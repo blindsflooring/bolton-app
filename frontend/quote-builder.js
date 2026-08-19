@@ -49,13 +49,20 @@ async function toggleLineFields() {
   const isFlooring = cat === 'flooring';
   document.getElementById('fjMain').style.display = isFlooring ? '' : 'none';
   document.getElementById('genericLineCard').style.display = isFlooring ? 'none' : '';
+  // Hardened Aug 2026, extended after a live bug found via staff-testing
+  // the deployed app: the original fix here only re-fetched
+  // flooringProducts (isFlooring branch below), assuming
+  // blindsProducts/trimProducts were safe to read directly further
+  // down — same unguarded-cache-read shape, just not yet caught. Blinds/
+  // trim/skirting/stairwell all read straight from the cache via
+  // refreshLineProductOptions() or the stairwell dropdowns below, with
+  // no await — invisible against instant local SQLite, trivially easy
+  // to hit against the real deployed backend on a Render free-tier cold
+  // start (30-60+s to wake). Now awaits all three caches up front,
+  // regardless of which category is selected, before anything below
+  // reads any of them.
+  await Promise.all([loadFlooring(), loadBlinds(), loadTrims()]);
   if (isFlooring) {
-    // Hardened Aug 2026: always re-fetch before building the Range/Colour
-    // dropdowns, rather than trusting the cached flooringProducts array is
-    // already populated — a real race condition was found where this ran
-    // before the initial page-load fetch had completed, silently leaving
-    // every price field empty (which showed as an all-zero result panel).
-    await loadFlooring();
     populateFloorProductDropdowns();
     // Labour rate default from Business Settings — set once here, NOT
     // inside onVinylProductChange(), since labour rate is a genuinely

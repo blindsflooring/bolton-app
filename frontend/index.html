@@ -452,7 +452,20 @@ function onTileClick(tileId) {
   else if (tileId === 'supplierPrices') { goToTab('priceBook'); }
 }
 
-function renderFlooringDrill(el) {
+async function renderFlooringDrill(el) {
+  // Real bug found via staff-testing the deployed app: this used to read
+  // flooringProducts synchronously, assuming the page-load loadFlooring()
+  // call (fired without await, in the init sequence at the bottom of this
+  // file) had already finished. Invisible against instant local SQLite;
+  // trivially easy to hit clicking this tile against the real deployed
+  // backend, especially a Render free-tier cold start (30-60+s to wake) —
+  // showed "No flooring products in the price book yet" with real data
+  // sitting right there, just not fetched yet. Same class of bug already
+  // fixed once in toggleLineFields() (quote-builder.js); this is the
+  // other place it was still lurking. Now awaits the real fetch every
+  // time, same pattern every other landing sub-view already uses.
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Flooring Quotes</h2><p class="muted">Loading...</p></div>`;
+  await loadFlooring();
   const materialProducts = flooringProducts.filter(p => p.pricing_type === 'material');
   const byCategory = {};
   materialProducts.forEach(p => {
