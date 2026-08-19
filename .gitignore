@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+backend/venv/
+
+# Local SQLite database — Supabase Postgres is the real database once
+# deployed; the local file (and its pre-round backups) has no place in
+# version control.
+backend/bolton.db*
+
+# Real uploaded files (HR documents etc.) — data, not code.
+backend/uploads/
+
+# Real credentials — DATABASE_URL and anything else secret lives in
+# Render's environment variables, never committed.
+.env
+*.env
+
+# Historical backup snapshots taken before past merge rounds — real git
+# history replaces the need for these now that this is a real repo.
+# Left on disk for local reference, just not committed.
+*.orig
+*.pre-*-merge
+
+# Claude Code local settings — machine-specific, not shared config.
+.claude/settings.local.json

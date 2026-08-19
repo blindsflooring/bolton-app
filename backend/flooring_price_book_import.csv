@@ -1,0 +1,5 @@
+product_name,supplier,pricing_type,base_cost_ex_vat,trade_discount_pct,wastage_pct,unit,m2_per_pack,tiles_per_pack,source
+deZIGN series 120,Azura Distributors,material,200.00,0.30,0.08,m2,4.94,22,pdf_import_azura_june2026
+deZIGN series 200,Azura Distributors,material,222.00,0.30,0.08,m2,3.345,12,pdf_import_azura_june2026
+deZIGN series 250,Azura Distributors,material,295.00,0.30,0.08,m2,4.46,16,pdf_import_azura_june2026
+deZIGN series XL,Azura Distributors,material,285.00,0.30,0.08,m2,3.45,10,pdf_import_azura_june2026

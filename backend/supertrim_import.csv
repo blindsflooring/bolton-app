@@ -1,0 +1,12 @@
+product_name,profile_code,category,supplier,cost_ex_vat_per_lm,pricing_mode,markup_multiplier,source
+Stair Nose - 8-10mm floor,S299,stair_nose,Supertrim,89.63,markup,1.5,pdf_import_supertrim_feb2024
+SPC Stair Nose - 4.5-6mm floor,S231,stair_nose,Supertrim,81.48,markup,1.5,pdf_import_supertrim_feb2024
+Vinyl Stair Nose - closed steps,S287,stair_nose,Supertrim,68.89,markup,1.5,pdf_import_supertrim_feb2024
+Vinyl Stair Nose - open steps,S297,stair_nose,Supertrim,68.89,markup,1.5,pdf_import_supertrim_feb2024
+Aluminium Reducer,S130,reducer,Supertrim,55.55,markup,1.5,pdf_import_supertrim_feb2024
+Aluminium Reducer,S128g,reducer,Supertrim,70.37,markup,1.5,pdf_import_supertrim_feb2024
+Aluminium Reducer (short),S128g-short,reducer,Supertrim,79.99,markup,1.5,pdf_import_supertrim_feb2024
+Aluminium Reducer (dowel/glue),S129,reducer,Supertrim,77.77,markup,1.5,pdf_import_supertrim_feb2024
+Carpet Varistrip,SC1006,carpet_strip,Supertrim,67.40,markup,1.5,pdf_import_supertrim_feb2024
+Carpet Naplok,SC1007,carpet_strip,Supertrim,52.59,markup,1.5,pdf_import_supertrim_feb2024
+Aluminium Equal Angle (25x25mm),S2525,corner_protector,Supertrim,56.29,markup,1.5,pdf_import_supertrim_feb2024

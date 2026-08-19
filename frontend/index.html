@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blinds & Flooring Studio — Bolt-on (Phase 1)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <div class="logo-row">
+    <img src="data:image/png;base64,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" alt="Blinds & Flooring Studio">
+    <h1>Bolt-on <span style="opacity:0.6;">— Phase 1</span></h1>
+    <span id="versionBadge" style="background:var(--teal); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; margin-left:10px; font-family:'Poppins',sans-serif;">v65</span>
+  </div>
+  <div class="role-select">
+    Viewing as:
+    <select id="roleSelect">
+      <option value="owner">Owner (Burgert)</option>
+      <option value="admin">Admin (Madri)</option>
+      <option value="sales">Sales (Ryno)</option>
+    </select>
+  </div>
+</header>
+
+<nav>
+  <button class="tab-btn active" data-tab="landing">Home</button>
+</nav>
+
+<main>
+
+  <!-- LANDING PAGE -->
+  <section id="landing"></section>
+
+  <!-- PRICE BOOK -->
+  <section id="priceBook" style="display:none;">
+    <span class="back-link" onclick="showSection('landing');">← Back to Home</span>
+    <div class="card">
+      <h2>Add Flooring Product</h2>
+      <div class="grid">
+        <div class="field"><label>Product name (range)</label><input id="fl_name" placeholder="e.g. Aspen Premium Range 2.5mm"></div>
+        <div class="field"><label>Colour</label><input id="fl_colour" placeholder="e.g. GD Bleached Oak"></div>
+        <div class="field"><label>Supplier</label><input id="fl_supplier"></div>
+        <div class="field"><label>Pricing type</label>
+          <select id="fl_pricing_type">
+            <option value="material">Material (flat price — vinyl, laminate, oak...)</option>
+            <option value="screed">Screed (job-type multiplier applies)</option>
+          </select>
+        </div>
+        <div class="field"><label>Category</label>
+          <select id="fl_category">
+            <option value="vinyl">Vinyl</option>
+            <option value="laminate">Laminate</option>
+            <option value="spc">SPC</option>
+            <option value="novilon">Novilon</option>
+            <option value="carpet">Carpet</option>
+            <option value="engineered_wood">Engineered Wood</option>
+            <option value="screed">Screed</option>
+          </select>
+        </div>
+        <div class="field"><label>Base cost ex VAT (per m²)</label><input id="fl_cost" type="number" step="0.01"></div>
+        <div class="field"><label>Wastage %</label><input id="fl_wastage" type="number" step="1" value="8"></div>
+        <div class="field"><label>Trade discount %</label><input id="fl_discount" type="number" step="1" value="0"></div>
+        <div class="field"><label>m² per pack (optional)</label><input id="fl_m2perpack" type="number" step="0.001"></div>
+        <div class="field"><label>Sell markup (material only)</label><input id="fl_markup" type="number" step="0.01" value="1.3"></div>
+        <div class="field"><label>Display priority <span class="adj">(lower = shown first, e.g. your best-seller at 10)</span></label><input id="fl_display_order" type="number" step="1" value="100"></div>
+        <div class="field"><label>Delivery fee (R/m²) <span class="adj">(supplier-specific, e.g. Aspen — 0 for everyone else)</span></label><input id="fl_delivery_fee" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Over Tiles multiplier (screed only)</label><input id="fl_over_tiles_mult" type="number" step="0.01" value="1.5"></div>
+        <div class="field"><label>Removed Tiles multiplier (screed only)</label><input id="fl_removed_tiles_mult" type="number" step="0.01" value="2.0"></div>
+      </div>
+      <br><button class="primary" onclick="addFlooring()">Add to Price Book</button>
+    </div>
+
+    <div class="card">
+      <h2>Bulk Import (JSON)</h2>
+      <p class="muted">For loading a whole supplier range at once instead of one product at a time — e.g. a new Aspen or Azura range. Upload a JSON file matching the same fields as "Add Flooring Product" above.</p>
+      <input type="file" id="bulkImportFile" accept=".json">
+      <button class="primary" onclick="bulkImportFlooring()" style="margin-left:10px;">Import</button>
+      <p class="muted" id="bulkImportStatus" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="card">
+      <h2>Flooring Price Book</h2>
+      <p class="muted">Prices shown are the base rate (screed) or marked-up sell rate (material) per m² — glue and R45/m² labour are added on top at quote time, not shown here.</p>
+      <div id="flooringTree"></div>
+    </div>
+
+    <div class="card">
+      <h2>Add Blinds Product</h2>
+      <div class="grid">
+        <div class="field"><label>Product name</label><input id="bl_name" placeholder="e.g. Roller Blockout"></div>
+        <div class="field"><label>Supplier</label><input id="bl_supplier"></div>
+        <div class="field"><label>Mechanism</label><input id="bl_mechanism" placeholder="roller / venetian..."></div>
+        <div class="field"><label>Book price</label><input id="bl_price" type="number" step="0.01"></div>
+      </div>
+      <br><button class="primary" onclick="addBlinds()">Add to Price Book</button>
+    </div>
+
+    <div class="card">
+      <h2>Blinds Price Book</h2>
+      <table id="blindsTable"><thead><tr><th>Product</th><th>Supplier</th><th>Book price</th><th>Sell (ex VAT)</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
+      <p class="muted">Margin: cost = book × 55% (after 45% trade) × 92.5% (after 7.5% settlement). Confirmed ~49% margin at full price.</p>
+    </div>
+
+    <div class="card">
+      <h2>Add Trim Product</h2>
+      <div class="grid">
+        <div class="field"><label>Product name</label><input id="tr_name" placeholder="e.g. Pine Skirting 69mm"></div>
+        <div class="field"><label>Profile code (optional)</label><input id="tr_code" placeholder="e.g. S299"></div>
+        <div class="field"><label>Category</label>
+          <select id="tr_category">
+            <option value="skirting">Skirting</option>
+            <option value="quarter_round">Quarter Round</option>
+            <option value="stair_nose">Stair Nose</option>
+            <option value="reducer">Reducer</option>
+            <option value="carpet_strip">Carpet Strip</option>
+          </select>
+        </div>
+        <div class="field"><label>Supplier</label><input id="tr_supplier"></div>
+        <div class="field"><label>Cost ex VAT (per lm)</label><input id="tr_cost" type="number" step="0.01"></div>
+        <div class="field"><label>Pricing mode</label>
+          <select id="tr_pricing_mode" onchange="toggleTrimPricingFields()">
+            <option value="fixed">Fixed sell price (pine skirting)</option>
+            <option value="markup">Markup on cost (aluminium trims, ×1.5)</option>
+          </select>
+        </div>
+        <div class="field" id="tr_fixed_field"><label>Sell price (per lm)</label><input id="tr_fixed_price" type="number" step="0.01"></div>
+        <div class="field" id="tr_markup_field" style="display:none;"><label>Markup multiplier <span class="adj">(1.9636 = 45% margin exactly, accounting for the 8% wastage cost)</span></label><input id="tr_markup" type="number" step="0.0001" value="1.9636"></div>
+        <div class="field" id="tr_vat_field" style="display:none;"><label>VAT % (reference only — not used in pricing, see note)</label><input id="tr_vat" type="number" step="1" value="15"></div>
+      </div>
+      <br><button class="primary" onclick="addTrim()">Add to Price Book</button>
+    </div>
+
+    <div class="card">
+      <h2>Trim Price Book</h2>
+      <div id="trimTree"></div>
+    </div>
+  </section>
+
+  <!-- QUOTE BUILDER -->
+  <section id="quoteBuilder" style="display:none;">
+    <span class="back-link" onclick="showSection('landing');">← Back to Home</span>
+    <div class="card">
+      <h2>New Quote</h2>
+      <div class="grid">
+        <div class="field" style="position:relative;">
+          <label>Client name</label>
+          <input id="q_client" placeholder="Client name — start typing to search existing clients" autocomplete="off"
+            oninput="onQClientInput(this.value)"
+            onkeydown="if(event.key==='Enter' && !document.getElementById('startQuoteBtn').disabled) createQuote();">
+          <div id="qClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+        </div>
+        <div class="field"><label>Sales Owner</label>
+          <select id="q_owner"><option value="burgert">Burgert</option><option value="madri">Madri</option><option value="ryno">Ryno</option></select>
+        </div>
+        <div class="field"><label>Branch</label>
+          <select id="q_branch"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+        </div>
+      </div>
+      <div class="toggle-row" style="display:none;">
+        <input type="checkbox" id="q_measurements" checked>
+        <label style="margin:0;" for="q_measurements">Show blind measurements to client on this quote</label>
+      </div>
+      <br><button class="primary" id="startQuoteBtn" onclick="createQuote()">Start Quote</button>
+      <button onclick="startFreshQuote()" style="margin-left:10px; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;">New Quote (different client)</button>
+      <p class="muted" id="quoteStatus"></p>
+    </div>
+
+    <div class="card" id="addLineCard" style="display:none;">
+      <h2>Add Line Item</h2>
+      <div class="field"><label>Category</label>
+        <select id="line_category" onchange="toggleLineFields()">
+          <option value="flooring">Flooring</option>
+          <option value="blinds">Blinds</option>
+          <option value="skirting">Skirting</option>
+          <option value="trim">Trim</option>
+          <option value="stairwell">Stairwell</option>
+          <option value="misc">Miscellaneous</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- ===== FLOORING: two-column layout, identical structure to the confirmed calculator ===== -->
+    <div class="fj-main" id="fjMain" style="display:none;">
+      <div>
+        <div class="card" style="border: 2px solid var(--teal);">
+          <h2 style="color:var(--teal);">Floor Job</h2>
+          <div class="field"><label>Floor size (m²)</label><input id="fj_floor_m2" type="number" step="0.1" placeholder="e.g. 100" oninput="fjCalc()"></div>
+          <div class="field" style="margin-top:14px;">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_include_vinyl" checked onchange="fjOnIncludeChange()" style="width:auto; margin-right:6px;"> Include vinyl flooring</label>
+          </div>
+          <div class="field">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_include_screed" checked onchange="fjOnIncludeChange()" style="width:auto; margin-right:6px;"> Include screed</label>
+          </div>
+          <p class="muted">Uncheck either for a vinyl-only or screed-only job — some clients only want one.</p>
+        </div>
+
+        <div class="card" id="vinylCard">
+          <h2>Vinyl</h2>
+          <div class="field"><label>Range</label><select id="fj_vinyl_range" onchange="onVinylRangeChange()"></select></div>
+          <div class="field"><label>Colour</label><select id="fj_vinyl_colour" onchange="onVinylColourChange()"></select></div>
+          <input type="hidden" id="fj_vinyl_product">
+          <input type="hidden" id="fj_jobtype" value="smooth">
+          <!-- confirmed: vinyl material pricing is flat regardless of job type — job type only genuinely affects screed (its multiplier). Removed the dropdown here since it never did anything for vinyl; kept as a hidden fixed "smooth" value since the submission endpoint still expects the param. -->
+          <div class="field"><label>Wastage %</label><input type="number" id="fj_wastage" oninput="fjCalc()"></div>
+          <div class="field"><label>m² per box</label><input type="number" id="fj_m2_per_box" step="0.001" oninput="fjCalc()"></div>
+          <div class="field"><label>Price per m² (ex VAT, before discount)</label><input type="number" id="fj_box_price" oninput="fjCalc()"></div>
+          <div class="field"><label>Trade discount %</label><input type="number" id="fj_trade_discount" oninput="fjCalc()"></div>
+          <div class="field"><label>Glue rate (R/m², on actual floor area)</label><input type="number" id="fj_glue_rate" step="0.01" value="17.05" oninput="fjCalc()"></div>
+          <div class="field"><label>Markup % <span class="adj">(on boxes+glue subtotal)</span></label><input type="number" id="fj_markup" class="adjustable" oninput="fjCalc()"></div>
+          <div class="field"><label>Labour rate (R/m²) <span class="adj">(added after markup)</span></label><input type="number" id="fj_labour_rate" class="adjustable" value="45" oninput="fjCalc()"></div>
+          <div class="field"><label>Labour source</label>
+            <select id="fj_own_staff" onchange="fjCalc()">
+              <option value="true">Own staff (salaried — pure margin)</option>
+              <option value="false">Outside/subcontracted (real cost)</option>
+            </select>
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_material_only" onchange="fjOnMaterialOnlyChange()" style="width:auto; margin-right:6px;"> Material only — client buys the vinyl alone, no glue or labour charged</label>
+          </div>
+          <p class="muted" id="materialOnlyNote" style="display:none;">Line price is box cost × markup only (VAT still applied once at the end, same as every other line).</p>
+        </div>
+
+        <div class="card" id="screedCard">
+          <h2>Screed <span class="adj-badge">ADJUSTABLE</span></h2>
+          <p class="muted" id="screedEmptyNote" style="display:none; color:var(--coral); font-weight:600;">No screed products in your price book yet — add one under Price Book first, or uncheck "Include screed" above.</p>
+          <div class="field"><label>Product</label><select id="fj_screed_product" onchange="onScreedProductChange()"></select></div>
+          <div class="field"><label>Job type</label>
+            <select id="fj_screed_jobtype" onchange="fjCalc()">
+              <option value="smooth">Smooth</option>
+              <option value="over_tiles">Over Tiles</option>
+              <option value="removed_tiles">Removed Tiles</option>
+            </select>
+          </div>
+          <div class="field"><label>Screed rate (R/m², ex VAT, all-in) <span class="adj"></span></label><input type="number" id="fj_screed_rate" class="adjustable" oninput="fjCalc()"></div>
+          <div class="field"><label>Bag cost (R)</label><input type="number" id="fj_bag_cost" value="235" oninput="fjCalc()"></div>
+          <div class="field"><label>Bag coverage (m²/bag)</label><input type="number" id="fj_bag_coverage" value="4" step="0.1" oninput="fjCalc()"></div>
+          <div class="field" style="margin-top:10px;">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_tile_removal" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Add tile removal fee (R45/m² incl. VAT)</label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Discount</h2>
+          <div class="field"><label>Discount % <span class="adj">(applied ex VAT, whole quote, before VAT)</span></label><input type="number" id="fj_discount_pct" class="adjustable" value="0" step="0.1" oninput="fjCalc()"></div>
+        </div>
+
+        <div class="card">
+          <button class="primary" onclick="addFloorJob()" style="width:100%; padding:12px;">+ Add Floor Job to Quote</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>Result</h2>
+          <div class="fj-section-label">Job</div>
+          <div class="fj-line result"><span>Floor size</span><span id="fj_out_floor"></span></div>
+
+          <div class="fj-section-label">What needs to be ordered</div>
+          <div class="fj-line step"><span>m² needed (incl. wastage)</span><span id="fj_out_m2_needed"></span></div>
+          <div class="fj-line result" id="fj_row_boxes"><span>Boxes to order</span><span id="fj_out_boxes"></span></div>
+          <div class="fj-line result" id="fj_row_bags"><span>Bags of screed to order</span><span id="fj_out_bags"></span></div>
+
+          <div class="fj-section-label" id="fj_section_vinyl">Vinyl line</div>
+          <div id="fj_block_vinyl">
+            <div class="fj-line step"><span>Box list price (ex VAT, before discount)</span><span id="fj_out_list_box"></span></div>
+            <div class="fj-line step"><span>Net price/box (after trade discount)</span><span id="fj_out_net_box"></span></div>
+            <div class="fj-line step"><span>Box total</span><span id="fj_out_box_total"></span></div>
+            <div class="fj-line step"><span>Glue total</span><span id="fj_out_glue_total"></span></div>
+            <div class="fj-line step"><span>Subtotal (boxes + glue)</span><span id="fj_out_subtotal"></span></div>
+            <div class="fj-line step"><span>After markup</span><span id="fj_out_marked_up"></span></div>
+            <div class="fj-line step"><span>+ Labour</span><span id="fj_out_labour"></span></div>
+            <div class="fj-line result"><span>Vinyl line, ex VAT</span><span id="fj_out_vinyl_ex"></span></div>
+            <div class="fj-line result"><span>Vinyl line, incl VAT</span><span id="fj_out_vinyl_incl"></span></div>
+          </div>
+
+          <div class="fj-section-label" id="fj_section_screed">Screed line</div>
+          <div id="fj_block_screed">
+            <div class="fj-line step" id="fj_row_tile_removal"><span>Tile removal fee</span><span id="fj_out_tile_removal"></span></div>
+            <div class="fj-line result"><span>Screed, ex VAT</span><span id="fj_out_screed_ex"></span></div>
+            <div class="fj-line result"><span>Screed, incl VAT</span><span id="fj_out_screed_incl"></span></div>
+          </div>
+
+          <div class="fj-section-label">Turnkey total</div>
+          <div class="fj-line step"><span>Subtotal (floor, ex VAT)</span><span id="fj_out_pre_discount"></span></div>
+          <div class="fj-line step"><span>Discount (<span id="fj_out_discount_pct_label"></span>%, ex VAT side)</span><span id="fj_out_discount_amount"></span></div>
+          <div class="fj-line grand"><span>Total ex VAT</span><span id="fj_out_total_ex"></span></div>
+          <div class="fj-line grand"><span>Total incl VAT</span><span id="fj_out_total_incl"></span></div>
+
+          <div class="per-m2-check">
+            <div class="per-m2-label" id="fj_out_per_m2_label">Total price per m² — check against your target</div>
+            <div class="per-m2-value-row">
+              <div><div class="per-m2-value ex">R<span id="fj_out_per_m2_ex"></span></div><div class="per-m2-sublabel">ex VAT</div></div>
+              <div><div class="per-m2-value incl">R<span id="fj_out_per_m2_incl"></span></div><div class="per-m2-sublabel">incl VAT</div></div>
+            </div>
+            <div class="per-m2-split" id="fj_out_per_m2_split"></div>
+          </div>
+        </div>
+
+        <div class="card" style="border: 2px solid var(--coral);">
+          <h2 style="color:var(--coral);">Margin / GP Check</h2>
+          <div class="fj-line step"><span>Box cost (real)</span><span id="fj_out_gp_box_cost"></span></div>
+          <div class="fj-line step"><span>Glue cost (real)</span><span id="fj_out_gp_glue_cost"></span></div>
+          <div class="fj-line step"><span>Screed bag cost (real)</span><span id="fj_out_gp_screed_cost"></span></div>
+          <div class="fj-line step" id="fj_row_gp_tile_removal"><span>Tile removal fee (pass-through)</span><span id="fj_out_gp_tile_removal"></span></div>
+          <div class="fj-line step"><span>Labour cost</span><span id="fj_out_gp_labour_cost">R0.00 — salaried, no marginal cost to the job</span></div>
+          <div class="fj-line step"><span>Total real cost</span><span id="fj_out_gp_total_cost"></span></div>
+          <div class="fj-line step"><span>Total revenue (ex VAT)</span><span id="fj_out_gp_revenue"></span></div>
+          <div class="fj-line grand"><span>GP (Rand)</span><span id="fj_out_gp_rand"></span></div>
+          <div class="fj-line grand"><span>GP %</span><span id="fj_out_gp_pct"></span></div>
+          <div class="muted" style="margin-top:8px;">Labour (R<span id="fj_out_gp_labour_amount"></span>) is charged to the client but costs you nothing extra — you pay your guys a salary either way, so it flows straight into GP.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== BLINDS / TRIM / STAIRWELL: existing simpler forms ===== -->
+    <div class="card" id="genericLineCard" style="display:none;">
+      <h2>Add Line Item</h2>
+      <div class="grid">
+        <div class="field" id="product_field"><label>Product</label><select id="line_product"></select></div>
+        <div class="field misc-field" style="display:none;"><label>Description</label><input id="line_misc_desc" placeholder="e.g. Extra Saturday labour"></div>
+        <div class="field misc-field" style="display:none;"><label>Amount (ex VAT)</label><input id="line_misc_amount" type="number" step="0.01"></div>
+        <div class="field misc-field" style="display:none;"><label>Cost (ex VAT, optional — 0 if pure margin)</label><input id="line_misc_cost" type="number" step="0.01" value="0"></div>
+        <div class="field stairwell-field" style="display:none;"><label>Vinyl product</label><select id="line_stair_vinyl"></select></div>
+        <div class="field stairwell-field" style="display:none;"><label>Nosing product</label><select id="line_nosing_product"></select></div>
+        <div class="field blinds-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number"></div>
+        <div class="field blinds-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number"></div>
+        <div class="field trim-field" style="display:none;"><label>Length (m)</label><input id="line_length" type="number" step="0.1"></div>
+        <div class="field stairwell-field" style="display:none;"><label>Number of stairs</label><input id="line_num_stairs" type="number" step="1"></div>
+        <div class="field stairwell-field" style="display:none;"><label>Area per stair (m²)</label><input id="line_stair_area" type="number" step="0.01" value="0.45"></div>
+        <div class="field stairwell-field" style="display:none;"><label>Stairwell type</label>
+          <select id="line_stairwell_type">
+            <option value="closed">Closed (900mm nosing, R250/stair)</option>
+            <option value="one_side_open">One side open (1400mm, R300/stair)</option>
+            <option value="both_sides_open">Both sides open (1900mm, R350/stair)</option>
+          </select>
+        </div>
+        <div class="field stairwell-field" style="display:none;"><label>Labour source</label>
+          <select id="line_stair_own_staff">
+            <option value="true">Own staff (salaried — charge is pure margin)</option>
+            <option value="false">Outside/subcontracted (real cost)</option>
+          </select>
+        </div>
+        <div class="field"><label>Discount %</label><input id="line_discount" type="number" step="1" value="0"></div>
+      </div>
+      <br><button class="primary" onclick="addLine()">Add Line</button>
+    </div>
+
+    <div class="card" id="linesCard" style="display:none;">
+      <h2>Quote Lines</h2>
+      <table id="linesTable"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="total-row" id="quoteTotal"></div>
+      <div class="field" style="margin-top:16px;"><label>Quote status</label>
+        <select id="q_status">
+          <option value="draft">Draft</option>
+          <option value="sent">Sent to client</option>
+          <option value="accepted">Accepted (won)</option>
+          <option value="declined">Declined (lost)</option>
+          <option value="invoiced">Invoiced</option>
+          <option value="paid">Paid</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:10px; margin-top:16px;">
+        <button class="primary" onclick="saveQuote()" style="flex:1;">Save Quote</button>
+        <button onclick="printQuote()" style="flex:1; background:none; border:2px solid var(--navy); color:var(--navy); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Print / PDF</button>
+      </div>
+      <p class="muted" id="saveStatus" style="margin-top:8px;"></p>
+    </div>
+  </section>
+</main>
+<div id="printArea"></div>
+
+<script src="shared.js"></script>
+<script src="price-book.js"></script>
+<script src="clients.js"></script>
+<script src="order-index.js"></script>
+<script src="quote-builder.js"></script>
+<script src="hr.js"></script>
+<script>
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => showSection(btn.dataset.tab));
+});
+
+function showSection(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const navBtn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
+  if (navBtn) navBtn.classList.add('active'); // Price Book/Quote Builder have no nav button of their own — reached via tiles, so nav stays unhighlighted
+  document.getElementById('landing').style.display = tabName === 'landing' ? 'block' : 'none';
+  document.getElementById('priceBook').style.display = tabName === 'priceBook' ? 'block' : 'none';
+  document.getElementById('quoteBuilder').style.display = tabName === 'quoteBuilder' ? 'block' : 'none';
+  if (tabName === 'landing') {
+    landingView = 'tiles'; // confirmed Aug 2026: Home must always mean the tile screen, not "whatever sub-view you left off in"
+    renderLanding();
+  }
+}
+
+function goToTab(tabName) { showSection(tabName); }
+
+document.getElementById('roleSelect').addEventListener('change', () => {
+  applyRoleVisibility();
+  if (currentQuoteId) loadQuote();
+});
+
+// ===== LANDING PAGE =====
+function renderLanding() {
+  const el = document.getElementById('landing');
+  if (landingView === 'tiles') return renderLandingTiles(el);
+  if (landingView === 'flooring-drill') return renderFlooringDrill(el);
+  if (landingView === 'orders') return renderOrderIndex(el);
+  if (landingView === 'printInvoice') return renderPrintInvoicePicker(el);
+  if (landingView === 'clients') return renderClients(el);
+  if (landingView === 'client-detail') return renderClientDetail(el);
+  if (landingView === 'settings') return renderBusinessSettings(el);
+  if (landingView === 'business') return renderBusinessOverview(el);
+  if (landingView === 'hr') return renderHR(el);
+}
+
+function renderLandingTiles(el) {
+  el.innerHTML = `
+    <div class="landing-welcome">
+      <h1>Blinds &amp; Flooring Studio</h1>
+      <p>Pick where you're working today.</p>
+    </div>
+    <div class="tile-grid">
+      ${LANDING_TILES.map(t => `
+        <div class="tile ${t.ready ? '' : 'coming-soon'}" onclick="onTileClick('${t.id}')">
+          <div>
+            <h3>${t.title}</h3>
+            <p>${t.desc}</p>
+          </div>
+          ${t.ready ? '' : '<span class="tile-badge">Coming soon</span>'}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function onTileClick(tileId) {
+  const tile = LANDING_TILES.find(t => t.id === tileId);
+  if (!tile.ready) return; // coming-soon tiles do nothing yet — no fake functionality
+  if (tileId === 'flooring') { landingView = 'flooring-drill'; renderLanding(); }
+  else if (tileId === 'orders') { landingView = 'orders'; renderLanding(); }
+  else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
+  else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
+  else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }
+  else if (tileId === 'business') { landingView = 'business'; renderLanding(); }
+  else if (tileId === 'hr') { landingView = 'hr'; hrView = 'employees'; renderLanding(); }
+  else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
+  else if (tileId === 'supplierPrices') { goToTab('priceBook'); }
+}
+
+function renderFlooringDrill(el) {
+  const materialProducts = flooringProducts.filter(p => p.pricing_type === 'material');
+  const byCategory = {};
+  materialProducts.forEach(p => {
+    const cat = p.flooring_category || 'vinyl';
+    (byCategory[cat] = byCategory[cat] || []).push(p);
+  });
+  const catHtml = Object.keys(byCategory).length ? Object.keys(byCategory).sort().map(cat => {
+    const items = byCategory[cat];
+    const bySupplier = {};
+    items.forEach(p => (bySupplier[p.supplier] = bySupplier[p.supplier] || []).push(p));
+    const supplierHtml = Object.keys(bySupplier).sort().map(supplier => {
+      // Group by range (product_name) — clicking a range starts a quote
+      // with that range pre-selected, colour chosen afterward inside
+      // Quote Builder itself, not here (confirmed Aug 2026).
+      const byRange = {};
+      bySupplier[supplier].forEach(p => (byRange[p.product_name] = byRange[p.product_name] || []).push(p));
+      const rangeHtml = Object.keys(byRange).sort().map(range => `
+        <div class="drill-product-row" onclick="startQuoteWithVinylRange('${range.replace(/'/g,"\\'")}')">
+          <span>${range}</span><span class="go">${byRange[range].length} colour${byRange[range].length!==1?'s':''} — Start quote →</span>
+        </div>`).join('');
+      return `<details class="tree-node supplier">
+        <summary>${supplier} <span class="tree-count">(${bySupplier[supplier].length})</span></summary>
+        <div class="tree-body">${rangeHtml}</div>
+      </details>`;
+    }).join('');
+    return `<details class="tree-node category" open>
+      <summary>${CATEGORY_LABELS[cat] || cat} <span class="tree-count">(${items.length})</span></summary>
+      <div class="tree-body">${supplierHtml}</div>
+    </details>`;
+  }).join('') : '<p class="muted">No flooring products in the price book yet — add some under Price Book first.</p>';
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="card">
+      <h2>Flooring Quotes</h2>
+      <p class="muted">Pick a product to jump straight into a quote with it pre-selected.</p>
+      <div class="drill-tree">${catHtml}</div>
+    </div>
+  `;
+}
+
+async function startQuoteWithVinylRange(range) {
+  pendingVinylRange = range;
+  pendingCategory = 'flooring';
+  goToTab('quoteBuilder');
+  if (currentQuoteId) {
+    // a quote's already open — apply immediately rather than waiting for createQuote()
+    document.getElementById('line_category').value = 'flooring';
+    await toggleLineFields();
+    populateVinylRangeDropdown(range);
+    pendingVinylRange = null;
+    pendingCategory = null;
+  }
+}
+
+async function renderPrintInvoicePicker(el, searchTerm) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Print Invoice</h2><p class="muted">Loading...</p></div>`;
+  const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
+  const res = await fetch(`${API}/quotes${params}`);
+  const quotes = await res.json();
+  const rows = quotes.length ? quotes.map(q => `
+    <tr>
+      <td>#${q.id}</td>
+      <td>${q.client_name}</td>
+      <td>${q.branch}</td>
+      <td><span class="badge flooring">${q.status}</span></td>
+      <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
+      <td><button class="primary" onclick="printInvoiceForQuote(${q.id})">Print Invoice</button></td>
+    </tr>`).join('') : '<tr><td colspan="6" class="muted">No quotes match.</td></tr>';
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="card">
+      <h2>Print Invoice</h2>
+      <p class="muted">Pick any quote to generate its Tax Invoice — pulled from the same real line-item data as the quote, not re-typed.</p>
+      <div class="field"><label>Search (client name or quote #)</label><input type="text" id="invoiceSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderPrintInvoicePicker(document.getElementById('landing'), this.value)"></div>
+      <table><thead><tr><th>#</th><th>Client</th><th>Branch</th><th>Status</th><th>Date</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>
+  `;
+  const input = document.getElementById('invoiceSearchInput');
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function printInvoiceForQuote(quoteId) {
+  await renderPrintDoc(quoteId, 'invoice');
+}
+
+async function renderBusinessOverview(el) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Business Overview</h2><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/analytics/overview`);
+  const data = await res.json();
+
+  const pct = (v) => v === null || v === undefined ? '—' : (v*100).toFixed(1) + '%';
+  const money = R; // alias — consolidated to the one definition in shared.js
+
+  const kpiCard = (label, value, sublabel) => `
+    <div class="card" style="text-align:center;">
+      <div class="muted" style="text-transform:uppercase; font-size:11px; letter-spacing:0.03em;">${label}</div>
+      <div style="font-family:'Poppins',sans-serif; font-weight:800; font-size:26px; color:var(--teal); margin:6px 0;">${value}</div>
+      ${sublabel ? `<div class="muted" style="font-size:12px;">${sublabel}</div>` : ''}
+    </div>`;
+
+  const branchRows = Object.keys(data.by_branch).sort().map(b => {
+    const s = data.by_branch[b];
+    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${pct(s.conversion_rate_by_count)}</td><td>${pct(s.conversion_rate_by_value)}</td></tr>`;
+  }).join('');
+
+  const repRows = Object.keys(data.by_rep).sort().map(r => {
+    const s = data.by_rep[r];
+    return `<tr><td style="text-transform:capitalize;">${r}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${pct(s.conversion_rate_by_count)}</td><td>${pct(s.conversion_rate_by_value)}</td></tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Business Overview</h1><p>Live, built from real quote data — nothing here is estimated.</p></div>
+
+    <div class="tile-grid" style="margin-bottom:16px;">
+      ${kpiCard('Total quotes', data.overall.total_quotes)}
+      ${kpiCard('Open (awaiting decision)', data.overall.open_quotes, money(data.overall.open_value))}
+      ${kpiCard('Won', data.overall.won_quotes, money(data.overall.won_value))}
+      ${kpiCard('Conversion (by count)', pct(data.overall.conversion_rate_by_count), 'by value: ' + pct(data.overall.conversion_rate_by_value))}
+    </div>
+
+    <div class="card">
+      <h2>By Branch — Gansbaai vs Hermanus</h2>
+      <p class="muted">Conversion rate excludes still-open quotes — only decided ones (won or declined) count toward the rate.</p>
+      <table>
+        <thead><tr><th>Branch</th><th>Quotes</th><th>Won value</th><th>Conversion (count)</th><th>Conversion (value)</th></tr></thead>
+        <tbody>${branchRows || '<tr><td colspan="5" class="muted">No quotes yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>By Sales Owner</h2>
+      <p class="muted">Same conversion basis as above, split by who made the sale (not who processed admin work on it).</p>
+      <table>
+        <thead><tr><th>Rep</th><th>Quotes</th><th>Won value</th><th>Conversion (count)</th><th>Conversion (value)</th></tr></thead>
+        <tbody>${repRows || '<tr><td colspan="5" class="muted">No quotes yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div class="card" style="border: 2px solid var(--cream);">
+      <p class="muted" style="margin:0;">⚠️ Conversion rate needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count either way. Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
+    </div>
+  `;
+}
+
+function startQuoteForClient(clientId, clientName, preferredBranch) {
+  // Real gap found while merging v52: this already accepted a branch arg
+  // at one call site (below) but never did anything with it — site
+  // address is pre-filled server-side via client_id in POST /quotes, but
+  // branch never was. Now applied when the caller has it.
+  pendingClientId = clientId;
+  pendingClientName = clientName;
+  goToTab('quoteBuilder');
+  document.getElementById('q_client').value = clientName;
+  if (preferredBranch) { document.getElementById('q_branch').value = preferredBranch; }
+}
+
+// Confirmed Aug 2026 — one place for values used across the whole app
+// (VAT %, default deposit %, screed bag overage rate, default labour
+// rate, Order Index overdue threshold), merged into what used to be the
+// narrower "Business Details" letterhead-only page. Real production
+// data already lived in business_name/address/phone/email/bank_details
+// (free text) before this merge — kept those fields and names as-is
+// rather than adopting the zip lineage's rename+restructure (company_name/
+// contact_phone/contact_email, four separate structured bank fields) to
+// avoid any risk of mis-splitting the real bank_details text (it has a
+// "Send Proof of Payment to" line with nowhere to go in four fixed
+// fields). yoco_payment_link is new and safe to add — nothing to lose
+// there since it never existed before.
+async function renderBusinessSettings(el) {
+  await loadBusinessSettings();
+  const s = businessSettings;
+  const isOwner = currentRole() === 'owner';
+  const ro = isOwner ? '' : 'disabled';
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Business Settings</h1><p>One place for values used across the whole app — change them here, they apply everywhere.${isOwner ? '' : ' <b>Only the Owner role can make changes here.</b>'}</p></div>
+
+    <div class="card">
+      <h2>Pricing</h2>
+      <div class="grid">
+        <div class="field"><label>VAT %</label><input id="bs_vat_pct" type="number" step="0.1" value="${(s.vat_pct*100).toFixed(1)}" ${ro}></div>
+        <div class="field"><label>Default deposit %</label><input id="bs_deposit_pct" type="number" step="1" value="${(s.default_deposit_pct*100).toFixed(0)}" ${ro}></div>
+        <div class="field"><label>Screed bag overage rate (R, incl. VAT)</label><input id="bs_bag_overage" type="number" step="0.01" value="${s.bag_overage_rate}" ${ro}></div>
+        <div class="field"><label>Default labour rate (R/m²)</label><input id="bs_labour_rate" type="number" step="0.01" value="${s.default_labour_rate_per_m2}" ${ro}></div>
+        <div class="field"><label>Order Index overdue threshold (days)</label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Business Details <span class="adj">(shown on the printed quote header, alongside the logo)</span></h2>
+      <div class="grid">
+        <div class="field" style="grid-column: span 2;"><label>Business name</label><input id="bs_business_name" value="${s.business_name}" placeholder="Blinds & Flooring Studio" ${ro}></div>
+        <div class="field" style="grid-column: span 2;"><label>Address</label><input id="bs_address" value="${s.address}" placeholder="Street, town, postal code" ${ro}></div>
+        <div class="field"><label>Phone</label><input id="bs_phone" value="${s.phone}" placeholder="028 555 1234" ${ro}></div>
+        <div class="field"><label>Email</label><input id="bs_email" value="${s.email}" placeholder="info@example.com" ${ro}></div>
+        <div class="field"><label>VAT number</label><input id="bs_vat_number" value="${s.vat_number}" placeholder="4123456789" ${ro}></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Banking &amp; Payment</h2>
+      <div class="field">
+        <label>Banking details <span class="muted">(shown under the deposit line on the printed quote — one field per line)</span></label>
+        <textarea id="bs_bank_details" rows="4" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;" placeholder="Bank: FNB&#10;Account: 123456789&#10;Branch code: 250655" ${ro}>${s.bank_details}</textarea>
+      </div>
+      <div class="field" style="margin-top:10px;"><label>Yoco payment link</label><input id="bs_yoco_link" value="${s.yoco_payment_link}" placeholder="https://pay.yoco.com/..." ${ro}></div>
+      ${isOwner ? '<br><button class="primary" onclick="saveBusinessSettings()">Save Settings</button>' : ''}
+      <p class="muted" id="settingsSaveStatus" style="margin-top:8px;"></p>
+    </div>
+  `;
+}
+
+async function saveBusinessSettings() {
+  const body = {
+    vat_pct: parseFloat(document.getElementById('bs_vat_pct').value) / 100,
+    default_deposit_pct: parseFloat(document.getElementById('bs_deposit_pct').value) / 100,
+    bag_overage_rate: parseFloat(document.getElementById('bs_bag_overage').value),
+    default_labour_rate_per_m2: parseFloat(document.getElementById('bs_labour_rate').value),
+    order_overdue_days: parseInt(document.getElementById('bs_overdue_days').value),
+    business_name: document.getElementById('bs_business_name').value,
+    address: document.getElementById('bs_address').value,
+    phone: document.getElementById('bs_phone').value,
+    email: document.getElementById('bs_email').value,
+    vat_number: document.getElementById('bs_vat_number').value,
+    bank_details: document.getElementById('bs_bank_details').value,
+    yoco_payment_link: document.getElementById('bs_yoco_link').value,
+  };
+  const res = await fetch(`${API}/business-settings?role=${currentRole()}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (!res.ok) {
+    document.getElementById('settingsSaveStatus').textContent = '❌ Not saved — only the Owner role can change business settings.';
+    return;
+  }
+  await loadBusinessSettings(); // refresh the cache so the rest of the app picks up the change immediately
+  document.getElementById('settingsSaveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')}`;
+}
+
+async function openQuoteFromIndex(quoteId) {
+  currentQuoteId = quoteId;
+  goToTab('quoteBuilder');
+  document.getElementById('addLineCard').style.display = 'block';
+  document.getElementById('linesCard').style.display = 'block';
+
+  // Pre-fill the New Quote form with the real quote's details and lock
+  // "Start Quote" so amending an existing quote can never accidentally
+  // create a duplicate one alongside it.
+  const res = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
+  const data = await res.json();
+  document.getElementById('q_client').value = data.quote.client_name;
+  document.getElementById('q_owner').value = data.quote.sales_owner;
+  document.getElementById('q_branch').value = data.quote.branch;
+  const startBtn = document.getElementById('startQuoteBtn');
+  startBtn.disabled = true;
+  startBtn.textContent = 'Already open (see below)';
+  document.getElementById('quoteStatus').textContent = `Now amending Quote #${quoteId} for ${data.quote.client_name}.`;
+
+  toggleLineFields();
+  loadQuote();
+}
+
+let qClientSearchTimeout = null;
+function onQClientInput(value) {
+  pendingClientId = null; // typing manually means it's no longer a confirmed existing-client match
+  clearTimeout(qClientSearchTimeout);
+  const box = document.getElementById('qClientSuggestions');
+  if (!value || value.length < 2) { box.style.display = 'none'; return; }
+  qClientSearchTimeout = setTimeout(async () => {
+    const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
+    const matches = await res.json();
+    if (!matches.length) { box.style.display = 'none'; return; }
+    box.innerHTML = matches.map(c => `
+      <div style="padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--border);" onclick="selectQClient(${c.id}, '${c.name.replace(/'/g,"\\'")}')">
+        <b>${c.name}</b>${c.phone ? ' — '+c.phone : ''}
+      </div>`).join('');
+    box.style.display = 'block';
+  }, 250);
+}
+
+function selectQClient(clientId, clientName) {
+  pendingClientId = clientId;
+  document.getElementById('q_client').value = clientName;
+  document.getElementById('qClientSuggestions').style.display = 'none';
+}
+
+async function saveOrderDetails() {
+  if (!currentQuoteId) return;
+  const params = new URLSearchParams({
+    site_address: document.getElementById('od_site_address').value,
+    installation_date: document.getElementById('od_installation_date').value,
+    invoice_sent_date: document.getElementById('od_invoice_sent_date').value,
+    deposit_paid_date: document.getElementById('od_deposit_paid_date').value,
+    deposit_payment_method: document.getElementById('od_deposit_payment_method').value,
+    final_payment_date: document.getElementById('od_final_payment_date').value,
+    final_payment_method: document.getElementById('od_final_payment_method').value,
+  });
+  await fetch(`${API}/quotes/${currentQuoteId}?${params}`, {method:'PUT'});
+  document.getElementById('orderDetailsSaveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')}`;
+}
+
+async function logFollowUp() {
+  if (!currentQuoteId) return;
+  const followUpDate = document.getElementById('fu_date').value;
+  if (!followUpDate) { alert('Pick a date first.'); return; }
+  const notes = document.getElementById('fu_notes').value;
+  const params = new URLSearchParams({follow_up_date: followUpDate, notes});
+  await fetch(`${API}/quotes/${currentQuoteId}/follow-ups?${params}`, {method:'POST'});
+  document.getElementById('fu_date').value = '';
+  document.getElementById('fu_notes').value = '';
+  loadFollowUps();
+}
+
+async function loadFollowUps() {
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/follow-ups`);
+  const followUps = await res.json();
+  const el = document.getElementById('followUpList');
+  el.innerHTML = followUps.length
+    ? followUps.map(f => `<div class="muted" style="font-size:12px; padding:3px 0;">${new Date(f.follow_up_date).toLocaleDateString('en-ZA')} — ${f.notes || '(no notes)'}</div>`).join('')
+    : '<p class="muted" style="font-size:12px;">No follow-ups logged yet.</p>';
+}
+
+loadFlooring();
+loadBlinds();
+loadTrims();
+loadBusinessSettings();
+applyRoleVisibility();
+renderLanding();
+
+// Floating back-to-top button — appears once you've scrolled down,
+// works on any page in the app, confirmed Aug 2026 (long lists like the
+// 79-item Flooring Quotes drill-down made manual scrolling annoying).
+window.addEventListener('scroll', () => {
+  document.getElementById('backToTopBtn').style.display = window.scrollY > 300 ? 'flex' : 'none';
+});
+function scrollToTop() { window.scrollTo({top: 0, behavior: 'smooth'}); }
+</script>
+<button id="backToTopBtn" onclick="scrollToTop()" title="Back to top" style="display:none; position:fixed; bottom:24px; left:24px; width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:20px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; z-index:100;">↑</button>
+</body>
+</html>

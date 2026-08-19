@@ -1,0 +1,5 @@
+product_name,profile_code,category,supplier,cost_ex_vat_per_lm,pricing_mode,fixed_sell_price_per_lm,markup_multiplier,source
+Pine Skirting 69mm,,skirting,Local Supplier,26.78,fixed,80.00,1.5,manual_confirmed_aug2026
+Pine Skirting 96mm,,skirting,Local Supplier,39.42,fixed,145.00,1.5,manual_confirmed_aug2026
+Pine Skirting 140mm,,skirting,Local Supplier,41.12,fixed,195.00,1.5,manual_confirmed_aug2026
+Pine Quarter Round,,quarter_round,Local Supplier,18.00,fixed,45.00,1.5,manual_confirmed_aug2026
