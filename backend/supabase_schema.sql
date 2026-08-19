@@ -1,8 +1,35 @@
--- Phase 2: run this in Supabase's SQL editor when migrating off local SQLite.
--- Mirrors models.py exactly. Add RLS policies per role before going live
--- (row-level security matching the Owner/Admin/Sales split in brief §7).
+-- Phase 2 reference schema — mirrors models.py.
+--
+-- IMPORTANT, confirmed Aug 2026 during the real deployment: table names
+-- below match SQLModel's own auto-generated convention (lowercase,
+-- concatenated, no underscores — e.g. flooringproduct, not
+-- flooring_product), NOT a hand-chosen snake_case style. This file
+-- previously used snake_case names throughout and was never actually
+-- run against a real Postgres database until this deployment — when it
+-- finally was, it silently created a second, parallel, wrongly-named
+-- set of tables that the running app (which creates its OWN tables via
+-- `SQLModel.metadata.create_all(engine)` in main.py, using SQLModel's
+-- real naming convention) never queries at all. Real production data
+-- landed in the wrong tables the first time this ran; caught by testing
+-- an actual API call against the live connection afterward, not by
+-- trusting the migration step had worked. Renamed every table here to
+-- match reality — confirmed directly against `Model.__tablename__` for
+-- all 16 models, not guessed.
+--
+-- Practical note: `SQLModel.metadata.create_all(engine)` already
+-- creates every one of these tables automatically the first time the
+-- app connects to a fresh database — this file is not strictly
+-- required to run first. It's kept as accurate, explicit documentation
+-- (and a place to hang real constraints/RLS policies once Phase 2
+-- auth exists), not as the only path to a working schema.
+--
+-- Table order below is dependency-safe (every table after everything
+-- it references via foreign key) — a second real bug found running
+-- this for the first time: colour_change_log referenced quotelineitem
+-- before it existed, and hoursworked referenced quote before it
+-- existed, in the file's original order.
 
-create table if not exists flooring_product (
+create table if not exists flooringproduct (
     id serial primary key,
     product_name text not null,   -- the range/product name, NOT the colour
     colour text default '',       -- confirmed Aug 2026: real structured field, not baked into product_name
@@ -13,7 +40,7 @@ create table if not exists flooring_product (
     sell_markup_multiplier numeric not null default 1.0, -- material only, confirmed Aug 2026 — applied to (boxes+glue) subtotal, e.g. 1.30 for a 30% markup (box-by-box formula, not flat base x markup)
     wastage_pct numeric not null default 0.08,
     trade_discount_pct numeric not null default 0,
-    settlement_discount_pct numeric not null default 0,  -- a further discount some suppliers offer on top of trade discount — kept entirely as margin, never passed through to a lower client price (matches blinds_product)
+    settlement_discount_pct numeric not null default 0,  -- a further discount some suppliers offer on top of trade discount — kept entirely as margin, never passed through to a lower client price (matches blindsproduct)
     tile_width_mm numeric,      -- reference data from the supplier price list — not used in any calculation
     tile_length_mm numeric,
     tile_thickness_mm numeric,
@@ -28,7 +55,7 @@ create table if not exists flooring_product (
     source text not null default 'manual'
 );
 
-create table if not exists blinds_product (
+create table if not exists blindsproduct (
     id serial primary key,
     product_name text not null,
     supplier text not null,
@@ -44,7 +71,7 @@ create table if not exists blinds_product (
     source text not null default 'manual'
 );
 
-create table if not exists trim_product (
+create table if not exists trimproduct (
     id serial primary key,
     product_name text not null,
     profile_code text default '',
@@ -79,7 +106,7 @@ create table if not exists employee (
     created_at timestamptz not null default now()
 );
 
-create table if not exists commission_rate (
+create table if not exists commissionrate (
     id serial primary key,
     role_type text not null,            -- 'pure_sales' | 'builder_rep'
     basis text not null,                -- 'gp' | 'ex_vat_price'
@@ -88,76 +115,6 @@ create table if not exists commission_rate (
     tier_max numeric,                   -- null = "and above"
     rate_pct numeric not null,
     active boolean not null default true
-);
-
-create table if not exists commission_payment (
-    id serial primary key,
-    employee_id int not null references employee(id),
-    period_year int not null,
-    period_month int not null,
-    calculated_amount numeric not null,
-    paid_amount numeric not null,
-    paid_date date,
-    notes text default '',
-    created_at timestamptz not null default now()
-);
-
-create table if not exists hours_worked (
-    id serial primary key,
-    employee_id int not null references employee(id),
-    work_date date not null,
-    hours numeric not null,
-    hour_type text not null default 'normal',   -- normal | overtime | sunday | public_holiday
-    quote_id int references quote(id),
-    notes text default '',
-    created_at timestamptz not null default now()
-);
-
-create table if not exists document (
-    id serial primary key,
-    employee_id int not null references employee(id),
-    document_type text not null default 'other',  -- contract | sick_note | warning | other
-    filename text not null,
-    file_path text not null,
-    owner_only boolean not null default false,
-    notes text default '',
-    uploaded_at timestamptz not null default now()
-);
-
-create table if not exists leave_balance (
-    id serial primary key,
-    employee_id int not null references employee(id),
-    leave_type text not null,           -- annual | sick | unpaid | other
-    cycle_start_date date not null,
-    days_entitled numeric not null,
-    days_taken numeric not null default 0,
-    days_carried_over numeric not null default 0,
-    max_carry_over numeric not null default 5
-);
-
-create table if not exists leave_request (
-    id serial primary key,
-    employee_id int not null references employee(id),
-    leave_type text not null,
-    start_date date not null,
-    end_date date not null,
-    days_requested numeric not null,
-    status text not null default 'pending',   -- pending | approved | rejected
-    reason text default '',
-    requested_at timestamptz not null default now(),
-    reviewed_by text default '',
-    reviewed_at timestamptz,
-    sick_note_document_id int
-);
-
-create table if not exists colour_change_log (
-    id serial primary key,
-    quote_line_item_id int not null references quote_line_item(id),
-    old_colour text not null,
-    new_colour text not null,
-    reason text default '',
-    changed_by text default '',
-    changed_at timestamptz not null default now()
 );
 
 create table if not exists client (
@@ -176,7 +133,7 @@ create table if not exists client (
 -- of truth for business-wide values (VAT %, deposit %, bag overage
 -- rate, default labour rate, Order Index overdue threshold) that were
 -- previously hardcoded/duplicated in application code.
-create table if not exists business_settings (
+create table if not exists businesssettings (
     id int primary key default 1,
     business_name text default '',
     address text default '',
@@ -213,15 +170,7 @@ create table if not exists quote (
     final_payment_method text default ''
 );
 
-create table if not exists payment_follow_up (
-    id serial primary key,
-    quote_id int not null references quote(id),
-    follow_up_date date not null,
-    notes text default '',
-    created_at timestamptz not null default now()
-);
-
-create table if not exists quote_line_item (
+create table if not exists quotelineitem (
     id serial primary key,
     quote_id int not null references quote(id) on delete cascade,
     category text not null,             -- 'flooring' | 'blinds'
@@ -263,9 +212,87 @@ create table if not exists quote_line_item (
     nosing_sell_total numeric
 );
 
+create table if not exists commissionpayment (
+    id serial primary key,
+    employee_id int not null references employee(id),
+    period_year int not null,
+    period_month int not null,
+    calculated_amount numeric not null,
+    paid_amount numeric not null,
+    paid_date date,
+    notes text default '',
+    created_at timestamptz not null default now()
+);
+
+create table if not exists hoursworked (
+    id serial primary key,
+    employee_id int not null references employee(id),
+    work_date date not null,
+    hours numeric not null,
+    hour_type text not null default 'normal',   -- normal | overtime | sunday | public_holiday
+    quote_id int references quote(id),
+    notes text default '',
+    created_at timestamptz not null default now()
+);
+
+create table if not exists document (
+    id serial primary key,
+    employee_id int not null references employee(id),
+    document_type text not null default 'other',  -- contract | sick_note | warning | other
+    filename text not null,
+    file_path text not null,
+    owner_only boolean not null default false,
+    notes text default '',
+    uploaded_at timestamptz not null default now()
+);
+
+create table if not exists leavebalance (
+    id serial primary key,
+    employee_id int not null references employee(id),
+    leave_type text not null,           -- annual | sick | unpaid | other
+    cycle_start_date date not null,
+    days_entitled numeric not null,
+    days_taken numeric not null default 0,
+    days_carried_over numeric not null default 0,
+    max_carry_over numeric not null default 5
+);
+
+create table if not exists leaverequest (
+    id serial primary key,
+    employee_id int not null references employee(id),
+    leave_type text not null,
+    start_date date not null,
+    end_date date not null,
+    days_requested numeric not null,
+    status text not null default 'pending',   -- pending | approved | rejected
+    reason text default '',
+    requested_at timestamptz not null default now(),
+    reviewed_by text default '',
+    reviewed_at timestamptz,
+    sick_note_document_id int
+);
+
+create table if not exists colourchangelog (
+    id serial primary key,
+    quote_line_item_id int not null references quotelineitem(id),
+    old_colour text not null,
+    new_colour text not null,
+    reason text default '',
+    changed_by text default '',
+    changed_at timestamptz not null default now()
+);
+
+create table if not exists paymentfollowup (
+    id serial primary key,
+    quote_id int not null references quote(id),
+    follow_up_date date not null,
+    notes text default '',
+    created_at timestamptz not null default now()
+);
+
 -- Example RLS sketch (finish once Supabase auth/roles are wired up in Phase 2):
--- alter table quote_line_item enable row level security;
--- create policy "sales cannot see cost/margin" on quote_line_item
+-- alter table quotelineitem enable row level security;
+-- create policy "sales cannot see cost/margin" on quotelineitem
 --   for select using (
 --     current_setting('request.jwt.claims', true)::json->>'role' != 'sales'
 --     or true -- sales row visible, but cost/margin columns must be filtered
