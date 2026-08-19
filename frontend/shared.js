@@ -8,7 +8,7 @@
 // just recreate the "everything in one place" problem this refactor
 // exists to fix.
 
-const API = "http://127.0.0.1:8020"; // swap for deployed backend URL
+const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 — real quote calc verified against this exact URL (R29,016.48, series 200) before this change was made
 
 // Cross-feature state — read/written by more than one feature area:
 let currentQuoteId = null;
