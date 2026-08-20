@@ -32,7 +32,7 @@ STAIRWELL_LABOUR_PER_STAIR = {
     StairwellType.one_side_open: 300.0,
     StairwellType.both_sides_open: 350.0,
 }
-TILES_PER_STAIR = 2   # confirmed minimum (informational — area below is the actual pricing driver)
+TILES_PER_STAIR = 3   # confirmed Aug 2026: tread coverage = 3 planks x standard plank width per stair (was 2 — corrected per 3 independent flooring reps)
 STAIR_AREA_M2 = 0.45  # confirmed Aug 2026: 900mm wide tread x (300mm going + 200mm riser) = 0.9 x 0.5 = 0.45m² per stair
 
 
@@ -52,8 +52,37 @@ JOB_TYPE_MULTIPLIERS = {
 
 class UserRole(str, Enum):
     owner = "owner"       # Burgert — full access
-    admin = "admin"       # Madri — price book edit, quotes, imports, send POs
-    sales = "sales"       # Ryno — build/view quotes, selling price only, no margin
+    admin = "admin"       # Madri — price book edit, quotes, imports, send POs, CRM/HR/Admin areas
+    sales = "sales"       # Ryno — build/view quotes, selling price only, no margin, Sales/Flooring/Blinds areas
+
+
+class User(SQLModel, table=True):
+    """Real per-person login account (confirmed Aug 2026 — replaces the old
+    self-reported 'Viewing as' role dropdown, flagged in the go-live
+    handover as a blocking dependency before a Builder-Rep Portal can be
+    built safely: a client-supplied role query param meant anyone could
+    just claim to be Owner). Table name deliberately NOT "user" — that's a
+    reserved word in Postgres and this project has already hit one real
+    table-naming bug on Supabase from an unquoted reserved-ish name."""
+    __tablename__ = "app_user"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)   # lowercase, e.g. "burgert"
+    display_name: str
+    password_hash: str          # pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex> — see auth.py
+    role: str                   # UserRole value
+    active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserSession(SQLModel, table=True):
+    """Server-side session record backing the login cookie. Stored in the
+    DB (not in-memory) so sessions survive a Render backend restart/redeploy
+    — an in-memory dict would silently log everyone out on every deploy."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token: str = Field(unique=True, index=True)
+    user_id: int = Field(foreign_key="app_user.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime   # confirmed Aug 2026: fixed 24h session length from login — not permanent, not aggressive re-login mid-shift
 
 
 class HourType(str, Enum):
@@ -139,7 +168,7 @@ class FlooringProduct(SQLModel, table=True):
     over_tiles_multiplier: float = 1.5    # SCREED only, editable per product (confirmed Aug 2026: your real 8-year rates are NOT a clean 1.5x/2x — e.g. deZIGN S200 screed is 130/160/250, ratios ~1.23x/1.92x, not 1.5x/2x. Default 1.5 is a generic placeholder — set your real number per product.
     removed_tiles_multiplier: float = 2.0  # SCREED only, editable per product — same as above
     m2_per_pack: Optional[float] = None  # for purchase-order pack-quantity calc (Phase 3, §13)
-    tiles_per_pack: Optional[float] = None  # for stairwell calc (2 tiles/stair, confirmed Aug 2026) — derived from plank dimensions
+    tiles_per_pack: Optional[float] = None  # for stairwell calc (3 tiles/stair, confirmed Aug 2026 — 3 planks x standard plank width = tread width per stair) — derived from plank dimensions
     unit: str = "m2"
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     source: str = "manual"           # "manual" | "pdf_import" | "legacy_import"

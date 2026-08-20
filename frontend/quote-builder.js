@@ -457,11 +457,76 @@ async function printQuote() {
   await renderPrintDoc(currentQuoteId, 'quote');
 }
 
+// Landing support (staircases with a turn/half-landing can have more than
+// one landing platform — confirmed Aug 2026). Each row is measured
+// individually and summed; the total is billed as a normal flooring
+// material line, NOT part of the stairwell tile/glue formula (landing was
+// already documented as deliberately outside the stairwell calc).
+function addLandingRow() {
+  const list = document.getElementById('stairwell_landings_list');
+  const row = document.createElement('div');
+  row.className = 'landing-row';
+  row.style.cssText = 'display:flex; gap:6px; align-items:center; margin-bottom:4px;';
+  row.innerHTML = `<input type="number" class="landing-area-input" step="0.01" min="0" placeholder="Landing area m²" style="width:140px;" oninput="recomputeLandingTotal()"><button type="button" onclick="removeLandingRow(this)">Remove</button>`;
+  list.appendChild(row);
+  recomputeLandingTotal();
+}
+function removeLandingRow(btn) {
+  btn.closest('.landing-row').remove();
+  recomputeLandingTotal();
+}
+function recomputeLandingTotal() {
+  const inputs = document.querySelectorAll('.landing-area-input');
+  let total = 0;
+  inputs.forEach(i => { total += parseFloat(i.value) || 0; });
+  document.getElementById('landing_total_display').textContent = total.toFixed(2);
+  return total;
+}
+function clearLandingRows() {
+  document.getElementById('stairwell_landings_list').innerHTML = '';
+  recomputeLandingTotal();
+}
+
 async function addLine() {
   const cat = document.getElementById('line_category').value;
   const productId = document.getElementById('line_product').value;
   const discount = parseFloat(document.getElementById('line_discount').value) / 100;
   const role = currentRole();
+
+  if (cat === 'stairwell') {
+    const vinylProductId = document.getElementById('line_stair_vinyl').value;
+    const ownStaff = document.getElementById('line_stair_own_staff').value;
+    const params = new URLSearchParams({
+      vinyl_product_id: vinylProductId,
+      nosing_product_id: document.getElementById('line_nosing_product').value,
+      num_stairs: document.getElementById('line_num_stairs').value,
+      stair_area_m2: document.getElementById('line_stair_area').value || 0.45,
+      stairwell_type: document.getElementById('line_stairwell_type').value,
+      own_staff: ownStaff,
+      role,
+    });
+    const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/stairwell?${params}`, {method:'POST'});
+    const line = await res.json();
+    if (line.warning) alert(line.warning);
+
+    // Landing(s), summed, billed as a plain flooring material line at the
+    // product's standard per-m² rate (same vinyl product as the stairs) —
+    // no markup override, no stair-tread tile/glue logic applied.
+    const landingTotal = recomputeLandingTotal();
+    if (landingTotal > 0) {
+      const landingParams = new URLSearchParams({
+        product_id: vinylProductId, quantity_m2: landingTotal, job_type: 'smooth',
+        own_staff: ownStaff, role,
+      });
+      const landingRes = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${landingParams}`, {method:'POST'});
+      const landingLine = await landingRes.json();
+      if (landingLine.warning) alert(landingLine.warning);
+      clearLandingRows();
+    }
+    loadQuote();
+    return;
+  }
+
   let url;
   if (cat === 'blinds') {
     const params = new URLSearchParams({
@@ -484,17 +549,6 @@ async function addLine() {
     });
     if (!document.getElementById('line_misc_desc').value) { alert('Enter a description first.'); return; }
     url = `${API}/quotes/${currentQuoteId}/lines/misc?${params}`;
-  } else {
-    const params = new URLSearchParams({
-      vinyl_product_id: document.getElementById('line_stair_vinyl').value,
-      nosing_product_id: document.getElementById('line_nosing_product').value,
-      num_stairs: document.getElementById('line_num_stairs').value,
-      stair_area_m2: document.getElementById('line_stair_area').value || 0.45,
-      stairwell_type: document.getElementById('line_stairwell_type').value,
-      own_staff: document.getElementById('line_stair_own_staff').value,
-      role,
-    });
-    url = `${API}/quotes/${currentQuoteId}/lines/stairwell?${params}`;
   }
   const res = await fetch(url, {method:'POST'});
   const line = await res.json();

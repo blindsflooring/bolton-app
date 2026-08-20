@@ -11,18 +11,20 @@ import os
 import shutil
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
-    JobType, UserRole, StairwellType,
+    JobType, UserRole, StairwellType, User, UserSession,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
+from auth import hash_password, verify_password, new_session_token, new_expiry, SESSION_COOKIE_NAME
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
 # environment (set in Render's dashboard, never committed to the repo)
@@ -55,9 +57,23 @@ def coerce_date_fields(obj, *field_names):
         if isinstance(value, str):
             setattr(obj, field, date.fromisoformat(value))
     return obj
+# Tightened Aug 2026 (real login shipped): a session cookie can only be
+# sent cross-site with allow_credentials=True, and browsers refuse that
+# combination with a wildcard origin — so this can no longer be "*" now
+# that auth relies on a cookie instead of a client-supplied role param.
+# bolton-frontend.onrender.com and bolton-backend.onrender.com are
+# different subdomains of a shared hosting domain (onrender.com is on the
+# public suffix list, same reasoning as github.io/herokuapp.com), so the
+# browser treats them as cross-site — SameSite=None + Secure on the cookie
+# (see auth.py's cookie-set calls below) plus this explicit origin list.
+FRONTEND_ORIGINS = [
+    "https://bolton-frontend.onrender.com",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten before real deployment
+    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",  # local dev only
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -88,10 +104,125 @@ def on_startup():
                 session.add(r)
             session.commit()
 
+        if not session.exec(select(User)).first():
+            # One-time seed (confirmed Aug 2026): only runs while the
+            # app_user table is empty, so it never overwrites passwords
+            # anyone has since changed via /auth/change-password. These
+            # are temporary initial passwords, hashed here — the plaintext
+            # was reported to Burgert directly in chat, never committed to
+            # source control, and each user should change theirs on
+            # first login.
+            seed_users = [
+                User(username="burgert", display_name="Burgert", role=UserRole.owner,
+                     password_hash="pbkdf2_sha256$260000$295728ae9fea1b39e0acbc754f8b57af$bbf141469314ddc450ffdbdf30c2895c321f7accf2c721c2e3ec8d34e68fdf22"),
+                User(username="ryno", display_name="Ryno", role=UserRole.sales,
+                     password_hash="pbkdf2_sha256$260000$60f81b8c4153c7ec982d6c5415a5f675$b6d263a91c3c1722ff6d6f99705b193c5f43c4ededfa3d307b314fe28fefd915"),
+                User(username="madri", display_name="Madri", role=UserRole.admin,
+                     password_hash="pbkdf2_sha256$260000$eb80a40b8263fc5984c0fc64ecd2ddca$e52495c5a0605b9a208db009fe8bbb6a1053d09e1f4744223d4fce3728dfb962"),
+            ]
+            for u in seed_users:
+                session.add(u)
+            session.commit()
+
 
 def get_session():
     with Session(engine) as session:
         yield session
+
+
+def get_current_role(request: Request) -> str:
+    """Replaces the old client-supplied `role` query param (confirmed Aug
+    2026 — anyone could just claim to be Owner by editing the URL). Role
+    now comes exclusively from a validated server-side session looked up
+    by the httponly cookie; there is no way for the frontend to override
+    it."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(401, "Not logged in")
+    with Session(engine) as session:
+        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+        if not sess or sess.expires_at < datetime.utcnow():
+            raise HTTPException(401, "Session expired — please log in again")
+        user = session.get(User, sess.user_id)
+        if not user or not user.active:
+            raise HTTPException(401, "Account not available")
+        return user.role
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/auth/login")
+def login(body: LoginRequest, response: Response):
+    # Body, not query params (unlike the rest of this API's endpoints) —
+    # deliberate: credentials must never land in a URL, where they'd be
+    # captured by Render/proxy access logs and browser history.
+    with Session(engine) as session:
+        user = session.exec(select(User).where(User.username == body.username.strip().lower())).first()
+        # Deliberately identical error for "no such user" and "wrong
+        # password" — doesn't leak which usernames exist.
+        if not user or not user.active or not verify_password(body.password, user.password_hash):
+            raise HTTPException(401, "Incorrect username or password")
+        token = new_session_token()
+        sess = UserSession(token=token, user_id=user.id, expires_at=new_expiry())
+        session.add(sess)
+        session.commit()
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME, value=token, httponly=True, secure=True,
+            samesite="none", max_age=24 * 60 * 60, path="/",
+        )
+        return {"username": user.username, "display_name": user.display_name, "role": user.role}
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        with Session(engine) as session:
+            sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+            if sess:
+                session.delete(sess)
+                session.commit()
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="none", secure=True)
+    return {"ok": True}
+
+
+@app.get("/auth/me")
+def get_me(request: Request):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(401, "Not logged in")
+    with Session(engine) as session:
+        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+        if not sess or sess.expires_at < datetime.utcnow():
+            raise HTTPException(401, "Session expired — please log in again")
+        user = session.get(User, sess.user_id)
+        if not user or not user.active:
+            raise HTTPException(401, "Account not available")
+        return {"username": user.username, "display_name": user.display_name, "role": user.role}
+
+
+@app.post("/auth/change-password")
+def change_password(body: ChangePasswordRequest, request: Request, role: str = Depends(get_current_role)):
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters.")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    with Session(engine) as session:
+        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+        user = session.get(User, sess.user_id)
+        if not verify_password(body.current_password, user.password_hash):
+            raise HTTPException(401, "Current password is incorrect.")
+        user.password_hash = hash_password(body.new_password)
+        session.add(user)
+        session.commit()
+        return {"ok": True}
 
 
 def strip_sensitive_fields(line_item: dict, role: str) -> dict:
@@ -362,7 +493,7 @@ def strip_employee_notes(emp_dict: dict, role: str) -> dict:
 
 
 @app.get("/employees")
-def list_employees(role: str = Query(default=UserRole.owner)):
+def list_employees(role: str = Depends(get_current_role)):
     with Session(engine) as session:
         employees = session.exec(select(Employee)).all()
         return [strip_employee_notes(e.dict(), role) for e in employees]
@@ -657,7 +788,7 @@ def upload_document(employee_id: int, document_type: str = "other", owner_only: 
 
 
 @app.get("/documents")
-def list_documents(employee_id: Optional[int] = None, role: str = Query(default=UserRole.owner)):
+def list_documents(employee_id: Optional[int] = None, role: str = Depends(get_current_role)):
     with Session(engine) as session:
         stmt = select(Document)
         if employee_id:
@@ -669,7 +800,7 @@ def list_documents(employee_id: Optional[int] = None, role: str = Query(default=
 
 
 @app.get("/documents/{doc_id}/download")
-def download_document(doc_id: int, role: str = Query(default=UserRole.sales)):
+def download_document(doc_id: int, role: str = Depends(get_current_role)):
     with Session(engine) as session:
         doc = session.get(Document, doc_id)
         if not doc:
@@ -912,7 +1043,7 @@ def get_business_settings():
 
 
 @app.put("/business-settings")
-def update_business_settings(updates: BusinessSettings, role: str = Query(default=UserRole.owner)):
+def update_business_settings(updates: BusinessSettings, role: str = Depends(get_current_role)):
     # Confirmed Aug 2026: business settings (including the VAT %, deposit
     # %, and rate defaults added in v54, same as the original letterhead
     # details) are Owner-only to change — Admin/Sales can still view them
@@ -1101,7 +1232,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        bag_cost: float = 235.0, bag_coverage_m2: float = None,
                        own_staff: bool = True, markup_override: float = None,
                        include_tile_removal_fee: bool = False,
-                       role: str = Query(default=UserRole.owner)):
+                       role: str = Depends(get_current_role)):
     """
     Material lines: glue_cost_per_unit / glue_coverage_m2 (e.g. Techem Tek
     70/70 = 1193.50 / 70), labour_rate_per_m2 — your fixed per-m² labour cost.
@@ -1166,7 +1297,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
 
 @app.post("/quotes/{quote_id}/lines/blinds")
 def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: float,
-                     discount_pct: float = 0.0, role: str = Query(default=UserRole.owner)):
+                     discount_pct: float = 0.0, role: str = Depends(get_current_role)):
     with Session(engine) as session:
         quote = session.get(Quote, quote_id)
         if not quote:
@@ -1192,7 +1323,7 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
 
 @app.post("/quotes/{quote_id}/lines/trims")
 def add_trim_line(quote_id: int, product_id: int, length_m: float,
-                   discount_pct: float = 0.0, role: str = Query(default=UserRole.owner)):
+                   discount_pct: float = 0.0, role: str = Depends(get_current_role)):
     with Session(engine) as session:
         quote = session.get(Quote, quote_id)
         if not quote:
@@ -1223,7 +1354,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
 def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
                         num_stairs: int, stairwell_type: StairwellType,
                         stair_area_m2: float = 0.45, own_staff: bool = True,
-                        role: str = Query(default=UserRole.owner)):
+                        role: str = Depends(get_current_role)):
     """
     stair_area_m2 defaults to 0.45 (confirmed: 900mm wide tread x (300mm
     going + 200mm riser) = 0.9 x 0.5). Override if your stairs differ.
@@ -1284,7 +1415,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
 
 @app.post("/quotes/{quote_id}/lines/misc")
 def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
-                   role: str = Query(default=UserRole.owner)):
+                   role: str = Depends(get_current_role)):
     """Confirmed Aug 2026 — freeform line for anything that doesn't fit
     an existing category: extra Saturday/Sunday labour, a one-off
     special request, anything not covered by a real product record.
@@ -1309,7 +1440,7 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
 
 
 @app.get("/quotes/{quote_id}")
-def get_quote(quote_id: int, role: str = Query(default=UserRole.owner)):
+def get_quote(quote_id: int, role: str = Depends(get_current_role)):
     with Session(engine) as session:
         quote = session.get(Quote, quote_id)
         if not quote:

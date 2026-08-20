@@ -261,17 +261,18 @@ def calculate_stairwell_line(
     two different reasons, confirmed directly by Burgert):
 
     - VINYL is billed on a TILE-COUNT basis, not the raw stair geometry.
-      2 tiles/stair (confirmed minimum) x num_stairs = total tiles needed.
-      Tile area is derived from the product's actual plank dimensions
-      (tiles_per_pack, confirmed exact whole numbers — e.g. deZIGN series
-      200 = 12 tiles/pack). This is billed area, not geometric area, because
-      tile offcuts can't be reused ("I can't do anything with the offcuts")
-      — confirmed example: 10 stairs x 2 tiles = 20 tiles = 5.58m² on
-      series 200, and that 5.58m² is what's actually charged, even though
-      the raw stair footprint (900x300x200mm) is smaller. Boxes needed are
-      rounded up from tile count; cost is for full boxes bought, sell is
-      for the tile area actually used (5.58m², not the larger box-rounded
-      total).
+      3 tiles/stair (confirmed Aug 2026 — tread width per stair = 3 planks x
+      standard plank width; corrected from the earlier 2/stair figure) x
+      num_stairs = total tiles needed. Tile area is derived from the
+      product's actual plank dimensions (tiles_per_pack, confirmed exact
+      whole numbers — e.g. deZIGN series 200 = 12 tiles/pack). This is
+      billed area, not geometric area, because tile offcuts can't be
+      reused ("I can't do anything with the offcuts") — confirmed example:
+      10 stairs x 3 tiles = 30 tiles = 8.37m² on series 200, and that
+      8.37m² is what's actually charged, even though the raw stair
+      footprint (900x300x200mm) is smaller. Boxes needed are rounded up
+      from tile count; cost is for full boxes bought, sell is for the tile
+      area actually used (8.37m², not the larger box-rounded total).
     - GLUE uses the raw GEOMETRIC stair area instead (900mm wide tread x
       (300mm going + 200mm riser) = 0.45m²/stair, confirmed default),
       because glue coverage is about the real substrate footprint, not

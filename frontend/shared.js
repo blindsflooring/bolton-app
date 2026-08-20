@@ -10,6 +10,28 @@
 
 const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 — real quote calc verified against this exact URL (R29,016.48, series 200) before this change was made
 
+// Auth (confirmed Aug 2026): every request to the API must carry the
+// session cookie cross-site — bolton-frontend.onrender.com and
+// bolton-backend.onrender.com are different subdomains of a shared
+// hosting domain (onrender.com is on the public suffix list, same
+// reasoning as github.io/herokuapp.com), so browsers treat them as
+// cross-site and a plain fetch() would silently NOT send/receive the
+// cookie. Wrapping the global fetch here, once, is deliberately safer
+// than hunting down every one of the dozens of existing
+// fetch(`${API}/...`) call sites across 6 files and adding
+// `credentials: 'include'` to each — a single missed call site would
+// silently break under real login while working fine locally against
+// same-origin during dev.
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = function(url, options = {}) {
+  if (typeof url === 'string' && url.startsWith(API)) {
+    options = Object.assign({}, options, {credentials: 'include'});
+  }
+  return _nativeFetch(url, options);
+};
+
+let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad()
+
 // Cross-feature state — read/written by more than one feature area:
 let currentQuoteId = null;
 let flooringProducts = [];   // price book cache — read by Price Book AND Quote Builder
@@ -42,7 +64,11 @@ async function loadBusinessSettings() {
   businessSettings = await res.json();
 }
 
-function currentRole() { return document.getElementById('roleSelect').value; }
+// Confirmed Aug 2026: role now comes exclusively from the real logged-in
+// session (currentUser, set in index.html after /auth/login or
+// /auth/me) — replaces the old self-reported "Viewing as" dropdown,
+// which let anyone claim to be Owner just by picking it from a <select>.
+function currentRole() { return currentUser ? currentUser.role : null; }
 
 function applyRoleVisibility() {
   const isSales = currentRole() === 'sales';
@@ -210,3 +236,19 @@ const LANDING_TILES = [
   { id: 'hr', title: 'HR & Commission', desc: 'Employees, hours, leave, docs', ready: true },
   { id: 'settings', title: 'Business Settings', desc: 'VAT, deposit %, banking, rates', ready: true },
 ];
+
+// Default role/tile split (confirmed Aug 2026, proposed per the go-live
+// handover and implemented for Burgert to review/adjust after seeing it
+// in practice): Sales/Rep (Ryno) is scoped to Sales/Flooring/Blinds
+// areas — quoting, clients, orders, printing — and doesn't need (or see
+// cost/margin data in) Business Overview, Business Settings, HR &
+// Commission, or the supplier price books, which stay Owner/Admin areas.
+// This is a frontend visibility layer on top of the real server-side
+// enforcement that already existed (strip_sensitive_fields, the
+// owner-only business-settings write, etc.) — it doesn't change what the
+// backend allows, just what's surfaced in the UI.
+const SALES_HIDDEN_TILES = ['business', 'settings', 'hr', 'supplierPrices', 'supplierUploads'];
+function visibleLandingTiles() {
+  if (currentRole() !== 'sales') return LANDING_TILES;
+  return LANDING_TILES.filter(t => !SALES_HIDDEN_TILES.includes(t.id));
+}

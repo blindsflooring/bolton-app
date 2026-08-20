@@ -143,10 +143,31 @@ no AI assistant yet — those are later phases (see brief §17).
 - **Trim wastage** — 8% buffer (your confirmed number) applied to trim/
   skirting cost when ordering, for offcuts and mitres. Affects cost only —
   you're still charged for actual length required on the client-facing price.
+- **Real per-person login (confirmed Aug 2026)** — replaces the earlier
+  self-reported "Viewing as" role dropdown, which let anyone claim to be
+  Owner just by picking it from a `<select>`. Three real accounts
+  (Burgert/owner, Ryno/sales, Madri/admin), PBKDF2-hashed passwords
+  (stdlib `hashlib`, no bcrypt dependency), server-side sessions in the
+  `app_user`/`usersession` tables backing an httponly cookie (24h fixed
+  length). Every endpoint that used to accept a client-supplied `role`
+  query param now derives it exclusively from the validated session via
+  the `get_current_role` dependency in `main.py` — the frontend can no
+  longer choose its own role.
 - **Role-based visibility, enforced server-side** — logged in as Sales
   (Ryno), the API itself never sends back `unit_cost` or `margin_pct` for
   any line item. This isn't just hidden in the UI; a Sales-role API call
-  physically doesn't receive that data.
+  physically doesn't receive that data. Sales also doesn't see the
+  Business Overview, Business Settings, HR & Commission, or Supplier
+  Price Book tiles in the UI (default split — Owner/Admin unaffected;
+  adjust `SALES_HIDDEN_TILES` in shared.js if this needs changing).
+- **Stairwell tread coverage** (confirmed Aug 2026): 3 tiles/stair
+  (`TILES_PER_STAIR` in models.py) — tread width per stair = 3 planks x
+  standard plank width, corrected from the earlier 2/stair figure.
+- **Stairwell landings** — staircases with a turn/half-landing can have
+  multiple landing platforms; the Quote Builder lets you add one row per
+  landing, sums the total area, and bills it as a normal flooring
+  material line (same vinyl product as the stairs, standard per-m² rate)
+  — not part of the stairwell tile/glue formula.
 - **Blinds measurement toggle** — per quote, controls whether width/drop
   show on the client-facing view. Full data is always kept internally
   regardless of the toggle.
@@ -157,8 +178,6 @@ no AI assistant yet — those are later phases (see brief §17).
 
 - Xero integration (Phase 2) — quotes stay local drafts for now
 - PDF price list import (Phase 2)
-- Landing area for a stairwell job — priced as a normal flooring material
-  line at m² rate, not part of the stairwell calculator itself (confirmed)
 - Receipt capture, Job Photos, Purchase Orders (Phase 3+)
 - AI Assistant (later phase)
 - Analytics Dashboard / breakeven tracker (later phase)
