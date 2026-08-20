@@ -13,7 +13,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -66,6 +66,32 @@ def coerce_date_fields(obj, *field_names):
 # public suffix list, same reasoning as github.io/herokuapp.com), so the
 # browser treats them as cross-site — SameSite=None + Secure on the cookie
 # (see auth.py's cookie-set calls below) plus this explicit origin list.
+# Closed-by-default enforcement (confirmed Aug 2026, ported from review of
+# a parallel patch): every request must carry a valid session UNLESS its
+# path is explicitly allowlisted below. This sits on top of the
+# per-endpoint `role: str = Depends(get_current_role)` already used
+# throughout — that per-endpoint check only protects an endpoint that
+# remembers to declare it (the commission-rate CRUD endpoints were a real
+# example of one that didn't, until this same review caught it). This
+# middleware means a future endpoint that forgets isn't silently left
+# wide open. Registered BEFORE CORSMiddleware below — Starlette makes the
+# LAST-registered middleware the OUTERMOST one, so CORS must be added
+# after this to wrap it; otherwise a 401 short-circuit here never reaches
+# CORSMiddleware and the browser can't even read the error response
+# (confirmed by testing: without this ordering, Access-Control-Allow-
+# Origin was missing from blocked responses entirely).
+PUBLIC_PATHS = {"/auth/login", "/auth/logout", "/auth/me", "/", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+    if _resolve_role_from_cookie(request) is None:
+        return JSONResponse(status_code=401, content={"detail": "Not logged in — please log in again"})
+    return await call_next(request)
+
+
 FRONTEND_ORIGINS = [
     "https://bolton-frontend.onrender.com",
 ]
@@ -130,23 +156,33 @@ def get_session():
         yield session
 
 
+def _resolve_role_from_cookie(request: Request) -> Optional[str]:
+    """Shared by get_current_role (per-endpoint check) and the
+    require_auth middleware below (closed-by-default check) — one place
+    that actually validates the session cookie, so the two can't drift."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    with Session(engine) as session:
+        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+        if not sess or sess.expires_at < datetime.utcnow():
+            return None
+        user = session.get(User, sess.user_id)
+        if not user or not user.active:
+            return None
+        return user.role
+
+
 def get_current_role(request: Request) -> str:
     """Replaces the old client-supplied `role` query param (confirmed Aug
     2026 — anyone could just claim to be Owner by editing the URL). Role
     now comes exclusively from a validated server-side session looked up
     by the httponly cookie; there is no way for the frontend to override
     it."""
-    token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        raise HTTPException(401, "Not logged in")
-    with Session(engine) as session:
-        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
-        if not sess or sess.expires_at < datetime.utcnow():
-            raise HTTPException(401, "Session expired — please log in again")
-        user = session.get(User, sess.user_id)
-        if not user or not user.active:
-            raise HTTPException(401, "Account not available")
-        return user.role
+    role = _resolve_role_from_cookie(request)
+    if role is None:
+        raise HTTPException(401, "Not logged in — please log in again")
+    return role
 
 
 class LoginRequest(BaseModel):
@@ -538,10 +574,18 @@ def delete_employee(employee_id: int):
 
 # ---------- HR: Commission rate card ----------
 # Owner-only to edit, per the brief ("Admin... Cannot change commission
-# rates/structures"). This endpoint doesn't enforce that server-side yet
-# (no real auth exists in this Phase 1 build — role is a client-supplied
-# param throughout), but the frontend gates the edit UI to Owner only,
-# consistent with how the rest of this app's role system currently works.
+# rates/structures"). CORRECTED Aug 2026 (caught during review of a
+# parallel patch): this was flagged as frontend-gated only, with a
+# comment saying server-side enforcement would follow once real auth
+# existed. Real auth now exists (see get_current_role above) — this was
+# a genuine gap until now, closed here with the same require_owner
+# dependency used elsewhere.
+
+def require_owner(role: str = Depends(get_current_role)) -> str:
+    if role != UserRole.owner:
+        raise HTTPException(403, "Only the Owner role can do this.")
+    return role
+
 
 @app.get("/commission-rates")
 def list_commission_rates():
@@ -550,7 +594,7 @@ def list_commission_rates():
 
 
 @app.post("/commission-rates")
-def create_commission_rate(rate: CommissionRate):
+def create_commission_rate(rate: CommissionRate, role: str = Depends(require_owner)):
     with Session(engine) as session:
         session.add(rate)
         session.commit()
@@ -559,7 +603,7 @@ def create_commission_rate(rate: CommissionRate):
 
 
 @app.put("/commission-rates/{rate_id}")
-def update_commission_rate(rate_id: int, updates: CommissionRate):
+def update_commission_rate(rate_id: int, updates: CommissionRate, role: str = Depends(require_owner)):
     with Session(engine) as session:
         rate = session.get(CommissionRate, rate_id)
         if not rate:
@@ -574,7 +618,7 @@ def update_commission_rate(rate_id: int, updates: CommissionRate):
 
 
 @app.delete("/commission-rates/{rate_id}")
-def delete_commission_rate(rate_id: int):
+def delete_commission_rate(rate_id: int, role: str = Depends(require_owner)):
     with Session(engine) as session:
         rate = session.get(CommissionRate, rate_id)
         if not rate:
