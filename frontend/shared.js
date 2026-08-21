@@ -62,6 +62,15 @@ let businessSettings = null;   // cached on page load, same pattern as flooringP
 async function loadBusinessSettings() {
   const res = await fetch(`${API}/business-settings`);
   businessSettings = await res.json();
+  // Part 3 finding (confirmed Aug 2026): the printed quote's logo used to
+  // be hardcoded in this file's <img> tag with no way to change it per
+  // tenant. Empty by default (Blinds & Flooring Studio keeps the
+  // existing hardcoded image, unchanged) — only swaps the src if a
+  // tenant has actually set one.
+  if (businessSettings.logo_base64) {
+    const logoEl = document.getElementById('headerLogo');
+    if (logoEl) logoEl.src = businessSettings.logo_base64;
+  }
 }
 
 // Confirmed Aug 2026: role now comes exclusively from the real logged-in

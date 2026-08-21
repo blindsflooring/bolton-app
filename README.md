@@ -173,6 +173,30 @@ no AI assistant yet — those are later phases (see brief §17).
   regardless of the toggle.
 - Flooring margin warning — flags if a discount pushes a flooring line's
   margin below 30%
+- **Multi-tenant groundwork (confirmed Aug 2026, invisible today)** —
+  every business-data table (Client, Quote, QuoteLineItem, User, the
+  three price books, Employee, HR/commission tables, BusinessSettings,
+  etc.) carries a `tenant_id`, defaulted to `"1"` (Blinds & Flooring
+  Studio, the only tenant that exists). Every query in main.py is
+  scoped by it via the `get_current_tenant` dependency, sourced from
+  the logged-in user's own `tenant_id` — never client-supplied. A new
+  `_ensure_new_columns()` startup migration adds any missing column to
+  an already-existing table without touching or requiring re-entry of
+  any existing data (tested against a real historical copy of the
+  database — all rows preserved, correctly backfilled). No tenant
+  switcher, no way to create a second tenant through the app yet — this
+  is purely so retrofitting tenant-scoping onto live data later isn't
+  necessary. See `PART 2` below for the related settings migration.
+- **Business rules moved into Business Settings (confirmed Aug 2026)**
+  — the remaining genuinely-hardcoded numeric constants in
+  calculations.py/models.py (stairwell labour rates, stairwell glue
+  defaults, the flooring margin warning threshold, screed bag cost/
+  coverage, the tile removal fee) are now BusinessSettings fields,
+  editable via the existing Business Settings tile, same values as
+  before by default — no behaviour change. VAT %, deposit %, and
+  commission GP tiers were already settings/table-backed before this
+  pass; Azura's 30% trade discount was already real per-product data,
+  not a code constant — neither needed touching.
 
 ## What's deliberately NOT built yet (by design, per the phased plan)
 
@@ -181,10 +205,15 @@ no AI assistant yet — those are later phases (see brief §17).
 - Receipt capture, Job Photos, Purchase Orders (Phase 3+)
 - AI Assistant (later phase)
 - Analytics Dashboard / breakeven tracker (later phase)
-- Multi-tenant / selling to other companies (later phase) — see
-  `BANKED-DECISIONS.md` for the master supplier price catalog design
-  banked against this, plus a pointer to the editions/module-toggle
-  work from an earlier strategy conversation
+- Multi-tenant PRODUCTIZATION — onboarding/signup, billing/subscriptions,
+  a tenant switcher, per-tenant theming/domains, a multi-business admin
+  console, usage limits (later phase, only once a second paying business
+  is real). The underlying tenant_id schema/query-scoping groundwork for
+  this is already done (see above) — deliberately just the cheap,
+  invisible part, not the product. See `BANKED-DECISIONS.md` for the
+  master supplier price catalog design banked against this, plus a
+  pointer to the editions/module-toggle work from an earlier strategy
+  conversation.
 
 ## Running it locally
 

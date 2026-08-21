@@ -20,12 +20,13 @@ DEFAULT_BAG_COVERAGE_M2 = {
 DEFAULT_BAG_COST = 235.0            # iTe LEVELiTe F10, 20kg
 BAG_OVERAGE_RATE = 350.0            # confirmed Aug 2026: R350 per bag beyond the included allowance, INCL. VAT (not ex-VAT) — used as a flat client-facing site-variance charge, shown on the printed quote, not added to VAT again
 # CORRECTED Aug 2026: confirmed R45/m² is INCL VAT, not ex VAT like every
-# other figure in this app. Stored here as the ex-VAT equivalent so the
+# other figure in this app. Converted to its ex-VAT equivalent inside
+# calculate_flooring_line (using the actual vat_pct passed in, not a
+# hardcoded 1.15 — multi-tenant groundwork, confirmed Aug 2026) so the
 # normal "VAT applied once at quote level" flow still lands on exactly
-# R45 incl VAT to the client, instead of R51.75 (45 x 1.15) if it had
-# been treated as ex VAT and had VAT re-applied on top.
+# R45 incl VAT to the client, instead of R51.75 if it had been treated
+# as ex VAT and had VAT re-applied on top.
 TILE_REMOVAL_FEE_PER_M2_INCL_VAT = 45.0
-TILE_REMOVAL_FEE_PER_M2 = TILE_REMOVAL_FEE_PER_M2_INCL_VAT / 1.15   # ≈ 39.13 ex VAT
 
 
 def calculate_flooring_line(
@@ -41,6 +42,9 @@ def calculate_flooring_line(
     own_staff: bool = True,
     markup_override: float = None,   # confirmed Aug 2026: per-quote markup override — actually applied to the saved line, not just a live-preview-only value
     include_tile_removal_fee: bool = False,   # screed only — explicit per-line toggle, not auto-tied to job_type (a job can need tile removal billed independent of the Smooth/Over Tiles/Removed Tiles prep rate selected)
+    margin_warn_threshold: float = FLOORING_MARGIN_WARN_THRESHOLD,   # multi-tenant groundwork (confirmed Aug 2026): now settings-driven — main.py passes BusinessSettings.flooring_margin_warn_threshold; this default is only a safety net for any caller that doesn't
+    tile_removal_fee_per_m2_incl_vat: float = TILE_REMOVAL_FEE_PER_M2_INCL_VAT,   # settings-driven — see above
+    vat_pct: float = 0.15,   # only used to convert tile_removal_fee_per_m2_incl_vat to its ex-VAT equivalent — main.py passes BusinessSettings.vat_pct
 ) -> dict:
     """
     Screed formula (confirmed): selling price = base rate x job-type multiplier
@@ -135,7 +139,8 @@ def calculate_flooring_line(
         bags_allowed = math.ceil(quantity_m2 / coverage)
         compound_cost_total = bags_allowed * bag_cost
         if include_tile_removal_fee:
-            tile_removal_fee_total = TILE_REMOVAL_FEE_PER_M2 * quantity_m2
+            tile_removal_fee_per_m2 = tile_removal_fee_per_m2_incl_vat / (1 + vat_pct)
+            tile_removal_fee_total = tile_removal_fee_per_m2 * quantity_m2
             line_total += tile_removal_fee_total
 
         total_job_cost = compound_cost_total + tile_removal_fee_total
@@ -209,10 +214,10 @@ def calculate_flooring_line(
     overall_margin_pct = (line_total - total_job_cost) / line_total if line_total else 0.0
 
     warning = None
-    if overall_margin_pct < FLOORING_MARGIN_WARN_THRESHOLD:
+    if overall_margin_pct < margin_warn_threshold:
         warning = (
             f"Overall margin on this line is {overall_margin_pct:.1%}, below the "
-            f"{FLOORING_MARGIN_WARN_THRESHOLD:.0%} warning threshold."
+            f"{margin_warn_threshold:.0%} warning threshold."
         )
 
     result = {
@@ -252,9 +257,11 @@ def calculate_stairwell_line(
     stairwell_type: StairwellType,
     tiles_per_stair: int = TILES_PER_STAIR,
     stair_area_m2: float = STAIR_AREA_M2,
-    glue_cost_per_unit: float = 1193.50,
-    glue_coverage_m2: float = 70.0,
+    glue_cost_per_unit: float = 1193.50,   # multi-tenant groundwork (confirmed Aug 2026): now settings-driven — main.py passes BusinessSettings.stairwell_default_glue_cost_per_unit; this default is only a safety net
+    glue_coverage_m2: float = 70.0,        # settings-driven — see above (stairwell_default_glue_coverage_m2)
     own_staff: bool = True,
+    labour_per_stair: float = None,        # settings-driven — main.py passes the BusinessSettings value matching stairwell_type (stairwell_labour_closed/one_side_open/both_sides_open); None falls back to the STAIRWELL_LABOUR_PER_STAIR dict below, unchanged from before
+    margin_warn_threshold: float = FLOORING_MARGIN_WARN_THRESHOLD,   # settings-driven — see calculate_flooring_line
 ) -> dict:
     """
     Stairwell formula (confirmed Aug 2026 — two DIFFERENT area bases, for
@@ -336,7 +343,8 @@ def calculate_stairwell_line(
 
     # Labour — confirmed pass-through, deliberately part of the overall
     # stairwell margin rather than marked up on its own
-    labour_per_stair = STAIRWELL_LABOUR_PER_STAIR[stairwell_type]
+    if labour_per_stair is None:
+        labour_per_stair = STAIRWELL_LABOUR_PER_STAIR[stairwell_type]
     labour_charged_total = labour_per_stair * num_stairs   # always what's charged to the client
     labour_cost_total = 0.0 if own_staff else labour_charged_total   # own staff = salaried, no marginal job cost; outside = pass-through
 
@@ -345,8 +353,8 @@ def calculate_stairwell_line(
     margin_pct = (line_total - total_cost) / line_total if line_total else 0.0
 
     warning = None
-    if margin_pct < FLOORING_MARGIN_WARN_THRESHOLD:
-        warning = f"Overall margin on this stairwell line is {margin_pct:.1%}, below the {FLOORING_MARGIN_WARN_THRESHOLD:.0%} warning threshold."
+    if margin_pct < margin_warn_threshold:
+        warning = f"Overall margin on this stairwell line is {margin_pct:.1%}, below the {margin_warn_threshold:.0%} warning threshold."
 
     return {
         "billed_vinyl_area_m2": round(billed_vinyl_area_m2, 2),
@@ -370,7 +378,8 @@ def calculate_stairwell_line(
     }
 
 
-def calculate_trim_line(product, length_m: float, discount_pct: float = 0.0) -> dict:
+def calculate_trim_line(product, length_m: float, discount_pct: float = 0.0,
+                         margin_warn_threshold: float = FLOORING_MARGIN_WARN_THRESHOLD) -> dict:
     """
     Trim/skirting formula (CORRECTED Aug 2026 — VAT architecture fixed):
     - "fixed" mode (pine skirting): sell price is the flat R/lm figure set
@@ -401,8 +410,8 @@ def calculate_trim_line(product, length_m: float, discount_pct: float = 0.0) -> 
     margin_pct = (line_total - line_cost) / line_total if line_total else 0.0
 
     warning = None
-    if margin_pct < FLOORING_MARGIN_WARN_THRESHOLD:
-        warning = f"Margin on this trim line is {margin_pct:.1%}, below the {FLOORING_MARGIN_WARN_THRESHOLD:.0%} warning threshold."
+    if margin_pct < margin_warn_threshold:
+        warning = f"Margin on this trim line is {margin_pct:.1%}, below the {margin_warn_threshold:.0%} warning threshold."
 
     return {
         "unit_cost": round(product.cost_ex_vat_per_lm, 2),

@@ -21,7 +21,7 @@ from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
-    JobType, UserRole, StairwellType, User, UserSession,
+    JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry, SESSION_COOKIE_NAME
@@ -87,7 +87,7 @@ PUBLIC_PATHS = {"/auth/login", "/auth/logout", "/auth/me", "/", "/docs", "/opena
 async def require_auth(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
         return await call_next(request)
-    if _resolve_role_from_cookie(request) is None:
+    if _resolve_session(request) is None:
         return JSONResponse(status_code=401, content={"detail": "Not logged in — please log in again"})
     return await call_next(request)
 
@@ -105,8 +105,80 @@ app.add_middleware(
 )
 
 
+def _ensure_new_columns():
+    """Multi-tenant groundwork (confirmed Aug 2026): adds every new
+    column introduced by this brief to whichever already-existing tables
+    need them, WITHOUT touching or requiring re-entry of any existing
+    data. SQLModel.metadata.create_all() (called right after this) only
+    creates tables that don't exist yet — it never alters an existing
+    table — so on a live database where these tables already exist, the
+    new fields in models.py would otherwise silently do nothing at all
+    (a real bug caught testing this against a real pre-existing SQLite
+    copy: the tenant_id backfill alone wasn't enough — the new
+    BusinessSettings Part 2 fields, e.g. flooring_margin_warn_threshold,
+    needed the exact same treatment on that same already-existing table).
+    Engine-agnostic (identical SQL works against local SQLite and live
+    Supabase Postgres), idempotent — only ever adds a column if it isn't
+    already there — and safe to run on every startup.
+
+    Existing columns for every table are captured up front, once, then
+    updated in memory as columns get added — deliberately not
+    re-querying the DB mid-loop, so there's no dependency on how
+    aggressively the DB driver caches schema reflection within one
+    transaction."""
+    from sqlalchemy import inspect, text
+    new_columns = [
+        # (table, column, SQL type, default SQL literal)
+        # Part 1 — tenant_id on every business-data table:
+        ("app_user", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("flooringproduct", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("trimproduct", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("blindsproduct", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("client", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("quote", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("quotelineitem", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("employee", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("commissionrate", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("commissionpayment", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("hoursworked", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("document", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("leavebalance", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("leaverequest", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("colourchangelog", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("paymentfollowup", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        ("businesssettings", "tenant_id", "VARCHAR", f"'{DEFAULT_TENANT_ID}'"),
+        # Part 2 — hardcoded business-rule constants moved onto BusinessSettings:
+        ("businesssettings", "flooring_margin_warn_threshold", "FLOAT", "0.30"),
+        ("businesssettings", "stairwell_labour_closed", "FLOAT", "250.0"),
+        ("businesssettings", "stairwell_labour_one_side_open", "FLOAT", "300.0"),
+        ("businesssettings", "stairwell_labour_both_sides_open", "FLOAT", "350.0"),
+        ("businesssettings", "stairwell_default_glue_cost_per_unit", "FLOAT", "1193.50"),
+        ("businesssettings", "stairwell_default_glue_coverage_m2", "FLOAT", "70.0"),
+        ("businesssettings", "default_bag_cost", "FLOAT", "235.0"),
+        ("businesssettings", "default_bag_coverage_smooth_m2", "FLOAT", "4.0"),
+        ("businesssettings", "default_bag_coverage_over_tiles_m2", "FLOAT", "3.0"),
+        ("businesssettings", "default_bag_coverage_removed_tiles_m2", "FLOAT", "2.0"),
+        ("businesssettings", "tile_removal_fee_per_m2_incl_vat", "FLOAT", "45.0"),
+        # Part 3 — logo pulled from settings instead of hardcoded in the frontend:
+        ("businesssettings", "logo_base64", "TEXT", "''"),
+    ]
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    table_columns = {t: {c["name"] for c in inspector.get_columns(t)} for t in existing_tables}
+    with engine.begin() as conn:
+        for table, column, sql_type, default_literal in new_columns:
+            if table not in existing_tables:
+                continue  # brand new table — create_all() right after this will create it already carrying every current field, nothing to backfill
+            if column in table_columns[table]:
+                continue
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default_literal}"))
+            table_columns[table].add(column)
+            print(f"Migration: added {column} to {table}, defaulted to {default_literal}")
+
+
 @app.on_event("startup")
 def on_startup():
+    _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         if not session.exec(select(CommissionRate)).first():
@@ -156,21 +228,29 @@ def get_session():
         yield session
 
 
-def _resolve_role_from_cookie(request: Request) -> Optional[str]:
-    """Shared by get_current_role (per-endpoint check) and the
-    require_auth middleware below (closed-by-default check) — one place
-    that actually validates the session cookie, so the two can't drift."""
+def _resolve_session(request: Request) -> Optional[dict]:
+    """Shared by get_current_role/get_current_tenant (per-endpoint checks)
+    and the require_auth middleware (closed-by-default check) — one place
+    that actually validates the session cookie, so none of them can
+    drift. Cached on request.state (confirmed Aug 2026, added alongside
+    get_current_tenant): without this, a single request using both
+    get_current_role and get_current_tenant as separate Depends() would
+    hit the DB twice for the exact same cookie lookup — cheap at today's
+    scale, but no reason to pay it twice when one lookup already answers
+    both questions."""
+    if hasattr(request.state, "bolton_session"):
+        return request.state.bolton_session
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        return None
-    with Session(engine) as session:
-        sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
-        if not sess or sess.expires_at < datetime.utcnow():
-            return None
-        user = session.get(User, sess.user_id)
-        if not user or not user.active:
-            return None
-        return user.role
+    result = None
+    if token:
+        with Session(engine) as session:
+            sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
+            if sess and sess.expires_at >= datetime.utcnow():
+                user = session.get(User, sess.user_id)
+                if user and user.active:
+                    result = {"role": user.role, "tenant_id": user.tenant_id, "user_id": user.id, "username": user.username}
+    request.state.bolton_session = result
+    return result
 
 
 def get_current_role(request: Request) -> str:
@@ -179,10 +259,25 @@ def get_current_role(request: Request) -> str:
     now comes exclusively from a validated server-side session looked up
     by the httponly cookie; there is no way for the frontend to override
     it."""
-    role = _resolve_role_from_cookie(request)
-    if role is None:
+    session_data = _resolve_session(request)
+    if session_data is None:
         raise HTTPException(401, "Not logged in — please log in again")
-    return role
+    return session_data["role"]
+
+
+def get_current_tenant(request: Request) -> str:
+    """Multi-tenant groundwork (confirmed Aug 2026): the tenant_id every
+    endpoint scopes its queries by. Comes from the logged-in user's own
+    tenant_id — never client-supplied, same trust boundary as role
+    above. Every real user today belongs to tenant '1' (Blinds &
+    Flooring Studio), so this always resolves to the same value right
+    now — the point is that every query already goes through this, so
+    nothing needs auditing/retrofitting later when a second tenant is
+    real."""
+    session_data = _resolve_session(request)
+    if session_data is None:
+        raise HTTPException(401, "Not logged in — please log in again")
+    return session_data["tenant_id"]
 
 
 class LoginRequest(BaseModel):
@@ -261,6 +356,20 @@ def change_password(body: ChangePasswordRequest, request: Request, role: str = D
         return {"ok": True}
 
 
+def get_or_404(session: Session, model, obj_id: int, tenant_id: str, name: str = "Record"):
+    """Multi-tenant groundwork (confirmed Aug 2026): replaces the
+    session.get(Model, id) + `if not X: raise 404` pattern used
+    throughout this file with one that also enforces the tenant
+    boundary. A row that exists but belongs to a different tenant comes
+    back as the SAME 404 as a row that doesn't exist at all — never a
+    distinct "belongs to someone else" error, which would let one
+    tenant probe for another tenant's real IDs."""
+    obj = session.get(model, obj_id)
+    if not obj or obj.tenant_id != tenant_id:
+        raise HTTPException(404, f"{name} not found")
+    return obj
+
+
 def strip_sensitive_fields(line_item: dict, role: str) -> dict:
     """Sales role never sees cost or margin — enforced server-side, not just
     hidden in the UI. Applies to quote line items wherever they're returned.
@@ -281,13 +390,14 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
 # ---------- Price Book: Flooring ----------
 
 @app.get("/price-book/flooring", response_model=List[FlooringProduct])
-def list_flooring():
+def list_flooring(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        return session.exec(select(FlooringProduct)).all()
+        return session.exec(select(FlooringProduct).where(FlooringProduct.tenant_id == tenant_id)).all()
 
 
 @app.post("/price-book/flooring", response_model=FlooringProduct)
-def create_flooring(product: FlooringProduct):
+def create_flooring(product: FlooringProduct, tenant_id: str = Depends(get_current_tenant)):
+    product.tenant_id = tenant_id   # never client-supplied — same trust boundary as role
     with Session(engine) as session:
         session.add(product)
         session.commit()
@@ -296,12 +406,10 @@ def create_flooring(product: FlooringProduct):
 
 
 @app.put("/price-book/flooring/{product_id}", response_model=FlooringProduct)
-def update_flooring(product_id: int, updates: FlooringProduct):
+def update_flooring(product_id: int, updates: FlooringProduct, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(FlooringProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Flooring product not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(product, k, v)
         product.last_updated = datetime.utcnow()
@@ -312,18 +420,16 @@ def update_flooring(product_id: int, updates: FlooringProduct):
 
 
 @app.delete("/price-book/flooring/{product_id}")
-def delete_flooring(product_id: int):
+def delete_flooring(product_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(FlooringProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Flooring product not found")
+        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
         session.delete(product)
         session.commit()
         return {"deleted": product_id}
 
 
 @app.post("/price-book/flooring/bulk-import")
-def bulk_import_flooring(products: List[FlooringProduct]):
+def bulk_import_flooring(products: List[FlooringProduct], tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — loading a full supplier range one product at
     a time through the form doesn't scale (e.g. Aspen's 35+ colours
     across 5 ranges). Takes a list of the same shape the single-create
@@ -332,6 +438,7 @@ def bulk_import_flooring(products: List[FlooringProduct]):
     half-populated."""
     with Session(engine) as session:
         for product in products:
+            product.tenant_id = tenant_id
             session.add(product)
         session.commit()
         return {"imported": len(products)}
@@ -340,13 +447,14 @@ def bulk_import_flooring(products: List[FlooringProduct]):
 # ---------- Price Book: Blinds ----------
 
 @app.get("/price-book/blinds", response_model=List[BlindsProduct])
-def list_blinds():
+def list_blinds(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        return session.exec(select(BlindsProduct)).all()
+        return session.exec(select(BlindsProduct).where(BlindsProduct.tenant_id == tenant_id)).all()
 
 
 @app.post("/price-book/blinds", response_model=BlindsProduct)
-def create_blinds(product: BlindsProduct):
+def create_blinds(product: BlindsProduct, tenant_id: str = Depends(get_current_tenant)):
+    product.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(product)
         session.commit()
@@ -355,12 +463,10 @@ def create_blinds(product: BlindsProduct):
 
 
 @app.put("/price-book/blinds/{product_id}", response_model=BlindsProduct)
-def update_blinds(product_id: int, updates: BlindsProduct):
+def update_blinds(product_id: int, updates: BlindsProduct, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(BlindsProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Blinds product not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(product, k, v)
         product.last_updated = datetime.utcnow()
@@ -371,11 +477,9 @@ def update_blinds(product_id: int, updates: BlindsProduct):
 
 
 @app.delete("/price-book/blinds/{product_id}")
-def delete_blinds(product_id: int):
+def delete_blinds(product_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(BlindsProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Blinds product not found")
+        product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
         session.delete(product)
         session.commit()
         return {"deleted": product_id}
@@ -384,13 +488,14 @@ def delete_blinds(product_id: int):
 # ---------- Price Book: Trims ----------
 
 @app.get("/price-book/trims", response_model=List[TrimProduct])
-def list_trims():
+def list_trims(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        return session.exec(select(TrimProduct)).all()
+        return session.exec(select(TrimProduct).where(TrimProduct.tenant_id == tenant_id)).all()
 
 
 @app.post("/price-book/trims", response_model=TrimProduct)
-def create_trim(product: TrimProduct):
+def create_trim(product: TrimProduct, tenant_id: str = Depends(get_current_tenant)):
+    product.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(product)
         session.commit()
@@ -399,7 +504,7 @@ def create_trim(product: TrimProduct):
 
 
 @app.put("/price-book/trims/bulk-update-markup")
-def bulk_update_trim_markup(new_markup: float, category: str = None):
+def bulk_update_trim_markup(new_markup: float, category: str = None, tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — bulk-adjust the markup multiplier across every
     markup-mode trim product in one call (optionally filtered to one
     category), instead of editing each product individually. Only
@@ -419,7 +524,7 @@ def bulk_update_trim_markup(new_markup: float, category: str = None):
     would match it first and fail trying to parse "bulk-update-markup"
     as an int, never reaching this function at all."""
     with Session(engine) as session:
-        stmt = select(TrimProduct).where(TrimProduct.pricing_mode == "markup")
+        stmt = select(TrimProduct).where(TrimProduct.pricing_mode == "markup", TrimProduct.tenant_id == tenant_id)
         if category:
             stmt = stmt.where(TrimProduct.category == category)
         products = session.exec(stmt).all()
@@ -432,12 +537,10 @@ def bulk_update_trim_markup(new_markup: float, category: str = None):
 
 
 @app.put("/price-book/trims/{product_id}", response_model=TrimProduct)
-def update_trim(product_id: int, updates: TrimProduct):
+def update_trim(product_id: int, updates: TrimProduct, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(TrimProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Trim product not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(product, k, v)
         product.last_updated = datetime.utcnow()
@@ -448,11 +551,9 @@ def update_trim(product_id: int, updates: TrimProduct):
 
 
 @app.delete("/price-book/trims/{product_id}")
-def delete_trim(product_id: int):
+def delete_trim(product_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        product = session.get(TrimProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Trim product not found")
+        product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
         session.delete(product)
         session.commit()
         return {"deleted": product_id}
@@ -461,7 +562,7 @@ def delete_trim(product_id: int):
 # ---------- Analytics ----------
 
 @app.get("/analytics/overview")
-def analytics_overview():
+def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
     """
     Business Overview data. Deliberately built from data that already
     exists — no new pricing logic here, just querying quotes/lines that
@@ -472,8 +573,8 @@ def analytics_overview():
     "Lost" = declined only.
     """
     with Session(engine) as session:
-        quotes = session.exec(select(Quote)).all()
-        lines = session.exec(select(QuoteLineItem)).all()
+        quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all()
+        lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.tenant_id == tenant_id)).all()
 
         # value per quote = sum of its line totals (client-facing sell price, ex VAT)
         value_by_quote = {}
@@ -529,15 +630,16 @@ def strip_employee_notes(emp_dict: dict, role: str) -> dict:
 
 
 @app.get("/employees")
-def list_employees(role: str = Depends(get_current_role)):
+def list_employees(role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        employees = session.exec(select(Employee)).all()
+        employees = session.exec(select(Employee).where(Employee.tenant_id == tenant_id)).all()
         return [strip_employee_notes(e.dict(), role) for e in employees]
 
 
 @app.post("/employees")
-def create_employee(employee: Employee):
+def create_employee(employee: Employee, tenant_id: str = Depends(get_current_tenant)):
     coerce_date_fields(employee, "start_date", "birthday")
+    employee.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(employee)
         session.commit()
@@ -546,13 +648,11 @@ def create_employee(employee: Employee):
 
 
 @app.put("/employees/{employee_id}")
-def update_employee(employee_id: int, updates: Employee):
+def update_employee(employee_id: int, updates: Employee, tenant_id: str = Depends(get_current_tenant)):
     coerce_date_fields(updates, "start_date", "birthday")
     with Session(engine) as session:
-        emp = session.get(Employee, employee_id)
-        if not emp:
-            raise HTTPException(404, "Employee not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        emp = get_or_404(session, Employee, employee_id, tenant_id, "Employee")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(emp, k, v)
         session.add(emp)
@@ -562,11 +662,9 @@ def update_employee(employee_id: int, updates: Employee):
 
 
 @app.delete("/employees/{employee_id}")
-def delete_employee(employee_id: int):
+def delete_employee(employee_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        emp = session.get(Employee, employee_id)
-        if not emp:
-            raise HTTPException(404, "Employee not found")
+        emp = get_or_404(session, Employee, employee_id, tenant_id, "Employee")
         session.delete(emp)
         session.commit()
         return {"deleted": employee_id}
@@ -588,13 +686,14 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
 
 
 @app.get("/commission-rates")
-def list_commission_rates():
+def list_commission_rates(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        return session.exec(select(CommissionRate).where(CommissionRate.active == True)).all()
+        return session.exec(select(CommissionRate).where(CommissionRate.active == True, CommissionRate.tenant_id == tenant_id)).all()
 
 
 @app.post("/commission-rates")
-def create_commission_rate(rate: CommissionRate, role: str = Depends(require_owner)):
+def create_commission_rate(rate: CommissionRate, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    rate.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(rate)
         session.commit()
@@ -603,12 +702,10 @@ def create_commission_rate(rate: CommissionRate, role: str = Depends(require_own
 
 
 @app.put("/commission-rates/{rate_id}")
-def update_commission_rate(rate_id: int, updates: CommissionRate, role: str = Depends(require_owner)):
+def update_commission_rate(rate_id: int, updates: CommissionRate, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        rate = session.get(CommissionRate, rate_id)
-        if not rate:
-            raise HTTPException(404, "Rate not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        rate = get_or_404(session, CommissionRate, rate_id, tenant_id, "Rate")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(rate, k, v)
         session.add(rate)
@@ -618,11 +715,9 @@ def update_commission_rate(rate_id: int, updates: CommissionRate, role: str = De
 
 
 @app.delete("/commission-rates/{rate_id}")
-def delete_commission_rate(rate_id: int, role: str = Depends(require_owner)):
+def delete_commission_rate(rate_id: int, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        rate = session.get(CommissionRate, rate_id)
-        if not rate:
-            raise HTTPException(404, "Rate not found")
+        rate = get_or_404(session, CommissionRate, rate_id, tenant_id, "Rate")
         rate.active = False   # soft delete — keeps history for past statements intact
         session.add(rate)
         session.commit()
@@ -632,7 +727,7 @@ def delete_commission_rate(rate_id: int, role: str = Depends(require_owner)):
 # ---------- HR: Commission calculation ----------
 
 @app.get("/commission/statement/{sales_owner_key}")
-def commission_statement(sales_owner_key: str, year: int, month: int):
+def commission_statement(sales_owner_key: str, year: int, month: int, tenant_id: str = Depends(get_current_tenant)):
     """
     Confirmed Aug 2026: commission is calculated ONLY on fully paid
     invoices (status == "paid"), for the given calendar month, per the
@@ -648,7 +743,7 @@ def commission_statement(sales_owner_key: str, year: int, month: int):
     """
     with Session(engine) as session:
         employee = session.exec(
-            select(Employee).where(Employee.sales_owner_key == sales_owner_key)
+            select(Employee).where(Employee.sales_owner_key == sales_owner_key, Employee.tenant_id == tenant_id)
         ).first()
         if not employee:
             raise HTTPException(404, f"No employee found with sales_owner_key '{sales_owner_key}'")
@@ -659,17 +754,18 @@ def commission_statement(sales_owner_key: str, year: int, month: int):
             select(Quote).where(
                 Quote.sales_owner == sales_owner_key,
                 Quote.status == "paid",
+                Quote.tenant_id == tenant_id,
             )
         ).all()
         paid_quotes = [q for q in paid_quotes if q.created_at.year == year and q.created_at.month == month]
 
-        rates = session.exec(select(CommissionRate).where(CommissionRate.active == True)).all()
+        rates = session.exec(select(CommissionRate).where(CommissionRate.active == True, CommissionRate.tenant_id == tenant_id)).all()
 
         if employee.commission_role_type == "pure_sales":
             total_turnover = 0.0
             total_gp = 0.0
             for q in paid_quotes:
-                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id)).all()
+                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
                 quote_turnover = sum(l.line_total for l in lines)
                 quote_cost = sum(line_real_cost(l) for l in lines)
                 total_turnover += quote_turnover
@@ -704,7 +800,7 @@ def commission_statement(sales_owner_key: str, year: int, month: int):
             total_commission = 0.0
             breakdown = {}
             for q in paid_quotes:
-                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id)).all()
+                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
                 for l in lines:
                     total_turnover += l.line_total
                     rate = category_rates.get(l.category)
@@ -716,7 +812,7 @@ def commission_statement(sales_owner_key: str, year: int, month: int):
 
             missing_categories = sorted(set(
                 l.category for q in paid_quotes
-                for l in session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id)).all()
+                for l in session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
                 if l.category not in category_rates
             ))
 
@@ -738,8 +834,9 @@ def commission_statement(sales_owner_key: str, year: int, month: int):
 # ---------- HR: Hours Worked ----------
 
 @app.post("/hours-worked")
-def log_hours(entry: HoursWorked):
+def log_hours(entry: HoursWorked, tenant_id: str = Depends(get_current_tenant)):
     coerce_date_fields(entry, "work_date")
+    entry.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(entry)
         session.commit()
@@ -748,9 +845,9 @@ def log_hours(entry: HoursWorked):
 
 
 @app.get("/hours-worked")
-def list_hours(employee_id: Optional[int] = None, year: Optional[int] = None, month: Optional[int] = None):
+def list_hours(employee_id: Optional[int] = None, year: Optional[int] = None, month: Optional[int] = None, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        stmt = select(HoursWorked)
+        stmt = select(HoursWorked).where(HoursWorked.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(HoursWorked.employee_id == employee_id)
         entries = session.exec(stmt).all()
@@ -762,29 +859,27 @@ def list_hours(employee_id: Optional[int] = None, year: Optional[int] = None, mo
 
 
 @app.delete("/hours-worked/{entry_id}")
-def delete_hours(entry_id: int):
+def delete_hours(entry_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        entry = session.get(HoursWorked, entry_id)
-        if not entry:
-            raise HTTPException(404, "Entry not found")
+        entry = get_or_404(session, HoursWorked, entry_id, tenant_id, "Entry")
         session.delete(entry)
         session.commit()
         return {"deleted": entry_id}
 
 
 @app.get("/hours-worked/summary")
-def hours_summary(year: int, month: int, employee_id: Optional[int] = None):
+def hours_summary(year: int, month: int, employee_id: Optional[int] = None, tenant_id: str = Depends(get_current_tenant)):
     """Monthly summary, per the brief's "accountant-ready" requirement —
     totals by hour type, per employee (or one employee if filtered)."""
     with Session(engine) as session:
-        employees = session.exec(select(Employee)).all()
+        employees = session.exec(select(Employee).where(Employee.tenant_id == tenant_id)).all()
         if employee_id:
             employees = [e for e in employees if e.id == employee_id]
 
         result = []
         for emp in employees:
             entries = session.exec(
-                select(HoursWorked).where(HoursWorked.employee_id == emp.id)
+                select(HoursWorked).where(HoursWorked.employee_id == emp.id, HoursWorked.tenant_id == tenant_id)
             ).all()
             entries = [e for e in entries if e.work_date.year == year and e.work_date.month == month]
             if not entries and employee_id is None:
@@ -808,22 +903,34 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+def _tenant_upload_dir(tenant_id: str) -> str:
+    """Part 3 finding (confirmed Aug 2026): every document used to land
+    in one shared uploads/ folder regardless of tenant — fine with one
+    tenant, a real filename-collision/cross-listing risk once a second
+    one exists. Existing files for tenant '1' are untouched in place
+    (they're already correctly namespaced by their random uuid4 prefix,
+    so nothing needs moving) — this only changes where NEW uploads land."""
+    d = os.path.join(UPLOAD_DIR, tenant_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 @app.post("/documents/upload")
 def upload_document(employee_id: int, document_type: str = "other", owner_only: bool = False,
-                     notes: str = "", file: UploadFile = File(...)):
+                     notes: str = "", file: UploadFile = File(...), tenant_id: str = Depends(get_current_tenant)):
     # SECURITY FIX: file.filename is client-supplied and untrusted — a
     # crafted value like "../../../etc/passwd" would otherwise let a
     # direct API call write outside UPLOAD_DIR. basename() strips any
     # directory components before it's used in the storage path.
     original_name = os.path.basename(file.filename or "upload")
     safe_name = f"{uuid.uuid4().hex}_{original_name}"
-    dest_path = os.path.join(UPLOAD_DIR, safe_name)
+    dest_path = os.path.join(_tenant_upload_dir(tenant_id), safe_name)
     with open(dest_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
     with Session(engine) as session:
         doc = Document(
             employee_id=employee_id, document_type=document_type, filename=original_name,
-            file_path=safe_name, owner_only=owner_only, notes=notes,
+            file_path=safe_name, owner_only=owner_only, notes=notes, tenant_id=tenant_id,
         )
         session.add(doc)
         session.commit()
@@ -832,9 +939,9 @@ def upload_document(employee_id: int, document_type: str = "other", owner_only: 
 
 
 @app.get("/documents")
-def list_documents(employee_id: Optional[int] = None, role: str = Depends(get_current_role)):
+def list_documents(employee_id: Optional[int] = None, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        stmt = select(Document)
+        stmt = select(Document).where(Document.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(Document.employee_id == employee_id)
         docs = session.exec(stmt).all()
@@ -844,11 +951,9 @@ def list_documents(employee_id: Optional[int] = None, role: str = Depends(get_cu
 
 
 @app.get("/documents/{doc_id}/download")
-def download_document(doc_id: int, role: str = Depends(get_current_role)):
+def download_document(doc_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        doc = session.get(Document, doc_id)
-        if not doc:
-            raise HTTPException(404, "Document not found")
+        doc = get_or_404(session, Document, doc_id, tenant_id, "Document")
         # SECURITY FIX: list_documents already hides owner_only docs from
         # Sales, but this endpoint had no role check at all — anyone who
         # knew/guessed a doc_id could download an owner_only document
@@ -865,19 +970,24 @@ def download_document(doc_id: int, role: str = Depends(get_current_role)):
         # of leaking quietly (a wrongly-allowed Sales user won't).
         if doc.owner_only and role == UserRole.sales:
             raise HTTPException(403, "This document is restricted to Owner/Admin")
-        full_path = os.path.join(UPLOAD_DIR, doc.file_path)
+        # Existing (pre-tenant-groundwork) files live directly in
+        # UPLOAD_DIR; new ones land under UPLOAD_DIR/{tenant_id}/ — check
+        # both so nothing already on disk breaks.
+        full_path = os.path.join(_tenant_upload_dir(tenant_id), doc.file_path)
+        if not os.path.exists(full_path):
+            full_path = os.path.join(UPLOAD_DIR, doc.file_path)
         if not os.path.exists(full_path):
             raise HTTPException(404, "File missing on disk")
         return FileResponse(full_path, filename=doc.filename)
 
 
 @app.delete("/documents/{doc_id}")
-def delete_document(doc_id: int):
+def delete_document(doc_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        doc = session.get(Document, doc_id)
-        if not doc:
-            raise HTTPException(404, "Document not found")
-        full_path = os.path.join(UPLOAD_DIR, doc.file_path)
+        doc = get_or_404(session, Document, doc_id, tenant_id, "Document")
+        full_path = os.path.join(_tenant_upload_dir(tenant_id), doc.file_path)
+        if not os.path.exists(full_path):
+            full_path = os.path.join(UPLOAD_DIR, doc.file_path)
         if os.path.exists(full_path):
             os.remove(full_path)
         session.delete(doc)
@@ -888,8 +998,9 @@ def delete_document(doc_id: int):
 # ---------- HR: Leave ----------
 
 @app.post("/leave-balances")
-def create_leave_balance(balance: LeaveBalance):
+def create_leave_balance(balance: LeaveBalance, tenant_id: str = Depends(get_current_tenant)):
     coerce_date_fields(balance, "cycle_start_date")
+    balance.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(balance)
         session.commit()
@@ -898,9 +1009,9 @@ def create_leave_balance(balance: LeaveBalance):
 
 
 @app.get("/leave-balances")
-def list_leave_balances(employee_id: Optional[int] = None):
+def list_leave_balances(employee_id: Optional[int] = None, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        stmt = select(LeaveBalance)
+        stmt = select(LeaveBalance).where(LeaveBalance.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(LeaveBalance.employee_id == employee_id)
         balances = session.exec(stmt).all()
@@ -913,13 +1024,14 @@ def list_leave_balances(employee_id: Optional[int] = None):
 
 
 @app.post("/leave-requests")
-def submit_leave_request(request: LeaveRequest):
+def submit_leave_request(request: LeaveRequest, tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026: submitting a request does NOT touch the
     balance — only approval does. This matches the brief's explicit
     workflow (request -> approve -> balance updates)."""
     coerce_date_fields(request, "start_date", "end_date")
     with Session(engine) as session:
         request.status = "pending"
+        request.tenant_id = tenant_id
         session.add(request)
         session.commit()
         session.refresh(request)
@@ -927,9 +1039,9 @@ def submit_leave_request(request: LeaveRequest):
 
 
 @app.get("/leave-requests")
-def list_leave_requests(employee_id: Optional[int] = None, status: Optional[str] = None):
+def list_leave_requests(employee_id: Optional[int] = None, status: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        stmt = select(LeaveRequest)
+        stmt = select(LeaveRequest).where(LeaveRequest.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(LeaveRequest.employee_id == employee_id)
         if status:
@@ -938,11 +1050,9 @@ def list_leave_requests(employee_id: Optional[int] = None, status: Optional[str]
 
 
 @app.put("/leave-requests/{request_id}/approve")
-def approve_leave_request(request_id: int, reviewed_by: str):
+def approve_leave_request(request_id: int, reviewed_by: str, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        req = session.get(LeaveRequest, request_id)
-        if not req:
-            raise HTTPException(404, "Request not found")
+        req = get_or_404(session, LeaveRequest, request_id, tenant_id, "Request")
         if req.status != "pending":
             raise HTTPException(400, f"Request is already {req.status}, cannot approve again")
 
@@ -950,6 +1060,7 @@ def approve_leave_request(request_id: int, reviewed_by: str):
             select(LeaveBalance).where(
                 LeaveBalance.employee_id == req.employee_id,
                 LeaveBalance.leave_type == req.leave_type,
+                LeaveBalance.tenant_id == tenant_id,
             )
         ).first()
         if not balance:
@@ -971,11 +1082,9 @@ def approve_leave_request(request_id: int, reviewed_by: str):
 
 
 @app.put("/leave-requests/{request_id}/reject")
-def reject_leave_request(request_id: int, reviewed_by: str):
+def reject_leave_request(request_id: int, reviewed_by: str, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        req = session.get(LeaveRequest, request_id)
-        if not req:
-            raise HTTPException(404, "Request not found")
+        req = get_or_404(session, LeaveRequest, request_id, tenant_id, "Request")
         if req.status != "pending":
             raise HTTPException(400, f"Request is already {req.status}")
         req.status = "rejected"
@@ -990,11 +1099,11 @@ def reject_leave_request(request_id: int, reviewed_by: str):
 # ---------- Clients ----------
 
 @app.get("/clients")
-def list_clients(search: str = None):
+def list_clients(search: str = None, tenant_id: str = Depends(get_current_tenant)):
     """search filters by name (case-insensitive, contains) — used by the
     Order Index / New Quote client picker."""
     with Session(engine) as session:
-        stmt = select(Client)
+        stmt = select(Client).where(Client.tenant_id == tenant_id)
         clients = session.exec(stmt).all()
         if search:
             search_lower = search.lower()
@@ -1003,16 +1112,14 @@ def list_clients(search: str = None):
 
 
 @app.get("/clients/{client_id}")
-def get_client(client_id: int):
+def get_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        client = session.get(Client, client_id)
-        if not client:
-            raise HTTPException(404, "Client not found")
-        return client
+        return get_or_404(session, Client, client_id, tenant_id, "Client")
 
 
 @app.post("/clients")
-def create_client(client: Client):
+def create_client(client: Client, tenant_id: str = Depends(get_current_tenant)):
+    client.tenant_id = tenant_id
     with Session(engine) as session:
         session.add(client)
         session.commit()
@@ -1021,12 +1128,10 @@ def create_client(client: Client):
 
 
 @app.put("/clients/{client_id}")
-def update_client(client_id: int, updates: Client):
+def update_client(client_id: int, updates: Client, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        client = session.get(Client, client_id)
-        if not client:
-            raise HTTPException(404, "Client not found")
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        client = get_or_404(session, Client, client_id, tenant_id, "Client")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(client, k, v)
         session.add(client)
@@ -1036,44 +1141,49 @@ def update_client(client_id: int, updates: Client):
 
 
 @app.delete("/clients/{client_id}")
-def delete_client(client_id: int):
+def delete_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        client = session.get(Client, client_id)
-        if not client:
-            raise HTTPException(404, "Client not found")
+        client = get_or_404(session, Client, client_id, tenant_id, "Client")
         session.delete(client)
         session.commit()
         return {"deleted": client_id}
 
 
 @app.get("/clients/{client_id}/quotes")
-def get_client_quotes(client_id: int):
+def get_client_quotes(client_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Order history for a client — every quote ever linked to this
     record, most recent first."""
     with Session(engine) as session:
-        client = session.get(Client, client_id)
-        if not client:
-            raise HTTPException(404, "Client not found")
+        client = get_or_404(session, Client, client_id, tenant_id, "Client")
         quotes = session.exec(
-            select(Quote).where(Quote.client_id == client_id).order_by(Quote.created_at.desc())
+            select(Quote).where(Quote.client_id == client_id, Quote.tenant_id == tenant_id).order_by(Quote.created_at.desc())
         ).all()
         return {"client": client, "quotes": quotes}
 
 
 # ---------- Business Settings ----------
 
-def get_settings(session: Session) -> BusinessSettings:
+def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> BusinessSettings:
     """Confirmed Aug 2026 — the single source of truth for business-wide
     values (VAT %, default deposit %, screed bag overage rate, default
     labour rate, Order Index overdue threshold, plus the original
-    letterhead details). Auto-creates the default row on first call if
-    none exists, same as before, so this never errors on a fresh
-    database. Call this instead of hardcoding a business-wide value
+    letterhead details). Auto-creates the default row for this tenant on
+    first call if none exists, same as before, so this never errors on a
+    fresh database. Call this instead of hardcoding a business-wide value
     directly — that exact duplication (VAT_PCT hardcoded identically in
-    two endpoints below) is the bug this table was expanded to close."""
-    settings = session.get(BusinessSettings, 1)
+    two endpoints, fixed at v54) is the bug this table was expanded to
+    close.
+
+    Multi-tenant groundwork (confirmed Aug 2026): was a hardcoded
+    session.get(BusinessSettings, 1) singleton lookup — now looks up by
+    tenant_id instead of assuming id=1, so a second tenant automatically
+    gets their own settings row on first call, no code change needed.
+    tenant_id defaults to DEFAULT_TENANT_ID only so any code that hasn't
+    been updated to pass it explicitly still behaves exactly as before
+    for the one real tenant that exists today."""
+    settings = session.exec(select(BusinessSettings).where(BusinessSettings.tenant_id == tenant_id)).first()
     if not settings:
-        settings = BusinessSettings(id=1)
+        settings = BusinessSettings(tenant_id=tenant_id)
         session.add(settings)
         session.commit()
         session.refresh(settings)
@@ -1081,13 +1191,13 @@ def get_settings(session: Session) -> BusinessSettings:
 
 
 @app.get("/business-settings")
-def get_business_settings():
+def get_business_settings(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        return get_settings(session)
+        return get_settings(session, tenant_id)
 
 
 @app.put("/business-settings")
-def update_business_settings(updates: BusinessSettings, role: str = Depends(get_current_role)):
+def update_business_settings(updates: BusinessSettings, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     # Confirmed Aug 2026: business settings (including the VAT %, deposit
     # %, and rate defaults added in v54, same as the original letterhead
     # details) are Owner-only to change — Admin/Sales can still view them
@@ -1100,8 +1210,8 @@ def update_business_settings(updates: BusinessSettings, role: str = Depends(get_
     if role != UserRole.owner:
         raise HTTPException(403, "Only the Owner role can change business settings")
     with Session(engine) as session:
-        settings = get_settings(session)
-        data = updates.dict(exclude_unset=True, exclude={"id"})
+        settings = get_settings(session, tenant_id)
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id"})
         for k, v in data.items():
             setattr(settings, k, v)
         session.add(settings)
@@ -1116,7 +1226,7 @@ def update_business_settings(updates: BusinessSettings, role: str = Depends(get_
 def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
                   blinds_measurements_visible: bool = True,
                   discount_pct: float = 0.0, deposit_pct: float = 0.70,
-                  client_id: int = None):
+                  client_id: int = None, tenant_id: str = Depends(get_current_tenant)):
     """If client_id is given, client_name AND site_address are taken
     from that real Client record (overriding whatever was passed) —
     confirmed Aug 2026, previously only client_name did this, leaving a
@@ -1126,9 +1236,7 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
     with Session(engine) as session:
         site_address = ""
         if client_id:
-            client = session.get(Client, client_id)
-            if not client:
-                raise HTTPException(404, "Client not found")
+            client = get_or_404(session, Client, client_id, tenant_id, "Client")
             client_name = client.name
             site_address = client.address
         quote = Quote(
@@ -1140,6 +1248,7 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
             discount_pct=discount_pct,
             deposit_pct=deposit_pct,
             site_address=site_address,
+            tenant_id=tenant_id,
         )
         session.add(quote)
         session.commit()
@@ -1148,13 +1257,11 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
 
 
 @app.put("/quotes/{quote_id}/discount")
-def update_quote_discount(quote_id: int, discount_pct: float):
+def update_quote_discount(quote_id: int, discount_pct: float, tenant_id: str = Depends(get_current_tenant)):
     """Set/change the quote-level discount after the fact — you often won't
     know the discount until the quote's already built up with line items."""
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         quote.discount_pct = discount_pct
         session.add(quote)
         session.commit()
@@ -1168,7 +1275,7 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
                           site_address: str = None, installation_date: str = None,
                           invoice_sent_date: str = None, deposit_paid_date: str = None,
                           deposit_payment_method: str = None, final_payment_date: str = None,
-                          final_payment_method: str = None):
+                          final_payment_method: str = None, tenant_id: str = Depends(get_current_tenant)):
     """Update a quote's own details — client name, sales owner, branch,
     status, plus order-tracking fields (site address, installation date,
     invoice/payment dates and methods) confirmed Aug 2026 for the Order
@@ -1179,9 +1286,7 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
     fix as v38's coerce_date_fields(), applied here from the start this
     time rather than being rediscovered as a bug later."""
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if client_name is not None:
             quote.client_name = client_name
         if sales_owner is not None:
@@ -1211,12 +1316,10 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
 
 
 @app.post("/quotes/{quote_id}/follow-ups")
-def log_follow_up(quote_id: int, follow_up_date: str, notes: str = ""):
+def log_follow_up(quote_id: int, follow_up_date: str, notes: str = "", tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
-        entry = PaymentFollowUp(quote_id=quote_id, follow_up_date=date.fromisoformat(follow_up_date), notes=notes)
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        entry = PaymentFollowUp(quote_id=quote_id, follow_up_date=date.fromisoformat(follow_up_date), notes=notes, tenant_id=tenant_id)
         session.add(entry)
         session.commit()
         session.refresh(entry)
@@ -1224,15 +1327,15 @@ def log_follow_up(quote_id: int, follow_up_date: str, notes: str = ""):
 
 
 @app.get("/quotes/{quote_id}/follow-ups")
-def list_follow_ups(quote_id: int):
+def list_follow_ups(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         return session.exec(
-            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id).order_by(PaymentFollowUp.follow_up_date)
+            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id, PaymentFollowUp.tenant_id == tenant_id).order_by(PaymentFollowUp.follow_up_date)
         ).all()
 
 
 @app.delete("/quotes/{quote_id}")
-def delete_quote(quote_id: int):
+def delete_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Deletes a quote and everything hanging off it. SQLite doesn't
     enforce the cascade from supabase_schema.sql, so it's all removed
     explicitly here.
@@ -1245,21 +1348,19 @@ def delete_quote(quote_id: int):
     history under its own id. Caught by a real test cycle, not
     inspection."""
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         lines = session.exec(
-            select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id)
+            select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
         for line in lines:
             colour_logs = session.exec(
-                select(ColourChangeLog).where(ColourChangeLog.quote_line_item_id == line.id)
+                select(ColourChangeLog).where(ColourChangeLog.quote_line_item_id == line.id, ColourChangeLog.tenant_id == tenant_id)
             ).all()
             for log in colour_logs:
                 session.delete(log)
             session.delete(line)
         follow_ups = session.exec(
-            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id)
+            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id, PaymentFollowUp.tenant_id == tenant_id)
         ).all()
         for f in follow_ups:
             session.delete(f)
@@ -1276,7 +1377,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        bag_cost: float = 235.0, bag_coverage_m2: float = None,
                        own_staff: bool = True, markup_override: float = None,
                        include_tile_removal_fee: bool = False,
-                       role: str = Depends(get_current_role)):
+                       role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """
     Material lines: glue_cost_per_unit / glue_coverage_m2 (e.g. Techem Tek
     70/70 = 1193.50 / 70), labour_rate_per_m2 — your fixed per-m² labour cost.
@@ -1289,21 +1390,21 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
     confirmed R45/m² incl VAT tile removal fee — not auto-tied to job_type.
     """
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
-        product = session.get(FlooringProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Flooring product not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        settings = get_settings(session, tenant_id)
 
         calc = calculate_flooring_line(
             product, quantity_m2, job_type, discount_pct,
             glue_cost_per_unit, glue_coverage_m2, labour_rate_per_m2,
             bag_cost, bag_coverage_m2, own_staff, markup_override,
             include_tile_removal_fee,
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
         )
         line = QuoteLineItem(
-            quote_id=quote_id, category="flooring", product_id=product_id,
+            quote_id=quote_id, category="flooring", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, colour=product.colour, original_colour=product.colour,
             job_type=job_type,
             quantity_m2=quantity_m2, discount_pct=discount_pct,
@@ -1341,18 +1442,14 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
 
 @app.post("/quotes/{quote_id}/lines/blinds")
 def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: float,
-                     discount_pct: float = 0.0, role: str = Depends(get_current_role)):
+                     discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
-        product = session.get(BlindsProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Blinds product not found")
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
 
         calc = calculate_blinds_line(product, width_mm, drop_mm, discount_pct)
         line = QuoteLineItem(
-            quote_id=quote_id, category="blinds", product_id=product_id,
+            quote_id=quote_id, category="blinds", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, width_mm=width_mm, drop_mm=drop_mm,
             discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
@@ -1367,18 +1464,15 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
 
 @app.post("/quotes/{quote_id}/lines/trims")
 def add_trim_line(quote_id: int, product_id: int, length_m: float,
-                   discount_pct: float = 0.0, role: str = Depends(get_current_role)):
+                   discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
-        product = session.get(TrimProduct, product_id)
-        if not product:
-            raise HTTPException(404, "Trim product not found")
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
+        settings = get_settings(session, tenant_id)
 
-        calc = calculate_trim_line(product, length_m, discount_pct)
+        calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
         line = QuoteLineItem(
-            quote_id=quote_id, category="trim", product_id=product_id,
+            quote_id=quote_id, category="trim", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, length_m=length_m,
             discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
@@ -1398,7 +1492,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
 def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
                         num_stairs: int, stairwell_type: StairwellType,
                         stair_area_m2: float = 0.45, own_staff: bool = True,
-                        role: str = Depends(get_current_role)):
+                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """
     stair_area_m2 defaults to 0.45 (confirmed: 900mm wide tread x (300mm
     going + 200mm riser) = 0.9 x 0.5). Override if your stairs differ.
@@ -1407,21 +1501,27 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
     cost treated as pass-through (roughly what you actually pay out).
     """
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
-        vinyl_product = session.get(FlooringProduct, vinyl_product_id)
-        if not vinyl_product:
-            raise HTTPException(404, "Vinyl product not found")
-        nosing_product = session.get(TrimProduct, nosing_product_id)
-        if not nosing_product:
-            raise HTTPException(404, "Nosing product not found")
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
+        nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
         if not vinyl_product.tiles_per_pack:
             raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
+        settings = get_settings(session, tenant_id)
 
-        calc = calculate_stairwell_line(vinyl_product, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff)
+        stairwell_labour_by_type = {
+            StairwellType.closed: settings.stairwell_labour_closed,
+            StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
+            StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
+        }
+        calc = calculate_stairwell_line(
+            vinyl_product, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
+            glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
+            glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
+            labour_per_stair=stairwell_labour_by_type[stairwell_type],
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+        )
         line = QuoteLineItem(
-            quote_id=quote_id, category="stairwell",
+            quote_id=quote_id, category="stairwell", tenant_id=tenant_id,
             product_id=vinyl_product_id,
             product_name=f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)",
             unit_cost=0, unit_price=0,
@@ -1459,7 +1559,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
 
 @app.post("/quotes/{quote_id}/lines/misc")
 def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
-                   role: str = Depends(get_current_role)):
+                   role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — freeform line for anything that doesn't fit
     an existing category: extra Saturday/Sunday labour, a one-off
     special request, anything not covered by a real product record.
@@ -1467,12 +1567,10 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
     for things like weekend labour where there's genuinely no
     additional cost beyond what's already being paid in salary."""
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
         line = QuoteLineItem(
-            quote_id=quote_id, category="misc", product_id=0,
+            quote_id=quote_id, category="misc", product_id=0, tenant_id=tenant_id,
             product_name=description,
             unit_cost=cost_ex_vat, unit_price=amount_ex_vat,
             line_total=amount_ex_vat, margin_pct=margin_pct,
@@ -1484,13 +1582,11 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
 
 
 @app.get("/quotes/{quote_id}")
-def get_quote(quote_id: int, role: str = Depends(get_current_role)):
+def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        quote = session.get(Quote, quote_id)
-        if not quote:
-            raise HTTPException(404, "Quote not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         lines = session.exec(
-            select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id)
+            select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
         lines_out = [strip_sensitive_fields(l.dict(), role) for l in lines]
         subtotal_ex_vat = sum(l["line_total"] for l in lines_out)
@@ -1510,7 +1606,7 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role)):
         # below, so a VAT change (or a typo landing in only one spot)
         # could have made this endpoint and the Order Index quietly
         # disagree on totals. Both now read from the same settings row.
-        VAT_PCT = get_settings(session).vat_pct
+        VAT_PCT = get_settings(session, tenant_id).vat_pct
         discount_amount = subtotal_ex_vat * quote.discount_pct
         total_ex_vat = subtotal_ex_vat - discount_amount
         total_incl_vat = total_ex_vat * (1 + VAT_PCT)
@@ -1543,10 +1639,10 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role)):
 
 
 @app.delete("/quotes/{quote_id}/lines/{line_id}")
-def delete_quote_line(quote_id: int, line_id: int):
+def delete_quote_line(quote_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         line = session.get(QuoteLineItem, line_id)
-        if not line or line.quote_id != quote_id:
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
         session.delete(line)
         session.commit()
@@ -1554,7 +1650,7 @@ def delete_quote_line(quote_id: int, line_id: int):
 
 
 @app.put("/quotes/{quote_id}/lines/{line_id}/colour")
-def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str = "", changed_by: str = ""):
+def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str = "", changed_by: str = "", tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — a colour quoted might go out of stock and
     need substituting. This changes the ACTIVE colour on the line (what
     shows on the quote, what gets ordered), while logging the change so
@@ -1562,7 +1658,7 @@ def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str
     is never touched here — it's set once, at creation, permanently."""
     with Session(engine) as session:
         line = session.get(QuoteLineItem, line_id)
-        if not line or line.quote_id != quote_id:
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
 
         # BUG FIXED Aug 2026: this used to reject setting a colour when the
@@ -1572,7 +1668,7 @@ def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str
         # rather than blocking the action entirely.
         log_entry = ColourChangeLog(
             quote_line_item_id=line_id, old_colour=line.colour or "(none)", new_colour=new_colour,
-            reason=reason, changed_by=changed_by,
+            reason=reason, changed_by=changed_by, tenant_id=tenant_id,
         )
         session.add(log_entry)
 
@@ -1584,16 +1680,16 @@ def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str
 
 
 @app.get("/quotes/{quote_id}/lines/{line_id}/colour-history")
-def get_colour_history(quote_id: int, line_id: int):
+def get_colour_history(quote_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Internal/operational view — never shown on the client-facing
     printed quote, which only ever shows the current colour."""
     with Session(engine) as session:
         line = session.get(QuoteLineItem, line_id)
-        if not line or line.quote_id != quote_id:
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
         history = session.exec(
             select(ColourChangeLog)
-            .where(ColourChangeLog.quote_line_item_id == line_id)
+            .where(ColourChangeLog.quote_line_item_id == line_id, ColourChangeLog.tenant_id == tenant_id)
             .order_by(ColourChangeLog.changed_at)
         ).all()
         return {
@@ -1605,7 +1701,8 @@ def get_colour_history(quote_id: int, line_id: int):
 
 @app.get("/quotes")
 def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
-                 status: Optional[str] = None, search: Optional[str] = None):
+                 status: Optional[str] = None, search: Optional[str] = None,
+                 tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — Order Index needs totals (deposit amount,
     balance amount) visible without clicking into each quote, so this
     now computes them per quote, same VAT_PCT/discount logic as the
@@ -1616,8 +1713,8 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
     identically here AND in get_quote above, so a VAT change (or a typo
     landing in only one spot) could have made the two quietly disagree."""
     with Session(engine) as session:
-        VAT_PCT = get_settings(session).vat_pct
-        stmt = select(Quote)
+        VAT_PCT = get_settings(session, tenant_id).vat_pct
+        stmt = select(Quote).where(Quote.tenant_id == tenant_id)
         if sales_owner:
             stmt = stmt.where(Quote.sales_owner == sales_owner)
         if branch:
@@ -1631,7 +1728,7 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
 
         result = []
         for q in quotes:
-            lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id)).all()
+            lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
             subtotal_ex_vat = sum(l.line_total for l in lines)
             discount_amount = subtotal_ex_vat * q.discount_pct
             total_ex_vat = subtotal_ex_vat - discount_amount

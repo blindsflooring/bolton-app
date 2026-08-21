@@ -15,6 +15,18 @@ from enum import Enum
 from typing import Optional
 from sqlmodel import SQLModel, Field
 
+# Multi-tenant groundwork (confirmed Aug 2026 — cheap now, painful to
+# retrofit onto live data later). Single tenant today ("1" = Blinds &
+# Flooring Studio); every business-data table below carries a tenant_id
+# so every query CAN be tenant-scoped from day one, even though there's
+# only one tenant to scope against right now. No tenant-switcher, no way
+# to create a new tenant through the app yet — this is invisible
+# groundwork, not a feature. See main.py's _ensure_tenant_id_columns()
+# for how this lands on an already-live database without re-entering
+# any existing data, and get_current_tenant() for where the scoping
+# value comes from at request time (the logged-in user's own tenant_id).
+DEFAULT_TENANT_ID = "1"
+
 
 class StairwellType(str, Enum):
     closed = "closed"                    # both sides closed — 900mm nosing, R250/stair
@@ -66,6 +78,7 @@ class User(SQLModel, table=True):
     table-naming bug on Supabase from an unquoted reserved-ish name."""
     __tablename__ = "app_user"
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     username: str = Field(unique=True, index=True)   # lowercase, e.g. "burgert"
     display_name: str
     password_hash: str          # pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex> — see auth.py
@@ -120,6 +133,7 @@ class TrimProduct(SQLModel, table=True):
       margin stays the raw ex-VAT figure.)
     """
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     product_name: str
     profile_code: str = ""       # e.g. "S299", or blank for skirting
     category: str = "skirting"   # "skirting" | "stair_nose" | "reducer" | "carpet_strip" | "quarter_round"
@@ -150,6 +164,7 @@ class FlooringProduct(SQLModel, table=True):
     Confirmed with Burgert Aug 2026: vinyl price stays flat regardless of
     job type."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     product_name: str          # the range/product name, e.g. "Aspen Premium Range 2.5mm" — NOT the colour, see colour field below
     colour: str = ""            # confirmed Aug 2026: real structured field, not baked into product_name — so the exact colour ordered from the supplier stays locked and clearly visible on the actual quote. Same range at different colours = separate price book entries.
     supplier: str
@@ -180,6 +195,7 @@ class BlindsProduct(SQLModel, table=True):
     less further 7.5% settlement discount. Selling price = book price + VAT (15%).
     This yields ~49% margin at full price."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     product_name: str
     supplier: str
     mechanism: str            # e.g. roller, venetian, vertical
@@ -199,6 +215,7 @@ class Employee(SQLModel, table=True):
     Owner+Admin only, stripped for self-service views the same way cost/
     margin is stripped for Sales elsewhere in this app."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     full_name: str
     role_title: str = ""          # Sales, Admin, Installer, Builder-Rep, etc.
     start_date: Optional[date] = None
@@ -230,6 +247,7 @@ class CommissionRate(SQLModel, table=True):
       installation labour and a GP-based model would double-reward that.
     """
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     role_type: str            # "pure_sales" | "builder_rep"
     basis: str                # "gp" | "ex_vat_price"
     category: Optional[str] = None   # flooring / blinds / trim / skirting / stairwell — builder_rep only
@@ -244,6 +262,7 @@ class CommissionPayment(SQLModel, table=True):
     per the brief's requirement for an auditable payment history separate
     from the calculated-but-not-yet-paid statement."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     employee_id: int = Field(foreign_key="employee.id")
     period_year: int
     period_month: int
@@ -258,6 +277,7 @@ class HoursWorked(SQLModel, table=True):
     """Confirmed Aug 2026 — HR Phase A. Traceable hours record with a
     clean monthly summary for the accountant, per the brief."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     employee_id: int = Field(foreign_key="employee.id")
     work_date: date
     hours: float
@@ -272,6 +292,7 @@ class Document(SQLModel, table=True):
     under /uploads (see main.py), this record is the metadata + access
     control (owner_only)."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     employee_id: int = Field(foreign_key="employee.id")
     document_type: str = "other"   # contract | sick_note | warning | other
     filename: str
@@ -288,6 +309,7 @@ class LeaveBalance(SQLModel, table=True):
     max_carry_over at cycle rollover (enforced in the rollover endpoint,
     not automatically — carry-over is a deliberate admin action)."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     employee_id: int = Field(foreign_key="employee.id")
     leave_type: str            # annual | sick | unpaid | other
     cycle_start_date: date
@@ -302,6 +324,7 @@ class LeaveRequest(SQLModel, table=True):
     on the matching LeaveBalance only updates on approval, not on
     submission — per the brief's explicit requirement."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     employee_id: int = Field(foreign_key="employee.id")
     leave_type: str
     start_date: date
@@ -322,6 +345,7 @@ class Client(SQLModel, table=True):
     still work without requiring a CRM entry first, and historical quotes
     aren't affected if a client's name is later corrected."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     name: str
     phone: str = ""
     email: str = ""
@@ -353,6 +377,7 @@ class BusinessSettings(SQLModel, table=True):
     yoco_payment_link is new and safe to add outright — nothing existed
     there before."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, unique=True, index=True)   # one settings row per tenant (was a hardcoded id=1 singleton — see main.py's get_settings())
     business_name: str = ""
     address: str = ""
     phone: str = ""
@@ -367,10 +392,37 @@ class BusinessSettings(SQLModel, table=True):
     bag_overage_rate: float = 350.0            # R/bag incl. VAT, screed site-variance charge — see calculations.py's BAG_OVERAGE_RATE comment
     default_labour_rate_per_m2: float = 45.0
     order_overdue_days: int = 7                # Order Index "Overdue" status threshold
+    # Multi-tenant groundwork Part 2 (confirmed Aug 2026): the remaining
+    # genuinely-hardcoded numeric business rules found auditing
+    # calculations.py/models.py — moved here so a future tenant gets
+    # their own editable defaults with zero code change. Existing values
+    # match the prior hardcoded constants exactly — no behaviour change
+    # for Blinds & Flooring Studio. VAT/deposit %/commission tiers were
+    # already settings- or table-backed before this pass and needed no
+    # further work; Azura's 30% trade discount is real per-product data,
+    # not a code constant, so it's untouched too.
+    flooring_margin_warn_threshold: float = 0.30   # was FLOORING_MARGIN_WARN_THRESHOLD in calculations.py
+    stairwell_labour_closed: float = 250.0         # was STAIRWELL_LABOUR_PER_STAIR[closed] in models.py
+    stairwell_labour_one_side_open: float = 300.0  # was STAIRWELL_LABOUR_PER_STAIR[one_side_open]
+    stairwell_labour_both_sides_open: float = 350.0  # was STAIRWELL_LABOUR_PER_STAIR[both_sides_open]
+    stairwell_default_glue_cost_per_unit: float = 1193.50   # was calculate_stairwell_line's glue_cost_per_unit default (Techem Tek 70/70)
+    stairwell_default_glue_coverage_m2: float = 70.0        # was calculate_stairwell_line's glue_coverage_m2 default
+    default_bag_cost: float = 235.0                # was DEFAULT_BAG_COST in calculations.py (iTe LEVELiTe F10, 20kg)
+    default_bag_coverage_smooth_m2: float = 4.0     # was DEFAULT_BAG_COVERAGE_M2[smooth]
+    default_bag_coverage_over_tiles_m2: float = 3.0     # was DEFAULT_BAG_COVERAGE_M2[over_tiles]
+    default_bag_coverage_removed_tiles_m2: float = 2.0  # was DEFAULT_BAG_COVERAGE_M2[removed_tiles]
+    tile_removal_fee_per_m2_incl_vat: float = 45.0  # was TILE_REMOVAL_FEE_PER_M2_INCL_VAT in calculations.py
+    # Part 3 finding (confirmed Aug 2026): the printed quote's logo was a
+    # base64 image hardcoded in frontend/index.html, not pulled from
+    # here like every other letterhead detail. Empty by default so the
+    # frontend falls back to the existing hardcoded image — no visible
+    # change for Blinds & Flooring Studio unless/until this is filled in.
+    logo_base64: str = ""
 
 
 class Quote(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     client_name: str
     client_id: Optional[int] = Field(default=None, foreign_key="client.id")  # confirmed Aug 2026: links to a real Client record when one exists; nullable so walk-in/one-off quotes without a CRM entry still work
     sales_owner: str          # "ryno" | "madri" | "burgert" — drives commission, decoupled
@@ -399,6 +451,7 @@ class PaymentFollowUp(SQLModel, table=True):
     append-only log, not a single field that would overwrite the
     previous follow-up date every time a new one goes out."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     quote_id: int = Field(foreign_key="quote.id")
     follow_up_date: date
     notes: str = ""
@@ -407,6 +460,7 @@ class PaymentFollowUp(SQLModel, table=True):
 
 class QuoteLineItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     quote_id: int = Field(foreign_key="quote.id")
     category: str              # "flooring" | "blinds"
     product_id: int
@@ -458,6 +512,7 @@ class ColourChangeLog(SQLModel, table=True):
     internal/operational record, not shown on the client-facing printed
     quote, which only ever shows the current colour."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     quote_line_item_id: int = Field(foreign_key="quotelineitem.id")
     old_colour: str
     new_colour: str
