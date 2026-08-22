@@ -548,6 +548,8 @@ function renderLanding() {
   if (landingView === 'business') return renderBusinessOverview(el);
   if (landingView === 'hr') return renderHR(el);
   if (landingView === 'sessionLog') return renderSessionLog(el);
+  if (landingView === 'supplierConsole') return renderSupplierConsole(el);
+  if (landingView === 'changeLog') return renderChangeLog(el);
 }
 
 function renderLandingTiles(el) {
@@ -581,6 +583,8 @@ function onTileClick(tileId) {
   else if (tileId === 'business') { landingView = 'business'; renderLanding(); }
   else if (tileId === 'hr') { landingView = 'hr'; hrView = 'employees'; renderLanding(); }
   else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
+  else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
+  else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
   else if (tileId === 'supplierPrices') { goToTab('priceBook'); }
 }
@@ -827,6 +831,232 @@ function renderSessionLogTable() {
   `;
 }
 
+// ===== Supplier & Price Book Management Console (confirmed Aug 2026) =====
+// Owner-only (enforced server-side by /admin/supplier-console/commit and
+// /admin/audit-log — this tile's own visibility is just the first
+// layer, see OWNER_ONLY_TILES in shared.js). Commit-and-acknowledge
+// workflow, per the brief: edits are staged locally in stagedChanges as
+// the owner makes them — NOTHING hits the database until "Commit
+// Changes" is clicked, which posts the whole batch in one action and
+// shows a plain-English confirmation of exactly what changed.
+
+let stagedChanges = {};   // key: "entityType:entityId:field" -> {entity_type, entity_id, field, new_value, old_value, label, entityLabel}
+
+const FLOORING_CONSOLE_FIELDS = [
+  ['product_name', 'Range', 'text'],
+  ['colour', 'Colour', 'text'],
+  ['m2_per_pack', 'm² per box', 'number', '0.001'],
+  ['base_cost_ex_vat', 'Price/m² ex VAT', 'number', '0.01'],
+  ['trade_discount_pct', 'Trade discount %', 'pct'],
+  ['wastage_pct', 'Wastage %', 'pct'],
+  ['sell_markup_multiplier', 'Markup (x)', 'number', '0.01'],
+  ['glue_rate_per_m2', 'Glue rate R/m²', 'number', '0.01'],
+  ['labour_rate_per_m2', 'Labour rate R/m²', 'number', '0.01'],
+  ['default_own_staff', 'Own staff (labour source)', 'bool'],
+  ['tile_length_mm', 'Plank length mm', 'number', '0.01'],
+  ['tile_width_mm', 'Plank width mm', 'number', '0.01'],
+  ['tile_thickness_mm', 'Plank thickness mm', 'number', '0.01'],
+  ['tiles_per_pack', 'Planks/box (auto if dims set)', 'number', '1'],
+  ['price_zone_a', 'Zone A price', 'number', '0.01'],
+  ['price_zone_b', 'Zone B price', 'number', '0.01'],
+  ['price_zone_c', 'Zone C price', 'number', '0.01'],
+];
+const TRIM_CONSOLE_FIELDS = [
+  ['product_name', 'Product', 'text'],
+  ['category', 'Category', 'text'],
+  ['cost_ex_vat_per_lm', 'Cost/lm ex VAT', 'number', '0.01'],
+  ['wastage_pct', 'Wastage %', 'pct'],
+  ['pricing_mode', 'Pricing mode', 'text'],
+  ['fixed_sell_price_per_lm', 'Fixed sell price/lm', 'number', '0.01'],
+  ['markup_multiplier', 'Markup (x)', 'number', '0.01'],
+];
+const BLINDS_CONSOLE_FIELDS = [
+  ['product_name', 'Product', 'text'],
+  ['mechanism', 'Mechanism', 'text'],
+  ['fabric_tier', 'Fabric tier', 'text'],
+  ['book_price', 'Book price', 'number', '0.01'],
+  ['trade_discount_pct', 'Trade discount %', 'pct'],
+  ['settlement_discount_pct', 'Settlement discount %', 'pct'],
+];
+
+let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
+
+async function renderSupplierConsole(el) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Supplier Console</h2><p class="muted">Loading...</p></div>`;
+  const [flr, bld, trm] = await Promise.all([
+    fetch(`${API}/price-book/flooring`).then(r => r.json()),
+    fetch(`${API}/price-book/blinds`).then(r => r.json()),
+    fetch(`${API}/price-book/trims`).then(r => r.json()),
+  ]);
+  supplierConsoleData = { flooring: flr, blinds: bld, trims: trm };
+  stagedChanges = {};
+  renderSupplierConsoleTable();
+}
+
+function supplierConsoleRow(entityType, fields, product) {
+  const cells = fields.map(([field, label, type, step]) => {
+    const key = `${entityType}:${product.id}:${field}`;
+    const val = product[field];
+    const attrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="${type}" data-orig="${val === null || val === undefined ? '' : val}" onchange="stageChange(this)"`;
+    if (type === 'bool') {
+      return `<td><select ${attrs}><option value="true" ${val ? 'selected' : ''}>Own staff</option><option value="false" ${!val ? 'selected' : ''}>Outside</option></select></td>`;
+    }
+    if (type === 'pct') {
+      return `<td><input type="number" step="0.1" style="width:80px;" value="${val !== null && val !== undefined ? (val * 100).toFixed(1) : ''}" ${attrs}></td>`;
+    }
+    if (type === 'number') {
+      return `<td><input type="number" step="${step || 'any'}" style="width:90px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
+    }
+    return `<td><input type="text" style="width:120px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
+  }).join('');
+  return `<tr id="console-row-${entityType}-${product.id}">${cells}</tr>`;
+}
+
+function renderSupplierConsoleTable() {
+  const el = document.getElementById('landing');
+  const allProducts = [
+    ...supplierConsoleData.flooring.map(p => ({ ...p, _entityType: 'FlooringProduct', _fields: FLOORING_CONSOLE_FIELDS })),
+    ...supplierConsoleData.blinds.map(p => ({ ...p, _entityType: 'BlindsProduct', _fields: BLINDS_CONSOLE_FIELDS })),
+    ...supplierConsoleData.trims.map(p => ({ ...p, _entityType: 'TrimProduct', _fields: TRIM_CONSOLE_FIELDS })),
+  ];
+  const suppliers = [...new Set(allProducts.map(p => p.supplier))].sort();
+
+  const supplierSections = suppliers.map(supplier => {
+    const groups = [
+      ['FlooringProduct', FLOORING_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'FlooringProduct')],
+      ['BlindsProduct', BLINDS_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'BlindsProduct')],
+      ['TrimProduct', TRIM_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'TrimProduct')],
+    ].filter(([, , products]) => products.length);
+
+    const tables = groups.map(([entityType, fields, products]) => `
+      <div style="overflow-x:auto; margin-bottom:12px;">
+        <table>
+          <thead><tr>${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+          <tbody>${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}</tbody>
+        </table>
+      </div>`).join('');
+
+    return `<div class="card"><h2>${supplier}</h2>${tables}</div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below.</p></div>
+    <div class="card" style="position:sticky; top:0; z-index:50;">
+      <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
+      <span id="consoleCommitStatus" class="muted" style="margin-left:12px;"></span>
+    </div>
+    ${supplierSections}
+  `;
+}
+
+function stageChange(inputEl) {
+  const entityType = inputEl.dataset.entityType;
+  const entityId = parseInt(inputEl.dataset.entityId, 10);
+  const field = inputEl.dataset.field;
+  const inputType = inputEl.dataset.inputType;
+  const origRaw = inputEl.dataset.orig;
+  let newValue, origValue;
+  if (inputType === 'bool') {
+    newValue = inputEl.value === 'true';
+    origValue = origRaw === 'true';
+  } else if (inputType === 'pct') {
+    newValue = parseFloat(inputEl.value) / 100;
+    origValue = origRaw === '' ? null : parseFloat(origRaw);
+  } else if (inputType === 'number') {
+    newValue = inputEl.value === '' ? null : parseFloat(inputEl.value);
+    origValue = origRaw === '' ? null : parseFloat(origRaw);
+  } else {
+    newValue = inputEl.value;
+    origValue = origRaw;
+  }
+  const key = `${entityType}:${entityId}:${field}`;
+  const unchanged = (newValue === origValue) || (newValue === null && origValue === null) ||
+    (typeof newValue === 'number' && typeof origValue === 'number' && Math.abs(newValue - origValue) < 1e-9);
+  if (unchanged) {
+    delete stagedChanges[key];
+    inputEl.style.background = '';
+  } else {
+    stagedChanges[key] = { entity_type: entityType, entity_id: entityId, field, new_value: newValue };
+    inputEl.style.background = 'var(--cream)';
+  }
+  const count = Object.keys(stagedChanges).length;
+  const btn = document.getElementById('commitChangesBtn');
+  btn.textContent = `Commit Changes (${count} pending)`;
+  btn.disabled = count === 0;
+}
+
+async function commitSupplierConsoleChanges() {
+  const changes = Object.values(stagedChanges);
+  if (!changes.length) return;
+  const statusEl = document.getElementById('consoleCommitStatus');
+  statusEl.textContent = 'Committing...';
+  const res = await fetch(`${API}/admin/supplier-console/commit`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ changes }),
+  });
+  if (!res.ok) {
+    statusEl.textContent = '❌ Commit failed — nothing was saved.';
+    return;
+  }
+  const result = await res.json();
+  stagedChanges = {};
+  // Immediately after committing: show exactly what changed, one line
+  // per field — not just "Saved", per the brief.
+  const summaryHtml = result.summary.length
+    ? `<div class="card" style="border:2px solid var(--teal);"><h2>✓ ${result.changed_count} field(s) updated</h2>` +
+      result.summary.map(line => `<div style="padding:4px 0; border-bottom:1px solid var(--border);">${line}</div>`).join('') +
+      `</div>`
+    : `<div class="card"><p class="muted">Nothing actually changed.</p></div>`;
+  await renderSupplierConsole(document.getElementById('landing'));
+  document.getElementById('landing').insertAdjacentHTML('afterbegin', summaryHtml);
+}
+
+// ===== Change Log (Audit Log) — confirmed Aug 2026, Owner-only =====
+
+async function renderChangeLog(el) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Change Log</h2><p class="muted">Loading...</p></div>`;
+  await loadChangeLog();
+}
+
+async function loadChangeLog(filters) {
+  const params = new URLSearchParams(filters || {});
+  const res = await fetch(`${API}/admin/audit-log?${params}`);
+  const rows = res.ok ? await res.json() : [];
+  renderChangeLogTable(rows);
+}
+
+function renderChangeLogTable(rows) {
+  const el = document.getElementById('landing');
+  const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
+  const tableRows = rows.map(r => `
+    <tr>
+      <td>${fmt(r.timestamp)}</td>
+      <td>${r.username}</td>
+      <td>${r.entity_type} #${r.entity_id}</td>
+      <td>${r.field_label}</td>
+      <td>${r.old_value_formatted}</td>
+      <td>${r.new_value_formatted}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Change Log</h1><p>Every price book edit, permanent and audited — Owner only. Read-only: nothing here can be edited or deleted.</p></div>
+    <div class="card">
+      <div class="grid">
+        <div class="field"><label>From date</label><input type="date" id="cl_start"></div>
+        <div class="field"><label>To date</label><input type="date" id="cl_end"></div>
+      </div>
+      <button onclick="loadChangeLog({start_date: document.getElementById('cl_start').value, end_date: document.getElementById('cl_end').value})">Filter</button>
+      <button onclick="loadChangeLog()">Clear filter</button>
+      <table style="margin-top:14px;">
+        <thead><tr><th>When</th><th>Who</th><th>What</th><th>Field</th><th>Old value</th><th>New value</th></tr></thead>
+        <tbody>${tableRows || '<tr><td colspan="6" class="muted">No changes logged yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function startQuoteForClient(clientId, clientName, preferredBranch) {
   // Real gap found while merging v52: this already accepted a branch arg
   // at one call site (below) but never did anything with it — site
@@ -868,6 +1098,13 @@ async function renderBusinessSettings(el) {
         <div class="field"><label>Screed bag overage rate (R, incl. VAT)</label><input id="bs_bag_overage" type="number" step="0.01" value="${s.bag_overage_rate}" ${ro}></div>
         <div class="field"><label>Default labour rate (R/m²)</label><input id="bs_labour_rate" type="number" step="0.01" value="${s.default_labour_rate_per_m2}" ${ro}></div>
         <div class="field"><label>Order Index overdue threshold (days)</label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
+        <div class="field"><label>Pricing Zone <span class="adj">(Azura zone-based pricing — no manual per-quote zone choice)</span></label>
+          <select id="bs_pricing_zone" ${ro}>
+            <option value="A" ${s.pricing_zone==='A'?'selected':''}>Zone A</option>
+            <option value="B" ${s.pricing_zone==='B'?'selected':''}>Zone B</option>
+            <option value="C" ${s.pricing_zone==='C'?'selected':''}>Zone C</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -944,6 +1181,7 @@ async function saveBusinessSettings() {
   const body = {
     vat_pct: parseFloat(document.getElementById('bs_vat_pct').value) / 100,
     default_deposit_pct: parseFloat(document.getElementById('bs_deposit_pct').value) / 100,
+    pricing_zone: document.getElementById('bs_pricing_zone').value,
     bag_overage_rate: parseFloat(document.getElementById('bs_bag_overage').value),
     default_labour_rate_per_m2: parseFloat(document.getElementById('bs_labour_rate').value),
     order_overdue_days: parseInt(document.getElementById('bs_overdue_days').value),

@@ -192,14 +192,63 @@ no AI assistant yet — those are later phases (see brief §17).
   standard plank width, corrected from the earlier 2/stair figure.
 - **Stairwell landings** — staircases with a turn/half-landing can have
   multiple landing platforms; the Quote Builder lets you add one row per
-  landing, sums the total area, and bills it as a normal flooring
-  material line (same vinyl product as the stairs, standard per-m² rate)
-  — not part of the stairwell tile/glue formula.
+  landing, sums the total area, and prices it at the standard per-m²
+  flat-flooring rate (same vinyl product as the stairs, no stair-tread
+  tile/glue logic applied to it). CHANGED Aug 2026: folded into the SAME
+  stairwell quote line instead of appearing as its own separate
+  "flooring" line — one combined stair price on the quote, not two. The
+  stairwell line's detail text states the landing is included (area and
+  its own price) so it's never unclear whether it was left out; the
+  rate/formula itself is unchanged from before.
 - **Blinds measurement toggle** — per quote, controls whether width/drop
   show on the client-facing view. Full data is always kept internally
   regardless of the toggle.
 - Flooring margin warning — flags if a discount pushes a flooring line's
   margin below 30%
+- **Supplier & Price Book Management Console + Commit-and-Audit
+  Workflow** (confirmed Aug 2026) — a dedicated Owner-only screen
+  (`price-book/*` GET for data, new `POST /admin/supplier-console/commit`
+  to save, both gated the same preview-aware way as everything else),
+  organised by supplier, covering every price-book field already used
+  in quoting (range, colour, m²/box, price/m² ex VAT, trade discount %,
+  wastage %, markup, plus new per-product glue rate/labour rate/labour
+  source defaults that pre-fill the Floor Job builder's quote-time
+  fields — still fully overridable per quote, same pattern
+  BusinessSettings.default_labour_rate_per_m2 already used). Edits are
+  staged in the browser and only take effect on a deliberate "Commit
+  Changes" click, which applies the whole batch in one action and shows
+  a plain-English line per changed field (e.g. "Aspen — GD Aspen Oak:
+  Price per m² changed from R42.61 to R190.00"), not a generic "Saved."
+  Every commit writes to a new general-purpose `AuditLog` table
+  (timestamp, user, entity_type, entity_id, field, old_value,
+  new_value) — permanent, no edit/delete endpoint exists for it, ever —
+  browsable via a new Owner-only Change Log screen
+  (`GET /admin/audit-log`), filterable by date range.
+  - **Plank dimensions genuinely used**: `tile_length_mm`/`tile_width_mm`
+    (real mm format confirmed from Azura's own price sheet, e.g.
+    "184.15 x 1219.2 x 2.0") now auto-derive `tiles_per_pack` whenever
+    both dimensions and m²/box are set, instead of it being a
+    separately-entered number that can drift out of sync with the real
+    plank dimensions — computed via `recompute_tiles_per_pack()` in
+    main.py whenever the console commits an edit touching any of the
+    three inputs.
+  - **Azura zone pricing** (confirmed real from Azura's own "Suggested
+    Retail Price List", not guessed): every Azura/deZIGN product stores
+    all three real zone prices (`price_zone_a/b/c`), and
+    `BusinessSettings.pricing_zone` (A/B/C, defaulting to A) decides
+    which one every quote calculation for that product actually uses —
+    resolved via `resolve_zone_price()` in main.py right before calling
+    `calculate_flooring_line()`/`calculate_stairwell_line()`, on a
+    detached copy of the product so the real stored per-zone prices are
+    never at risk of being overwritten by the resolution step itself.
+    No manual per-quote zone choice, ever. Non-Azura products (no zone
+    prices stored) are completely unaffected.
+- **Aspen Flooring price book corrected** (Aug 2026) — all 35 products
+  were storing (list price ÷ m²/box) instead of the real list price
+  itself, understating every Aspen quote by 1.4x–4.5x depending on the
+  range. Fixed directly via the price-book API against the real Feb
+  2025 wholesale list; confirmed no live quote had used an Aspen product
+  at the wrong rate before the fix landed.
 - **Multi-tenant groundwork (confirmed Aug 2026, invisible today)** —
   every business-data table (Client, Quote, QuoteLineItem, User, the
   three price books, Employee, HR/commission tables, BusinessSettings,

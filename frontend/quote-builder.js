@@ -157,9 +157,31 @@ function onVinylProductChange() {
   if (!p) return;
   document.getElementById('fj_wastage').value = (p.wastage_pct * 100).toFixed(1);
   document.getElementById('fj_m2_per_box').value = p.m2_per_pack || '';
-  document.getElementById('fj_box_price').value = p.base_cost_ex_vat;
+  // Azura zone pricing (confirmed Aug 2026): a product with zone prices
+  // set uses whichever zone matches BusinessSettings.pricing_zone as
+  // its EFFECTIVE price — same resolution the backend applies at
+  // quote-calc time (resolve_zone_price in main.py). Pre-filling the
+  // raw base_cost_ex_vat here would show the wrong number in this
+  // live preview for Azura products and disagree with what the real
+  // saved quote line actually charges.
+  const zoneField = `price_zone_${(businessSettings?.pricing_zone || 'A').toLowerCase()}`;
+  const zonePrice = p[zoneField];
+  document.getElementById('fj_box_price').value = (zonePrice !== null && zonePrice !== undefined) ? zonePrice : p.base_cost_ex_vat;
   document.getElementById('fj_trade_discount').value = (p.trade_discount_pct * 100).toFixed(1);
   document.getElementById('fj_markup').value = (((p.sell_markup_multiplier || 1) - 1) * 100).toFixed(1);
+  // Supplier Console per-product defaults (confirmed Aug 2026) —
+  // pre-fill glue rate/labour rate/labour source from this product's
+  // own stored defaults when set, same pre-fill-not-mandate pattern as
+  // everything else here: still fully overridable per quote, and falls
+  // back to whatever was already in the field (e.g. Business Settings'
+  // default labour rate) if this product has no override of its own.
+  if (p.glue_rate_per_m2 !== null && p.glue_rate_per_m2 !== undefined) {
+    document.getElementById('fj_glue_rate').value = p.glue_rate_per_m2;
+  }
+  if (p.labour_rate_per_m2 !== null && p.labour_rate_per_m2 !== undefined) {
+    document.getElementById('fj_labour_rate').value = p.labour_rate_per_m2;
+  }
+  document.getElementById('fj_own_staff').value = (p.default_own_staff === false) ? 'false' : 'true';
   fjCalc();
 }
 
@@ -496,6 +518,13 @@ async function addLine() {
   if (cat === 'stairwell') {
     const vinylProductId = document.getElementById('line_stair_vinyl').value;
     const ownStaff = document.getElementById('line_stair_own_staff').value;
+    // Landing(s), summed — CHANGED Aug 2026: folded into this SAME
+    // stairwell request/line instead of a separate POST to
+    // /lines/flooring, so the quote shows one combined stair price, not
+    // two lines. Still priced at the standard per-m² flat-flooring rate
+    // (same vinyl product, no markup override) — only how it's posted
+    // and displayed changed, not the rate or calculation.
+    const landingTotal = recomputeLandingTotal();
     const params = new URLSearchParams({
       vinyl_product_id: vinylProductId,
       nosing_product_id: document.getElementById('line_nosing_product').value,
@@ -503,26 +532,13 @@ async function addLine() {
       stair_area_m2: document.getElementById('line_stair_area').value || 0.45,
       stairwell_type: document.getElementById('line_stairwell_type').value,
       own_staff: ownStaff,
+      landing_area_m2: landingTotal,
       role,
     });
     const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/stairwell?${params}`, {method:'POST'});
     const line = await res.json();
     if (line.warning) alert(line.warning);
-
-    // Landing(s), summed, billed as a plain flooring material line at the
-    // product's standard per-m² rate (same vinyl product as the stairs) —
-    // no markup override, no stair-tread tile/glue logic applied.
-    const landingTotal = recomputeLandingTotal();
-    if (landingTotal > 0) {
-      const landingParams = new URLSearchParams({
-        product_id: vinylProductId, quantity_m2: landingTotal, job_type: 'smooth',
-        own_staff: ownStaff, role,
-      });
-      const landingRes = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${landingParams}`, {method:'POST'});
-      const landingLine = await landingRes.json();
-      if (landingLine.warning) alert(landingLine.warning);
-      clearLandingRows();
-    }
+    if (landingTotal > 0) clearLandingRows();
     loadQuote();
     return;
   }
@@ -596,7 +612,7 @@ async function loadQuote() {
       : l.category === 'trim'
       ? `${l.length_m} lm`
       : l.category === 'stairwell'
-      ? `${l.num_stairs} stairs — ${l.stairwell_type}, ${l.nosing_length_m}m nosing, ${l.boxes_needed} boxes (${l.billed_vinyl_area_m2}m² vinyl billed, ${l.glue_area_m2}m² glue coverage)`
+      ? `${l.num_stairs} stairs — ${l.stairwell_type}, ${l.nosing_length_m}m nosing, ${l.boxes_needed} boxes (${l.billed_vinyl_area_m2}m² vinyl billed, ${l.glue_area_m2}m² glue coverage)${l.landing_area_m2 ? ` — incl. ${l.landing_area_m2}m² landing (R${l.landing_sell_total.toFixed(2)})` : ''}`
       : l.category === 'misc'
       ? '—'
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : `<span class="hidden-note">measurements hidden</span>`);

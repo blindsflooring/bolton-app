@@ -177,17 +177,35 @@ class FlooringProduct(SQLModel, table=True):
     wastage_pct: float = 0.08        # 8% default wastage
     trade_discount_pct: float = 0.0  # e.g. 0.30 for Azura vinyl
     settlement_discount_pct: float = 0.0  # a further discount some suppliers offer on top of trade discount — kept entirely as margin, never passed through to a lower client price (matches how BlindsProduct already handles it)
-    tile_width_mm: Optional[float] = None   # reference data from the supplier price list — not used in any calculation
+    tile_width_mm: Optional[float] = None   # confirmed Aug 2026 (Supplier Console brief) — real format from Azura's own price sheet: width x length x thickness mm, e.g. "184.15 x 1219.2 x 2.0". Now genuinely used — see tiles_per_pack below.
     tile_length_mm: Optional[float] = None
     tile_thickness_mm: Optional[float] = None
     delivery_fee_per_m2: float = 0.0  # confirmed Aug 2026: some suppliers (e.g. Aspen) charge delivery on top, no trade discount to offset it. Pass-through, same treatment as glue — real cost AND charged in full, never marked up. Defaults to 0 so it never affects any other supplier.
     over_tiles_multiplier: float = 1.5    # SCREED only, editable per product (confirmed Aug 2026: your real 8-year rates are NOT a clean 1.5x/2x — e.g. deZIGN S200 screed is 130/160/250, ratios ~1.23x/1.92x, not 1.5x/2x. Default 1.5 is a generic placeholder — set your real number per product.
     removed_tiles_multiplier: float = 2.0  # SCREED only, editable per product — same as above
     m2_per_pack: Optional[float] = None  # for purchase-order pack-quantity calc (Phase 3, §13)
-    tiles_per_pack: Optional[float] = None  # for stairwell calc (3 tiles/stair, confirmed Aug 2026 — 3 planks x standard plank width = tread width per stair) — derived from plank dimensions
+    tiles_per_pack: Optional[float] = None  # for stairwell calc (3 tiles/stair, confirmed Aug 2026 — 3 planks x standard plank width = tread width per stair). CHANGED Aug 2026 (Supplier Console brief): now auto-derived from tile_length_mm x tile_width_mm x m2_per_pack whenever the console commits an edit touching any of those three — see recompute_tiles_per_pack() in main.py. Still a plain editable field for products without full dimension data.
     unit: str = "m2"
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     source: str = "manual"           # "manual" | "pdf_import" | "legacy_import"
+    # Supplier & Price Book Management Console (confirmed Aug 2026):
+    glue_rate_per_m2: Optional[float] = None       # per-product default (R/m², same figure as the Floor Job builder's manual glue-rate field) — pre-fills that field when this product is selected; still fully overridable per quote, same pattern as BusinessSettings.default_labour_rate_per_m2 already does for labour
+    labour_rate_per_m2: Optional[float] = None     # per-product default labour rate — same pre-fill-not-mandate pattern
+    default_own_staff: bool = True                 # per-product default labour source — same pre-fill pattern
+    # Azura zone pricing (confirmed Aug 2026, real rule from Azura's own
+    # "Suggested Retail Price List" — every Azura/deZIGN product has
+    # three real prices side by side, one per zone). All three are
+    # stored on every Azura product (not just the zone this business
+    # currently uses) so a future tenant in a different zone already has
+    # their own correct column, no new fields needed later. Resolved to
+    # the effective base_cost_ex_vat at quote-calc time via
+    # resolve_zone_price() in main.py, based on BusinessSettings.
+    # pricing_zone — never a per-quote manual choice. None on every
+    # non-Azura product; base_cost_ex_vat is used directly for those,
+    # completely unchanged.
+    price_zone_a: Optional[float] = None
+    price_zone_b: Optional[float] = None
+    price_zone_c: Optional[float] = None
 
 
 class BlindsProduct(SQLModel, table=True):
@@ -419,6 +437,12 @@ class BusinessSettings(SQLModel, table=True):
     # frontend falls back to the existing hardcoded image — no visible
     # change for Blinds & Flooring Studio unless/until this is filled in.
     logo_base64: str = ""
+    # Supplier & Price Book Management Console (confirmed Aug 2026): the
+    # one place "which zone am I" is decided — Azura product pricing is
+    # tiered by zone (see FlooringProduct.price_zone_a/b/c), and every
+    # quote calculation for an Azura product automatically uses whichever
+    # zone matches this setting. Never a per-quote manual choice.
+    pricing_zone: str = "A"   # "A" | "B" | "C" — confirmed Aug 2026, Blinds & Flooring Studio is Zone A
 
 
 class Quote(SQLModel, table=True):
@@ -503,6 +527,17 @@ class QuoteLineItem(SQLModel, table=True):
     vinyl_cost_total: Optional[float] = None
     nosing_cost_total: Optional[float] = None
     nosing_sell_total: Optional[float] = None
+    # Stairwell landing (confirmed Aug 2026): folded into the SAME
+    # stairwell line's totals rather than appearing as its own separate
+    # "flooring" quote line — same standard per-m² flat-rate calculation
+    # as before (calculate_flooring_line, unchanged), just combined at
+    # persistence time instead of posted as a second line item. These
+    # two fields exist purely so the description can clearly state the
+    # landing is included (and how much), and so Owner/Admin/Sales alike
+    # can see the price breakdown — landing_sell_total is a SELL price,
+    # not a cost figure, so it's not stripped for Sales.
+    landing_area_m2: Optional[float] = None
+    landing_sell_total: Optional[float] = None
 
 
 class ColourChangeLog(SQLModel, table=True):
@@ -520,3 +555,27 @@ class ColourChangeLog(SQLModel, table=True):
     reason: str = ""
     changed_by: str = ""
     changed_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AuditLog(SQLModel, table=True):
+    """General-purpose audit log (confirmed Aug 2026, Supplier & Price
+    Book Management Console brief — built for this real need, not
+    speculatively, but deliberately generic so it's reusable anywhere
+    else "what changed and when" matters later, without a rebuild).
+    old_value/new_value are stored as plain strings regardless of the
+    field's real type (float, bool, str...) — this is a change-history
+    record, not a typed data store; str() on either side is enough to
+    answer "what changed" and keeps this table usable for literally any
+    entity/field combination without per-type columns.
+    Permanent — no update/delete endpoint exists for this table, ever,
+    for the same reason the session log can't be edited: a record that
+    can be quietly changed isn't a record."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    username: str              # who made the change — the real, authenticated username, never client-supplied
+    entity_type: str           # e.g. "FlooringProduct", "BlindsProduct", "TrimProduct" — Python class name, so it's unambiguous and greppable against models.py
+    entity_id: int
+    field: str
+    old_value: str
+    new_value: str

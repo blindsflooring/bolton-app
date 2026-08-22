@@ -6,7 +6,7 @@ those are Phase 2+ per the build brief.
 Run: uvicorn main:app --reload --port 8000
 """
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Any
 import os
 import shutil
 import uuid
@@ -21,7 +21,7 @@ from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
-    JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID,
+    JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry, SESSION_COOKIE_NAME
@@ -163,6 +163,17 @@ def _ensure_new_columns():
         ("businesssettings", "logo_base64", "TEXT", "''"),
         # Login & Session Activity Log Phase 1 (confirmed Aug 2026):
         ("usersession", "ended_at", "TIMESTAMP", "NULL"),   # FIXED (confirmed via real Render/Postgres deploy failure, Aug 2026): DATETIME is not a valid Postgres type name (psycopg2.errors.UndefinedObject) — SQLite silently accepted it since it has no real type enforcement, which is exactly why this wasn't caught by local SQLite testing. TIMESTAMP is valid in both.
+        # Stairwell landing folded into the stairwell line (confirmed Aug 2026):
+        ("quotelineitem", "landing_area_m2", "FLOAT", "NULL"),
+        ("quotelineitem", "landing_sell_total", "FLOAT", "NULL"),
+        # Supplier & Price Book Management Console (confirmed Aug 2026):
+        ("flooringproduct", "glue_rate_per_m2", "FLOAT", "NULL"),
+        ("flooringproduct", "labour_rate_per_m2", "FLOAT", "NULL"),
+        ("flooringproduct", "default_own_staff", "BOOLEAN", "TRUE"),   # TRUE, not 1 — confirmed Postgres boolean literal syntax (learned from the earlier DATETIME mistake: verify type/literal syntax explicitly, don't assume SQLite's permissiveness proves Postgres compatibility)
+        ("flooringproduct", "price_zone_a", "FLOAT", "NULL"),
+        ("flooringproduct", "price_zone_b", "FLOAT", "NULL"),
+        ("flooringproduct", "price_zone_c", "FLOAT", "NULL"),
+        ("businesssettings", "pricing_zone", "VARCHAR", "'A'"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -315,6 +326,18 @@ def get_current_tenant(request: Request) -> str:
     return session_data["tenant_id"]
 
 
+def get_current_username(request: Request) -> str:
+    """The real authenticated username — for AuditLog entries (confirmed
+    Aug 2026, Supplier Console brief: "who made the change" must be the
+    real person, never affected by Owner Preview Mode — not that it can
+    diverge in practice, since anything gated by require_owner already
+    can't be reached while previewing as a lesser role)."""
+    session_data = _resolve_session(request)
+    if session_data is None:
+        raise HTTPException(401, "Not logged in — please log in again")
+    return session_data["username"]
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -418,12 +441,25 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
     bags_allowed and tile_removal_fee_total stay visible — they're
     operational/client-facing info, not cost data. Everything else that
     reveals what a job actually costs (material, glue, labour, compound,
-    the total real cost) is stripped."""
+    the total real cost) is stripped.
+
+    BUG FOUND AND FIXED Aug 2026 (caught during regression testing while
+    building the Supplier Console, not something that brief asked for):
+    vinyl_cost_total/nosing_cost_total (stairwell-specific cost fields)
+    were only ever stripped in add_stairwell_line's own immediate
+    response — get_quote/list_quotes call this shared function but never
+    knew about those two fields, so re-opening a saved stairwell quote
+    leaked real cost data to Sales even though adding the line in the
+    first place correctly hid it. Centralizing the strip here closes
+    that gap everywhere this function is called, not just at creation
+    time — the ad-hoc pop() calls that used to live in add_stairwell_line
+    are removed as redundant now that this covers it."""
     if role == UserRole.sales:
         line_item = dict(line_item)
         for field in (
             "unit_cost", "margin_pct", "glue_cost_total",
             "labour_cost_total", "compound_cost_total", "total_job_cost",
+            "vinyl_cost_total", "nosing_cost_total",
         ):
             line_item.pop(field, None)
     return line_item
@@ -781,6 +817,209 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
             })
         result.sort(key=lambda r: r["login_time"], reverse=True)
         return result
+
+
+# ---------- Supplier & Price Book Management Console (confirmed Aug 2026) ----------
+
+ENTITY_TYPE_MODELS = {
+    "FlooringProduct": FlooringProduct,
+    "BlindsProduct": BlindsProduct,
+    "TrimProduct": TrimProduct,
+}
+
+# Human-readable labels for the commit confirmation message and the
+# audit log UI — e.g. "Price per m²" instead of "base_cost_ex_vat".
+FIELD_LABELS = {
+    "product_name": "Range", "colour": "Colour", "supplier": "Supplier",
+    "base_cost_ex_vat": "Price per m² (ex VAT)", "m2_per_pack": "m² per box",
+    "trade_discount_pct": "Trade discount %", "wastage_pct": "Wastage %",
+    "settlement_discount_pct": "Settlement discount %",
+    "sell_markup_multiplier": "Markup", "delivery_fee_per_m2": "Delivery fee (R/m²)",
+    "glue_rate_per_m2": "Glue rate (R/m²)", "labour_rate_per_m2": "Labour rate (R/m²)",
+    "default_own_staff": "Labour source",
+    "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
+    "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
+    "price_zone_a": "Zone A price", "price_zone_b": "Zone B price", "price_zone_c": "Zone C price",
+    "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
+    "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
+    "markup_multiplier": "Markup",
+}
+
+
+def format_field_value(field: str, value) -> str:
+    """Confirmed Aug 2026: currency/percentage formatting for the commit
+    confirmation message and audit log display — e.g. "R42.61" not
+    "42.61", "8.0%" not "0.08". Best-effort by field-name pattern, not a
+    strict per-field type registry — this is display formatting only,
+    the actual stored value (str(value), see the commit endpoint below)
+    is never affected by this."""
+    if value is None:
+        return "(not set)"
+    if isinstance(value, bool):
+        return "Own staff (salaried)" if value else "Outside/subcontracted"
+    fl = field.lower()
+    if isinstance(value, (int, float)):
+        if "pct" in fl or "discount" in fl:
+            return f"{value * 100:.1f}%"
+        if any(k in fl for k in ("price", "cost", "rate", "fee")):
+            return f"R{value:.2f}"
+        if "multiplier" in fl or "markup" in fl:
+            return f"{value}x"
+    return str(value)
+
+
+def recompute_tiles_per_pack(product: FlooringProduct) -> Optional[float]:
+    """Plank dimensions genuinely used (confirmed Aug 2026, Supplier
+    Console brief — real mm format confirmed directly from Azura's own
+    price sheet, e.g. "184.15 x 1219.2 x 2.0"): planks/box is now
+    auto-derived from length x width x m2_per_pack whenever all three
+    are present on the product, instead of being a separately-entered
+    number that can silently drift out of sync with the real plank
+    dimensions. Returns None (leave tiles_per_pack untouched) for
+    products missing full dimension data — not every supplier's price
+    list gives plank dimensions, so this degrades gracefully rather
+    than blocking edits on products that don't have them."""
+    if not (product.tile_length_mm and product.tile_width_mm and product.m2_per_pack):
+        return None
+    plank_area_m2 = (product.tile_length_mm / 1000) * (product.tile_width_mm / 1000)
+    if plank_area_m2 <= 0:
+        return None
+    return round(product.m2_per_pack / plank_area_m2)
+
+
+class CommitChange(BaseModel):
+    entity_type: str   # "FlooringProduct" | "BlindsProduct" | "TrimProduct"
+    entity_id: int
+    field: str
+    new_value: Any
+
+
+class CommitRequest(BaseModel):
+    changes: List[CommitChange]
+
+
+@app.post("/admin/supplier-console/commit")
+def commit_supplier_console_changes(
+    body: CommitRequest, role: str = Depends(require_owner),
+    tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username),
+):
+    """Commit-and-acknowledge workflow (confirmed Aug 2026): applies every
+    staged edit in ONE action — nothing hits the database until this is
+    called (the console stages edits locally in the browser, see
+    index.html). Writes one AuditLog row per genuinely-changed field
+    (skips any staged "change" that's actually a no-op — same value
+    re-submitted), and returns a plain-English confirmation line per
+    change, e.g. "Aspen — GD Aspen Oak: Price per m² (ex VAT) changed
+    from R42.61 to R190.00" — not just a generic "Saved."
+
+    Owner-only via require_owner, which reads through get_current_role —
+    so an Owner previewing as Sales/Admin is correctly blocked here too,
+    same enforcement path as everywhere else in Owner Preview Mode.
+    """
+    with Session(engine) as session:
+        by_entity: dict = {}
+        for c in body.changes:
+            if c.entity_type not in ENTITY_TYPE_MODELS:
+                raise HTTPException(400, f"Unknown entity_type '{c.entity_type}'")
+            by_entity.setdefault((c.entity_type, c.entity_id), []).append(c)
+
+        summary_lines = []
+        for (entity_type, entity_id), changes in by_entity.items():
+            model = ENTITY_TYPE_MODELS[entity_type]
+            entity = get_or_404(session, model, entity_id, tenant_id, entity_type)
+            entity_label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{entity.supplier} product #{entity_id}"
+            if hasattr(entity, "colour") and entity.colour:
+                entity_label += f" ({entity.colour})"
+
+            old_tiles_per_pack = getattr(entity, "tiles_per_pack", None) if entity_type == "FlooringProduct" else None
+            touched_dimension_field = False
+
+            for c in changes:
+                if not hasattr(entity, c.field):
+                    raise HTTPException(400, f"{entity_type} has no field '{c.field}'")
+                old_value = getattr(entity, c.field)
+                if old_value == c.new_value:
+                    continue   # staged but genuinely unchanged — no audit entry, no confirmation line
+                setattr(entity, c.field, c.new_value)
+                if c.field in ("tile_length_mm", "tile_width_mm", "m2_per_pack"):
+                    touched_dimension_field = True
+                label = FIELD_LABELS.get(c.field, c.field)
+                session.add(AuditLog(
+                    tenant_id=tenant_id, username=username, entity_type=entity_type, entity_id=entity_id,
+                    field=c.field, old_value=str(old_value), new_value=str(c.new_value),
+                ))
+                summary_lines.append(f"{entity_label}: {label} changed from {format_field_value(c.field, old_value)} to {format_field_value(c.field, c.new_value)}")
+
+            if entity_type == "FlooringProduct" and touched_dimension_field:
+                new_tiles_per_pack = recompute_tiles_per_pack(entity)
+                if new_tiles_per_pack is not None and new_tiles_per_pack != old_tiles_per_pack:
+                    session.add(AuditLog(
+                        tenant_id=tenant_id, username=username, entity_type=entity_type, entity_id=entity_id,
+                        field="tiles_per_pack", old_value=str(old_tiles_per_pack), new_value=str(new_tiles_per_pack),
+                    ))
+                    summary_lines.append(f"{entity_label}: Planks per box (auto-derived from dimensions) changed from {format_field_value('tiles_per_pack', old_tiles_per_pack)} to {format_field_value('tiles_per_pack', new_tiles_per_pack)}")
+                    entity.tiles_per_pack = new_tiles_per_pack
+
+            if hasattr(entity, "last_updated"):
+                entity.last_updated = datetime.utcnow()
+            session.add(entity)
+
+        session.commit()
+        return {"changed_count": len(summary_lines), "summary": summary_lines}
+
+
+@app.get("/admin/audit-log")
+def get_audit_log(
+    entity_type: Optional[str] = None, entity_id: Optional[int] = None,
+    start_date: Optional[str] = None, end_date: Optional[str] = None,
+    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+):
+    """Change Log / Audit Log (confirmed Aug 2026) — read-only, Owner-only
+    (require_owner, same preview-aware enforcement as session-log above).
+    Deliberately general-purpose (see AuditLog's own docstring in
+    models.py) — entity_type/entity_id here happen to always be price-
+    book products today, but nothing about this endpoint assumes that.
+    No edit/delete endpoint exists for this table, ever — permanent
+    record, same principle as the session log."""
+    with Session(engine) as session:
+        stmt = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
+        if entity_type:
+            stmt = stmt.where(AuditLog.entity_type == entity_type)
+        if entity_id:
+            stmt = stmt.where(AuditLog.entity_id == entity_id)
+        rows = session.exec(stmt).all()
+        if start_date:
+            rows = [r for r in rows if r.timestamp.date() >= date.fromisoformat(start_date)]
+        if end_date:
+            rows = [r for r in rows if r.timestamp.date() <= date.fromisoformat(end_date)]
+        rows = sorted(rows, key=lambda r: r.timestamp, reverse=True)
+        return [
+            {
+                "id": r.id, "timestamp": r.timestamp.isoformat(), "username": r.username,
+                "entity_type": r.entity_type, "entity_id": r.entity_id,
+                "field": r.field, "field_label": FIELD_LABELS.get(r.field, r.field),
+                "old_value": r.old_value, "new_value": r.new_value,
+                "old_value_formatted": format_field_value(r.field, _parse_audit_value(r.old_value)),
+                "new_value_formatted": format_field_value(r.field, _parse_audit_value(r.new_value)),
+            }
+            for r in rows
+        ]
+
+
+def _parse_audit_value(raw: str):
+    """AuditLog stores every value as a plain string (see AuditLog's own
+    docstring) — this is a best-effort re-parse purely for display
+    formatting (format_field_value needs a real number/bool to format
+    currency/percentages correctly), never used for anything that
+    affects a stored value or a calculation."""
+    if raw in ("None", ""):
+        return None
+    if raw in ("True", "False"):
+        return raw == "True"
+    try:
+        return float(raw)
+    except ValueError:
+        return raw
 
 
 @app.get("/commission-rates")
@@ -1288,6 +1527,34 @@ def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> Busine
     return settings
 
 
+def resolve_zone_price(product: FlooringProduct, settings: BusinessSettings) -> FlooringProduct:
+    """Azura zone pricing (confirmed Aug 2026, Supplier Console brief —
+    real rule from Azura's own "Suggested Retail Price List", not
+    guessed: every Azura/deZIGN product has three real prices side by
+    side, one per zone). A product with zone prices stored
+    (price_zone_a/b/c) uses whichever zone matches
+    BusinessSettings.pricing_zone as its effective base_cost_ex_vat,
+    instead of its own plain base_cost_ex_vat — no manual per-quote zone
+    selection, ever, per the brief.
+
+    Returns a DETACHED copy (model_copy — not session-tracked), never
+    the real ORM object with a field mutated in place: mutating a
+    tracked SQLAlchemy attribute risks it being silently flushed back to
+    the database on some later autoflush, which would corrupt the real
+    stored per-zone prices. This is deliberately calculations.py-free —
+    calculate_flooring_line()/calculate_stairwell_line() only ever read
+    base_cost_ex_vat off whatever product object they're handed, so
+    resolving zone pricing here, before calling them, means their
+    formulas never needed to change at all.
+
+    Products without zone pricing (price_zone_a/b/c all None — every
+    non-Azura supplier) pass through completely unchanged."""
+    zone_price = getattr(product, f"price_zone_{settings.pricing_zone.lower()}", None)
+    if zone_price is None:
+        return product
+    return product.model_copy(update={"base_cost_ex_vat": zone_price})
+
+
 @app.get("/business-settings")
 def get_business_settings(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
@@ -1493,7 +1760,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         settings = get_settings(session, tenant_id)
 
         calc = calculate_flooring_line(
-            product, quantity_m2, job_type, discount_pct,
+            resolve_zone_price(product, settings), quantity_m2, job_type, discount_pct,
             glue_cost_per_unit, glue_coverage_m2, labour_rate_per_m2,
             bag_cost, bag_coverage_m2, own_staff, markup_override,
             include_tile_removal_fee,
@@ -1590,6 +1857,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
 def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
                         num_stairs: int, stairwell_type: StairwellType,
                         stair_area_m2: float = 0.45, own_staff: bool = True,
+                        landing_area_m2: float = 0.0,
                         role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """
     stair_area_m2 defaults to 0.45 (confirmed: 900mm wide tread x (300mm
@@ -1597,6 +1865,20 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
     own_staff: True (default) = your own salaried guys, labour cost treated
     as R0 (charge = pure margin). False = outside/subcontracted, labour
     cost treated as pass-through (roughly what you actually pay out).
+
+    landing_area_m2 (confirmed Aug 2026 — CHANGED from a separate line):
+    staircases with a turn/half-landing can have a landing platform,
+    summed from however many landing rows the frontend collected. This
+    used to be posted as its own separate "flooring" quote line at the
+    standard per-m² rate; it's now folded into THIS SAME stairwell line's
+    totals instead, so the client/quote shows one combined stair price,
+    not two. The rate/formula is completely unchanged — still priced via
+    calculate_flooring_line(), the exact same function a normal flooring
+    line uses, same vinyl product, no markup override, no stair-tread
+    tile/glue logic applied to it. Only how the result is combined and
+    displayed changed, not the calculation itself — landing_calc below
+    is computed identically to before, just added into the stairwell
+    line's fields instead of becoming its own QuoteLineItem row.
     """
     with Session(engine) as session:
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")
@@ -1611,20 +1893,40 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
             StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
             StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
         }
+        effective_vinyl = resolve_zone_price(vinyl_product, settings)   # Azura zone pricing — see resolve_zone_price(); no-op for non-Azura products
         calc = calculate_stairwell_line(
-            vinyl_product, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
+            effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
             glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
             glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
             labour_per_stair=stairwell_labour_by_type[stairwell_type],
             margin_warn_threshold=settings.flooring_margin_warn_threshold,
         )
+
+        landing_calc = None
+        if landing_area_m2 > 0:
+            landing_calc = calculate_flooring_line(
+                effective_vinyl, landing_area_m2, JobType.smooth, own_staff=own_staff,
+                margin_warn_threshold=settings.flooring_margin_warn_threshold,
+                tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+                vat_pct=settings.vat_pct,
+            )
+
+        combined_line_total = calc["line_total"] + (landing_calc["line_total"] if landing_calc else 0.0)
+        combined_total_job_cost = calc["total_job_cost"] + (landing_calc["total_job_cost"] if landing_calc else 0.0)
+        combined_margin_pct = (combined_line_total - combined_total_job_cost) / combined_line_total if combined_line_total else 0.0
+        combined_labour_charged = calc["labour_charged_total"] + (landing_calc["labour_charged_total"] if landing_calc else 0.0)
+        combined_labour_cost = calc["labour_cost_total"] + (landing_calc["labour_cost_total"] if landing_calc else 0.0)
+        combined_warning = None
+        if combined_margin_pct < settings.flooring_margin_warn_threshold:
+            combined_warning = f"Overall margin on this stairwell line (incl. landing) is {combined_margin_pct:.1%}, below the {settings.flooring_margin_warn_threshold:.0%} warning threshold."
+
         line = QuoteLineItem(
             quote_id=quote_id, category="stairwell", tenant_id=tenant_id,
             product_id=vinyl_product_id,
             product_name=f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)",
             unit_cost=0, unit_price=0,
-            line_total=calc["line_total"], margin_pct=calc["margin_pct"],
-            total_job_cost=calc["total_job_cost"],
+            line_total=combined_line_total, margin_pct=combined_margin_pct,
+            total_job_cost=combined_total_job_cost,
             num_stairs=num_stairs, stairwell_type=stairwell_type,
             nosing_length_m=calc["nosing_length_m"], boxes_needed=calc["boxes_needed"],
             billed_vinyl_area_m2=calc["billed_vinyl_area_m2"],
@@ -1636,22 +1938,19 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
             glue_cost_total=calc["glue_cost_total"],
             glue_sell_total=calc["glue_sell_total"],
             glue_units_needed=calc["glue_units_needed"],
-            labour_cost_total=calc["labour_cost_total"],
-            labour_charged_total=calc["labour_charged_total"],
+            labour_cost_total=combined_labour_cost,
+            labour_charged_total=combined_labour_charged,
             own_staff=calc["own_staff"],
+            landing_area_m2=landing_area_m2 if landing_calc else None,
+            landing_sell_total=landing_calc["line_total"] if landing_calc else None,
         )
         session.add(line)
         session.commit()
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
-            result["warning"] = calc["warning"]
-        # vinyl_cost_total / nosing_cost_total are stairwell-specific cost
-        # fields not covered by the standard strip list — remove for Sales
-        if role == UserRole.sales:
-            result.pop("vinyl_cost_total", None)
-            result.pop("nosing_cost_total", None)
+        if combined_warning and role != UserRole.sales:
+            result["warning"] = combined_warning
         return result
 
 

@@ -187,7 +187,7 @@ async function renderPrintDoc(quoteId, docType) {
   const rows = data.lines.map(l => {
     let detail = l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
       : l.category === 'trim' ? `${l.length_m} lm`
-      : l.category === 'stairwell' ? `${l.num_stairs} stairs`
+      : l.category === 'stairwell' ? `${l.num_stairs} stairs${l.landing_area_m2 ? ` (incl. ${l.landing_area_m2}m² landing)` : ''}`
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : '');
     // Screed lines carry a bag allowance — bags_allowed is screed-specific
     // (material lines never set it), so its presence identifies this as
@@ -268,6 +268,8 @@ const LANDING_TILES = [
   { id: 'hr', title: 'HR & Commission', desc: 'Employees, hours, leave, docs', ready: true },
   { id: 'settings', title: 'Business Settings', desc: 'VAT, deposit %, banking, rates', ready: true },
   { id: 'sessionLog', title: 'Login Activity', desc: 'Who logged in, when, for how long', ready: true },
+  { id: 'supplierConsole', title: 'Supplier Console', desc: 'Every supplier\'s real data, one place', ready: true },
+  { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
 ];
 
 // Default role/tile split (confirmed Aug 2026, proposed per the go-live
@@ -287,7 +289,7 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr', 'supplierPrices', 'sup
 // HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
 // as Sales or Admin correctly loses this tile too, same as the backend
 // blocking the endpoint itself for a previewed non-owner role.
-const OWNER_ONLY_TILES = ['sessionLog'];
+const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog'];
 function visibleLandingTiles() {
   const role = currentRole();
   return LANDING_TILES.filter(t => {
