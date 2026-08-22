@@ -586,7 +586,6 @@ function onTileClick(tileId) {
   else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
   else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
-  else if (tileId === 'supplierPrices') { goToTab('priceBook'); }
 }
 
 async function renderFlooringDrill(el) {

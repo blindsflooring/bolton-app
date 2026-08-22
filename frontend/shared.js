@@ -262,8 +262,19 @@ const LANDING_TILES = [
   { id: 'flooring', title: 'Flooring Quotes', desc: 'Vinyl, SPC, laminate...', ready: true },
   { id: 'blinds', title: 'Blinds', desc: 'Blinds quoting', ready: true },
   { id: 'clients', title: 'Clients', desc: 'Client records', ready: true },
-  { id: 'supplierPrices', title: 'Supplier Prices', desc: 'Price books', ready: true },
-  { id: 'supplierUploads', title: 'Supplier Uploads', desc: 'PDF import per supplier', ready: false },
+  // 'supplierPrices' (old Price Book screen) and 'supplierUploads' (a
+  // "Coming soon" placeholder for PDF import) removed Aug 2026, per
+  // explicit confirmation — both were fully superseded by Supplier
+  // Console: 'supplierUploads' described a feature that now exists
+  // (AI-Assisted Price Sheet Import, inside the Console), and
+  // 'supplierPrices' was a second, unaudited way to add/delete
+  // products (writes straight to the DB, no staging, no Change Log
+  // entry) that bypassed the entire commit-and-audit workflow the
+  // Console exists to enforce — confirmed nothing there isn't covered
+  // by the Console. The underlying screen/functions weren't deleted
+  // (loadFlooring/loadBlinds/loadTrims are still used elsewhere, e.g.
+  // populating Quote Builder's product dropdowns) — just made
+  // unreachable, since removing this tile was its only entry point.
   { id: 'printInvoice', title: 'Print Invoice', desc: 'Generate & print', ready: true },
   { id: 'hr', title: 'HR & Commission', desc: 'Employees, hours, leave, docs', ready: true },
   { id: 'settings', title: 'Business Settings', desc: 'VAT, deposit %, banking, rates', ready: true },
@@ -282,7 +293,7 @@ const LANDING_TILES = [
 // enforcement that already existed (strip_sensitive_fields, the
 // owner-only business-settings write, etc.) — it doesn't change what the
 // backend allows, just what's surfaced in the UI.
-const SALES_HIDDEN_TILES = ['business', 'settings', 'hr', 'supplierPrices', 'supplierUploads'];
+const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // Login & Session Activity Log (confirmed Aug 2026): Owner-only, under
 // all circumstances — stricter than SALES_HIDDEN_TILES above, which
 // only hides from Sales (Admin still sees Business Overview/Settings/
