@@ -1202,45 +1202,36 @@ function renderSupplierConsoleTable() {
 
     const tables = visibleGroups.map(([entityType, fields, products]) => {
       const wrapperId = `scrollwrap-${cssSafeId(supplier)}-${entityType}`;
-      // Sticky headers, fixed Aug 2026 — first attempt was WRONG: the
-      // wrapper only set overflow-x:auto, expecting sticky to resolve
-      // against the page scroll (matching the search box's own
-      // stickiness). It doesn't: per the CSS overflow spec, setting
-      // overflow-x to anything other than 'visible' while overflow-y is
-      // left unset forces overflow-y's COMPUTED value to 'auto' too
-      // (confirmed real, not overridable by also specifying
-      // overflow-y:visible — browsers still force it) — so the wrapper
-      // div silently became its own scroll container, and sticky's
-      // containing block became that div instead of the page. Since the
-      // div's own height was unconstrained (auto = content height), it
-      // never actually scrolled internally, so the "stuck" <th> just sat
-      // at a fixed pixel offset FROM THE TOP OF THAT TABLE, permanently
-      // — never tracking real page scroll — which is exactly the
-      // reported symptom: it rendered a fixed distance into the table,
-      // between whichever two rows happened to sit at that offset.
-      //
-      // Fix: make the wrapper a REAL, deliberate scroll container on
-      // BOTH axes (overflow:auto + a max-height), instead of only
-      // overflow-x. Now sticky resolves correctly against the div's own
-      // internal scrollport (top:0, no offset math needed — this box
-      // doesn't compete with the page-level search box at all, since
-      // it's a separate internal scroll region). This is the standard,
-      // spec-correct "frozen header" pattern and needs no JS-measured
-      // offset. Side benefit: this also caps how tall any one supplier's
-      // table can grow on screen, which directly serves the earlier
-      // explicit "stay usable at hundreds of rows" requirement — rows
-      // scroll inside that supplier's own box instead of making the
-      // whole page enormous.
-      const stickyTh = 'position:sticky; top:0; z-index:5; background:var(--card);';
+      const headerBarId = `stickyhdr-${cssSafeId(supplier)}-${entityType}`;
+      // Sticky headers, redesigned Aug 2026 (3rd attempt — see
+      // setupStickyHeaders() below for the full history/reasoning):
+      // page-level sticky + independent per-table horizontal scroll
+      // can't both live on the same <th>, because a div with
+      // overflow-x:auto always becomes ITS OWN sticky containing block
+      // (confirmed twice now, empirically). So the header row is no
+      // longer inside the horizontally-scrolling wrapper at all — it's
+      // a separate "header bar" div, a sibling BEFORE the wrapper,
+      // filled in by JS after render (setupStickyHeaders) with a clone
+      // of this real <thead> (guaranteeing identical labels/field
+      // order/column count — zero risk of the header bar's CONTENT
+      // drifting out of sync, only its pixel WIDTHS are computed).
+      // The real <thead> row here stays in the DOM (still needed so the
+      // table's natural column-width layout accounts for the header
+      // labels, same as before) but visibility:collapse hides it and
+      // removes its height — the visible header is only ever the clone
+      // in the header bar above.
       return `
-      <div id="${wrapperId}" style="overflow:auto; max-height:60vh; margin-bottom:12px;">
-        <table style="width:max-content; min-width:100%;">
-          <thead><tr>${entityType==='FlooringProduct' ? `<th style="${stickyTh}"></th>` : ''}${fields.map(([, label]) => `<th style="${stickyTh}">${label}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
-            ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
-          </tbody>
-        </table>
+      <div style="position:relative;">
+        <div id="${headerBarId}" style="position:sticky; z-index:10; overflow:hidden; background:var(--card);"></div>
+        <div id="${wrapperId}" style="overflow-x:auto; margin-bottom:12px;">
+          <table style="width:max-content; min-width:100%;">
+            <thead><tr style="visibility:collapse;">${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
+              ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
+            </tbody>
+          </table>
+        </div>
       </div>`;
     }).join('');
 
@@ -1269,7 +1260,7 @@ function renderSupplierConsoleTable() {
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below. Rows marked "NEW (import)" came from an AI-read price sheet — review every field, especially anything highlighted, before committing.</p></div>
-    <div class="card" style="position:sticky; top:0; z-index:50;">
+    <div class="card" id="consoleSearchCard" style="position:sticky; top:0; z-index:50;">
       <input type="text" id="consoleSearchBox" placeholder="Search by range, colour, or supplier..." value="${query}" oninput="handleConsoleSearch(this.value)" style="width:100%; max-width:400px; padding:8px; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; display:block; box-sizing:border-box;">
       <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
       <span id="consoleCommitStatus" class="muted" style="margin-left:12px;"></span>
@@ -1286,6 +1277,94 @@ function renderSupplierConsoleTable() {
   // the observer watches the wrapper elements that exist right now, not
   // the ones from before this render.
   setupTableVisibilityObserver();
+  setupStickyHeaders();
+}
+
+// Sticky headers, redesigned Aug 2026 — 3rd attempt on this exact
+// feature, kept honest here since the first two both failed for real,
+// specific reasons worth remembering:
+//   1st: position:sticky on the <th> cells themselves, inside the
+//        horizontally-scrolling wrapper (overflow-x:auto). Broke because
+//        a div with overflow-x set to anything but 'visible' forces its
+//        overflow-y's COMPUTED value to 'auto' too, even if overflow-y
+//        is never specified (a real, confirmed CSS overflow-spec rule)
+//        — so the wrapper silently became ITS OWN sticky containing
+//        block instead of the page. Since the wrapper's height was
+//        unconstrained (auto = content height), it never scrolled
+//        internally, so the "stuck" header just sat at a fixed pixel
+//        offset INTO the table forever, matching Burgert's screenshot
+//        exactly (header floating between two data rows).
+//   2nd: fixed the containing-block problem by making the wrapper a
+//        real, bounded scroll container (overflow:auto + max-height),
+//        so sticky worked correctly — but only within that box's own
+//        small internal scrollbar, which Burgert explicitly did not
+//        want (wanted the whole page to scroll normally).
+//   3rd (this one): page-level sticky AND independent per-table
+//        horizontal scroll genuinely can't both live on the same <th>,
+//        for the same containing-block reason as the 1st attempt — so
+//        the header is no longer a descendant of the overflow-x:auto
+//        wrapper at all. Each table gets a separate "header bar" div
+//        rendered as an empty placeholder (a sibling BEFORE the
+//        wrapper, in normal page flow — so ITS sticky containing block
+//        is correctly the page, same mechanism the search box already
+//        uses), filled in here by cloning that table's own real
+//        <thead> — guaranteeing identical labels/fields/column count,
+//        zero risk of the header bar's CONTENT drifting out of sync
+//        with the real columns (a real risk this exact table has hit
+//        twice before). Only the column WIDTHS are computed: measured
+//        from the first real body row's cells (always present,
+//        unambiguously laid out — more reliable than trying to measure
+//        the invisible original header row) and copied onto the clone.
+//        The real <thead> row stays in the table (visibility:collapse —
+//        invisible and zero height, but still counted for the table's
+//        own natural column-width layout, same as before), so the only
+//        VISIBLE header is the clone in the header bar.
+//   Horizontal scroll sync: the header bar has no scrollbar of its own
+//   (overflow:hidden) — its scrollLeft is mirrored from the real
+//   wrapper's on every scroll event, so it tracks both manual scrolling
+//   and the floating arrow buttons (which just call scrollBy on the
+//   wrapper, already wired up).
+//   Works with collapsible sections and search unchanged: like
+//   setupTableVisibilityObserver(), this only touches whatever
+//   scrollwrap-*/stickyhdr-* elements actually exist in the DOM right
+//   now — collapsed or search-filtered-out suppliers have none, so
+//   there's nothing stale to clean up; newly-expanded/matched ones get
+//   built fresh on this same call, since it re-runs after every
+//   collapse/search re-render.
+function setupStickyHeaders() {
+  const searchCard = document.getElementById('consoleSearchCard');
+  const offset = searchCard ? searchCard.getBoundingClientRect().height : 0;
+
+  document.querySelectorAll('[id^="scrollwrap-"]').forEach(wrapper => {
+    const headerBarId = wrapper.id.replace('scrollwrap-', 'stickyhdr-');
+    const headerBar = document.getElementById(headerBarId);
+    const realThead = wrapper.querySelector('thead');
+    const firstBodyRow = wrapper.querySelector('tbody tr');
+    if (!headerBar || !realThead || !firstBodyRow) return;
+
+    headerBar.style.top = offset + 'px';
+
+    const clone = realThead.cloneNode(true);
+    const cloneRow = clone.querySelector('tr');
+    cloneRow.style.visibility = '';   // undo the collapse — this copy is the one that's actually shown
+    const cloneCells = clone.querySelectorAll('th');
+    const bodyCells = firstBodyRow.querySelectorAll('td');
+    cloneCells.forEach((th, i) => {
+      if (bodyCells[i]) th.style.width = bodyCells[i].getBoundingClientRect().width + 'px';
+    });
+
+    const cloneTable = document.createElement('table');
+    cloneTable.style.cssText = 'width:max-content; min-width:100%; table-layout:fixed; border-collapse:collapse;';
+    cloneTable.appendChild(clone);
+    headerBar.innerHTML = '';
+    headerBar.appendChild(cloneTable);
+
+    // Keep the header bar's horizontal position glued to the real
+    // table's — it has no scrollbar of its own, this is its only way
+    // of tracking left/right movement (manual or via the floating
+    // arrows, which scroll this same wrapper).
+    wrapper.onscroll = () => { headerBar.scrollLeft = wrapper.scrollLeft; };
+  });
 }
 
 function stageChange(inputEl) {
