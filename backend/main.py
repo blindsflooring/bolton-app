@@ -162,7 +162,7 @@ def _ensure_new_columns():
         # Part 3 — logo pulled from settings instead of hardcoded in the frontend:
         ("businesssettings", "logo_base64", "TEXT", "''"),
         # Login & Session Activity Log Phase 1 (confirmed Aug 2026):
-        ("usersession", "ended_at", "DATETIME", "NULL"),
+        ("usersession", "ended_at", "TIMESTAMP", "NULL"),   # FIXED (confirmed via real Render/Postgres deploy failure, Aug 2026): DATETIME is not a valid Postgres type name (psycopg2.errors.UndefinedObject) — SQLite silently accepted it since it has no real type enforcement, which is exactly why this wasn't caught by local SQLite testing. TIMESTAMP is valid in both.
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
