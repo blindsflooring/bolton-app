@@ -912,6 +912,127 @@ function supplierConsoleRow(entityType, fields, product) {
   return `<tr id="console-row-${entityType}-${product.id}">${cells}</tr>`;
 }
 
+// AI-Assisted Price Sheet Import (confirmed Aug 2026 — banked brief,
+// built ahead of its own stated precondition per explicit instruction).
+// Extracted rows land here as STAGED NEW ENTITIES — same "nothing is
+// saved until Commit" discipline as manual edits, just for rows that
+// don't have a real entity_id yet. Each staged row is visually flagged
+// as import-sourced (not a manual edit), and any field the extraction
+// wasn't confident about is highlighted distinctly so the owner checks
+// it more carefully before committing, per the brief.
+let stagedNewEntities = [];   // [{tempId, entityType, supplier, fields, uncertainFields: Set, rawPrice, rawUnitBasis}]
+
+function updateCommitButton() {
+  const count = Object.keys(stagedChanges).length + stagedNewEntities.length;
+  const btn = document.getElementById('commitChangesBtn');
+  if (!btn) return;
+  btn.textContent = `Commit Changes (${count} pending)`;
+  btn.disabled = count === 0;
+}
+
+async function handleImportFile(supplier, inputEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById(`import-status-${cssSafeId(supplier)}`);
+  if (statusEl) statusEl.textContent = 'Uploading and extracting — this can take a minute...';
+  const formData = new FormData();
+  formData.append('file', file);
+  let res;
+  try {
+    res = await fetch(`${API}/admin/supplier-console/import?supplier=${encodeURIComponent(supplier)}`, { method: 'POST', body: formData });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '❌ Could not reach the server.';
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (statusEl) statusEl.textContent = `❌ ${err.detail || 'Import failed.'}`;
+    return;
+  }
+  const result = await res.json();
+  for (const row of (result.rows || [])) {
+    const uncertain = new Set(row.uncertain_fields || []);
+    const fields = {
+      product_name: row.product_name || '',
+      colour: row.colour || '',
+      pricing_type: 'material',
+      m2_per_pack: row.m2_per_pack ?? null,
+    };
+    // Unit-basis safety (confirmed Aug 2026): NEVER auto-convert a
+    // non-per-m2 price into base_cost_ex_vat — that silent conversion
+    // is exactly the shape of bug that caused the real Aspen price
+    // book mix-up this project already found and fixed. Only a price
+    // already quoted per-m2 goes straight into the field; anything
+    // else is left blank, with the raw extracted value shown alongside
+    // for the owner to convert deliberately.
+    if (row.unit_basis === 'per_m2') {
+      fields.base_cost_ex_vat = row.price ?? null;
+    } else {
+      fields.base_cost_ex_vat = null;
+      uncertain.add('base_cost_ex_vat');
+    }
+    if (row.zone_prices) {
+      fields.price_zone_a = row.zone_prices.A ?? null;
+      fields.price_zone_b = row.zone_prices.B ?? null;
+      fields.price_zone_c = row.zone_prices.C ?? null;
+    }
+    if (row.dimensions_mm) {
+      fields.tile_length_mm = row.dimensions_mm.length ?? null;
+      fields.tile_width_mm = row.dimensions_mm.width ?? null;
+      fields.tile_thickness_mm = row.dimensions_mm.thickness ?? null;
+    }
+    stagedNewEntities.push({
+      tempId: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      entityType: 'FlooringProduct', supplier, fields, uncertainFields: uncertain,
+      rawPrice: row.price, rawUnitBasis: row.unit_basis,
+    });
+  }
+  inputEl.value = '';
+  renderSupplierConsoleTable();
+}
+
+function cssSafeId(s) { return s.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+function removeStagedNewEntity(tempId) {
+  stagedNewEntities = stagedNewEntities.filter(e => e.tempId !== tempId);
+  renderSupplierConsoleTable();
+}
+
+function stageNewEntityField(tempId, field, inputType, rawValue) {
+  const entity = stagedNewEntities.find(e => e.tempId === tempId);
+  if (!entity) return;
+  if (inputType === 'pct') entity.fields[field] = rawValue === '' ? null : parseFloat(rawValue) / 100;
+  else if (inputType === 'number') entity.fields[field] = rawValue === '' ? null : parseFloat(rawValue);
+  else if (inputType === 'bool') entity.fields[field] = rawValue === 'true';
+  else entity.fields[field] = rawValue;
+  entity.uncertainFields.delete(field);   // owner reviewed/edited it — no longer flagged
+}
+
+function newEntityRow(entity, fields) {
+  const cells = fields.map(([field, label, type, step]) => {
+    const val = entity.fields[field];
+    const isUncertain = entity.uncertainFields.has(field);
+    const highlight = isUncertain ? 'background:#fff3cd; border:1px solid #e0a800;' : '';
+    const oninput = `stageNewEntityField('${entity.tempId}','${field}','${type}', this.value)`;
+    let inputHtml;
+    if (type === 'bool') {
+      inputHtml = `<select style="${highlight}" onchange="${oninput}"><option value="true" ${val!==false?'selected':''}>Own staff</option><option value="false" ${val===false?'selected':''}>Outside</option></select>`;
+    } else if (type === 'pct') {
+      inputHtml = `<input type="number" step="0.1" style="width:80px; ${highlight}" value="${val!==null&&val!==undefined?(val*100).toFixed(1):''}" oninput="${oninput}">`;
+    } else if (type === 'number') {
+      inputHtml = `<input type="number" step="${step||'any'}" style="width:90px; ${highlight}" value="${val!==null&&val!==undefined?val:''}" oninput="${oninput}">`;
+    } else {
+      inputHtml = `<input type="text" style="width:120px; ${highlight}" value="${val!==null&&val!==undefined?val:''}" oninput="${oninput}">`;
+    }
+    let note = '';
+    if (field === 'base_cost_ex_vat' && entity.rawUnitBasis && entity.rawUnitBasis !== 'per_m2') {
+      note = `<br><span class="muted" style="font-size:10px;">sheet shows R${entity.rawPrice} ${entity.rawUnitBasis.replace('_',' ')} — convert to per-m² yourself</span>`;
+    }
+    return `<td>${inputHtml}${note}</td>`;
+  }).join('');
+  return `<tr style="border-left:3px solid var(--teal);"><td style="white-space:nowrap;"><b style="color:var(--teal); font-size:11px;">NEW (import)</b> <button onclick="removeStagedNewEntity('${entity.tempId}')" style="font-size:11px;">✕</button></td>${cells}</tr>`;
+}
+
 function renderSupplierConsoleTable() {
   const el = document.getElementById('landing');
   const allProducts = [
@@ -919,7 +1040,7 @@ function renderSupplierConsoleTable() {
     ...supplierConsoleData.blinds.map(p => ({ ...p, _entityType: 'BlindsProduct', _fields: BLINDS_CONSOLE_FIELDS })),
     ...supplierConsoleData.trims.map(p => ({ ...p, _entityType: 'TrimProduct', _fields: TRIM_CONSOLE_FIELDS })),
   ];
-  const suppliers = [...new Set(allProducts.map(p => p.supplier))].sort();
+  const suppliers = [...new Set([...allProducts.map(p => p.supplier), ...stagedNewEntities.map(e => e.supplier)])].sort();
 
   const supplierSections = suppliers.map(supplier => {
     const groups = [
@@ -927,27 +1048,41 @@ function renderSupplierConsoleTable() {
       ['BlindsProduct', BLINDS_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'BlindsProduct')],
       ['TrimProduct', TRIM_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'TrimProduct')],
     ].filter(([, , products]) => products.length);
+    const newForSupplier = stagedNewEntities.filter(e => e.supplier === supplier);
 
     const tables = groups.map(([entityType, fields, products]) => `
       <div style="overflow-x:auto; margin-bottom:12px;">
         <table>
-          <thead><tr>${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
-          <tbody>${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}</tbody>
+          <thead><tr>${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
+            ${entityType === 'FlooringProduct' ? newForSupplier.map(e => newEntityRow(e, fields)).join('') : ''}
+          </tbody>
         </table>
       </div>`).join('');
 
-    return `<div class="card"><h2>${supplier}</h2>${tables}</div>`;
+    return `
+      <div class="card">
+        <h2>${supplier}</h2>
+        <div style="margin-bottom:10px;">
+          <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
+          <input type="file" accept=".pdf,image/*" onchange="handleImportFile('${supplier.replace(/'/g,"\\'")}', this)">
+          <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;"></span>
+        </div>
+        ${tables || '<p class="muted">No products from this supplier yet.</p>'}
+      </div>`;
   }).join('');
 
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
-    <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below.</p></div>
+    <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below. Rows marked "NEW (import)" came from an AI-read price sheet — review every field, especially anything highlighted, before committing.</p></div>
     <div class="card" style="position:sticky; top:0; z-index:50;">
       <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
       <span id="consoleCommitStatus" class="muted" style="margin-left:12px;"></span>
     </div>
     ${supplierSections}
   `;
+  updateCommitButton();
 }
 
 function stageChange(inputEl) {
@@ -980,20 +1115,18 @@ function stageChange(inputEl) {
     stagedChanges[key] = { entity_type: entityType, entity_id: entityId, field, new_value: newValue };
     inputEl.style.background = 'var(--cream)';
   }
-  const count = Object.keys(stagedChanges).length;
-  const btn = document.getElementById('commitChangesBtn');
-  btn.textContent = `Commit Changes (${count} pending)`;
-  btn.disabled = count === 0;
+  updateCommitButton();
 }
 
 async function commitSupplierConsoleChanges() {
   const changes = Object.values(stagedChanges);
-  if (!changes.length) return;
+  const new_entities = stagedNewEntities.map(e => ({ entity_type: e.entityType, supplier: e.supplier, fields: e.fields }));
+  if (!changes.length && !new_entities.length) return;
   const statusEl = document.getElementById('consoleCommitStatus');
   statusEl.textContent = 'Committing...';
   const res = await fetch(`${API}/admin/supplier-console/commit`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ changes }),
+    body: JSON.stringify({ changes, new_entities }),
   });
   if (!res.ok) {
     statusEl.textContent = '❌ Commit failed — nothing was saved.';
@@ -1001,6 +1134,7 @@ async function commitSupplierConsoleChanges() {
   }
   const result = await res.json();
   stagedChanges = {};
+  stagedNewEntities = [];
   // Immediately after committing: show exactly what changed, one line
   // per field — not just "Saved", per the brief.
   const summaryHtml = result.summary.length

@@ -25,6 +25,7 @@ from models import (
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry, SESSION_COOKIE_NAME
+from ai_import import extract_price_sheet
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
 # environment (set in Render's dashboard, never committed to the repo)
@@ -894,8 +895,19 @@ class CommitChange(BaseModel):
     new_value: Any
 
 
+class NewEntityImport(BaseModel):
+    """A brand-new product row (confirmed Aug 2026, AI Price Sheet Import
+    brief — onboarding a new supplier's range means genuinely NEW rows,
+    not just corrections to existing ones). Same staging discipline as
+    CommitChange: nothing is created until the whole batch commits."""
+    entity_type: str
+    supplier: str
+    fields: dict
+
+
 class CommitRequest(BaseModel):
-    changes: List[CommitChange]
+    changes: List[CommitChange] = []
+    new_entities: List[NewEntityImport] = []
 
 
 @app.post("/admin/supplier-console/commit")
@@ -964,8 +976,92 @@ def commit_supplier_console_changes(
                 entity.last_updated = datetime.utcnow()
             session.add(entity)
 
+        # New products (confirmed Aug 2026, AI Price Sheet Import brief —
+        # onboarding a new supplier's range, not just correcting existing
+        # rows). Modeled as "every given field went from (new) to its
+        # value" so it reuses the exact same audit-log/confirmation-
+        # message shape as an edit — no separate code path to keep in
+        # sync. session.flush() (not commit) makes the new row's id
+        # available for the audit log entries below while keeping the
+        # whole batch atomic with everything else in this request — if
+        # anything later in this same commit fails, this insert rolls
+        # back too, same "nothing saved until Commit succeeds" guarantee.
+        for ne in body.new_entities:
+            if ne.entity_type not in ENTITY_TYPE_MODELS:
+                raise HTTPException(400, f"Unknown entity_type '{ne.entity_type}'")
+            model = ENTITY_TYPE_MODELS[ne.entity_type]
+            fields = dict(ne.fields)
+            fields["tenant_id"] = tenant_id
+            fields["supplier"] = ne.supplier
+            # BUG FOUND AND FIXED (Aug 2026, caught in testing, not
+            # something the brief asked for): SQLModel table models don't
+            # enforce a missing required field (e.g. base_cost_ex_vat)
+            # at construction time the way a plain Pydantic model would
+            # — the real failure only surfaces as a raw NOT NULL
+            # constraint violation at flush()/INSERT time, which the
+            # original try/except here didn't cover (it only wrapped
+            # model(**fields)). Left unguarded, this crashed with a bare
+            # 500 instead of a clean 400 explaining what's missing —
+            # exactly the kind of confusing error a reviewer correcting
+            # an AI-extracted row with a gap (e.g. price never read)
+            # would hit. Now wraps the flush too, and rolls back so the
+            # session isn't left in an aborted state.
+            try:
+                entity = model(**fields)
+                session.add(entity)
+                session.flush()   # assigns entity.id without committing yet
+            except Exception as e:
+                session.rollback()
+                raise HTTPException(400, f"Could not create new {ne.entity_type} for {ne.supplier} ('{fields.get('product_name', '?')}'): {e}")
+
+            entity_label = f"{ne.supplier} — {fields.get('product_name', '(new)')}"
+            if fields.get("colour"):
+                entity_label += f" ({fields['colour']})"
+            for field, value in ne.fields.items():
+                if field in ("supplier",):
+                    continue   # already reflected in entity_label, not a separately useful audit line
+                label = FIELD_LABELS.get(field, field)
+                session.add(AuditLog(
+                    tenant_id=tenant_id, username=username, entity_type=ne.entity_type, entity_id=entity.id,
+                    field=field, old_value="(new)", new_value=str(value),
+                ))
+                summary_lines.append(f"{entity_label}: {label} set to {format_field_value(field, value)} (new product)")
+
+            if ne.entity_type == "FlooringProduct":
+                derived = recompute_tiles_per_pack(entity)
+                if derived is not None and derived != entity.tiles_per_pack:
+                    session.add(AuditLog(
+                        tenant_id=tenant_id, username=username, entity_type=ne.entity_type, entity_id=entity.id,
+                        field="tiles_per_pack", old_value="(new)", new_value=str(derived),
+                    ))
+                    summary_lines.append(f"{entity_label}: Planks per box (auto-derived from dimensions) set to {format_field_value('tiles_per_pack', derived)} (new product)")
+                    entity.tiles_per_pack = derived
+            session.add(entity)
+
         session.commit()
         return {"changed_count": len(summary_lines), "summary": summary_lines}
+
+
+@app.post("/admin/supplier-console/import")
+async def import_price_sheet(
+    supplier: str, file: UploadFile = File(...),
+    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+):
+    """AI-Assisted Price Sheet Import (confirmed Aug 2026 — banked brief,
+    built ahead of its own stated precondition per explicit instruction).
+    Sends the uploaded file to the Claude API (ai_import.py) and returns
+    PROPOSED staging rows only — writes NOTHING to the price book. The
+    frontend loads these into the console's existing staging area
+    exactly as if typed in by hand; nothing is saved until the owner
+    reviews and clicks the existing Commit Changes button, same
+    commit-and-log path as any manual edit. Owner-only via require_owner
+    (preview-aware, same enforcement path as everything else)."""
+    file_bytes = await file.read()
+    media_type = file.content_type or "application/octet-stream"
+    try:
+        return extract_price_sheet(file_bytes, media_type, supplier)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
 
 
 @app.get("/admin/audit-log")

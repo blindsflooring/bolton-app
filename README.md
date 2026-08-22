@@ -249,6 +249,31 @@ no AI assistant yet — those are later phases (see brief §17).
   range. Fixed directly via the price-book API against the real Feb
   2025 wholesale list; confirmed no live quote had used an Aspen product
   at the wrong rate before the fix landed.
+- **AI-Assisted Price Sheet Import** (Aug 2026 — built ahead of its own
+  stated precondition of "wait until the Supplier Console has real
+  usage history", per explicit instruction) — an "Import from price
+  sheet" upload per supplier on the Supplier Console. Sends the PDF/
+  photo to the Claude API (`ai_import.py`, stdlib `urllib`, no new HTTP
+  client dependency) with a prompt that describes the FIELDS to find,
+  not a fixed table shape (every supplier's sheet layout differs).
+  Extracted rows land in the console's existing staging area as clearly
+  marked "NEW (import)" rows — nothing is saved until the same Commit
+  Changes click as any manual edit, same audit-log path either way.
+  Deliberately never auto-converts a non-per-m² price into
+  `base_cost_ex_vat` itself (left blank with the raw value shown for
+  the reviewer instead) — an AI doing that silently would repeat
+  exactly the shape of bug the Aspen fix above already found and fixed.
+  Requires `ANTHROPIC_API_KEY` set in Render's environment (never
+  committed) — the endpoint returns a clear error if it's missing
+  rather than a silent failure.
+  **Known verification gap**: this environment has no
+  `ANTHROPIC_API_KEY` and no access to the real Aspen/Azura price sheet
+  PDFs, so the actual extraction accuracy (the brief's own required
+  verification step) has not been tested against real documents — only
+  the surrounding plumbing (upload, staging, commit, audit log,
+  role-gating, and a real bug this caught: creating a new product
+  missing a required field used to crash with a bare 500, now a clean
+  400 with nothing partially saved) has been verified.
 - **Multi-tenant groundwork (confirmed Aug 2026, invisible today)** —
   every business-data table (Client, Quote, QuoteLineItem, User, the
   three price books, Employee, HR/commission tables, BusinessSettings,
