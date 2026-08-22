@@ -33,9 +33,26 @@
   </div>
   <div class="role-select">
     Logged in as: <b id="loggedInAsLabel"></b>
+    <span id="previewToggleWrap" style="display:none; margin-left:14px;">
+      Viewing as:
+      <select id="previewRoleSelect" onchange="applyPreviewRole(this.value)">
+        <option value="">Me (Owner)</option>
+        <option value="sales">Sales</option>
+        <option value="admin">Admin</option>
+      </select>
+    </span>
     <button onclick="doLogout()" style="margin-left:10px;">Log out</button>
   </div>
 </header>
+
+<!-- Owner Preview Mode banner (confirmed Aug 2026) — persistent and
+     unmissable while previewing, so there's never a moment of confusing
+     preview-view for real Owner-view. Sits outside <header>/<main> so
+     it's visible regardless of which tab/view is showing. -->
+<div id="previewBanner" style="display:none; position:sticky; top:0; z-index:200; background:var(--coral); color:white; text-align:center; padding:8px 12px; font-weight:600; font-size:13px;">
+  <span id="previewBannerText"></span>
+  <button onclick="applyPreviewRole('')" style="margin-left:12px; background:white; color:var(--coral); border:none; padding:3px 10px; border-radius:4px; font-weight:700; cursor:pointer;">Exit preview</button>
+</div>
 
 <nav style="display:none;">
   <button class="tab-btn active" data-tab="landing">Home</button>
@@ -445,7 +462,34 @@ async function doLogin() {
 async function doLogout() {
   await fetch(`${API}/auth/logout`, {method: 'POST'});
   currentUser = null;
+  previewRole = null;   // Owner Preview Mode: never carries into the next login, per the brief
   showLogin();
+}
+
+// Owner Preview Mode (confirmed Aug 2026): the toggle in the header
+// changes previewRole and re-renders in place — deliberately does NOT
+// navigate away or reload the page ("without leaving the page they're
+// on"). Re-running the same boot-time cache loads plus whatever the
+// current view is covers every screen this app has; loadQuote() only
+// fires if a quote is actually open, since that's the one place with
+// its own separate role-sensitive fetch outside the landing views.
+async function applyPreviewRole(newRole) {
+  previewRole = newRole || null;
+  document.getElementById('previewRoleSelect').value = previewRole || '';
+  const banner = document.getElementById('previewBanner');
+  if (previewRole) {
+    const displayNames = {sales: 'Ryno', admin: 'Madri'};
+    const roleLabel = previewRole[0].toUpperCase() + previewRole.slice(1);
+    document.getElementById('previewBannerText').textContent =
+      `Previewing as ${roleLabel} — this is what ${displayNames[previewRole]} sees`;
+    banner.style.display = 'block';
+  } else {
+    banner.style.display = 'none';
+  }
+  applyRoleVisibility();
+  await loadBusinessSettings();
+  if (currentQuoteId) await loadQuote();
+  renderLanding();
 }
 
 function showApp() {
@@ -455,6 +499,10 @@ function showApp() {
   document.querySelector('main').style.display = '';
   document.getElementById('loggedInAsLabel').textContent =
     `${currentUser.display_name} (${currentUser.role[0].toUpperCase()}${currentUser.role.slice(1)})`;
+  // Owner Preview Mode: the toggle only ever appears for a REAL owner
+  // (realRole(), never the effective/previewed role — this is the one
+  // spot that must never be fooled by its own preview state).
+  document.getElementById('previewToggleWrap').style.display = realRole() === 'owner' ? '' : 'none';
   applyRoleVisibility();
   loadFlooring();
   loadBlinds();
@@ -468,6 +516,7 @@ function showLogin() {
   document.querySelector('header').style.display = 'none';
   document.querySelector('nav').style.display = 'none';
   document.querySelector('main').style.display = 'none';
+  document.getElementById('previewBanner').style.display = 'none';
   document.getElementById('login_username').value = '';
   document.getElementById('login_error').textContent = '';
 }
@@ -498,6 +547,7 @@ function renderLanding() {
   if (landingView === 'settings') return renderBusinessSettings(el);
   if (landingView === 'business') return renderBusinessOverview(el);
   if (landingView === 'hr') return renderHR(el);
+  if (landingView === 'sessionLog') return renderSessionLog(el);
 }
 
 function renderLandingTiles(el) {
@@ -530,6 +580,7 @@ function onTileClick(tileId) {
   else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }
   else if (tileId === 'business') { landingView = 'business'; renderLanding(); }
   else if (tileId === 'hr') { landingView = 'hr'; hrView = 'employees'; renderLanding(); }
+  else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
   else if (tileId === 'supplierPrices') { goToTab('priceBook'); }
 }
@@ -692,6 +743,86 @@ async function renderBusinessOverview(el) {
 
     <div class="card" style="border: 2px solid var(--cream);">
       <p class="muted" style="margin:0;">⚠️ Conversion rate needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count either way. Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
+    </div>
+  `;
+}
+
+// Login & Session Activity Log, Phase 1 (confirmed Aug 2026) — Owner-only
+// (enforced server-side by /admin/session-log itself, this render
+// function is just the second layer: the tile that reaches it is
+// already hidden from anyone but a real Owner, see OWNER_ONLY_TILES in
+// shared.js). Read-only report — no edit/delete anywhere on this
+// screen, per the brief ("an accurate record only means something if
+// it can't be quietly changed").
+let sessionLogRows = [];        // last-fetched (date-filtered) rows, cached so the user-filter dropdown doesn't need a round-trip
+let sessionLogRange = 'all';    // 'all' | 'week' | 'month' — which quick filter is active, purely for highlighting the active button
+
+function sessionLogDateRange(range) {
+  const now = new Date();
+  if (range === 'week') {
+    const day = now.getDay();   // 0=Sunday
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    const start = new Date(now); start.setDate(now.getDate() - diffToMonday); start.setHours(0,0,0,0);
+    return {start_date: start.toISOString().slice(0,10), end_date: now.toISOString().slice(0,10)};
+  }
+  if (range === 'month') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return {start_date: start.toISOString().slice(0,10), end_date: now.toISOString().slice(0,10)};
+  }
+  return {};   // 'all' — no date filter
+}
+
+async function renderSessionLog(el) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Login Activity</h2><p class="muted">Loading...</p></div>`;
+  await loadSessionLog(sessionLogRange);
+}
+
+async function loadSessionLog(range) {
+  sessionLogRange = range;
+  const params = new URLSearchParams(sessionLogDateRange(range));
+  const res = await fetch(`${API}/admin/session-log?${params}`);
+  sessionLogRows = res.ok ? await res.json() : [];
+  renderSessionLogTable();
+}
+
+function renderSessionLogTable() {
+  const el = document.getElementById('landing');
+  const users = [...new Set(sessionLogRows.map(r => r.username))].sort();
+  const userFilterEl = document.getElementById('sessionLogUserFilter');
+  const activeUserFilter = userFilterEl ? userFilterEl.value : '';
+  const rows = sessionLogRows.filter(r => !activeUserFilter || r.username === activeUserFilter);
+
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'}) : '—';
+  const fmtDuration = (mins) => mins < 60 ? `${mins.toFixed(0)} min` : `${(mins/60).toFixed(1)} hr`;
+
+  const tableRows = rows.map(r => `
+    <tr>
+      <td>${r.display_name} <span class="muted">(${r.username})</span></td>
+      <td>${fmt(r.login_time)}</td>
+      <td>${r.still_active ? '<b style="color:var(--teal);">Still active</b>' : fmt(r.logout_time)}</td>
+      <td>${fmtDuration(r.duration_minutes)}</td>
+    </tr>`).join('');
+
+  const btn = (range, label) => `<button onclick="loadSessionLog('${range}')" style="${sessionLogRange===range ? 'background:var(--teal); color:white;' : ''}">${label}</button>`;
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Login Activity</h1><p>Who logged in, when, and for how long — Owner only. Read-only: nothing here can be edited or deleted.</p></div>
+
+    <div class="card">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        ${btn('all', 'All time')} ${btn('week', 'This week')} ${btn('month', 'This month')}
+        <span style="margin-left:16px;">User:
+          <select id="sessionLogUserFilter" onchange="renderSessionLogTable()">
+            <option value="">All users</option>
+            ${users.map(u => `<option value="${u}" ${u===activeUserFilter?'selected':''}>${u}</option>`).join('')}
+          </select>
+        </span>
+      </div>
+      <table style="margin-top:14px;">
+        <thead><tr><th>User</th><th>Login time</th><th>Logout time</th><th>Duration</th></tr></thead>
+        <tbody>${tableRows || '<tr><td colspan="4" class="muted">No sessions in this range.</td></tr>'}</tbody>
+      </table>
     </div>
   `;
 }

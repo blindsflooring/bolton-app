@@ -22,15 +22,27 @@ const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 �
 // `credentials: 'include'` to each — a single missed call site would
 // silently break under real login while working fine locally against
 // same-origin during dev.
+// Owner Preview Mode (confirmed Aug 2026): in-memory only, deliberately
+// never persisted (localStorage/cookie) — a fresh login or even a plain
+// page refresh always starts back at the Owner's own real view, never
+// stuck mid-preview, per the brief's own requirement. Same fetch-wrapper
+// trick as credentials: 'include' below — the header rides along on
+// every request automatically, no need to touch any of the dozens of
+// existing fetch(`${API}/...`) call sites.
+let previewRole = null;   // null | 'sales' | 'admin'
+
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = function(url, options = {}) {
   if (typeof url === 'string' && url.startsWith(API)) {
     options = Object.assign({}, options, {credentials: 'include'});
+    if (previewRole && realRole() === 'owner') {
+      options.headers = Object.assign({}, options.headers || {}, {'X-Preview-Role': previewRole});
+    }
   }
   return _nativeFetch(url, options);
 };
 
-let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad()
+let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad(). This is always the REAL identity, never swapped by preview.
 
 // Cross-feature state — read/written by more than one feature area:
 let currentQuoteId = null;
@@ -77,7 +89,18 @@ async function loadBusinessSettings() {
 // session (currentUser, set in index.html after /auth/login or
 // /auth/me) — replaces the old self-reported "Viewing as" dropdown,
 // which let anyone claim to be Owner just by picking it from a <select>.
-function currentRole() { return currentUser ? currentUser.role : null; }
+function realRole() { return currentUser ? currentUser.role : null; }
+
+// Owner Preview Mode (confirmed Aug 2026): currentRole() now returns the
+// EFFECTIVE role — the preview, when one is active, otherwise the real
+// role. Every existing role-based UI check already calls currentRole()
+// (applyRoleVisibility, visibleLandingTiles, the price-locked fields,
+// etc.) — deliberately the same "swap the one function" trick used
+// server-side in get_current_role(), so none of that logic needed to
+// change or be duplicated to respect an active preview. Use realRole()
+// instead wherever the actual logged-in identity matters regardless of
+// preview (e.g. deciding whether to show the preview control at all).
+function currentRole() { return previewRole || realRole(); }
 
 function applyRoleVisibility() {
   const isSales = currentRole() === 'sales';
@@ -244,6 +267,7 @@ const LANDING_TILES = [
   { id: 'printInvoice', title: 'Print Invoice', desc: 'Generate & print', ready: true },
   { id: 'hr', title: 'HR & Commission', desc: 'Employees, hours, leave, docs', ready: true },
   { id: 'settings', title: 'Business Settings', desc: 'VAT, deposit %, banking, rates', ready: true },
+  { id: 'sessionLog', title: 'Login Activity', desc: 'Who logged in, when, for how long', ready: true },
 ];
 
 // Default role/tile split (confirmed Aug 2026, proposed per the go-live
@@ -257,7 +281,18 @@ const LANDING_TILES = [
 // owner-only business-settings write, etc.) — it doesn't change what the
 // backend allows, just what's surfaced in the UI.
 const SALES_HIDDEN_TILES = ['business', 'settings', 'hr', 'supplierPrices', 'supplierUploads'];
+// Login & Session Activity Log (confirmed Aug 2026): Owner-only, under
+// all circumstances — stricter than SALES_HIDDEN_TILES above, which
+// only hides from Sales (Admin still sees Business Overview/Settings/
+// HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
+// as Sales or Admin correctly loses this tile too, same as the backend
+// blocking the endpoint itself for a previewed non-owner role.
+const OWNER_ONLY_TILES = ['sessionLog'];
 function visibleLandingTiles() {
-  if (currentRole() !== 'sales') return LANDING_TILES;
-  return LANDING_TILES.filter(t => !SALES_HIDDEN_TILES.includes(t.id));
+  const role = currentRole();
+  return LANDING_TILES.filter(t => {
+    if (OWNER_ONLY_TILES.includes(t.id) && role !== 'owner') return false;
+    if (role === 'sales' && SALES_HIDDEN_TILES.includes(t.id)) return false;
+    return true;
+  });
 }

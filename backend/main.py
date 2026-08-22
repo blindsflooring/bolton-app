@@ -161,6 +161,8 @@ def _ensure_new_columns():
         ("businesssettings", "tile_removal_fee_per_m2_incl_vat", "FLOAT", "45.0"),
         # Part 3 — logo pulled from settings instead of hardcoded in the frontend:
         ("businesssettings", "logo_base64", "TEXT", "''"),
+        # Login & Session Activity Log Phase 1 (confirmed Aug 2026):
+        ("usersession", "ended_at", "DATETIME", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -245,7 +247,13 @@ def _resolve_session(request: Request) -> Optional[dict]:
     if token:
         with Session(engine) as session:
             sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
-            if sess and sess.expires_at >= datetime.utcnow():
+            # ended_at check (confirmed Aug 2026, Login & Session Activity
+            # Log): a real logout now soft-ends a session (sets ended_at)
+            # instead of deleting the row, so the log has real history —
+            # but that means expires_at alone is no longer enough to prove
+            # a session is still valid. An ended session must stop working
+            # immediately, not linger until its original 24h expiry.
+            if sess and sess.ended_at is None and sess.expires_at >= datetime.utcnow():
                 user = session.get(User, sess.user_id)
                 if user and user.active:
                     result = {"role": user.role, "tenant_id": user.tenant_id, "user_id": user.id, "username": user.username}
@@ -253,16 +261,43 @@ def _resolve_session(request: Request) -> Optional[dict]:
     return result
 
 
+def get_real_role(request: Request) -> str:
+    """The actual authenticated role — NEVER affected by Owner Preview
+    Mode (confirmed Aug 2026). Used only where the real identity matters
+    regardless of any active preview: deciding whether to honor a
+    preview header at all, and /auth/me's own response."""
+    session_data = _resolve_session(request)
+    if session_data is None:
+        raise HTTPException(401, "Not logged in — please log in again")
+    return session_data["role"]
+
+
 def get_current_role(request: Request) -> str:
     """Replaces the old client-supplied `role` query param (confirmed Aug
     2026 — anyone could just claim to be Owner by editing the URL). Role
     now comes exclusively from a validated server-side session looked up
     by the httponly cookie; there is no way for the frontend to override
-    it."""
+    it.
+
+    Owner Preview Mode (confirmed Aug 2026): when the REAL role is
+    owner, an X-Preview-Role header ('sales' or 'admin') swaps the role
+    every endpoint downstream sees for the rest of this request — same
+    field-stripping, same permission checks (e.g. require_owner, which
+    depends on this same function), just fed a different role value.
+    This is deliberately the ONLY function that needs to know about
+    preview mode — every endpoint already reads role through here (or
+    through require_owner, which reads it through here too), so nothing
+    else needed to change. Any non-owner sending this header is
+    silently ignored — no second path, no exceptions, per the brief."""
     session_data = _resolve_session(request)
     if session_data is None:
         raise HTTPException(401, "Not logged in — please log in again")
-    return session_data["role"]
+    real_role = session_data["role"]
+    if real_role == UserRole.owner:
+        preview = request.headers.get("X-Preview-Role")
+        if preview in (UserRole.sales, UserRole.admin):
+            return preview
+    return real_role
 
 
 def get_current_tenant(request: Request) -> str:
@@ -318,8 +353,15 @@ def logout(request: Request, response: Response):
     if token:
         with Session(engine) as session:
             sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
-            if sess:
-                session.delete(sess)
+            # CHANGED Aug 2026 (Login & Session Activity Log): used to
+            # delete the row outright — now soft-ends it (sets ended_at)
+            # so a real login/logout history survives for the session
+            # log. _resolve_session() treats an ended_at session as
+            # invalid immediately, same practical effect as deleting it
+            # for auth purposes, just without losing the record.
+            if sess and sess.ended_at is None:
+                sess.ended_at = datetime.utcnow()
+                session.add(sess)
                 session.commit()
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="none", secure=True)
     return {"ok": True}
@@ -332,7 +374,7 @@ def get_me(request: Request):
         raise HTTPException(401, "Not logged in")
     with Session(engine) as session:
         sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
-        if not sess or sess.expires_at < datetime.utcnow():
+        if not sess or sess.ended_at is not None or sess.expires_at < datetime.utcnow():
             raise HTTPException(401, "Session expired — please log in again")
         user = session.get(User, sess.user_id)
         if not user or not user.active:
@@ -683,6 +725,62 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
     if role != UserRole.owner:
         raise HTTPException(403, "Only the Owner role can do this.")
     return role
+
+
+# ---------- Login & Session Activity Log, Phase 1 (confirmed Aug 2026) ----------
+
+@app.get("/admin/session-log")
+def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None,
+                 role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Read-only, Owner-only (require_owner reads through get_current_role,
+    so an Owner previewing as Sales/Admin correctly gets blocked here too
+    — same enforcement path as everything else in Owner Preview Mode).
+
+    Filterable by date range (start_date/end_date, ISO date strings,
+    inclusive) — the frontend's "This week"/"This month" buttons compute
+    the actual range and pass it through; filtering by user happens
+    client-side over this same result set, since the whole dataset is
+    tiny for a 3-4 person team. No username param needed here to satisfy
+    that.
+
+    still_active / logout_time distinguishes a real logout (ended_at
+    set) from a session nobody explicitly logged out of but whose 24h
+    window has since passed (expires_at used as the approximate end
+    time in that case) — computed here at read time, no background job
+    needed. duration_minutes covers both: elapsed time up to the real
+    or approximate end, or up to now for a genuinely still-active
+    session."""
+    with Session(engine) as session:
+        stmt = select(UserSession, User).join(User, UserSession.user_id == User.id).where(User.tenant_id == tenant_id)
+        rows = session.exec(stmt).all()
+
+        now = datetime.utcnow()
+        result = []
+        for sess, user in rows:
+            if start_date and sess.created_at.date() < date.fromisoformat(start_date):
+                continue
+            if end_date and sess.created_at.date() > date.fromisoformat(end_date):
+                continue
+            if sess.ended_at is not None:
+                logout_time = sess.ended_at
+                still_active = False
+            elif sess.expires_at < now:
+                logout_time = sess.expires_at   # natural 24h expiry, no explicit logout — approximate end time
+                still_active = False
+            else:
+                logout_time = None
+                still_active = True
+            duration_minutes = round(((logout_time or now) - sess.created_at).total_seconds() / 60, 1)
+            result.append({
+                "username": user.username,
+                "display_name": user.display_name,
+                "login_time": sess.created_at.isoformat(),
+                "logout_time": logout_time.isoformat() if logout_time else None,
+                "still_active": still_active,
+                "duration_minutes": duration_minutes,
+            })
+        result.sort(key=lambda r: r["login_time"], reverse=True)
+        return result
 
 
 @app.get("/commission-rates")

@@ -160,6 +160,33 @@ no AI assistant yet — those are later phases (see brief §17).
   Business Overview, Business Settings, HR & Commission, or Supplier
   Price Book tiles in the UI (default split — Owner/Admin unaffected;
   adjust `SALES_HIDDEN_TILES` in shared.js if this needs changing).
+- **Owner Preview Mode ("View As")** (confirmed Aug 2026) — a header
+  control, Owner-only, that swaps which role `get_current_role()` (the
+  single dependency almost every endpoint reads role through) returns
+  for the rest of the request, via an `X-Preview-Role` header the
+  frontend adds automatically when a preview is active. This is
+  deliberately the ONLY place preview logic lives — every endpoint's
+  existing field-stripping and permission checks (`require_owner`
+  included) already run through this one function, so an Owner
+  previewing as Sales gets the exact same stripped API response and the
+  exact same 403s a real Sales login would, with zero duplicated logic
+  per endpoint. A non-owner sending the header is silently ignored — no
+  second path. Preview state is frontend-only (`previewRole` in
+  shared.js), never persisted, so a fresh login or even a plain page
+  refresh always starts back at the Owner's own real view.
+- **Login & Session Activity Log, Phase 1** (confirmed Aug 2026) — a new
+  Owner-only screen (`GET /admin/session-log`, gated the same
+  preview-aware way as everything else) showing username/login time/
+  logout time (or "still active")/duration, filterable by date range
+  and, client-side, by user. `UserSession` gained an `ended_at` field —
+  a real logout now soft-ends the row (sets `ended_at`) instead of
+  deleting it, so there's an actual history to report on; a session
+  that times out without an explicit logout is shown as ended at its
+  `expires_at`, computed at read time, no background job needed.
+  Read-only by design — no edit/delete endpoint exists for log entries.
+  Phase 2 (per-feature time breakdown) is explicitly not built —
+  flagged as a separate, bigger project requiring frontend activity
+  heartbeats, not a natural extension of Phase 1.
 - **Stairwell tread coverage** (confirmed Aug 2026): 3 tiles/stair
   (`TILES_PER_STAIR` in models.py) — tread width per stair = 3 planks x
   standard plank width, corrected from the earlier 2/stair figure.

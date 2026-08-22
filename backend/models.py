@@ -96,6 +96,7 @@ class UserSession(SQLModel, table=True):
     user_id: int = Field(foreign_key="app_user.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime   # confirmed Aug 2026: fixed 24h session length from login — not permanent, not aggressive re-login mid-shift
+    ended_at: Optional[datetime] = None   # Login & Session Activity Log Phase 1 (confirmed Aug 2026): real logout time. NULL means either still active, OR ended by natural 24h expiry (no explicit logout call) — the session-log endpoint tells the two apart by comparing expires_at to now at read time, no background job needed. A real logout now sets this instead of deleting the row, so the log has real history — see /auth/logout and _resolve_session()'s corresponding check that an ended_at session is no longer valid even if expires_at hasn't passed yet.
 
 
 class HourType(str, Enum):
