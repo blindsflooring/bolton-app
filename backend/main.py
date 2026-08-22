@@ -862,9 +862,24 @@ def format_field_value(field: str, value) -> str:
     if isinstance(value, (int, float)):
         if "pct" in fl or "discount" in fl:
             return f"{value * 100:.1f}%"
+        # CORRECTED Aug 2026 (real display inconsistency found, not a
+        # data bug — confirmed against the live database that the
+        # stored value itself was always correct): sell_markup_multiplier/
+        # markup_multiplier are stored as a raw multiplier (1.3 = x1.3)
+        # but shown as "% above cost" everywhere else in this app (the
+        # Floor Job builder's own Markup % field) — matched here so the
+        # commit confirmation message and audit log read the same way a
+        # value was actually typed on the console. Deliberately an exact
+        # field-name match, NOT a loose "multiplier" substring match —
+        # over_tiles_multiplier/removed_tiles_multiplier are a genuinely
+        # different kind of multiplier (a screed job-type rate factor,
+        # e.g. "Over Tiles is x1.5 the Smooth rate") where "x1.5" is the
+        # correct, already-established display, not a %-above-cost figure.
+        if field in ("sell_markup_multiplier", "markup_multiplier"):
+            return f"{(value - 1) * 100:.1f}%"
         if any(k in fl for k in ("price", "cost", "rate", "fee")):
             return f"R{value:.2f}"
-        if "multiplier" in fl or "markup" in fl:
+        if "multiplier" in fl:
             return f"{value}x"
     return str(value)
 
@@ -1044,7 +1059,7 @@ def commit_supplier_console_changes(
 
 @app.post("/admin/supplier-console/import")
 async def import_price_sheet(
-    supplier: str, file: UploadFile = File(...),
+    supplier: str, file: UploadFile = File(...), instructions: str = "",
     role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
 ):
     """AI-Assisted Price Sheet Import (confirmed Aug 2026 — banked brief,
@@ -1055,11 +1070,15 @@ async def import_price_sheet(
     exactly as if typed in by hand; nothing is saved until the owner
     reviews and clicks the existing Commit Changes button, same
     commit-and-log path as any manual edit. Owner-only via require_owner
-    (preview-aware, same enforcement path as everything else)."""
+    (preview-aware, same enforcement path as everything else).
+
+    instructions: optional free text, appended to the extraction prompt
+    for this import only (e.g. "skip the clearance section") — blank
+    behaves exactly as before this was added."""
     file_bytes = await file.read()
     media_type = file.content_type or "application/octet-stream"
     try:
-        return extract_price_sheet(file_bytes, media_type, supplier)
+        return extract_price_sheet(file_bytes, media_type, supplier, instructions)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
 

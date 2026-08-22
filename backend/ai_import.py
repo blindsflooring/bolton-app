@@ -60,13 +60,19 @@ Return ONLY a JSON object of this exact shape, no other text, no markdown code f
 {"rows": [{"product_name": "", "colour": "", "unit_basis": "", "price": 0.0, "m2_per_pack": null, "zone_prices": null, "dimensions_mm": null, "sku": null, "uncertain_fields": []}]}"""
 
 
-def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str) -> dict:
+def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str, instructions: str = "") -> dict:
     """Calls the Claude API with the uploaded file as a document/image
     content block. Raises RuntimeError with a clear, specific message on
     any failure (missing API key, API error, unparseable response) — the
     caller (main.py's import endpoint) turns this into a clean HTTP
     error. Never returns a silently-empty or fabricated result on
-    failure."""
+    failure.
+
+    instructions (confirmed Aug 2026): optional free text from the
+    owner — e.g. "skip the clearance section" or "only Zone A/B, ignore
+    Zone C" — appended to the user turn as extra guidance for THIS
+    import only. Blank behaves exactly as before this was added: the
+    extraction prompt is unchanged, nothing is appended."""
     if not ANTHROPIC_API_KEY:
         raise RuntimeError(
             "ANTHROPIC_API_KEY is not set on this server — required for AI-assisted "
@@ -82,6 +88,10 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str) -> di
         "source": {"type": "base64", "media_type": media_type, "data": b64},
     }
 
+    user_text = f"This is {supplier}'s price sheet. Extract every product/range/colour row per the instructions."
+    if instructions and instructions.strip():
+        user_text += f"\n\nAdditional instructions for this import specifically: {instructions.strip()}"
+
     body = {
         "model": ANTHROPIC_MODEL,
         "max_tokens": 8000,
@@ -89,7 +99,7 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str) -> di
         "messages": [
             {"role": "user", "content": [
                 content_block,
-                {"type": "text", "text": f"This is {supplier}'s price sheet. Extract every product/range/colour row per the instructions."},
+                {"type": "text", "text": user_text},
             ]},
         ],
     }
