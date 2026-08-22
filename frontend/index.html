@@ -919,7 +919,17 @@ function supplierConsoleRow(entityType, fields, product) {
     }
     return `<td><input type="text" style="width:120px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
   }).join('');
-  return `<tr id="console-row-${entityType}-${product.id}">${cells}</tr>`;
+  // BUG FIXED (Aug 2026, real column-shift confirmed from a live
+  // screenshot): the table header adds a leading <th></th> for
+  // FlooringProduct tables (the "NEW (import)" indicator column, added
+  // when the AI import feature landed) but this row never grew a
+  // matching leading <td> — every existing product's real columns were
+  // landing one position left of their header. newEntityRow() already
+  // had its own leading cell (the "NEW (import)" badge itself), which
+  // is exactly why only EXISTING rows were shifted, not staged import
+  // rows — that asymmetry is what caused it.
+  const leadingCell = entityType === 'FlooringProduct' ? '<td></td>' : '';
+  return `<tr id="console-row-${entityType}-${product.id}">${leadingCell}${cells}</tr>`;
 }
 
 // AI-Assisted Price Sheet Import (confirmed Aug 2026 — banked brief,
@@ -1068,7 +1078,7 @@ function renderSupplierConsoleTable() {
 
     const tables = groups.map(([entityType, fields, products]) => `
       <div style="overflow-x:auto; margin-bottom:12px;">
-        <table>
+        <table style="width:max-content; min-width:100%;">
           <thead><tr>${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
           <tbody>
             ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
