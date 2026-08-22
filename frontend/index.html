@@ -1104,6 +1104,61 @@ function scrollTable(wrapperId, direction) {
   if (wrap) wrap.scrollBy({ left: direction * 320, behavior: 'smooth' });
 }
 
+// Floating scroll arrows (confirmed Aug 2026): genuinely position:fixed
+// on the screen, matching the existing back-to-top button, rather than
+// anchored to each table's own position (which scrolled away with the
+// page once you scrolled past that table's top edge). Since several
+// supplier tables can be expanded/visible at once, "which table do
+// left/right control" is decided by an IntersectionObserver watching
+// every currently-rendered table wrapper: each wrapper reports back how
+// much of its own height is inside the viewport (0 to 1), re-checked
+// every time that crosses one of 11 thresholds (0%, 10%, ... 100%) as
+// the page scrolls. The wrapper with the highest visible fraction right
+// now becomes the "active" one the fixed buttons scroll — control hands
+// off smoothly as one table scrolls out and another scrolls in. The
+// buttons hide themselves once no table wrapper is visible at all
+// (scrolled past the console, or every section collapsed). Rebuilt
+// every time the console re-renders (collapse/expand, search), since
+// re-rendering replaces the wrapper elements with new ones.
+let tableVisibilityObserver = null;
+let tableVisibilityRatios = new Map(); // wrapperId -> intersectionRatio
+let activeScrollWrapperId = null;
+
+function setupTableVisibilityObserver() {
+  if (tableVisibilityObserver) tableVisibilityObserver.disconnect();
+  tableVisibilityRatios = new Map();
+  activeScrollWrapperId = null;
+  updateFloatingScrollArrows();
+
+  const wrappers = document.querySelectorAll('[id^="scrollwrap-"]');
+  if (!wrappers.length) return;
+
+  tableVisibilityObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) tableVisibilityRatios.set(entry.target.id, entry.intersectionRatio);
+      else tableVisibilityRatios.delete(entry.target.id);
+    });
+    let best = null, bestRatio = 0;
+    for (const [id, ratio] of tableVisibilityRatios) {
+      if (ratio > bestRatio) { best = id; bestRatio = ratio; }
+    }
+    activeScrollWrapperId = best;
+    updateFloatingScrollArrows();
+  }, { threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] });
+
+  wrappers.forEach(w => tableVisibilityObserver.observe(w));
+}
+
+function updateFloatingScrollArrows() {
+  const btns = document.getElementById('floatingScrollArrows');
+  if (!btns) return;
+  btns.style.display = activeScrollWrapperId ? 'flex' : 'none';
+}
+
+function scrollActiveTable(direction) {
+  if (activeScrollWrapperId) scrollTable(activeScrollWrapperId, direction);
+}
+
 function renderSupplierConsoleTable() {
   const el = document.getElementById('landing');
   const query = consoleSearchQuery;
@@ -1144,20 +1199,14 @@ function renderSupplierConsoleTable() {
     const tables = visibleGroups.map(([entityType, fields, products]) => {
       const wrapperId = `scrollwrap-${cssSafeId(supplier)}-${entityType}`;
       return `
-      <div style="position:relative;">
-        <div style="position:absolute; top:2px; right:4px; z-index:5; display:flex; gap:3px;">
-          <button onclick="scrollTable('${wrapperId}', -1)" title="Scroll left" style="padding:2px 9px; font-weight:700; background:var(--teal); color:white; border:none; border-radius:4px; cursor:pointer; opacity:0.92;">◄</button>
-          <button onclick="scrollTable('${wrapperId}', 1)" title="Scroll right" style="padding:2px 9px; font-weight:700; background:var(--teal); color:white; border:none; border-radius:4px; cursor:pointer; opacity:0.92;">►</button>
-        </div>
-        <div id="${wrapperId}" style="overflow-x:auto; margin-bottom:12px;">
-          <table style="width:max-content; min-width:100%;">
-            <thead><tr>${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
-            <tbody>
-              ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
-              ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
-            </tbody>
-          </table>
-        </div>
+      <div id="${wrapperId}" style="overflow-x:auto; margin-bottom:12px;">
+        <table style="width:max-content; min-width:100%;">
+          <thead><tr>${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
+            ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
+          </tbody>
+        </table>
       </div>`;
     }).join('');
 
@@ -1193,8 +1242,16 @@ function renderSupplierConsoleTable() {
     </div>
     ${supplierSections}
     ${noResults}
+    <div id="floatingScrollArrows" style="display:none; position:fixed; bottom:24px; right:24px; z-index:100; gap:10px;">
+      <button onclick="scrollActiveTable(-1)" title="Scroll table left" style="width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:18px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; display:flex;">◄</button>
+      <button onclick="scrollActiveTable(1)" title="Scroll table right" style="width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:18px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; display:flex;">►</button>
+    </div>
   `;
   updateCommitButton();
+  // Re-run after the innerHTML above has actually landed in the DOM, so
+  // the observer watches the wrapper elements that exist right now, not
+  // the ones from before this render.
+  setupTableVisibilityObserver();
 }
 
 function stageChange(inputEl) {
