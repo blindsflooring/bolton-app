@@ -1198,10 +1198,21 @@ function renderSupplierConsoleTable() {
 
     const tables = visibleGroups.map(([entityType, fields, products]) => {
       const wrapperId = `scrollwrap-${cssSafeId(supplier)}-${entityType}`;
+      // Sticky headers (confirmed Aug 2026): position:sticky on each <th>
+      // itself (not <thead> or <tr> — less reliably supported cross-
+      // browser for background/z-index purposes). The wrapper div below
+      // only sets overflow-x, never a fixed height, so it never becomes
+      // its own vertical-scroll region — sticky here resolves against
+      // the PAGE's scroll, same as the search box's own stickiness, so
+      // horizontal table-scrolling and vertical header-sticking don't
+      // interact. top offset is a CSS var set from JS after render,
+      // measured from the sticky search box's real height, so headers
+      // tuck in just below it rather than colliding with it.
+      const stickyTh = 'position:sticky; top:var(--consoleHeaderOffset,64px); z-index:20; background:var(--card);';
       return `
       <div id="${wrapperId}" style="overflow-x:auto; margin-bottom:12px;">
         <table style="width:max-content; min-width:100%;">
-          <thead><tr>${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+          <thead><tr>${entityType==='FlooringProduct' ? `<th style="${stickyTh}"></th>` : ''}${fields.map(([, label]) => `<th style="${stickyTh}">${label}</th>`).join('')}</tr></thead>
           <tbody>
             ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
             ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
@@ -1235,7 +1246,7 @@ function renderSupplierConsoleTable() {
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below. Rows marked "NEW (import)" came from an AI-read price sheet — review every field, especially anything highlighted, before committing.</p></div>
-    <div class="card" style="position:sticky; top:0; z-index:50;">
+    <div class="card" id="consoleSearchCard" style="position:sticky; top:0; z-index:50;">
       <input type="text" id="consoleSearchBox" placeholder="Search by range, colour, or supplier..." value="${query}" oninput="handleConsoleSearch(this.value)" style="width:100%; max-width:400px; padding:8px; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; display:block; box-sizing:border-box;">
       <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
       <span id="consoleCommitStatus" class="muted" style="margin-left:12px;"></span>
@@ -1248,6 +1259,14 @@ function renderSupplierConsoleTable() {
     </div>
   `;
   updateCommitButton();
+  // Measured, not guessed: table headers stick just below the search
+  // box's real rendered height, so they tuck in under it rather than
+  // colliding with it — stays correct even if the search box's own
+  // height changes (e.g. wraps onto two lines on a narrow screen).
+  const searchCard = document.getElementById('consoleSearchCard');
+  if (searchCard) {
+    document.documentElement.style.setProperty('--consoleHeaderOffset', searchCard.getBoundingClientRect().height + 'px');
+  }
   // Re-run after the innerHTML above has actually landed in the DOM, so
   // the observer watches the wrapper elements that exist right now, not
   // the ones from before this render.
