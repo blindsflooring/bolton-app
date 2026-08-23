@@ -30,6 +30,18 @@ import urllib.error
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-sonnet-5"
+# Confirmed Aug 2026, real bug: this used to be the exact same 120s as
+# the frontend's own outer timeout on the whole request (index.html) —
+# a race, not a deliberate margin. If Claude genuinely took close to
+# 120s, whichever timeout fired first was luck of the draw, and the
+# frontend's own abort (firing at essentially the same wall-clock
+# moment) would kill the connection before this backend timeout's own,
+# more specific error could ever be received. Now shorter than the
+# frontend's outer timeout on purpose, with real margin — so THIS
+# timeout (with a clear, specific message) fires first if Claude is
+# genuinely slow, rather than a generic "could not reach the server"
+# on the frontend masking what actually happened.
+CLAUDE_API_TIMEOUT_SECONDS = 150
 
 SUPPORTED_MEDIA_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
 
@@ -136,12 +148,36 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str, instr
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=CLAUDE_API_TIMEOUT_SECONDS) as resp:
             api_result = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Claude API error ({e.code}): {detail[:500]}")
+    except TimeoutError:
+        # Confirmed Aug 2026: caught separately from the generic URLError
+        # below, and BEFORE it — a socket timeout on urlopen() is a
+        # TimeoutError (socket.timeout is the same class since Python
+        # 3.10), which URLError's own except clause would otherwise catch
+        # too (TimeoutError is an OSError subclass, same family as the
+        # connection-refused/DNS-failure cases URLError normally reports)
+        # and describe with the same vague "Could not reach the Claude
+        # API" wording — misleading for a genuine timeout, which is a
+        # completely different situation (the request WAS reaching
+        # Claude, it just wasn't finishing in time) needing a different
+        # fix (raise the timeout / reduce what's being extracted), not
+        # "check your network connection."
+        raise RuntimeError(
+            f"Claude API didn't respond within {CLAUDE_API_TIMEOUT_SECONDS}s — the extraction is taking "
+            "longer than that for this specific document, not a connectivity problem. A dense sheet "
+            "with many rows can genuinely take a while to fully extract; try again, or a smaller/simpler sheet."
+        )
     except urllib.error.URLError as e:
+        if isinstance(e.reason, TimeoutError):
+            raise RuntimeError(
+                f"Claude API didn't respond within {CLAUDE_API_TIMEOUT_SECONDS}s — the extraction is taking "
+                "longer than that for this specific document, not a connectivity problem. A dense sheet "
+                "with many rows can genuinely take a while to fully extract; try again, or a smaller/simpler sheet."
+            )
         raise RuntimeError(f"Could not reach the Claude API: {e.reason}")
 
     # Confirmed Aug 2026: checked BEFORE attempting to parse, so a

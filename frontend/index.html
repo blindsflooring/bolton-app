@@ -1084,7 +1084,12 @@ function updateCommitButton() {
 // null rather than a boolean specifically so a real "extracted 0 rows"
 // success doesn't get treated as a failure by a falsy check.
 async function processImportUpload(supplier, file, instructions, statusEl) {
-  if (statusEl) statusEl.textContent = 'Uploading and extracting — this can take a minute...';
+  // Spinner, not static text (confirmed Aug 2026) — this can now
+  // genuinely run for a couple of minutes on a dense sheet; static text
+  // for that long reads as the page being stuck. No percentage shown —
+  // this is one non-streaming API response, not incremental progress,
+  // so an indeterminate spinner is the honest signal, not a fake number.
+  if (statusEl) statusEl.innerHTML = '<span class="mini-spinner"></span>Uploading and extracting — this can take a couple of minutes for a detailed sheet...';
   const formData = new FormData();
   formData.append('file', file);
   const params = new URLSearchParams({ supplier, instructions });
@@ -1101,13 +1106,26 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
   // shared function); only surfaced now via new-supplier testing.
   // Fixed by supplying our own, much longer signal — the wrapper only
   // applies its 20s default when the caller hasn't already set one.
+  //
+  // 180s here, NOT the same value as the backend's own 150s timeout to
+  // Claude (ai_import.py) — confirmed real bug, second round: both were
+  // originally 120s, an exact tie, meaning whichever fired first was
+  // luck of the draw, and this OUTER abort firing at essentially the
+  // same wall-clock moment as the backend's own timeout would kill the
+  // connection before the backend's more specific, useful error message
+  // could ever be received here. This is now deliberately the LONGER of
+  // the two, with real margin, so the backend's own timeout (see
+  // CLAUDE_API_TIMEOUT_SECONDS) gets first chance to fire and report
+  // clearly WHY it failed — this outer one exists purely as a last-
+  // resort backstop for a genuinely hung connection, not the primary
+  // timeout signal.
   const importController = new AbortController();
-  const importTimeout = setTimeout(() => importController.abort(), 120000);
+  const importTimeout = setTimeout(() => importController.abort(), 180000);
   try {
     res = await fetch(`${API}/admin/supplier-console/import?${params}`, { method: 'POST', body: formData, signal: importController.signal });
   } catch (e) {
     if (statusEl) statusEl.textContent = e.name === 'AbortError'
-      ? '❌ Timed out after 2 minutes — the extraction is taking unusually long. Try again, or a smaller/clearer file.'
+      ? '❌ Timed out after 3 minutes with no response at all from the server — genuinely unusual; try again.'
       : '❌ Could not reach the server.';
     return null;
   } finally {
@@ -1159,12 +1177,20 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
   return (result.rows || []).length;
 }
 
-async function handleImportFile(supplier, inputEl) {
+// Two-step upload, confirmed Aug 2026 (choosing a file used to trigger
+// extraction immediately via the file input's own onchange — changed
+// because each extraction is a real, billed Anthropic API call, and the
+// owner wants a chance to check the filename/instructions before
+// committing to that cost). The file input's onchange now only
+// enables/disables this button — inputEl is passed through unchanged
+// from the button's own onclick, extraction only starts on this click.
+async function handleImportFile(supplier, inputEl, btnEl) {
   const file = inputEl.files[0];
   if (!file) return;
   const statusEl = document.getElementById(`import-status-${cssSafeId(supplier)}`);
   const instructionsEl = document.getElementById(`import-instructions-${cssSafeId(supplier)}`);
   const instructions = instructionsEl ? instructionsEl.value : '';
+  if (btnEl) btnEl.disabled = true;   // prevent a double-submit while this is running
   const count = await processImportUpload(supplier, file, instructions, statusEl);
   if (count !== null) {
     // Persisted (confirmed Aug 2026 — real bug: this used to be lost the
@@ -1173,7 +1199,9 @@ async function handleImportFile(supplier, inputEl) {
     // anything happened) — see importStatusMessages' own comment.
     importStatusMessages[supplier] = `✓ ${count} product${count !== 1 ? 's' : ''} staged for review — check the highlighted rows below, then click Commit Changes above to save.`;
     inputEl.value = '';
-    renderSupplierConsoleTable();
+    renderSupplierConsoleTable();   // fresh render puts the button back to its normal (disabled, no file chosen) state
+  } else if (btnEl) {
+    btnEl.disabled = false;   // failed — the file is still selected, let them retry without re-choosing it
   }
 }
 
@@ -1185,7 +1213,11 @@ async function handleImportFile(supplier, inputEl) {
 // derives from stagedNewEntities too, not just real product data — see
 // renderSupplierConsoleTable below) — nothing special-cased beyond this
 // one upload handler.
-async function handleNewSupplierImportFile(inputEl) {
+// Two-step upload (confirmed Aug 2026) — same reasoning as
+// handleImportFile above: choosing a file only enables this button now,
+// extraction starts only on the click, so a real billed API call never
+// fires just from picking a file.
+async function handleNewSupplierImportFile(inputEl, btnEl) {
   const file = inputEl.files[0];
   if (!file) return;
   const nameEl = document.getElementById('newSupplierName');
@@ -1193,8 +1225,7 @@ async function handleNewSupplierImportFile(inputEl) {
   const statusEl = document.getElementById('newSupplierImportStatus');
   if (!supplier) {
     if (statusEl) statusEl.textContent = '❌ Enter a supplier name first.';
-    inputEl.value = '';
-    return;
+    return;   // file stays selected — no need to make them re-choose it after fixing the name
   }
   // Friendly guardrail, not a hard block — creating "new" rows under a
   // name that already exists would still work fine (supplier grouping
@@ -1209,11 +1240,11 @@ async function handleNewSupplierImportFile(inputEl) {
   ]);
   if (existingSuppliers.has(supplier)) {
     if (statusEl) statusEl.textContent = `"${supplier}" already exists — use that supplier's own import box below instead.`;
-    inputEl.value = '';
     return;
   }
   const instructionsEl = document.getElementById('newSupplierInstructions');
   const instructions = instructionsEl ? instructionsEl.value : '';
+  if (btnEl) btnEl.disabled = true;   // prevent a double-submit while this is running
   const count = await processImportUpload(supplier, file, instructions, statusEl);
   if (count !== null) {
     // Persisted, same reasoning as handleImportFile above — plus this
@@ -1239,7 +1270,9 @@ async function handleNewSupplierImportFile(inputEl) {
     inputEl.value = '';
     nameEl.value = '';
     if (instructionsEl) instructionsEl.value = '';
-    renderSupplierConsoleTable();
+    renderSupplierConsoleTable();   // fresh render puts the button back to its normal (disabled, no file chosen) state
+  } else if (btnEl) {
+    btnEl.disabled = false;   // failed — the file is still selected, let them retry without re-choosing it
   }
 }
 
@@ -1495,8 +1528,11 @@ function renderSupplierConsoleTable() {
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
-          <input type="file" accept=".pdf,image/*" onchange="handleImportFile('${supplier.replace(/'/g,"\\'")}', this)">
-          <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${importStatusMessages[supplier] || ''}</span>
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <input type="file" id="import-file-${cssSafeId(supplier)}" accept=".pdf,image/*" onchange="document.getElementById('import-extract-btn-${cssSafeId(supplier)}').disabled = !this.files.length">
+            <button id="import-extract-btn-${cssSafeId(supplier)}" onclick="handleImportFile('${supplier.replace(/'/g,"\\'")}', document.getElementById('import-file-${cssSafeId(supplier)}'), this)" disabled>Upload &amp; Extract</button>
+            <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${importStatusMessages[supplier] || ''}</span>
+          </div>
         </div>
         ${tables || '<p class="muted">No products from this supplier yet.</p>'}
         ` : ''}
@@ -1522,7 +1558,8 @@ function renderSupplierConsoleTable() {
       <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
       <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
+        <input type="file" id="newSupplierFile" accept=".pdf,image/*" onchange="document.getElementById('newSupplierExtractBtn').disabled = !this.files.length">
+        <button id="newSupplierExtractBtn" onclick="handleNewSupplierImportFile(document.getElementById('newSupplierFile'), this)" disabled>Upload &amp; Extract</button>
         <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
       </div>
       ${newSupplierStagedBatches.length ? `
