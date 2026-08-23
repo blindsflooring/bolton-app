@@ -451,7 +451,14 @@ async function doLogin() {
       errEl.textContent = body.detail || 'Login failed.';
       return;
     }
-    currentUser = await res.json();
+    const data = await res.json();
+    // Token now comes back in the body, not a cookie (changed Aug 2026 —
+    // see shared.js's auth comment for the real mobile bug this fixes).
+    // Stored separately from currentUser (identity vs. credential) —
+    // setSessionToken also persists it to localStorage so a page
+    // refresh doesn't lose it.
+    setSessionToken(data.token);
+    currentUser = {username: data.username, display_name: data.display_name, role: data.role};
     document.getElementById('login_password').value = '';
     showApp();
   } catch (e) {
@@ -460,7 +467,10 @@ async function doLogin() {
 }
 
 async function doLogout() {
-  await fetch(`${API}/auth/logout`, {method: 'POST'});
+  try {
+    await fetch(`${API}/auth/logout`, {method: 'POST'});
+  } catch (e) { /* clear the local token regardless — no point staying "logged in" locally against a server we couldn't reach */ }
+  setSessionToken(null);
   currentUser = null;
   previewRole = null;   // Owner Preview Mode: never carries into the next login, per the brief
   showLogin();
@@ -523,7 +533,12 @@ function showLogin() {
 
 // Boot: check for an existing valid session (e.g. page refresh) before
 // deciding whether to show the login screen or the app itself.
+// sessionToken is already read from localStorage at shared.js's top
+// level, before this runs, and the fetch() wrapper attaches it
+// automatically — added Aug 2026, alongside the token-auth switch: skip
+// the round-trip entirely when there's plainly no token to check.
 (async function checkAuthOnLoad() {
+  if (!sessionToken) { showLogin(); return; }
   try {
     const res = await fetch(`${API}/auth/me`);
     if (res.ok) {
@@ -531,7 +546,12 @@ function showLogin() {
       showApp();
       return;
     }
-  } catch (e) { /* fall through to login screen */ }
+    // A clean rejection (expired/invalid token), not a network failure
+    // — the stored token is genuinely dead, so clear it rather than
+    // leaving it in localStorage to fail the same way on every future
+    // load until the user logs in again anyway.
+    setSessionToken(null);
+  } catch (e) { /* network failure, not a rejected token — leave it stored, fall through to login screen */ }
   showLogin();
 })();
 

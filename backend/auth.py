@@ -9,18 +9,36 @@ internal tool. PBKDF2 with a high iteration count is a NIST-approved,
 industry-standard choice and ships with zero new dependencies.
 
 Sessions: a random opaque token stored server-side in the UserSession
-table (survives a Render restart, unlike an in-memory dict), set as an
-HttpOnly cookie. Fixed 24h length from login — long enough to cover a
-full work day/shift without re-login, short enough that a forgotten
-logged-in browser doesn't stay valid indefinitely.
-"""
+table (survives a Render restart, unlike an in-memory dict). Fixed 24h
+length from login — long enough to cover a full work day/shift without
+re-login, short enough that a forgotten logged-in browser doesn't stay
+valid indefinitely.
+
+Transport, changed Aug 2026 — real mobile bug found via Render logs:
+this token used to travel as an HttpOnly cookie (SameSite=None;
+Secure). That's the CORRECT setting for a cross-site cookie, but it
+turned out to be necessary-not-sufficient: bolton-frontend.onrender.com
+and bolton-backend.onrender.com are different subdomains of a shared
+hosting domain that's on the Public Suffix List, so browsers treat them
+as different *sites* — making this a genuine third-party cookie, which
+mobile browsers (mobile Safari's ITP in particular, on by default for
+years) block or refuse to persist regardless of SameSite/Secure being
+set correctly. Confirmed via logs: POST /auth/login succeeded and set
+the cookie, but every request after it came back 401 on mobile,
+consistently, not just after cold starts — the browser was silently
+declining to store/send it. Desktop worked because desktop browsers
+have generally been more permissive about third-party cookies by
+default. Now travels as a plain `Authorization: Bearer <token>` header
+instead, set by the frontend from the login response body and kept in
+localStorage — sidesteps cookie policy entirely, since it was never
+actually about credentials:'include' or CORS being misconfigured (both
+were already correct)."""
 import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta
 
 PBKDF2_ITERATIONS = 260_000
-SESSION_COOKIE_NAME = "bolton_session"
 SESSION_LENGTH = timedelta(hours=24)
 
 

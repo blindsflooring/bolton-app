@@ -11,7 +11,7 @@ import os
 import shutil
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request, Response
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -24,7 +24,7 @@ from models import (
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
-from auth import hash_password, verify_password, new_session_token, new_expiry, SESSION_COOKIE_NAME
+from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
@@ -58,15 +58,21 @@ def coerce_date_fields(obj, *field_names):
         if isinstance(value, str):
             setattr(obj, field, date.fromisoformat(value))
     return obj
-# Tightened Aug 2026 (real login shipped): a session cookie can only be
-# sent cross-site with allow_credentials=True, and browsers refuse that
-# combination with a wildcard origin — so this can no longer be "*" now
-# that auth relies on a cookie instead of a client-supplied role param.
+# Tightened Aug 2026 (real login shipped): this can no longer be "*" now
+# that auth relies on a real session token instead of a client-supplied
+# role param — an explicit origin list, not a wildcard.
 # bolton-frontend.onrender.com and bolton-backend.onrender.com are
 # different subdomains of a shared hosting domain (onrender.com is on the
 # public suffix list, same reasoning as github.io/herokuapp.com), so the
-# browser treats them as cross-site — SameSite=None + Secure on the cookie
-# (see auth.py's cookie-set calls below) plus this explicit origin list.
+# browser treats them as cross-site. The session token itself no longer
+# rides as a cookie (moved to an Authorization header, Aug 2026 — see
+# auth.py's docstring for the real mobile bug that caused this: the
+# cookie was correctly configured, SameSite=None + Secure, but that
+# didn't stop mobile browsers' separate third-party-cookie-blocking
+# policies from silently refusing to persist it), so allow_credentials
+# below is no longer load-bearing for auth itself — left on since it's
+# harmless and this list of allowed origins still matters for CORS
+# regardless.
 # Closed-by-default enforcement (confirmed Aug 2026, ported from review of
 # a parallel patch): every request must carry a valid session UNLESS its
 # path is explicitly allowlisted below. This sits on top of the
@@ -242,19 +248,38 @@ def get_session():
         yield session
 
 
+def _get_bearer_token(request: Request) -> Optional[str]:
+    """Session token transport, changed Aug 2026 (see auth.py's docstring
+    for the full root-cause writeup): moved off an HttpOnly cookie onto a
+    plain `Authorization: Bearer <token>` header, set by the frontend
+    from the login response body and re-attached to every request by its
+    global fetch() wrapper — a real mobile bug, confirmed via Render
+    logs (login succeeded, every request after it 401'd, consistently,
+    on mobile only), traced to bolton-frontend/bolton-backend being
+    different *sites* per the browser (onrender.com is on the Public
+    Suffix List), making the session cookie a genuine third-party
+    cookie that mobile browsers silently refused to persist — no amount
+    of correct SameSite/Secure/credentials-include configuration fixes
+    that, since it's a separate browser policy layered on top."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[len("Bearer "):].strip() or None
+    return None
+
+
 def _resolve_session(request: Request) -> Optional[dict]:
     """Shared by get_current_role/get_current_tenant (per-endpoint checks)
     and the require_auth middleware (closed-by-default check) — one place
-    that actually validates the session cookie, so none of them can
+    that actually validates the session token, so none of them can
     drift. Cached on request.state (confirmed Aug 2026, added alongside
     get_current_tenant): without this, a single request using both
     get_current_role and get_current_tenant as separate Depends() would
-    hit the DB twice for the exact same cookie lookup — cheap at today's
+    hit the DB twice for the exact same token lookup — cheap at today's
     scale, but no reason to pay it twice when one lookup already answers
     both questions."""
     if hasattr(request.state, "bolton_session"):
         return request.state.bolton_session
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = _get_bearer_token(request)
     result = None
     if token:
         with Session(engine) as session:
@@ -288,8 +313,8 @@ def get_current_role(request: Request) -> str:
     """Replaces the old client-supplied `role` query param (confirmed Aug
     2026 — anyone could just claim to be Owner by editing the URL). Role
     now comes exclusively from a validated server-side session looked up
-    by the httponly cookie; there is no way for the frontend to override
-    it.
+    by the bearer token (see _get_bearer_token); there is no way for the
+    frontend to override it.
 
     Owner Preview Mode (confirmed Aug 2026): when the REAL role is
     owner, an X-Preview-Role header ('sales' or 'admin') swaps the role
@@ -350,7 +375,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 @app.post("/auth/login")
-def login(body: LoginRequest, response: Response):
+def login(body: LoginRequest):
     # Body, not query params (unlike the rest of this API's endpoints) —
     # deliberate: credentials must never land in a URL, where they'd be
     # captured by Render/proxy access logs and browser history.
@@ -364,16 +389,16 @@ def login(body: LoginRequest, response: Response):
         sess = UserSession(token=token, user_id=user.id, expires_at=new_expiry())
         session.add(sess)
         session.commit()
-        response.set_cookie(
-            key=SESSION_COOKIE_NAME, value=token, httponly=True, secure=True,
-            samesite="none", max_age=24 * 60 * 60, path="/",
-        )
-        return {"username": user.username, "display_name": user.display_name, "role": user.role}
+        # Returned in the body, not set as a cookie (changed Aug 2026 —
+        # see auth.py's docstring) — the frontend stores this itself
+        # (localStorage) and re-attaches it as an Authorization header on
+        # every subsequent request.
+        return {"username": user.username, "display_name": user.display_name, "role": user.role, "token": token}
 
 
 @app.post("/auth/logout")
-def logout(request: Request, response: Response):
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+def logout(request: Request):
+    token = _get_bearer_token(request)
     if token:
         with Session(engine) as session:
             sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
@@ -387,13 +412,12 @@ def logout(request: Request, response: Response):
                 sess.ended_at = datetime.utcnow()
                 session.add(sess)
                 session.commit()
-    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="none", secure=True)
     return {"ok": True}
 
 
 @app.get("/auth/me")
 def get_me(request: Request):
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = _get_bearer_token(request)
     if not token:
         raise HTTPException(401, "Not logged in")
     with Session(engine) as session:
@@ -410,7 +434,7 @@ def get_me(request: Request):
 def change_password(body: ChangePasswordRequest, request: Request, role: str = Depends(get_current_role)):
     if len(body.new_password) < 8:
         raise HTTPException(400, "New password must be at least 8 characters.")
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = _get_bearer_token(request)
     with Session(engine) as session:
         sess = session.exec(select(UserSession).where(UserSession.token == token)).first()
         user = session.get(User, sess.user_id)

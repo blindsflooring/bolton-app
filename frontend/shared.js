@@ -10,25 +10,40 @@
 
 const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 — real quote calc verified against this exact URL (R29,016.48, series 200) before this change was made
 
-// Auth (confirmed Aug 2026): every request to the API must carry the
-// session cookie cross-site — bolton-frontend.onrender.com and
-// bolton-backend.onrender.com are different subdomains of a shared
-// hosting domain (onrender.com is on the public suffix list, same
-// reasoning as github.io/herokuapp.com), so browsers treat them as
-// cross-site and a plain fetch() would silently NOT send/receive the
-// cookie. Wrapping the global fetch here, once, is deliberately safer
-// than hunting down every one of the dozens of existing
-// fetch(`${API}/...`) call sites across 6 files and adding
-// `credentials: 'include'` to each — a single missed call site would
-// silently break under real login while working fine locally against
-// same-origin during dev.
+// Auth, changed Aug 2026 — real mobile bug, confirmed via Render logs:
+// login was succeeding (200, cookie set) but every request after it
+// came back 401, consistently, on mobile only. Root cause: the session
+// token used to travel as an HttpOnly cookie (SameSite=None; Secure —
+// the correct setting for a cross-site cookie, since bolton-frontend
+// and bolton-backend are different *sites* per the browser, onrender.com
+// being on the Public Suffix List) — but that's necessary, not
+// sufficient. Mobile browsers (mobile Safari's ITP in particular) apply
+// a SEPARATE third-party-cookie-blocking policy on top of SameSite, and
+// silently refuse to persist a cookie set via a cross-site fetch()
+// response regardless of how correctly it's configured. `credentials:
+// 'include'` and the CORS config were both already correct — this
+// wasn't a code bug in the old sense, it was a cookie ever being usable
+// cross-site on mobile at all.
+// Now: the token comes back in the LOGIN RESPONSE BODY (not a cookie),
+// stored here and in localStorage (so it survives a page refresh), and
+// re-attached as a plain `Authorization: Bearer <token>` header on
+// every request by the same fetch() wrapper below — a normal header
+// isn't subject to any cookie policy, so this sidesteps the whole
+// problem rather than fighting it.
+let sessionToken = localStorage.getItem('bolton_token') || null;
+function setSessionToken(token) {
+  sessionToken = token;
+  if (token) localStorage.setItem('bolton_token', token);
+  else localStorage.removeItem('bolton_token');
+}
+
 // Owner Preview Mode (confirmed Aug 2026): in-memory only, deliberately
 // never persisted (localStorage/cookie) — a fresh login or even a plain
 // page refresh always starts back at the Owner's own real view, never
 // stuck mid-preview, per the brief's own requirement. Same fetch-wrapper
-// trick as credentials: 'include' below — the header rides along on
-// every request automatically, no need to touch any of the dozens of
-// existing fetch(`${API}/...`) call sites.
+// trick as the auth header above — it rides along on every request
+// automatically, no need to touch any of the dozens of existing
+// fetch(`${API}/...`) call sites.
 let previewRole = null;   // null | 'sales' | 'admin'
 
 // Timeout, confirmed Aug 2026 — real bug, mobile-specific: native
@@ -55,7 +70,10 @@ let previewRole = null;   // null | 'sales' | 'admin'
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = function(url, options = {}) {
   if (typeof url === 'string' && url.startsWith(API)) {
-    options = Object.assign({}, options, {credentials: 'include'});
+    options = Object.assign({}, options);
+    if (sessionToken) {
+      options.headers = Object.assign({}, options.headers || {}, {'Authorization': `Bearer ${sessionToken}`});
+    }
     if (previewRole && realRole() === 'owner') {
       options.headers = Object.assign({}, options.headers || {}, {'X-Preview-Role': previewRole});
     }
