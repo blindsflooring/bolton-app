@@ -984,7 +984,21 @@ function supplierConsoleRow(entityType, fields, product) {
       return `<td><input type="number" step="0.1" style="width:80px;" value="${val !== null && val !== undefined ? ((val - 1) * 100).toFixed(1) : ''}" ${attrs}></td>`;
     }
     if (type === 'number') {
-      return `<td><input type="number" step="${step || 'any'}" style="width:90px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
+      // Sanity-check hint (confirmed Aug 2026 — real bug found live: a
+      // Como Flooring product had a box price stored directly as
+      // base_cost_ex_vat with no division, because the AI extraction
+      // itself misclassified unit_basis as "per_m2" for that row — not
+      // a mapping-code bug, since this code never does any conversion
+      // arithmetic itself, by design (see processImportUpload's own
+      // unit-basis-safety comment). Shown for EVERY FlooringProduct
+      // with both fields set, not just Como, and purely informational —
+      // never auto-applied, since only a human with the real price
+      // sheet can judge whether the stored value is genuinely a per-m²
+      // rate or actually a box price that needs dividing.
+      const boxSanityNote = (field === 'base_cost_ex_vat' && entityType === 'FlooringProduct' && val !== null && val !== undefined && product.m2_per_pack)
+        ? `<br><span class="muted" style="font-size:10px;">÷ ${product.m2_per_pack} m²/box = R${(val / product.m2_per_pack).toFixed(2)}/m² — sanity check: is the stored price actually a box price?</span>`
+        : '';
+      return `<td><input type="number" step="${step || 'any'}" style="width:90px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}>${boxSanityNote}</td>`;
     }
     // Widened from 120px (confirmed Aug 2026 — real range names like
     // "Aspen Project Range" were being cut off to "Aspen Project R").
