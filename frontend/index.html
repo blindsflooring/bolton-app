@@ -943,6 +943,8 @@ async function renderSupplierConsole(el) {
   consoleSearchQuery = '';
   newSupplierNameDraft = '';
   newSupplierInstructionsDraft = '';
+  importStatusMessages = {};
+  newSupplierImportStatusMessage = '';
   renderSupplierConsoleTable();
   });
 }
@@ -1019,6 +1021,22 @@ let stagedDeletions = [];     // [{entityType, entityId, label}] — closes the 
 // class of bug already fixed for the search box's own focus/value.
 let newSupplierNameDraft = '';
 let newSupplierInstructionsDraft = '';
+// Import status messages, confirmed Aug 2026 — real bug found while
+// investigating "no Commit button after uploading a new supplier's
+// sheet": processImportUpload never set a completion message on
+// SUCCESS (only ever updated status text on the "Uploading..." start
+// and on failure), AND renderSupplierConsoleTable's full innerHTML
+// rewrite (called right after a successful import) would have wiped
+// any status text out immediately even if it had been set — so nothing
+// ever visibly confirmed a successful import finished, on EITHER an
+// existing supplier's import box or the new one. The Commit Changes
+// button itself was always correctly updated (its pending count did
+// include the new rows) — it just wasn't obvious anything had
+// succeeded, especially for a brand-new supplier whose section starts
+// collapsed. Persisted here (survives the re-render that would
+// otherwise erase it), keyed by supplier for existing sections.
+let importStatusMessages = {};        // supplier -> message, existing-supplier import boxes
+let newSupplierImportStatusMessage = '';
 
 // Staged deletion (confirmed Aug 2026): same discipline as every other
 // action here — clicking Delete only marks a row, nothing is removed
@@ -1047,8 +1065,10 @@ function updateCommitButton() {
 // (which has no existing section, and so no import-instructions/status
 // elements to read from) can reuse the exact same upload+extraction+
 // staging logic via handleNewSupplierImportFile below, instead of a
-// second, easy-to-drift-out-of-sync copy of this logic. Returns true on
-// success, false on failure (caller decides what to reset/clear).
+// second, easy-to-drift-out-of-sync copy of this logic. Returns the
+// number of rows staged (0 or more) on success, or null on failure —
+// null rather than a boolean specifically so a real "extracted 0 rows"
+// success doesn't get treated as a failure by a falsy check.
 async function processImportUpload(supplier, file, instructions, statusEl) {
   if (statusEl) statusEl.textContent = 'Uploading and extracting — this can take a minute...';
   const formData = new FormData();
@@ -1059,12 +1079,12 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
     res = await fetch(`${API}/admin/supplier-console/import?${params}`, { method: 'POST', body: formData });
   } catch (e) {
     if (statusEl) statusEl.textContent = '❌ Could not reach the server.';
-    return false;
+    return null;
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     if (statusEl) statusEl.textContent = `❌ ${err.detail || 'Import failed.'}`;
-    return false;
+    return null;
   }
   const result = await res.json();
   for (const row of (result.rows || [])) {
@@ -1104,7 +1124,7 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
       rawPrice: row.price, rawUnitBasis: row.unit_basis,
     });
   }
-  return true;
+  return (result.rows || []).length;
 }
 
 async function handleImportFile(supplier, inputEl) {
@@ -1113,8 +1133,16 @@ async function handleImportFile(supplier, inputEl) {
   const statusEl = document.getElementById(`import-status-${cssSafeId(supplier)}`);
   const instructionsEl = document.getElementById(`import-instructions-${cssSafeId(supplier)}`);
   const instructions = instructionsEl ? instructionsEl.value : '';
-  const ok = await processImportUpload(supplier, file, instructions, statusEl);
-  if (ok) { inputEl.value = ''; renderSupplierConsoleTable(); }
+  const count = await processImportUpload(supplier, file, instructions, statusEl);
+  if (count !== null) {
+    // Persisted (confirmed Aug 2026 — real bug: this used to be lost the
+    // instant renderSupplierConsoleTable() below replaced the DOM node
+    // it was set on, so a successful import never visibly confirmed
+    // anything happened) — see importStatusMessages' own comment.
+    importStatusMessages[supplier] = `✓ ${count} product${count !== 1 ? 's' : ''} staged for review — check the highlighted rows below, then click Commit Changes above to save.`;
+    inputEl.value = '';
+    renderSupplierConsoleTable();
+  }
 }
 
 // New Supplier Creation (confirmed Aug 2026): same import pipeline as
@@ -1154,8 +1182,21 @@ async function handleNewSupplierImportFile(inputEl) {
   }
   const instructionsEl = document.getElementById('newSupplierInstructions');
   const instructions = instructionsEl ? instructionsEl.value : '';
-  const ok = await processImportUpload(supplier, file, instructions, statusEl);
-  if (ok) {
+  const count = await processImportUpload(supplier, file, instructions, statusEl);
+  if (count !== null) {
+    // Persisted, same reasoning as handleImportFile above — plus this
+    // is the more important case to get right: a brand-new supplier's
+    // section doesn't exist anywhere the owner's already looking at, so
+    // without a clear message here, a successful import looked
+    // identical to nothing having happened at all.
+    newSupplierImportStatusMessage = `✓ ${count} product${count !== 1 ? 's' : ''} staged under "${supplier}" — scroll down to review (now expanded automatically), then click Commit Changes above to save.`;
+    // Auto-expand the new section — it would otherwise default to
+    // collapsed, like every supplier does, which is exactly backwards
+    // right after creating it: the whole point is to review these rows
+    // immediately, not go hunting for a collapsed entry that wasn't
+    // there a moment ago.
+    expandedSuppliers.add(supplier);
+    localStorage.setItem('supplierConsoleExpanded', JSON.stringify([...expandedSuppliers]));
     inputEl.value = '';
     nameEl.value = '';
     if (instructionsEl) instructionsEl.value = '';
@@ -1399,7 +1440,7 @@ function renderSupplierConsoleTable() {
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
           <input type="file" accept=".pdf,image/*" onchange="handleImportFile('${supplier.replace(/'/g,"\\'")}', this)">
-          <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;"></span>
+          <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${importStatusMessages[supplier] || ''}</span>
         </div>
         ${tables || '<p class="muted">No products from this supplier yet.</p>'}
         ` : ''}
@@ -1425,7 +1466,7 @@ function renderSupplierConsoleTable() {
       <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
       <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
       <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
-      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;">${newSupplierImportStatusMessage}</span>
     </div>
     ${supplierSections}
     ${noResults}
