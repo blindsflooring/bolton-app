@@ -1178,17 +1178,17 @@ function stageBoxPriceCorrections(supplier) {
   alert(`Staged a box-price correction (Price/m² ÷ m²/box) for ${corrected} of ${products.length} "${supplier}" products.\n\n${skipped} skipped — missing Price/m² or m²/box, so this formula can't be applied to them; check those individually.\n\nNothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`);
 }
 
-// Verified LVT correction (confirmed Aug 2026): hand-extracted directly
+// Verified correction (confirmed Aug 2026): hand-extracted directly
 // from the real source document (Como_Price_list_June_26_General.01.pdf,
 // "COMO FLOORING PRICE LIST JUNE 2026") — every number below was read
-// off the sheet's own "ZONE A/B/C PER m2" and "m2 PER BOX" columns for
-// the LUXURY VINYL FLOORING section, not derived or guessed. This is a
-// STRONGER source of truth than stageBoxPriceCorrections() above (which
-// only mechanically divides whatever's currently stored, still subject
-// to whatever the AI got wrong) — this instead REPLACES the stored
-// values with the sheet's own stated figures directly. Scoped to LVT
-// only, per explicit instruction — the sheet's SPC/Laminate/Parquet
-// sections are a separate, not-yet-verified correction.
+// off the sheet's own "ZONE A/B/C PER m2" and "m2 PER BOX" columns, for
+// every range on the sheet (LUXURY VINYL FLOORING, RIGID SPC FLOORING,
+// LAMINATE FLOORING, PARQUET FLOORING — the whole document, not just
+// LVT), not derived or guessed. This is a STRONGER source of truth than
+// stageBoxPriceCorrections() above (which only mechanically divides
+// whatever's currently stored, still subject to whatever the AI got
+// wrong) — this instead REPLACES the stored values with the sheet's
+// own stated figures directly.
 //
 // Ordered longest/most-specific name first ("Como Bonsai 2.0" before
 // "Como Bonsai") — matching is prefix-based after normalizing case/
@@ -1203,7 +1203,8 @@ function stageBoxPriceCorrections(supplier) {
 // range the name starts with, even though the name itself also needs a
 // manual fix this tool doesn't attempt (renaming isn't a price
 // correction, and guessing the "right" name back is a separate risk).
-const COMO_LVT_VERIFIED_PRICING = [
+const COMO_VERIFIED_PRICING = [
+  // LUXURY VINYL FLOORING
   { name: 'Numi LVT 2.0', zoneA: 219.95, zoneB: 236.95, zoneC: 242.95, m2PerPack: 5.020 },
   { name: 'Como Lake', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 5.560 },
   { name: 'Como Bonsai 2.0', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 3.600 },
@@ -1212,20 +1213,43 @@ const COMO_LVT_VERIFIED_PRICING = [
   { name: 'Como Mineral', zoneA: 369.95, zoneB: 386.95, zoneC: 392.95, m2PerPack: 4.418 },
   { name: 'Como Bonsai', zoneA: 409.95, zoneB: 426.95, zoneC: 432.95, m2PerPack: 2.475 },
   { name: 'Como Fire', zoneA: 449.95, zoneB: 466.95, zoneC: 472.95, m2PerPack: 4.170 },
+  // RIGID SPC FLOORING
+  { name: 'Numi 5.0 SPC', zoneA: 439.95, zoneB: 462.95, zoneC: 468.95, m2PerPack: 2.230 },
+  { name: 'Como Artica (IXPE) - PREMIUM', zoneA: 819.95, zoneB: 849.95, zoneC: 867.95, m2PerPack: 1.669 },
+  // LAMINATE FLOORING
+  { name: 'Krono - Atlantic 8', zoneA: 364.95, zoneB: 381.95, zoneC: 387.95, m2PerPack: 2.260 },
+  { name: 'Krono Altitude', zoneA: 599.95, zoneB: 616.95, zoneC: 622.95, m2PerPack: 1.960 },
+  // PARQUET FLOORING — "Como Craft 190 - Unfinished" ordered before
+  // "Como Craft 190" (longest/most-specific first, same reasoning as
+  // Como Bonsai 2.0 vs Como Bonsai above)
+  { name: 'Como Craft 190 - Unfinished', zoneA: 970.95, zoneB: 1000.95, zoneC: 1018.95, m2PerPack: 2.888 },
+  { name: 'Como Classique 190', zoneA: 1090.95, zoneB: 1120.95, zoneC: 1138.95, m2PerPack: 2.888 },
+  { name: 'Como Craft 190', zoneA: 1199.95, zoneB: 1229.95, zoneC: 1247.95, m2PerPack: 2.888 },
+  { name: 'Numi 190 Engineered', zoneA: 1069.95, zoneB: 1099.95, zoneC: 1117.95, m2PerPack: 2.888 },
+  { name: 'Numi 260 Engineered', zoneA: 1279.95, zoneB: 1309.95, zoneC: 1327.95, m2PerPack: 2.288 },
 ];
 
 function normalizeComoRangeName(s) {
   return (s || '').trim().toLowerCase().replace(/\s+lvt$/i, '').replace(/\s+/g, ' ');
 }
 
-function stageComoLvtVerifiedCorrections(supplier) {
+// Renders an on-screen table (confirmed Aug 2026 — explicit request:
+// "output a full table... I will check this table against the source
+// PDF myself"). alert()/console.log() (the previous version) truncate
+// long text and are easy to miss — this instead prepends a real,
+// scrollable HTML table to the page showing, per row: product, colour,
+// the sheet's own Zone A price, what was stored before this ran, and
+// what's now staged — so the comparison this was asked for is directly
+// visible and screenshot/copy-able, not relayed through a popup.
+function stageComoVerifiedCorrections(supplier) {
   const products = supplierConsoleData.flooring.filter(p => p.supplier === supplier);
-  const matchedLines = [];
+  const matched = [];
   const unmatched = [];
   products.forEach(p => {
     const normalized = normalizeComoRangeName(p.product_name);
-    const ref = COMO_LVT_VERIFIED_PRICING.find(r => normalized.startsWith(normalizeComoRangeName(r.name)));
-    if (!ref) { unmatched.push(p.product_name); return; }
+    const ref = COMO_VERIFIED_PRICING.find(r => normalized.startsWith(normalizeComoRangeName(r.name)));
+    if (!ref) { unmatched.push(p); return; }
+    const previousValue = p.base_cost_ex_vat;   // captured BEFORE staging overwrites the display
     const fieldsToSet = {
       base_cost_ex_vat: ref.zoneA,
       price_zone_a: ref.zoneA, price_zone_b: ref.zoneB, price_zone_c: ref.zoneC,
@@ -1234,15 +1258,35 @@ function stageComoLvtVerifiedCorrections(supplier) {
     for (const [field, newValue] of Object.entries(fieldsToSet)) {
       stagedChanges[`FlooringProduct:${p.id}:${field}`] = { entity_type: 'FlooringProduct', entity_id: p.id, field, new_value: newValue };
     }
-    matchedLines.push(`${p.product_name}${p.colour ? ' ('+p.colour+')' : ''} → matched "${ref.name}": Zone A R${ref.zoneA}/m², m²/box ${ref.m2PerPack}`);
+    matched.push({ product: p.product_name, colour: p.colour || '', matchedRange: ref.name, sheetZoneA: ref.zoneA, previousValue, staged: ref.zoneA });
   });
   updateCommitButton();
   renderSupplierConsoleTable();
-  const summary = `Staged verified LVT corrections (from the real source PDF) for ${matchedLines.length} of ${products.length} "${supplier}" products.\n\n` +
-    (unmatched.length ? `${unmatched.length} product(s) did NOT match any known LVT range name and were left untouched:\n${[...new Set(unmatched)].join('\n')}\n\n` : '') +
-    `Nothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`;
-  alert(summary);
-  console.log('Como LVT verified correction — matched rows:\n' + matchedLines.join('\n'));
+
+  const rows = matched.map(m => {
+    const changed = m.previousValue !== m.staged;
+    return `<tr style="${changed ? '' : 'opacity:0.6;'}">
+      <td>${m.product}</td><td>${m.colour}</td><td>${m.matchedRange}</td>
+      <td>R${m.sheetZoneA.toFixed(2)}</td>
+      <td>${m.previousValue != null ? 'R'+m.previousValue.toFixed(2) : '(not set)'}</td>
+      <td style="${changed ? 'font-weight:700; color:var(--teal);' : ''}">R${m.staged.toFixed(2)}${changed ? '' : ' (unchanged)'}</td>
+    </tr>`;
+  }).join('');
+  const unmatchedRows = unmatched.map(p => `<tr><td>${p.product_name}</td><td>${p.colour || ''}</td><td colspan="4" class="muted">No matching range found in the source PDF reference table — left untouched, check manually</td></tr>`).join('');
+
+  const tableHtml = `
+    <div class="card" style="border:2px solid var(--teal);">
+      <h2>Verified correction staged for "${supplier}" — ${matched.length} of ${products.length} products matched</h2>
+      <p class="muted">Every value below comes directly from Como_Price_list_June_26_General.01.pdf's own Zone A/B/C columns — check this against the real sheet yourself. Nothing is saved yet; press Commit Changes below once you've reviewed this.</p>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Product (as stored)</th><th>Colour</th><th>Matched sheet range</th><th>Sheet Zone A /m²</th><th>Previously stored</th><th>Now staged</th></tr></thead>
+          <tbody>${rows}${unmatchedRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  document.getElementById('landing').insertAdjacentHTML('afterbegin', tableHtml);
+  document.getElementById('landing').scrollIntoView({ behavior: 'smooth' });
 }
 
 function updateCommitButton() {
@@ -1785,7 +1829,7 @@ function renderSupplierConsoleTable() {
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
           <button onclick="stageBoxPriceCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; font-size:12px;" title="For every product where Price/m² and m²/box are both set, stage Price/m² = current value ÷ m²/box">Stage box-price correction (÷ m²/box) for all eligible products</button>
           ${supplier.toLowerCase().includes('como') ? `
-          <button onclick="stageComoLvtVerifiedCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; margin-left:8px; font-size:12px; background:var(--teal); color:white;" title="Uses the 8 LVT ranges' real Zone A/B/C and m²/box values, hand-extracted from the actual Como Flooring Price List PDF — not derived from currently-stored data">Stage VERIFIED LVT correction (from source PDF)</button>` : ''}
+          <button onclick="stageComoVerifiedCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; margin-left:8px; font-size:12px; background:var(--teal); color:white;" title="Uses all 17 ranges' real Zone A/B/C and m²/box values, hand-extracted from the actual Como Flooring Price List PDF (LVT, SPC, Laminate, Parquet) — not derived from currently-stored data">Stage VERIFIED correction (from source PDF) + show comparison table</button>` : ''}
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
