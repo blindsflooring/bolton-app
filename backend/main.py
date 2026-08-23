@@ -182,6 +182,15 @@ def _ensure_new_columns():
         ("flooringproduct", "price_zone_b", "FLOAT", "NULL"),
         ("flooringproduct", "price_zone_c", "FLOAT", "NULL"),
         ("businesssettings", "pricing_zone", "VARCHAR", "'A'"),
+        # Per-supplier zone pricing (confirmed Aug 2026) — NULL default,
+        # not 'A': unlike businesssettings.pricing_zone (exactly one row,
+        # always meaningful), most supplierdefault rows are for suppliers
+        # with NO zone pricing at all (e.g. a trade-discount-only
+        # supplier) — defaulting every one of those to 'A' would be
+        # wrong, implying a zone setting that doesn't apply. The
+        # dedicated startup backfill below (on_startup()) sets the real
+        # value only for suppliers that actually have zone pricing.
+        ("supplierdefault", "pricing_zone", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -242,6 +251,48 @@ def on_startup():
             for u in seed_users:
                 session.add(u)
             session.commit()
+
+        # Per-supplier zone pricing backfill (confirmed Aug 2026): zone
+        # pricing used to always resolve via the one global
+        # BusinessSettings.pricing_zone for every zone-priced supplier —
+        # now each such supplier gets its own SupplierDefault.pricing_zone
+        # instead (see resolve_zone_price). Runs on every startup but
+        # only ever ACTS the first time for a given supplier: for every
+        # distinct (tenant, supplier) with at least one zone-priced
+        # FlooringProduct, ensures a SupplierDefault row exists with
+        # pricing_zone carried forward from whatever that tenant's
+        # global setting currently is — so no supplier's effective price
+        # silently changed the moment this shipped (confirmed
+        # requirement: Azura keeps computing at Zone A, its existing
+        # default, unless deliberately changed afterward). Never
+        # overwrites a pricing_zone that's already set on an existing
+        # SupplierDefault row — from an earlier run of this exact
+        # backfill, or a real per-supplier change made since — this is a
+        # one-time-per-supplier seed, not an ongoing sync back to the
+        # global setting.
+        zone_priced_products = session.exec(
+            select(FlooringProduct).where(
+                (FlooringProduct.price_zone_a.is_not(None))
+                | (FlooringProduct.price_zone_b.is_not(None))
+                | (FlooringProduct.price_zone_c.is_not(None))
+            )
+        ).all()
+        zone_priced_suppliers = {(p.tenant_id, p.supplier) for p in zone_priced_products}
+        for zp_tenant_id, zp_supplier in zone_priced_suppliers:
+            zp_settings = get_settings(session, zp_tenant_id)
+            existing = session.exec(
+                select(SupplierDefault).where(
+                    SupplierDefault.tenant_id == zp_tenant_id,
+                    SupplierDefault.supplier == zp_supplier,
+                )
+            ).first()
+            if existing:
+                if not existing.pricing_zone:
+                    existing.pricing_zone = zp_settings.pricing_zone
+                    session.add(existing)
+            else:
+                session.add(SupplierDefault(tenant_id=zp_tenant_id, supplier=zp_supplier, pricing_zone=zp_settings.pricing_zone))
+        session.commit()
 
 
 def get_session():
@@ -887,6 +938,7 @@ FIELD_LABELS = {
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
     "markup_multiplier": "Markup",
     "default_trade_discount_pct": "Trade discount % (default for new products)",
+    "pricing_zone": "Pricing zone",
 }
 
 
@@ -1761,15 +1813,37 @@ def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> Busine
     return settings
 
 
-def resolve_zone_price(product: FlooringProduct, settings: BusinessSettings) -> FlooringProduct:
-    """Azura zone pricing (confirmed Aug 2026, Supplier Console brief —
-    real rule from Azura's own "Suggested Retail Price List", not
-    guessed: every Azura/deZIGN product has three real prices side by
-    side, one per zone). A product with zone prices stored
-    (price_zone_a/b/c) uses whichever zone matches
-    BusinessSettings.pricing_zone as its effective base_cost_ex_vat,
-    instead of its own plain base_cost_ex_vat — no manual per-quote zone
-    selection, ever, per the brief.
+def _effective_pricing_zone(session: Session, tenant_id: str, supplier: str, settings: BusinessSettings) -> str:
+    """Per-supplier zone override (confirmed Aug 2026 — Zone pricing is
+    now settable independently per zone-priced supplier, e.g. Azura on
+    Zone A while Como Flooring is on Zone B, replacing the one single
+    business-wide default that used to apply to every zone-priced
+    supplier alike). Looks up SupplierDefault.pricing_zone for this
+    supplier; falls back to BusinessSettings.pricing_zone only if this
+    supplier has never had its own zone set — in practice this only
+    matters for a brand-new zone-priced supplier before its first
+    explicit zone choice, since the startup backfill (on_startup())
+    already seeded a per-supplier value for every supplier that had zone
+    pricing at the time this shipped."""
+    row = session.exec(
+        select(SupplierDefault).where(SupplierDefault.tenant_id == tenant_id, SupplierDefault.supplier == supplier)
+    ).first()
+    if row and row.pricing_zone:
+        return row.pricing_zone
+    return settings.pricing_zone
+
+
+def resolve_zone_price(session: Session, tenant_id: str, product: FlooringProduct, settings: BusinessSettings) -> FlooringProduct:
+    """Zone pricing (confirmed Aug 2026, Supplier Console brief — real
+    rule from Azura's own "Suggested Retail Price List", not guessed:
+    every Azura/deZIGN product has three real prices side by side, one
+    per zone; Como Flooring confirmed to use the same structure). A
+    product with zone prices stored (price_zone_a/b/c) uses whichever
+    zone this specific SUPPLIER is currently set to (see
+    _effective_pricing_zone — per-supplier, not business-wide, as of
+    Aug 2026) as its effective base_cost_ex_vat, instead of its own
+    plain base_cost_ex_vat — no manual per-quote zone selection, ever,
+    per the brief.
 
     Returns a DETACHED copy (model_copy — not session-tracked), never
     the real ORM object with a field mutated in place: mutating a
@@ -1782,8 +1856,9 @@ def resolve_zone_price(product: FlooringProduct, settings: BusinessSettings) -> 
     formulas never needed to change at all.
 
     Products without zone pricing (price_zone_a/b/c all None — every
-    non-Azura supplier) pass through completely unchanged."""
-    zone_price = getattr(product, f"price_zone_{settings.pricing_zone.lower()}", None)
+    non-zone-priced supplier) pass through completely unchanged."""
+    zone = _effective_pricing_zone(session, tenant_id, product.supplier, settings)
+    zone_price = getattr(product, f"price_zone_{zone.lower()}", None)
     if zone_price is None:
         return product
     return product.model_copy(update={"base_cost_ex_vat": zone_price})
@@ -1994,7 +2069,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         settings = get_settings(session, tenant_id)
 
         calc = calculate_flooring_line(
-            resolve_zone_price(product, settings), quantity_m2, job_type, discount_pct,
+            resolve_zone_price(session, tenant_id, product, settings), quantity_m2, job_type, discount_pct,
             glue_cost_per_unit, glue_coverage_m2, labour_rate_per_m2,
             bag_cost, bag_coverage_m2, own_staff, markup_override,
             include_tile_removal_fee,
@@ -2127,7 +2202,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
             StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
             StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
         }
-        effective_vinyl = resolve_zone_price(vinyl_product, settings)   # Azura zone pricing — see resolve_zone_price(); no-op for non-Azura products
+        effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)   # per-supplier zone pricing — see resolve_zone_price(); no-op for non-zone-priced suppliers
         calc = calculate_stairwell_line(
             effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
             glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,

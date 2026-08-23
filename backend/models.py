@@ -210,19 +210,31 @@ class FlooringProduct(SQLModel, table=True):
 
 class SupplierDefault(SQLModel, table=True):
     """Per-supplier default values (confirmed Aug 2026, Supplier Console
-    brief) — currently just a trade discount % used to pre-fill NEW
-    products when they're created under that supplier, but modeled as
-    its own small table (one row per supplier name) rather than a field
-    bolted onto BusinessSettings, since other per-supplier defaults are
-    plausible later and this is naturally one-row-per-supplier already.
+    brief) — modeled as its own small table (one row per supplier name)
+    rather than fields bolted onto BusinessSettings, since these are
+    naturally one-row-per-supplier and more are plausible later.
 
-    Deliberately a DEFAULT, not an enforced rule, and NOT retroactive:
-    read once, at the moment a new product is staged, to pre-fill that
-    product's own trade_discount_pct field — the product's own stored
-    value is what's authoritative from then on. Changing this default
-    later never touches already-existing (or already-staged-but-not-yet-
-    committed) products, only ones created after the change, and each
-    product's own field stays individually editable exactly as before.
+    default_trade_discount_pct: a DEFAULT, not an enforced rule, and NOT
+    retroactive — read once, at the moment a new product is staged, to
+    pre-fill that product's own trade_discount_pct field; the product's
+    own stored value is what's authoritative from then on. Changing this
+    default later never touches already-existing (or already-staged-
+    but-not-yet-committed) products, only ones created after the change.
+
+    pricing_zone (confirmed Aug 2026): which of a zone-priced product's
+    price_zone_a/b/c columns is that SUPPLIER's effective base price —
+    used by resolve_zone_price() (main.py). Previously a single
+    business-wide BusinessSettings.pricing_zone applied to every zone-
+    priced supplier; now each such supplier (Azura, Como Flooring,
+    potentially more later) sets its own independently, e.g. Azura on
+    Zone A while Como Flooring is on Zone B. A one-time startup backfill
+    (see on_startup() in main.py) seeds this from whatever the global
+    setting was, for every supplier that already had zone pricing at
+    the time this shipped — so no existing supplier's effective price
+    changed the moment this went live. BusinessSettings.pricing_zone
+    itself is untouched/still exists, now used only as the fallback for
+    a brand-new zone-priced supplier that hasn't had its own zone set
+    yet — not the deciding value for any supplier that already has one.
 
     No table-level uniqueness constraint on (tenant_id, supplier) — the
     commit endpoint's own logic (reusing the existing CommitChange path
@@ -233,6 +245,7 @@ class SupplierDefault(SQLModel, table=True):
     tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     supplier: str = Field(index=True)
     default_trade_discount_pct: Optional[float] = None
+    pricing_zone: Optional[str] = None
 
 
 class BlindsProduct(SQLModel, table=True):

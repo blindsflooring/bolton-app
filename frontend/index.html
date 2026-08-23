@@ -928,14 +928,17 @@ function supplierDisplayName(raw) { return SUPPLIER_DISPLAY_NAMES[raw] || raw; }
 
 let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
 // Supplier-level defaults (confirmed Aug 2026): keyed by supplier name,
-// {id, default_trade_discount_pct} — id is null/undefined for a
-// supplier that's never had a default set, which the staging/commit
-// logic below treats as "create" (new_entities) rather than "edit"
-// (changes), same distinction the rest of this console already makes
-// for products. See SupplierDefault's own docstring (models.py) for
-// why this isn't retroactive.
+// {id, default_trade_discount_pct, pricing_zone} — id is null/undefined
+// for a supplier that's never had any default set, which the staging/
+// commit logic below treats as "create" (new_entities) rather than
+// "edit" (changes), same distinction the rest of this console already
+// makes for products. See SupplierDefault's own docstring (models.py)
+// for why default_trade_discount_pct isn't retroactive, and for the
+// per-supplier zone pricing rules (confirmed Aug 2026 — added after
+// default_trade_discount_pct, hence the nested-by-field structure below
+// rather than one value per supplier).
 let supplierDefaults = {};
-let stagedSupplierDefaults = {};   // supplier -> staged new value (0-1 fraction, or null to clear)
+let stagedSupplierDefaults = {};   // supplier -> { fieldName: stagedValue }
 
 async function renderSupplierConsole(el) {
   await renderWithRetry(el, 'Supplier Console', async () => {
@@ -1115,24 +1118,29 @@ function toggleStagedDeletion(entityType, entityId, label) {
   renderSupplierConsoleTable();
 }
 
-// Supplier-level default (confirmed Aug 2026): same staging discipline
-// as everything else — this only marks the value as pending, nothing
-// is saved until Commit Changes. Doesn't touch stagedChanges/
-// stagedNewEntities directly since SupplierDefault isn't a product row
-// (no table cell, no per-row Delete button, nothing FlooringProduct-
-// specific about it) — kept in its own small map instead, folded into
-// the same changes/new_entities commit payload at commit time.
-function stageSupplierDefault(supplier, rawValue, inputEl) {
-  const newValue = rawValue === '' ? null : parseFloat(rawValue) / 100;
+// Supplier-level default (confirmed Aug 2026, generalized when zone
+// pricing joined trade-discount default as a second per-supplier
+// field): same staging discipline as everything else — this only marks
+// the value as pending, nothing is saved until Commit Changes. Doesn't
+// touch stagedChanges/stagedNewEntities directly since SupplierDefault
+// isn't a product row (no table cell, no per-row Delete button, nothing
+// FlooringProduct-specific about it) — kept in its own small map
+// instead, folded into the same changes/new_entities commit payload at
+// commit time. newValue is the already-parsed value (a 0-1 fraction for
+// default_trade_discount_pct, a plain "A"/"B"/"C" string for
+// pricing_zone) — parsing is the caller's job, since different fields
+// on this one entity type need different parsing.
+function stageSupplierDefaultField(supplier, field, newValue, inputEl) {
   const existing = supplierDefaults[supplier];
-  const origValue = existing ? (existing.default_trade_discount_pct ?? null) : null;
+  const origValue = existing ? (existing[field] ?? null) : null;
   const unchanged = (newValue === origValue) ||
     (typeof newValue === 'number' && typeof origValue === 'number' && Math.abs(newValue - origValue) < 1e-9);
   if (unchanged) {
-    delete stagedSupplierDefaults[supplier];
+    if (stagedSupplierDefaults[supplier]) delete stagedSupplierDefaults[supplier][field];
     if (inputEl) inputEl.style.background = '';
   } else {
-    stagedSupplierDefaults[supplier] = newValue;
+    stagedSupplierDefaults[supplier] = stagedSupplierDefaults[supplier] || {};
+    stagedSupplierDefaults[supplier][field] = newValue;
     if (inputEl) inputEl.style.background = 'var(--cream)';
   }
   updateCommitButton();
@@ -1171,7 +1179,8 @@ function stageBoxPriceCorrections(supplier) {
 }
 
 function updateCommitButton() {
-  const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length + Object.keys(stagedSupplierDefaults).length;
+  const stagedSupplierDefaultCount = Object.values(stagedSupplierDefaults).reduce((n, fields) => n + Object.keys(fields).length, 0);
+  const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length + stagedSupplierDefaultCount;
   const btn = document.getElementById('commitChangesBtn');
   if (!btn) return;
   btn.textContent = `Commit Changes (${count} pending)`;
@@ -1260,8 +1269,9 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
     // editable per product after that, and changing the supplier
     // default later never touches rows already staged/created before
     // that change, per the brief.
-    const supplierDefaultNow = stagedSupplierDefaults.hasOwnProperty(supplier)
-      ? stagedSupplierDefaults[supplier]
+    const stagedForSupplier = stagedSupplierDefaults[supplier] || {};
+    const supplierDefaultNow = stagedForSupplier.hasOwnProperty('default_trade_discount_pct')
+      ? stagedForSupplier.default_trade_discount_pct
       : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
     if (supplierDefaultNow !== null && supplierDefaultNow !== undefined) {
       fields.trade_discount_pct = supplierDefaultNow;
@@ -1633,15 +1643,25 @@ function renderSupplierConsoleTable() {
     // limited to sections already opened.
     const isExpanded = query ? true : expandedSuppliers.has(supplier);
     const totalCount = visibleGroups.reduce((n, [, , p]) => n + p.length, 0) + filteredNew.length;
-    // Supplier-level default (confirmed Aug 2026): staged value wins if
+    // Supplier-level defaults (confirmed Aug 2026): staged value wins if
     // present (even if it's an explicit clear, i.e. null), else whatever
     // this supplier's existing SupplierDefault row already has, else
     // blank — same "staged overrides real" precedence every other
     // editable field on this screen already follows.
-    const supplierDefaultRaw = stagedSupplierDefaults.hasOwnProperty(supplier)
-      ? stagedSupplierDefaults[supplier]
+    const stagedForThisSupplier = stagedSupplierDefaults[supplier] || {};
+    const supplierDefaultRaw = stagedForThisSupplier.hasOwnProperty('default_trade_discount_pct')
+      ? stagedForThisSupplier.default_trade_discount_pct
       : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
     const supplierDefaultDisplay = (supplierDefaultRaw !== null && supplierDefaultRaw !== undefined) ? (supplierDefaultRaw * 100).toFixed(1) : '';
+    // Per-supplier zone pricing (confirmed Aug 2026): the Zone A/B/C
+    // selector only makes sense for a supplier that actually HAS zone
+    // pricing (at least one product with price_zone_a/b/c set) — shown
+    // conditionally, not on every supplier. Same staged-overrides-real
+    // precedence as the trade discount default above.
+    const isZonePricedSupplier = allProducts.some(p => p.supplier === supplier && (p.price_zone_a != null || p.price_zone_b != null || p.price_zone_c != null));
+    const supplierZoneRaw = stagedForThisSupplier.hasOwnProperty('pricing_zone')
+      ? stagedForThisSupplier.pricing_zone
+      : (supplierDefaults[supplier] ? supplierDefaults[supplier].pricing_zone : null);
 
     const tables = visibleGroups.map(([entityType, fields, products]) => {
       const wrapperId = `scrollwrap-${cssSafeId(supplier)}-${entityType}`;
@@ -1686,8 +1706,16 @@ function renderSupplierConsoleTable() {
         </h2>
         ${isExpanded ? `
         <div style="margin-bottom:10px;">
+          ${isZonePricedSupplier ? `
+          <label style="font-size:12px; font-weight:600;">Pricing zone <span class="adj">(which of this supplier's Zone A/B/C prices is actually charged — set independently per zone-priced supplier, e.g. Azura on Zone A while Como Flooring is on Zone B)</span></label>
+          <select style="width:110px; display:block; margin-bottom:10px;" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'pricing_zone', this.value, this)">
+            <option value="" ${!supplierZoneRaw ? 'selected' : ''}>Not set</option>
+            <option value="A" ${supplierZoneRaw==='A'?'selected':''}>Zone A</option>
+            <option value="B" ${supplierZoneRaw==='B'?'selected':''}>Zone B</option>
+            <option value="C" ${supplierZoneRaw==='C'?'selected':''}>Zone C</option>
+          </select>` : ''}
           <label style="font-size:12px; font-weight:600;">Trade discount % <span class="adj">(default for NEW products added under this supplier — existing products are never changed by this, and each product's own value stays individually editable afterward)</span></label>
-          <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefault('${supplier.replace(/'/g,"\\'")}', this.value, this)">
+          <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
           <button onclick="stageBoxPriceCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; font-size:12px;" title="For every product where Price/m² and m²/box are both set, stage Price/m² = current value ÷ m²/box">Stage box-price correction (÷ m²/box) for all eligible products</button>
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
@@ -1879,16 +1907,20 @@ async function commitSupplierConsoleChanges() {
   const deletions = stagedDeletions.map(d => ({ entity_type: d.entityType, entity_id: d.entityId }));
   // Supplier-level defaults fold into the SAME changes/new_entities the
   // rest of this console already sends — a supplier with an existing
-  // SupplierDefault row (has an id) is an edit (changes); a supplier
-  // setting one for the first time is a create (new_entities), exactly
-  // like every other entity type here. No separate endpoint or payload
-  // shape needed.
-  for (const [supplier, value] of Object.entries(stagedSupplierDefaults)) {
+  // SupplierDefault row (has an id) is an edit (changes, one per staged
+  // field, matching how every other multi-field edit here works); a
+  // supplier setting its FIRST default of any kind is a create
+  // (new_entities, all staged fields combined into the one new row —
+  // creating a row happens once, with whatever's set at that moment).
+  // No separate endpoint or payload shape needed for either case.
+  for (const [supplier, fieldsStaged] of Object.entries(stagedSupplierDefaults)) {
     const existing = supplierDefaults[supplier];
     if (existing && existing.id) {
-      changes.push({ entity_type: 'SupplierDefault', entity_id: existing.id, field: 'default_trade_discount_pct', new_value: value });
+      for (const [field, value] of Object.entries(fieldsStaged)) {
+        changes.push({ entity_type: 'SupplierDefault', entity_id: existing.id, field, new_value: value });
+      }
     } else {
-      new_entities.push({ entity_type: 'SupplierDefault', supplier, fields: { default_trade_discount_pct: value } });
+      new_entities.push({ entity_type: 'SupplierDefault', supplier, fields: { ...fieldsStaged } });
     }
   }
   if (!changes.length && !new_entities.length && !deletions.length) return;
@@ -2072,7 +2104,7 @@ async function renderBusinessSettings(el) {
         <div class="field"><label>Screed bag overage rate (R, incl. VAT)</label><input id="bs_bag_overage" type="number" step="0.01" value="${s.bag_overage_rate}" ${ro}></div>
         <div class="field"><label>Default labour rate (R/m²)</label><input id="bs_labour_rate" type="number" step="0.01" value="${s.default_labour_rate_per_m2}" ${ro}></div>
         <div class="field"><label>Order Index overdue threshold (days)</label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
-        <div class="field"><label>Pricing Zone <span class="adj">(Azura zone-based pricing — no manual per-quote zone choice)</span></label>
+        <div class="field"><label>Pricing Zone <span class="adj">(fallback default for a brand-new zone-priced supplier only — Azura, Como Flooring, and any other zone-priced supplier now each set their own zone independently in the Supplier Console, not here)</span></label>
           <select id="bs_pricing_zone" ${ro}>
             <option value="A" ${s.pricing_zone==='A'?'selected':''}>Zone A</option>
             <option value="B" ${s.pricing_zone==='B'?'selected':''}>Zone B</option>
