@@ -56,7 +56,7 @@ For each distinct product/range/colour combination found, extract:
 - sku: any product code/SKU shown, else null
 - uncertain_fields: a list of the field names above you are NOT confident about (unclear scan, ambiguous unit, merged/damaged cells, a value that could reasonably be read more than one way). Be honest and specific — flag anything genuinely uncertain rather than silently guessing a confident-looking value.
 
-Return ONLY a JSON object of this exact shape, no other text, no markdown code fences:
+Return ONLY a JSON object of this exact shape, no other text, no markdown code fences. Output it COMPACT — no pretty-printing, no indentation, no line breaks between fields or rows, minimal whitespace throughout. This is machine-parsed, not read by a person; every character spent on formatting is an output-token limit you're competing against yourself for, for zero benefit (a compact and a pretty-printed version parse to the exact same data):
 {"rows": [{"product_name": "", "colour": "", "unit_basis": "", "price": 0.0, "m2_per_pack": null, "zone_prices": null, "dimensions_mm": null, "sku": null, "uncertain_fields": []}]}"""
 
 
@@ -94,18 +94,28 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str, instr
 
     body = {
         "model": ANTHROPIC_MODEL,
-        # Confirmed Aug 2026, real bug: 8000 was enough for the sheets
-        # this was originally built/tested against, but a larger sheet
-        # (more rows) can genuinely need more output tokens than that to
-        # finish the JSON — Claude stops generating right at the ceiling,
-        # mid-object, and the resulting truncated text is naturally
-        # invalid JSON. Not a parsing bug (json.loads below already
-        # receives and parses the ENTIRE response text, no truncation of
-        # its own) — purely this ceiling being too low. Doubled; see the
-        # stop_reason check further down for a clear, specific error
-        # instead of a confusing "wasn't valid JSON" if a sheet is ever
-        # large enough to hit even this higher ceiling.
-        "max_tokens": 16000,
+        # Confirmed Aug 2026, real bug, two rounds: first raised 8000 ->
+        # 16000, which turned out to still be too tight for a genuinely
+        # single-page sheet (Como Flooring) — confirming the ceiling
+        # itself was just set too low, not that sheets were unusually
+        # large. Investigated the OTHER lever (not just raising the
+        # number blindly, per explicit request): the JSON schema itself
+        # (9 keys/row, no repeated field names beyond normal per-object
+        # JSON structure) isn't unusually verbose — but the prompt never
+        # told the model to output COMPACT JSON, and Claude's default
+        # instinct for "return a JSON object" is to pretty-print it
+        # (indentation, line breaks) — pure whitespace overhead that
+        # json.loads() below discards entirely, competing against this
+        # exact token ceiling for zero benefit. Added an explicit
+        # compact-output instruction to the prompt (see above) to
+        # address the real waste, AND raised this further as a safety
+        # margin on top of that — not either/or. Not a parsing bug
+        # (json.loads below already receives and parses the ENTIRE
+        # response text, no truncation of its own). See the stop_reason
+        # check further down for a clear, specific error instead of a
+        # confusing "wasn't valid JSON" if a sheet is ever large enough
+        # to hit even this ceiling.
+        "max_tokens": 32000,
         "system": EXTRACTION_SYSTEM_PROMPT,
         "messages": [
             {"role": "user", "content": [
