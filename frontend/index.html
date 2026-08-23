@@ -1746,11 +1746,42 @@ async function commitSupplierConsoleChanges() {
   const deletions = stagedDeletions.map(d => ({ entity_type: d.entityType, entity_id: d.entityId }));
   if (!changes.length && !new_entities.length && !deletions.length) return;
   const statusEl = document.getElementById('consoleCommitStatus');
-  statusEl.textContent = 'Committing...';
-  const res = await fetch(`${API}/admin/supplier-console/commit`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ changes, new_entities, deletions }),
-  });
+  statusEl.innerHTML = '<span class="mini-spinner"></span>Committing...';
+  // Real bug found and fixed here (confirmed Aug 2026 — Como Flooring's
+  // 94-new-product commit, which showed no clean success or failure and
+  // then genuinely wasn't in the database on refresh): this fetch had
+  // no custom timeout, so it was still subject to the global wrapper's
+  // default 20s abort (shared.js) — plausible to exceed for a large
+  // commit, since the backend flushes each new entity individually (94
+  // separate DB round-trips for 94 rows, not batched). Worse, there was
+  // no try/catch around it at all, so that abort became an UNCAUGHT
+  // exception — nothing after this line ever ran, leaving the status
+  // stuck on "Committing..." forever with no clean confirmation either
+  // way. When the browser aborts a fetch, the dropped connection
+  // typically cancels the in-flight request server-side too (Starlette/
+  // uvicorn), meaning session.commit() likely never even ran — so nothing
+  // was actually saved, consistent with the product genuinely missing
+  // after a refresh, not a display bug. Same fix pattern as
+  // processImportUpload: a longer, dedicated timeout plus a real
+  // try/catch that shows an honest, specific message either way instead
+  // of silently hanging.
+  const commitController = new AbortController();
+  const commitTimeout = setTimeout(() => commitController.abort(), 180000);
+  let res;
+  try {
+    res = await fetch(`${API}/admin/supplier-console/commit`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ changes, new_entities, deletions }),
+      signal: commitController.signal,
+    });
+  } catch (e) {
+    statusEl.textContent = e.name === 'AbortError'
+      ? '❌ Timed out after 3 minutes with no response — for a large batch this may still be a genuine size/performance issue worth investigating, not just this timeout. Refresh and check the Change Log before retrying, to see whether it actually went through.'
+      : '❌ Could not reach the server — nothing was saved.';
+    return;
+  } finally {
+    clearTimeout(commitTimeout);
+  }
   if (!res.ok) {
     // Confirmed Aug 2026: this used to show a generic "Commit failed"
     // regardless of why — swallowed the actual reason, which matters a
