@@ -1152,8 +1152,29 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
     // already quoted per-m2 goes straight into the field; anything
     // else is left blank, with the raw extracted value shown alongside
     // for the owner to convert deliberately.
+    //
+    // Real bug found and fixed here (confirmed Aug 2026, Como Flooring —
+    // commit correctly refused, atomically, with nothing saved, exactly
+    // as designed, but surfaced this gap): base_cost_ex_vat is NOT NULL
+    // in the database, but a zone-priced product (Azura/Como-style)
+    // often has no single flat per-m2 price on the sheet at all — it's
+    // priced entirely via Zone A/B/C columns, so unit_basis legitimately
+    // isn't "per_m2" and the row above left it null, which is correct
+    // for a genuinely ambiguous per-box/per-piece price but WRONG here:
+    // zone_prices.A is a real, directly-extracted number straight off
+    // the sheet, not a derived/guessed conversion — using it isn't the
+    // same risk class as the per-box-to-per-m2 guess this safety exists
+    // to prevent. Matches resolve_zone_price() (main.py), which already
+    // treats a zone-priced product's stored base_cost_ex_vat as only a
+    // fallback anyway — every real quote overrides it with whichever
+    // zone the business's own pricing_zone setting selects. Still
+    // flagged uncertain (not silently accepted) since defaulting to
+    // Zone A specifically is a real, reviewer-worthy choice.
     if (row.unit_basis === 'per_m2') {
       fields.base_cost_ex_vat = row.price ?? null;
+    } else if (row.zone_prices && row.zone_prices.A != null) {
+      fields.base_cost_ex_vat = row.zone_prices.A;
+      uncertain.add('base_cost_ex_vat');
     } else {
       fields.base_cost_ex_vat = null;
       uncertain.add('base_cost_ex_vat');
@@ -1331,7 +1352,17 @@ function newEntityRow(entity, fields) {
     }
     let note = '';
     if (field === 'base_cost_ex_vat' && entity.rawUnitBasis && entity.rawUnitBasis !== 'per_m2') {
-      note = `<br><span class="muted" style="font-size:10px;">sheet shows R${entity.rawPrice} ${entity.rawUnitBasis.replace('_',' ')} — convert to per-m² yourself</span>`;
+      // Two distinct situations share the "uncertain" flag on this
+      // field (confirmed Aug 2026, real bug fix — see processImportUpload's
+      // own comment): a genuinely ambiguous per-box/per-piece price
+      // (val is null, needs manual conversion) vs. a zone-priced product
+      // where this was already defaulted to a real, directly-extracted
+      // Zone A price (val is set) — worded differently so the review
+      // note actually matches what's in the field, not a generic
+      // "convert yourself" that would be wrong/confusing for the latter.
+      note = (val !== null && val !== undefined)
+        ? `<br><span class="muted" style="font-size:10px;">defaulted to the sheet's Zone A price — confirm this is the right base rate (every quote overrides it with the business's own pricing zone anyway)</span>`
+        : `<br><span class="muted" style="font-size:10px;">sheet shows R${entity.rawPrice} ${entity.rawUnitBasis.replace('_',' ')} — convert to per-m² yourself</span>`;
     }
     return `<td>${inputHtml}${note}</td>`;
   }).join('');
