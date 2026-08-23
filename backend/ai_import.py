@@ -94,7 +94,18 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str, instr
 
     body = {
         "model": ANTHROPIC_MODEL,
-        "max_tokens": 8000,
+        # Confirmed Aug 2026, real bug: 8000 was enough for the sheets
+        # this was originally built/tested against, but a larger sheet
+        # (more rows) can genuinely need more output tokens than that to
+        # finish the JSON — Claude stops generating right at the ceiling,
+        # mid-object, and the resulting truncated text is naturally
+        # invalid JSON. Not a parsing bug (json.loads below already
+        # receives and parses the ENTIRE response text, no truncation of
+        # its own) — purely this ceiling being too low. Doubled; see the
+        # stop_reason check further down for a clear, specific error
+        # instead of a confusing "wasn't valid JSON" if a sheet is ever
+        # large enough to hit even this higher ceiling.
+        "max_tokens": 16000,
         "system": EXTRACTION_SYSTEM_PROMPT,
         "messages": [
             {"role": "user", "content": [
@@ -122,6 +133,19 @@ def extract_price_sheet(file_bytes: bytes, media_type: str, supplier: str, instr
         raise RuntimeError(f"Claude API error ({e.code}): {detail[:500]}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach the Claude API: {e.reason}")
+
+    # Confirmed Aug 2026: checked BEFORE attempting to parse, so a
+    # too-large sheet gets a clear, specific, actionable error ("hit the
+    # token limit, contact support to raise it") instead of a confusing
+    # "wasn't valid JSON" that doesn't explain why — exactly the
+    # ambiguity a real truncated response from a larger supplier sheet
+    # (Como Flooring) hit and took real investigation to diagnose.
+    if api_result.get("stop_reason") == "max_tokens":
+        raise RuntimeError(
+            "Claude's response was cut off — this price sheet has more products than the current "
+            f"extraction limit ({body['max_tokens']} tokens) supports. Increase max_tokens in ai_import.py, "
+            "or split this sheet into smaller uploads."
+        )
 
     text = "".join(block.get("text", "") for block in api_result.get("content", []) if block.get("type") == "text")
     try:
