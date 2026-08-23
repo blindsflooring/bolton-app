@@ -22,6 +22,7 @@ from models import (
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
+    SupplierDefault,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -850,6 +851,7 @@ ENTITY_TYPE_MODELS = {
     "FlooringProduct": FlooringProduct,
     "BlindsProduct": BlindsProduct,
     "TrimProduct": TrimProduct,
+    "SupplierDefault": SupplierDefault,
 }
 
 # Confirmed Aug 2026, Console delete feature: which QuoteLineItem.category
@@ -884,6 +886,7 @@ FIELD_LABELS = {
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
     "markup_multiplier": "Markup",
+    "default_trade_discount_pct": "Trade discount % (default for new products)",
 }
 
 
@@ -1032,9 +1035,12 @@ def commit_supplier_console_changes(
         for (entity_type, entity_id), changes in by_entity.items():
             model = ENTITY_TYPE_MODELS[entity_type]
             entity = get_or_404(session, model, entity_id, tenant_id, entity_type)
-            entity_label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{entity.supplier} product #{entity_id}"
-            if hasattr(entity, "colour") and entity.colour:
-                entity_label += f" ({entity.colour})"
+            if entity_type == "SupplierDefault":
+                entity_label = f"{entity.supplier} (supplier default)"
+            else:
+                entity_label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{entity.supplier} product #{entity_id}"
+                if hasattr(entity, "colour") and entity.colour:
+                    entity_label += f" ({entity.colour})"
 
             old_tiles_per_pack = getattr(entity, "tiles_per_pack", None) if entity_type == "FlooringProduct" else None
             touched_dimension_field = False
@@ -1107,9 +1113,11 @@ def commit_supplier_console_changes(
                 session.rollback()
                 raise HTTPException(400, f"Could not create new {ne.entity_type} for {ne.supplier} ('{fields.get('product_name', '?')}'): {e}")
 
-            entity_label = f"{ne.supplier} — {fields.get('product_name', '(new)')}"
+            is_supplier_default = ne.entity_type == "SupplierDefault"
+            entity_label = f"{ne.supplier} (supplier default)" if is_supplier_default else f"{ne.supplier} — {fields.get('product_name', '(new)')}"
             if fields.get("colour"):
                 entity_label += f" ({fields['colour']})"
+            new_item_kind = "new supplier default" if is_supplier_default else "new product"
             for field, value in ne.fields.items():
                 if field in ("supplier",):
                     continue   # already reflected in entity_label, not a separately useful audit line
@@ -1118,7 +1126,7 @@ def commit_supplier_console_changes(
                     tenant_id=tenant_id, username=username, entity_type=ne.entity_type, entity_id=entity.id,
                     field=field, old_value="(new)", new_value=str(value),
                 ))
-                summary_lines.append(f"{entity_label}: {label} set to {format_field_value(field, value)} (new product)")
+                summary_lines.append(f"{entity_label}: {label} set to {format_field_value(field, value)} ({new_item_kind})")
 
             if ne.entity_type == "FlooringProduct":
                 derived = recompute_tiles_per_pack(entity)
@@ -1179,6 +1187,19 @@ async def import_price_sheet(
         return extract_price_sheet(file_bytes, media_type, supplier, instructions)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+
+
+@app.get("/admin/supplier-defaults", response_model=List[SupplierDefault])
+def list_supplier_defaults(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Per-supplier defaults (confirmed Aug 2026 — see SupplierDefault's
+    own docstring in models.py). One row per supplier that has ever had
+    a default set; a supplier with no row yet just has no default (the
+    Console shows an empty, stageable field for it either way, and
+    staging a value for the first time creates the row via the existing
+    new_entities path in commit_supplier_console_changes — no separate
+    create endpoint needed)."""
+    with Session(engine) as session:
+        return session.exec(select(SupplierDefault).where(SupplierDefault.tenant_id == tenant_id)).all()
 
 
 @app.get("/admin/audit-log")

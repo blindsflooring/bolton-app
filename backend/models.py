@@ -208,6 +208,33 @@ class FlooringProduct(SQLModel, table=True):
     price_zone_c: Optional[float] = None
 
 
+class SupplierDefault(SQLModel, table=True):
+    """Per-supplier default values (confirmed Aug 2026, Supplier Console
+    brief) — currently just a trade discount % used to pre-fill NEW
+    products when they're created under that supplier, but modeled as
+    its own small table (one row per supplier name) rather than a field
+    bolted onto BusinessSettings, since other per-supplier defaults are
+    plausible later and this is naturally one-row-per-supplier already.
+
+    Deliberately a DEFAULT, not an enforced rule, and NOT retroactive:
+    read once, at the moment a new product is staged, to pre-fill that
+    product's own trade_discount_pct field — the product's own stored
+    value is what's authoritative from then on. Changing this default
+    later never touches already-existing (or already-staged-but-not-yet-
+    committed) products, only ones created after the change, and each
+    product's own field stays individually editable exactly as before.
+
+    No table-level uniqueness constraint on (tenant_id, supplier) — the
+    commit endpoint's own logic (reusing the existing CommitChange path
+    once a row exists, NewEntityImport only for the first one) is what
+    keeps this to one row per supplier per tenant, same trust boundary
+    as everything else the Console writes through that one endpoint."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    supplier: str = Field(index=True)
+    default_trade_discount_pct: Optional[float] = None
+
+
 class BlindsProduct(SQLModel, table=True):
     """Blinds price book entry.
     Margin formula (confirmed): net cost = book price less 45% trade discount,

@@ -927,19 +927,32 @@ const SUPPLIER_DISPLAY_NAMES = { 'Local Supplier': 'Skirtings' };
 function supplierDisplayName(raw) { return SUPPLIER_DISPLAY_NAMES[raw] || raw; }
 
 let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
+// Supplier-level defaults (confirmed Aug 2026): keyed by supplier name,
+// {id, default_trade_discount_pct} — id is null/undefined for a
+// supplier that's never had a default set, which the staging/commit
+// logic below treats as "create" (new_entities) rather than "edit"
+// (changes), same distinction the rest of this console already makes
+// for products. See SupplierDefault's own docstring (models.py) for
+// why this isn't retroactive.
+let supplierDefaults = {};
+let stagedSupplierDefaults = {};   // supplier -> staged new value (0-1 fraction, or null to clear)
 
 async function renderSupplierConsole(el) {
   await renderWithRetry(el, 'Supplier Console', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Supplier Console</h2><p class="muted">Loading...</p></div>`;
-  const [flr, bld, trm] = await Promise.all([
+  const [flr, bld, trm, defaults] = await Promise.all([
     fetch(`${API}/price-book/flooring`).then(r => r.json()),
     fetch(`${API}/price-book/blinds`).then(r => r.json()),
     fetch(`${API}/price-book/trims`).then(r => r.json()),
+    fetch(`${API}/admin/supplier-defaults`).then(r => r.json()),
   ]);
   supplierConsoleData = { flooring: flr, blinds: bld, trims: trm };
+  supplierDefaults = {};
+  defaults.forEach(d => { supplierDefaults[d.supplier] = d; });
   stagedChanges = {};
   stagedNewEntities = [];
   stagedDeletions = [];
+  stagedSupplierDefaults = {};
   consoleSearchQuery = '';
   newSupplierNameDraft = '';
   newSupplierInstructionsDraft = '';
@@ -1066,8 +1079,31 @@ function toggleStagedDeletion(entityType, entityId, label) {
   renderSupplierConsoleTable();
 }
 
+// Supplier-level default (confirmed Aug 2026): same staging discipline
+// as everything else — this only marks the value as pending, nothing
+// is saved until Commit Changes. Doesn't touch stagedChanges/
+// stagedNewEntities directly since SupplierDefault isn't a product row
+// (no table cell, no per-row Delete button, nothing FlooringProduct-
+// specific about it) — kept in its own small map instead, folded into
+// the same changes/new_entities commit payload at commit time.
+function stageSupplierDefault(supplier, rawValue, inputEl) {
+  const newValue = rawValue === '' ? null : parseFloat(rawValue) / 100;
+  const existing = supplierDefaults[supplier];
+  const origValue = existing ? (existing.default_trade_discount_pct ?? null) : null;
+  const unchanged = (newValue === origValue) ||
+    (typeof newValue === 'number' && typeof origValue === 'number' && Math.abs(newValue - origValue) < 1e-9);
+  if (unchanged) {
+    delete stagedSupplierDefaults[supplier];
+    if (inputEl) inputEl.style.background = '';
+  } else {
+    stagedSupplierDefaults[supplier] = newValue;
+    if (inputEl) inputEl.style.background = 'var(--cream)';
+  }
+  updateCommitButton();
+}
+
 function updateCommitButton() {
-  const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length;
+  const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length + Object.keys(stagedSupplierDefaults).length;
   const btn = document.getElementById('commitChangesBtn');
   if (!btn) return;
   btn.textContent = `Commit Changes (${count} pending)`;
@@ -1145,6 +1181,23 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
       pricing_type: 'material',
       m2_per_pack: row.m2_per_pack ?? null,
     };
+    // Supplier-level trade discount default (confirmed Aug 2026): a
+    // price sheet never states a trade discount itself (it's a
+    // negotiated business term, not printed pricing), so every AI-
+    // imported product used to silently fall back to the database
+    // model's own default (0%) unless corrected by hand afterward —
+    // tedious across dozens of rows. Pre-filled here ONLY at creation
+    // time, from whatever this supplier's own default is right now
+    // (staged or already-saved) — the field stays individually
+    // editable per product after that, and changing the supplier
+    // default later never touches rows already staged/created before
+    // that change, per the brief.
+    const supplierDefaultNow = stagedSupplierDefaults.hasOwnProperty(supplier)
+      ? stagedSupplierDefaults[supplier]
+      : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
+    if (supplierDefaultNow !== null && supplierDefaultNow !== undefined) {
+      fields.trade_discount_pct = supplierDefaultNow;
+    }
     // Unit-basis safety (confirmed Aug 2026): NEVER auto-convert a
     // non-per-m2 price into base_cost_ex_vat — that silent conversion
     // is exactly the shape of bug that caused the real Aspen price
@@ -1512,6 +1565,15 @@ function renderSupplierConsoleTable() {
     // limited to sections already opened.
     const isExpanded = query ? true : expandedSuppliers.has(supplier);
     const totalCount = visibleGroups.reduce((n, [, , p]) => n + p.length, 0) + filteredNew.length;
+    // Supplier-level default (confirmed Aug 2026): staged value wins if
+    // present (even if it's an explicit clear, i.e. null), else whatever
+    // this supplier's existing SupplierDefault row already has, else
+    // blank — same "staged overrides real" precedence every other
+    // editable field on this screen already follows.
+    const supplierDefaultRaw = stagedSupplierDefaults.hasOwnProperty(supplier)
+      ? stagedSupplierDefaults[supplier]
+      : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
+    const supplierDefaultDisplay = (supplierDefaultRaw !== null && supplierDefaultRaw !== undefined) ? (supplierDefaultRaw * 100).toFixed(1) : '';
 
     const tables = visibleGroups.map(([entityType, fields, products]) => {
       const wrapperId = `scrollwrap-${cssSafeId(supplier)}-${entityType}`;
@@ -1556,6 +1618,8 @@ function renderSupplierConsoleTable() {
         </h2>
         ${isExpanded ? `
         <div style="margin-bottom:10px;">
+          <label style="font-size:12px; font-weight:600;">Trade discount % <span class="adj">(default for NEW products added under this supplier — existing products are never changed by this, and each product's own value stays individually editable afterward)</span></label>
+          <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefault('${supplier.replace(/'/g,"\\'")}', this.value, this)">
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
@@ -1744,6 +1808,20 @@ async function commitSupplierConsoleChanges() {
   const changes = Object.values(stagedChanges);
   const new_entities = stagedNewEntities.map(e => ({ entity_type: e.entityType, supplier: e.supplier, fields: e.fields }));
   const deletions = stagedDeletions.map(d => ({ entity_type: d.entityType, entity_id: d.entityId }));
+  // Supplier-level defaults fold into the SAME changes/new_entities the
+  // rest of this console already sends — a supplier with an existing
+  // SupplierDefault row (has an id) is an edit (changes); a supplier
+  // setting one for the first time is a create (new_entities), exactly
+  // like every other entity type here. No separate endpoint or payload
+  // shape needed.
+  for (const [supplier, value] of Object.entries(stagedSupplierDefaults)) {
+    const existing = supplierDefaults[supplier];
+    if (existing && existing.id) {
+      changes.push({ entity_type: 'SupplierDefault', entity_id: existing.id, field: 'default_trade_discount_pct', new_value: value });
+    } else {
+      new_entities.push({ entity_type: 'SupplierDefault', supplier, fields: { default_trade_discount_pct: value } });
+    }
+  }
   if (!changes.length && !new_entities.length && !deletions.length) return;
   const statusEl = document.getElementById('consoleCommitStatus');
   statusEl.innerHTML = '<span class="mini-spinner"></span>Committing...';
@@ -1817,6 +1895,7 @@ async function commitSupplierConsoleChanges() {
     stagedChanges = {};
     stagedNewEntities = [];
     stagedDeletions = [];
+    stagedSupplierDefaults = {};
     // Immediately after committing: show exactly what changed, one line
     // per field — not just "Saved", per the brief.
     const summary = result.summary || [];
