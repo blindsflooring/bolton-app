@@ -944,7 +944,7 @@ async function renderSupplierConsole(el) {
   newSupplierNameDraft = '';
   newSupplierInstructionsDraft = '';
   importStatusMessages = {};
-  newSupplierImportStatusMessage = '';
+  newSupplierStagedBatches = [];
   renderSupplierConsoleTable();
   });
 }
@@ -1036,7 +1036,21 @@ let newSupplierInstructionsDraft = '';
 // collapsed. Persisted here (survives the re-render that would
 // otherwise erase it), keyed by supplier for existing sections.
 let importStatusMessages = {};        // supplier -> message, existing-supplier import boxes
-let newSupplierImportStatusMessage = '';
+
+// New Supplier confirmations, clarified Aug 2026 — one shared message
+// wasn't enough: the "+ Add New Supplier" box resets and can be reused
+// to stage a SECOND new supplier before the first is committed, which
+// would silently overwrite/lose the first confirmation. Kept as a list,
+// each entry rendered as its own line INSIDE the box (not elsewhere on
+// the page), so it's unambiguous exactly what's staged from here and
+// will be included the next time the global Commit Changes button is
+// pressed. Stays visible across every re-render until the user commits
+// (the normal post-commit reset clears this list along with everything
+// else) or explicitly clears one line — "Clear" un-stages that whole
+// supplier's rows too, not just the confirmation text, since leaving
+// staged-but-no-longer-acknowledged rows around would be worse than
+// removing them outright.
+let newSupplierStagedBatches = [];    // [{id, supplier, count}]
 
 // Staged deletion (confirmed Aug 2026): same discipline as every other
 // action here — clicking Delete only marks a row, nothing is removed
@@ -1188,8 +1202,15 @@ async function handleNewSupplierImportFile(inputEl) {
     // is the more important case to get right: a brand-new supplier's
     // section doesn't exist anywhere the owner's already looking at, so
     // without a clear message here, a successful import looked
-    // identical to nothing having happened at all.
-    newSupplierImportStatusMessage = `✓ ${count} product${count !== 1 ? 's' : ''} staged under "${supplier}" — scroll down to review (now expanded automatically), then click Commit Changes above to save.`;
+    // identical to nothing having happened at all. Added to the LIST
+    // (clarified Aug 2026), not a single overwritable variable — the
+    // box resets right after this and can stage a second new supplier
+    // before the first is committed, so a single message would silently
+    // lose track of the first one.
+    newSupplierStagedBatches.push({
+      id: `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      supplier, count,
+    });
     // Auto-expand the new section — it would otherwise default to
     // collapsed, like every supplier does, which is exactly backwards
     // right after creating it: the whole point is to review these rows
@@ -1202,6 +1223,23 @@ async function handleNewSupplierImportFile(inputEl) {
     if (instructionsEl) instructionsEl.value = '';
     renderSupplierConsoleTable();
   }
+}
+
+// "Clear" on a staged-new-supplier confirmation line (clarified Aug
+// 2026): removes that supplier's confirmation AND un-stages every
+// FlooringProduct row currently staged under its name — leaving rows
+// staged with no visible acknowledgement they exist would be worse
+// than just removing them outright. Individual rows can still be
+// removed one at a time via each row's own "✕" (removeStagedNewEntity)
+// if the owner wants to keep some and drop others instead of clearing
+// the whole batch.
+function clearNewSupplierBatch(batchId) {
+  const batch = newSupplierStagedBatches.find(b => b.id === batchId);
+  if (batch) {
+    stagedNewEntities = stagedNewEntities.filter(e => !(e.entityType === 'FlooringProduct' && e.supplier === batch.supplier));
+  }
+  newSupplierStagedBatches = newSupplierStagedBatches.filter(b => b.id !== batchId);
+  renderSupplierConsoleTable();
 }
 
 function cssSafeId(s) { return s.replace(/[^a-zA-Z0-9]/g, '_'); }
@@ -1466,7 +1504,15 @@ function renderSupplierConsoleTable() {
       <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
       <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
       <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
-      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;">${newSupplierImportStatusMessage}</span>
+      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+      ${newSupplierStagedBatches.length ? `
+      <div style="margin-top:10px;">
+        ${newSupplierStagedBatches.map(b => `
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:6px; background:var(--cream); border-radius:6px; font-size:12px;">
+            <span>✓ <b>${b.count}</b> product${b.count !== 1 ? 's' : ''} staged for <b>"${b.supplier}"</b> — included when you press Commit Changes above.</span>
+            <button onclick="clearNewSupplierBatch('${b.id}')" style="margin-left:auto; font-size:11px; padding:3px 8px;">Clear</button>
+          </div>`).join('')}
+      </div>` : ''}
     </div>
     ${supplierSections}
     ${noResults}
