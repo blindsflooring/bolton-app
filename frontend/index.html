@@ -1521,8 +1521,10 @@ function renderSupplierConsoleTable() {
       <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
       <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
       <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
-      <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
-      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
+        <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+      </div>
       ${newSupplierStagedBatches.length ? `
       <div style="margin-top:10px;">
         ${newSupplierStagedBatches.map(b => `
