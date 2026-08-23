@@ -965,13 +965,31 @@ async function renderSupplierConsole(el) {
 function supplierConsoleRow(entityType, fields, product) {
   const cells = fields.map(([field, label, type, step]) => {
     const key = `${entityType}:${product.id}:${field}`;
-    const val = product[field];
-    const attrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="${type}" data-orig="${val === null || val === undefined ? '' : val}" onchange="stageChange(this)"`;
+    // Staged-value-aware (confirmed Aug 2026, real gap found building
+    // the bulk box-price correction below): this template used to
+    // always read product[field] directly, meaning a staged-but-not-
+    // yet-committed edit would visually LOOK reverted the moment
+    // anything triggered a full re-render (collapse/search/another
+    // edit) — the pending change was still correctly tracked in
+    // stagedChanges and would still commit fine, it just stopped being
+    // VISIBLE until you checked the pending count. Harmless for a
+    // single manual edit (the input's own live DOM value already
+    // showed it, no re-render needed to see your own keystroke) but a
+    // real problem for a BULK-staged change across many rows, which
+    // has no "live DOM value" to fall back on. trueOrig (not the
+    // possibly-staged val) is what data-orig uses, so stageChange()'s
+    // own "did this change from the real original" comparison is
+    // never fooled by a value that's merely staged, not actually saved.
+    const trueOrig = product[field];
+    const staged = stagedChanges[key];
+    const val = staged ? staged.new_value : trueOrig;
+    const stagedHighlight = staged ? 'background:var(--cream);' : '';
+    const attrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="${type}" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
     if (type === 'bool') {
-      return `<td><select ${attrs}><option value="true" ${val ? 'selected' : ''}>Own staff</option><option value="false" ${!val ? 'selected' : ''}>Outside</option></select></td>`;
+      return `<td><select style="${stagedHighlight}" ${attrs}><option value="true" ${val ? 'selected' : ''}>Own staff</option><option value="false" ${!val ? 'selected' : ''}>Outside</option></select></td>`;
     }
     if (type === 'pct') {
-      return `<td><input type="number" step="0.1" style="width:80px;" value="${val !== null && val !== undefined ? (val * 100).toFixed(1) : ''}" ${attrs}></td>`;
+      return `<td><input type="number" step="0.1" style="width:80px; ${stagedHighlight}" value="${val !== null && val !== undefined ? (val * 100).toFixed(1) : ''}" ${attrs}></td>`;
     }
     if (type === 'markup_pct') {
       // Confirmed Aug 2026: sell_markup_multiplier/markup_multiplier are
@@ -981,7 +999,7 @@ function supplierConsoleRow(entityType, fields, product) {
       // a real display inconsistency was found and fixed here, not a
       // data bug: 1.3 in the database was always correct, it was just
       // being shown as "1.3" instead of "30.0%" like everywhere else.
-      return `<td><input type="number" step="0.1" style="width:80px;" value="${val !== null && val !== undefined ? ((val - 1) * 100).toFixed(1) : ''}" ${attrs}></td>`;
+      return `<td><input type="number" step="0.1" style="width:80px; ${stagedHighlight}" value="${val !== null && val !== undefined ? ((val - 1) * 100).toFixed(1) : ''}" ${attrs}></td>`;
     }
     if (type === 'number') {
       // Sanity-check hint (confirmed Aug 2026 — real bug found live: a
@@ -994,17 +1012,21 @@ function supplierConsoleRow(entityType, fields, product) {
       // with both fields set, not just Como, and purely informational —
       // never auto-applied, since only a human with the real price
       // sheet can judge whether the stored value is genuinely a per-m²
-      // rate or actually a box price that needs dividing.
-      const boxSanityNote = (field === 'base_cost_ex_vat' && entityType === 'FlooringProduct' && val !== null && val !== undefined && product.m2_per_pack)
+      // rate or actually a box price that needs dividing. Hidden once a
+      // correction is already staged for this exact cell (confirmed Aug
+      // 2026) — recalculating the hint against the NEW staged value
+      // would just divide an already-corrected price a second time,
+      // producing a meaningless number, not an update of the hint.
+      const boxSanityNote = (field === 'base_cost_ex_vat' && entityType === 'FlooringProduct' && val !== null && val !== undefined && product.m2_per_pack && !staged)
         ? `<br><span class="muted" style="font-size:10px;">÷ ${product.m2_per_pack} m²/box = R${(val / product.m2_per_pack).toFixed(2)}/m² — sanity check: is the stored price actually a box price?</span>`
         : '';
-      return `<td><input type="number" step="${step || 'any'}" style="width:90px;" value="${val !== null && val !== undefined ? val : ''}" ${attrs}>${boxSanityNote}</td>`;
+      return `<td><input type="number" step="${step || 'any'}" style="width:90px; ${stagedHighlight}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}>${boxSanityNote}</td>`;
     }
     // Widened from 120px (confirmed Aug 2026 — real range names like
     // "Aspen Project Range" were being cut off to "Aspen Project R").
     // title attribute is a belt-and-braces fallback for any value still
     // too long to fit — hover shows the full text regardless of width.
-    return `<td><input type="text" style="width:200px;" title="${val !== null && val !== undefined ? val : ''}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
+    return `<td><input type="text" style="width:200px; ${stagedHighlight}" title="${val !== null && val !== undefined ? val : ''}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
   }).join('');
   // BUG FIXED (Aug 2026, real column-shift confirmed from a live
   // screenshot): the table header adds a leading <th></th> for
@@ -1114,6 +1136,38 @@ function stageSupplierDefault(supplier, rawValue, inputEl) {
     if (inputEl) inputEl.style.background = 'var(--cream)';
   }
   updateCommitButton();
+}
+
+// Bulk box-price correction (confirmed Aug 2026 — real live bug: an AI
+// import misclassified box prices as per-m² prices for a supplier's
+// products, confirmed systemic by Burgert's own visual review using
+// the sanity-check hint above). Mechanically stages Price/m² = current
+// value ÷ m²/box for every product where both are set, matching the
+// exact math the sanity-check hint already displays — same staging
+// discipline as every single-field edit on this screen: this only
+// marks 94 (or however many) values as PENDING, nothing is saved to
+// the database until the existing Commit Changes button is pressed,
+// and every staged row is visible (highlighted, showing its new value)
+// in the table below for review before that. Deliberately uniform, not
+// selective: there's no way for this code to independently tell "this
+// row's stored price is already correct" apart from "this row's price
+// looks like a box price" without a human checking against the real
+// price sheet — applying the same mechanical division to every
+// eligible row and surfacing all of them for review is safer than this
+// code guessing which ones need it and which don't.
+function stageBoxPriceCorrections(supplier) {
+  const products = supplierConsoleData.flooring.filter(p => p.supplier === supplier);
+  let corrected = 0, skipped = 0;
+  products.forEach(p => {
+    if (p.base_cost_ex_vat == null || !p.m2_per_pack) { skipped++; return; }
+    const key = `FlooringProduct:${p.id}:base_cost_ex_vat`;
+    const newValue = Math.round((p.base_cost_ex_vat / p.m2_per_pack) * 100) / 100;
+    stagedChanges[key] = { entity_type: 'FlooringProduct', entity_id: p.id, field: 'base_cost_ex_vat', new_value: newValue };
+    corrected++;
+  });
+  updateCommitButton();
+  renderSupplierConsoleTable();
+  alert(`Staged a box-price correction (Price/m² ÷ m²/box) for ${corrected} of ${products.length} "${supplier}" products.\n\n${skipped} skipped — missing Price/m² or m²/box, so this formula can't be applied to them; check those individually.\n\nNothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`);
 }
 
 function updateCommitButton() {
@@ -1634,6 +1688,7 @@ function renderSupplierConsoleTable() {
         <div style="margin-bottom:10px;">
           <label style="font-size:12px; font-weight:600;">Trade discount % <span class="adj">(default for NEW products added under this supplier — existing products are never changed by this, and each product's own value stays individually editable afterward)</span></label>
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefault('${supplier.replace(/'/g,"\\'")}', this.value, this)">
+          <button onclick="stageBoxPriceCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; font-size:12px;" title="For every product where Price/m² and m²/box are both set, stage Price/m² = current value ÷ m²/box">Stage box-price correction (÷ m²/box) for all eligible products</button>
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
