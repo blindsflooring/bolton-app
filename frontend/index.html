@@ -1178,6 +1178,73 @@ function stageBoxPriceCorrections(supplier) {
   alert(`Staged a box-price correction (Price/m² ÷ m²/box) for ${corrected} of ${products.length} "${supplier}" products.\n\n${skipped} skipped — missing Price/m² or m²/box, so this formula can't be applied to them; check those individually.\n\nNothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`);
 }
 
+// Verified LVT correction (confirmed Aug 2026): hand-extracted directly
+// from the real source document (Como_Price_list_June_26_General.01.pdf,
+// "COMO FLOORING PRICE LIST JUNE 2026") — every number below was read
+// off the sheet's own "ZONE A/B/C PER m2" and "m2 PER BOX" columns for
+// the LUXURY VINYL FLOORING section, not derived or guessed. This is a
+// STRONGER source of truth than stageBoxPriceCorrections() above (which
+// only mechanically divides whatever's currently stored, still subject
+// to whatever the AI got wrong) — this instead REPLACES the stored
+// values with the sheet's own stated figures directly. Scoped to LVT
+// only, per explicit instruction — the sheet's SPC/Laminate/Parquet
+// sections are a separate, not-yet-verified correction.
+//
+// Ordered longest/most-specific name first ("Como Bonsai 2.0" before
+// "Como Bonsai") — matching is prefix-based after normalizing case/
+// whitespace/a trailing " LVT" (the sheet's own colour-code table on
+// page 3 labels some ranges with an "LVT" suffix the pricing table
+// itself doesn't use, e.g. "Como Desert" vs "Como Desert LVT" for the
+// exact same range — both forms need to match the one reference row).
+// Prefix matching also deliberately still matches a garbled name like
+// "Como Bonsai 2.0 / Como Bellagio" (a real, separate bug: "Como
+// Bellagio" is actually a Como Lake colour code, wrongly merged into
+// this product's name) — the PRICE is still correct for whichever
+// range the name starts with, even though the name itself also needs a
+// manual fix this tool doesn't attempt (renaming isn't a price
+// correction, and guessing the "right" name back is a separate risk).
+const COMO_LVT_VERIFIED_PRICING = [
+  { name: 'Numi LVT 2.0', zoneA: 219.95, zoneB: 236.95, zoneC: 242.95, m2PerPack: 5.020 },
+  { name: 'Como Lake', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 5.560 },
+  { name: 'Como Bonsai 2.0', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 3.600 },
+  { name: 'Como Desert', zoneA: 289.95, zoneB: 306.95, zoneC: 312.95, m2PerPack: 5.3016 },
+  { name: 'Como Mountain', zoneA: 359.95, zoneB: 376.95, zoneC: 382.95, m2PerPack: 3.900 },
+  { name: 'Como Mineral', zoneA: 369.95, zoneB: 386.95, zoneC: 392.95, m2PerPack: 4.418 },
+  { name: 'Como Bonsai', zoneA: 409.95, zoneB: 426.95, zoneC: 432.95, m2PerPack: 2.475 },
+  { name: 'Como Fire', zoneA: 449.95, zoneB: 466.95, zoneC: 472.95, m2PerPack: 4.170 },
+];
+
+function normalizeComoRangeName(s) {
+  return (s || '').trim().toLowerCase().replace(/\s+lvt$/i, '').replace(/\s+/g, ' ');
+}
+
+function stageComoLvtVerifiedCorrections(supplier) {
+  const products = supplierConsoleData.flooring.filter(p => p.supplier === supplier);
+  const matchedLines = [];
+  const unmatched = [];
+  products.forEach(p => {
+    const normalized = normalizeComoRangeName(p.product_name);
+    const ref = COMO_LVT_VERIFIED_PRICING.find(r => normalized.startsWith(normalizeComoRangeName(r.name)));
+    if (!ref) { unmatched.push(p.product_name); return; }
+    const fieldsToSet = {
+      base_cost_ex_vat: ref.zoneA,
+      price_zone_a: ref.zoneA, price_zone_b: ref.zoneB, price_zone_c: ref.zoneC,
+      m2_per_pack: ref.m2PerPack,
+    };
+    for (const [field, newValue] of Object.entries(fieldsToSet)) {
+      stagedChanges[`FlooringProduct:${p.id}:${field}`] = { entity_type: 'FlooringProduct', entity_id: p.id, field, new_value: newValue };
+    }
+    matchedLines.push(`${p.product_name}${p.colour ? ' ('+p.colour+')' : ''} → matched "${ref.name}": Zone A R${ref.zoneA}/m², m²/box ${ref.m2PerPack}`);
+  });
+  updateCommitButton();
+  renderSupplierConsoleTable();
+  const summary = `Staged verified LVT corrections (from the real source PDF) for ${matchedLines.length} of ${products.length} "${supplier}" products.\n\n` +
+    (unmatched.length ? `${unmatched.length} product(s) did NOT match any known LVT range name and were left untouched:\n${[...new Set(unmatched)].join('\n')}\n\n` : '') +
+    `Nothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`;
+  alert(summary);
+  console.log('Como LVT verified correction — matched rows:\n' + matchedLines.join('\n'));
+}
+
 function updateCommitButton() {
   const stagedSupplierDefaultCount = Object.values(stagedSupplierDefaults).reduce((n, fields) => n + Object.keys(fields).length, 0);
   const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length + stagedSupplierDefaultCount;
@@ -1717,6 +1784,8 @@ function renderSupplierConsoleTable() {
           <label style="font-size:12px; font-weight:600;">Trade discount % <span class="adj">(default for NEW products added under this supplier — existing products are never changed by this, and each product's own value stays individually editable afterward)</span></label>
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
           <button onclick="stageBoxPriceCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; font-size:12px;" title="For every product where Price/m² and m²/box are both set, stage Price/m² = current value ÷ m²/box">Stage box-price correction (÷ m²/box) for all eligible products</button>
+          ${supplier.toLowerCase().includes('como') ? `
+          <button onclick="stageComoLvtVerifiedCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; margin-left:8px; font-size:12px; background:var(--teal); color:white;" title="Uses the 8 LVT ranges' real Zone A/B/C and m²/box values, hand-extracted from the actual Como Flooring Price List PDF — not derived from currently-stored data">Stage VERIFIED LVT correction (from source PDF)</button>` : ''}
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
           <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
           <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
