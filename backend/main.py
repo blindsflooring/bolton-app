@@ -852,6 +852,22 @@ ENTITY_TYPE_MODELS = {
     "TrimProduct": TrimProduct,
 }
 
+# Confirmed Aug 2026, Console delete feature: which QuoteLineItem.category
+# values reference which entity type via product_id, used to check
+# "is this product actually used on a real quote" before a delete is
+# allowed to proceed. FlooringProduct covers both regular flooring lines
+# AND stairwell lines (a stairwell line's product_id is the vinyl
+# product — see add_stairwell_line). Known gap, not fixed here: a
+# TrimProduct used only as a stairwell's NOSING product isn't tracked by
+# id on QuoteLineItem (only nosing_length_m, a computed value survives),
+# so this check can't catch that specific usage — deleting a nosing
+# product still in active use on a stairwell quote would not be blocked.
+ENTITY_TYPE_LINE_CATEGORIES = {
+    "FlooringProduct": ["flooring", "stairwell"],
+    "BlindsProduct": ["blinds"],
+    "TrimProduct": ["trim"],
+}
+
 # Human-readable labels for the commit confirmation message and the
 # audit log UI — e.g. "Price per m²" instead of "base_cost_ex_vat".
 FIELD_LABELS = {
@@ -944,9 +960,23 @@ class NewEntityImport(BaseModel):
     fields: dict
 
 
+class StagedDeletion(BaseModel):
+    """Confirmed Aug 2026 — closes a real gap: the Console had edit and
+    create, but no delete, so a genuinely old/duplicate/test product had
+    no audited way to be removed (the only prior delete path was the OLD
+    Price Book screen's raw, unaudited delete, which is exactly why that
+    screen was removed as a tile). Same staging discipline as everything
+    else here: nothing is deleted until Commit Changes, and the whole
+    commit is validated (see the reference check in the handler below)
+    before ANY of it — changes, new_entities, deletions — is applied."""
+    entity_type: str
+    entity_id: int
+
+
 class CommitRequest(BaseModel):
     changes: List[CommitChange] = []
     new_entities: List[NewEntityImport] = []
+    deletions: List[StagedDeletion] = []
 
 
 @app.post("/admin/supplier-console/commit")
@@ -968,6 +998,30 @@ def commit_supplier_console_changes(
     same enforcement path as everywhere else in Owner Preview Mode.
     """
     with Session(engine) as session:
+        # Deletions validated FIRST, before anything else in this commit
+        # is touched (changes, new_entities, or other deletions) — a
+        # deletion that turns out to be unsafe (a real quote still
+        # references it) aborts the WHOLE commit, same "nothing partially
+        # saved" guarantee everything else here already has. Checked as
+        # a pure read here — nothing is deleted until the second pass
+        # further down, after every deletion in this batch has passed.
+        for d in body.deletions:
+            if d.entity_type not in ENTITY_TYPE_MODELS:
+                raise HTTPException(400, f"Unknown entity_type '{d.entity_type}'")
+            model = ENTITY_TYPE_MODELS[d.entity_type]
+            entity = get_or_404(session, model, d.entity_id, tenant_id, d.entity_type)
+            categories = ENTITY_TYPE_LINE_CATEGORIES.get(d.entity_type, [])
+            ref = session.exec(
+                select(QuoteLineItem).where(
+                    QuoteLineItem.product_id == d.entity_id,
+                    QuoteLineItem.category.in_(categories),
+                    QuoteLineItem.tenant_id == tenant_id,
+                )
+            ).first()
+            if ref:
+                label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{d.entity_type} #{d.entity_id}"
+                raise HTTPException(400, f"Can't delete {label} — it's used on quote #{ref.quote_id}. Remove it from that quote first if you really need to delete this product.")
+
         by_entity: dict = {}
         for c in body.changes:
             if c.entity_type not in ENTITY_TYPE_MODELS:
@@ -1076,6 +1130,26 @@ def commit_supplier_console_changes(
                     summary_lines.append(f"{entity_label}: Planks per box (auto-derived from dimensions) set to {format_field_value('tiles_per_pack', derived)} (new product)")
                     entity.tiles_per_pack = derived
             session.add(entity)
+
+        # Deletions — actually performed here, second pass, only after
+        # every one of them already passed the reference check above.
+        # Logged as a single AuditLog row per deletion (field="__deleted__",
+        # capturing the full label so the permanent record still says what
+        # was removed even though the row itself is gone) — same
+        # append-only, no-edit-no-delete Change Log every other action
+        # here already writes to.
+        for d in body.deletions:
+            model = ENTITY_TYPE_MODELS[d.entity_type]
+            entity = session.get(model, d.entity_id)
+            entity_label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{d.entity_type} #{d.entity_id}"
+            if hasattr(entity, "colour") and entity.colour:
+                entity_label += f" ({entity.colour})"
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type=d.entity_type, entity_id=d.entity_id,
+                field="__deleted__", old_value=entity_label, new_value="(deleted)",
+            ))
+            summary_lines.append(f"{entity_label}: deleted from the price book")
+            session.delete(entity)
 
         session.commit()
         return {"changed_count": len(summary_lines), "summary": summary_lines}

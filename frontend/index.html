@@ -912,6 +912,20 @@ const BLINDS_CONSOLE_FIELDS = [
   ['settlement_discount_pct', 'Settlement discount %', 'pct'],
 ];
 
+// Supplier display-name overrides (confirmed Aug 2026): "Local Supplier"
+// is an outdated/unclear label — every product actually under it is
+// pine skirting/quarter-round (confirmed against pine_skirting_import.csv,
+// the original import source), so it reads much better as "Skirtings".
+// This is DISPLAY ONLY — the underlying `supplier` field on those
+// TrimProduct rows stays exactly "Local Supplier" in the database.
+// Checked before adding this: "Local Supplier" isn't hardcoded/matched
+// anywhere else in the codebase (grep across every backend .py and
+// frontend .js/.html file came back empty except this data itself), so
+// remapping only the DISPLAYED text can't silently break anything else
+// that keys off the raw value — there isn't any such thing.
+const SUPPLIER_DISPLAY_NAMES = { 'Local Supplier': 'Skirtings' };
+function supplierDisplayName(raw) { return SUPPLIER_DISPLAY_NAMES[raw] || raw; }
+
 let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
 
 async function renderSupplierConsole(el) {
@@ -925,7 +939,10 @@ async function renderSupplierConsole(el) {
   supplierConsoleData = { flooring: flr, blinds: bld, trims: trm };
   stagedChanges = {};
   stagedNewEntities = [];
+  stagedDeletions = [];
   consoleSearchQuery = '';
+  newSupplierNameDraft = '';
+  newSupplierInstructionsDraft = '';
   renderSupplierConsoleTable();
   });
 }
@@ -970,7 +987,19 @@ function supplierConsoleRow(entityType, fields, product) {
   // is exactly why only EXISTING rows were shifted, not staged import
   // rows — that asymmetry is what caused it.
   const leadingCell = entityType === 'FlooringProduct' ? '<td></td>' : '';
-  return `<tr id="console-row-${entityType}-${product.id}">${leadingCell}${cells}</tr>`;
+  // Delete (confirmed Aug 2026): a trailing column added to EVERY entity
+  // type's table (unlike the leading NEW-indicator cell, which is
+  // FlooringProduct-only) — so this must have a matching <th> in EVERY
+  // table's header, not a conditional one, or this reintroduces the
+  // exact column-shift bug fixed earlier on this same screen. Staged,
+  // not immediate — toggles into/out of stagedDeletions and just
+  // visually marks the row, same "nothing happens until Commit" rule
+  // as every other action here.
+  const isStaged = stagedDeletions.some(d => d.entityType === entityType && d.entityId === product.id);
+  const rowLabel = `${product.supplier || ''} — ${product.product_name || ''}${product.colour ? ' (' + product.colour + ')' : ''}`;
+  const deleteCell = `<td><button onclick="toggleStagedDeletion('${entityType}', ${product.id}, '${rowLabel.replace(/'/g, "\\'")}')" style="${isStaged ? 'background:var(--coral); color:white; border-color:var(--coral);' : ''} font-size:11px; padding:4px 8px;">${isStaged ? 'Undo delete' : 'Delete'}</button></td>`;
+  const rowStyle = isStaged ? ' style="opacity:0.5; text-decoration:line-through;"' : '';
+  return `<tr id="console-row-${entityType}-${product.id}"${rowStyle}>${leadingCell}${cells}${deleteCell}</tr>`;
 }
 
 // AI-Assisted Price Sheet Import (confirmed Aug 2026 — banked brief,
@@ -982,21 +1011,45 @@ function supplierConsoleRow(entityType, fields, product) {
 // wasn't confident about is highlighted distinctly so the owner checks
 // it more carefully before committing, per the brief.
 let stagedNewEntities = [];   // [{tempId, entityType, supplier, fields, uncertainFields: Set, rawPrice, rawUnitBasis}]
+let stagedDeletions = [];     // [{entityType, entityId, label}] — closes the "no audited delete path" gap, confirmed Aug 2026
+// New Supplier form drafts (confirmed Aug 2026): renderSupplierConsoleTable
+// does a full innerHTML rewrite on every collapse/search/delete-toggle —
+// without preserving these across that, typing a supplier name then
+// toggling some unrelated section open would silently wipe it, same
+// class of bug already fixed for the search box's own focus/value.
+let newSupplierNameDraft = '';
+let newSupplierInstructionsDraft = '';
+
+// Staged deletion (confirmed Aug 2026): same discipline as every other
+// action here — clicking Delete only marks a row, nothing is removed
+// from the database until Commit Changes, and the backend independently
+// re-checks (see main.py's commit handler) that the product isn't
+// actually used on a real quote before allowing it, regardless of what
+// the frontend thinks. Toggles back to "Delete" if clicked again before
+// committing.
+function toggleStagedDeletion(entityType, entityId, label) {
+  const idx = stagedDeletions.findIndex(d => d.entityType === entityType && d.entityId === entityId);
+  if (idx >= 0) stagedDeletions.splice(idx, 1);
+  else stagedDeletions.push({ entityType, entityId, label });
+  renderSupplierConsoleTable();
+}
 
 function updateCommitButton() {
-  const count = Object.keys(stagedChanges).length + stagedNewEntities.length;
+  const count = Object.keys(stagedChanges).length + stagedNewEntities.length + stagedDeletions.length;
   const btn = document.getElementById('commitChangesBtn');
   if (!btn) return;
   btn.textContent = `Commit Changes (${count} pending)`;
   btn.disabled = count === 0;
 }
 
-async function handleImportFile(supplier, inputEl) {
-  const file = inputEl.files[0];
-  if (!file) return;
-  const statusEl = document.getElementById(`import-status-${cssSafeId(supplier)}`);
-  const instructionsEl = document.getElementById(`import-instructions-${cssSafeId(supplier)}`);
-  const instructions = instructionsEl ? instructionsEl.value : '';
+// Shared core of the import upload (confirmed Aug 2026, New Supplier
+// Creation): extracted out of handleImportFile so a brand-new supplier
+// (which has no existing section, and so no import-instructions/status
+// elements to read from) can reuse the exact same upload+extraction+
+// staging logic via handleNewSupplierImportFile below, instead of a
+// second, easy-to-drift-out-of-sync copy of this logic. Returns true on
+// success, false on failure (caller decides what to reset/clear).
+async function processImportUpload(supplier, file, instructions, statusEl) {
   if (statusEl) statusEl.textContent = 'Uploading and extracting — this can take a minute...';
   const formData = new FormData();
   formData.append('file', file);
@@ -1006,12 +1059,12 @@ async function handleImportFile(supplier, inputEl) {
     res = await fetch(`${API}/admin/supplier-console/import?${params}`, { method: 'POST', body: formData });
   } catch (e) {
     if (statusEl) statusEl.textContent = '❌ Could not reach the server.';
-    return;
+    return false;
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     if (statusEl) statusEl.textContent = `❌ ${err.detail || 'Import failed.'}`;
-    return;
+    return false;
   }
   const result = await res.json();
   for (const row of (result.rows || [])) {
@@ -1051,8 +1104,63 @@ async function handleImportFile(supplier, inputEl) {
       rawPrice: row.price, rawUnitBasis: row.unit_basis,
     });
   }
-  inputEl.value = '';
-  renderSupplierConsoleTable();
+  return true;
+}
+
+async function handleImportFile(supplier, inputEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById(`import-status-${cssSafeId(supplier)}`);
+  const instructionsEl = document.getElementById(`import-instructions-${cssSafeId(supplier)}`);
+  const instructions = instructionsEl ? instructionsEl.value : '';
+  const ok = await processImportUpload(supplier, file, instructions, statusEl);
+  if (ok) { inputEl.value = ''; renderSupplierConsoleTable(); }
+}
+
+// New Supplier Creation (confirmed Aug 2026): same import pipeline as
+// every existing supplier's own upload box, just with nowhere existing
+// to read the supplier name from — it's typed fresh into its own form.
+// Once staged rows exist under this name, it behaves exactly like any
+// other supplier section from that point on (allSuppliers already
+// derives from stagedNewEntities too, not just real product data — see
+// renderSupplierConsoleTable below) — nothing special-cased beyond this
+// one upload handler.
+async function handleNewSupplierImportFile(inputEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const nameEl = document.getElementById('newSupplierName');
+  const supplier = nameEl.value.trim();
+  const statusEl = document.getElementById('newSupplierImportStatus');
+  if (!supplier) {
+    if (statusEl) statusEl.textContent = '❌ Enter a supplier name first.';
+    inputEl.value = '';
+    return;
+  }
+  // Friendly guardrail, not a hard block — creating "new" rows under a
+  // name that already exists would still work fine (supplier grouping
+  // is just whatever string is on each row), but nudges toward the
+  // section that already exists rather than doing the same thing from a
+  // less obvious place.
+  const existingSuppliers = new Set([
+    ...supplierConsoleData.flooring.map(p => p.supplier),
+    ...supplierConsoleData.blinds.map(p => p.supplier),
+    ...supplierConsoleData.trims.map(p => p.supplier),
+    ...stagedNewEntities.map(e => e.supplier),
+  ]);
+  if (existingSuppliers.has(supplier)) {
+    if (statusEl) statusEl.textContent = `"${supplier}" already exists — use that supplier's own import box below instead.`;
+    inputEl.value = '';
+    return;
+  }
+  const instructionsEl = document.getElementById('newSupplierInstructions');
+  const instructions = instructionsEl ? instructionsEl.value : '';
+  const ok = await processImportUpload(supplier, file, instructions, statusEl);
+  if (ok) {
+    inputEl.value = '';
+    nameEl.value = '';
+    if (instructionsEl) instructionsEl.value = '';
+    renderSupplierConsoleTable();
+  }
 }
 
 function cssSafeId(s) { return s.replace(/[^a-zA-Z0-9]/g, '_'); }
@@ -1097,7 +1205,12 @@ function newEntityRow(entity, fields) {
     }
     return `<td>${inputHtml}${note}</td>`;
   }).join('');
-  return `<tr style="border-left:3px solid var(--teal);"><td style="white-space:nowrap;"><b style="color:var(--teal); font-size:11px;">NEW (import)</b> <button onclick="removeStagedNewEntity('${entity.tempId}')" style="font-size:11px;">✕</button></td>${cells}</tr>`;
+  // Trailing <td></td> here matches the Delete column added to every
+  // table's header (Aug 2026) — a staged-new row is removed via the ✕
+  // in its own leading badge cell, not the Delete column, so this cell
+  // just keeps the column count matching the header (same reasoning as
+  // supplierConsoleRow's leadingCell fix earlier this project).
+  return `<tr style="border-left:3px solid var(--teal);"><td style="white-space:nowrap;"><b style="color:var(--teal); font-size:11px;">NEW (import)</b> <button onclick="removeStagedNewEntity('${entity.tempId}')" style="font-size:11px;">✕</button></td>${cells}<td></td></tr>`;
 }
 
 // Scalability (confirmed Aug 2026, explicit requirement — this table
@@ -1121,7 +1234,11 @@ function toggleSupplierSection(supplier) {
 
 function productMatchesSearch(product, query) {
   if (!query) return true;
-  const haystack = `${product.product_name || ''} ${product.colour || ''} ${product.supplier || ''}`.toLowerCase();
+  // Includes the display name too (e.g. "Skirtings"), not just the raw
+  // stored supplier value ("Local Supplier") — so searching for what's
+  // actually shown on screen works, even though the underlying data
+  // never changed.
+  const haystack = `${product.product_name || ''} ${product.colour || ''} ${product.supplier || ''} ${supplierDisplayName(product.supplier || '')}`.toLowerCase();
   return haystack.includes(query);
 }
 
@@ -1260,7 +1377,7 @@ function renderSupplierConsoleTable() {
         <div id="${headerBarId}" style="position:sticky; z-index:10; overflow:hidden; background:var(--card);"></div>
         <div id="${wrapperId}" style="overflow-x:auto; margin-bottom:12px;">
           <table style="width:max-content; min-width:100%;">
-            <thead><tr style="visibility:collapse;">${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}</tr></thead>
+            <thead><tr style="visibility:collapse;">${entityType==='FlooringProduct' ? '<th></th>' : ''}${fields.map(([, label]) => `<th>${label}</th>`).join('')}<th>Delete</th></tr></thead>
             <tbody>
               ${products.map(p => supplierConsoleRow(entityType, fields, p)).join('')}
               ${entityType === 'FlooringProduct' ? filteredNew.map(e => newEntityRow(e, fields)).join('') : ''}
@@ -1273,7 +1390,7 @@ function renderSupplierConsoleTable() {
     return `
       <div class="card">
         <h2 onclick="toggleSupplierSection('${supplier.replace(/'/g,"\\'")}')" style="cursor:pointer; user-select:none;">
-          <span style="display:inline-block; width:16px;">${isExpanded ? '▼' : '▶'}</span>${supplier}
+          <span style="display:inline-block; width:16px;">${isExpanded ? '▼' : '▶'}</span>${supplierDisplayName(supplier)}
           <span class="muted" style="font-size:12px; font-weight:400;">(${totalCount} product${totalCount !== 1 ? 's' : ''})</span>
         </h2>
         ${isExpanded ? `
@@ -1299,6 +1416,16 @@ function renderSupplierConsoleTable() {
       <input type="text" id="consoleSearchBox" placeholder="Search by range, colour, or supplier..." value="${query}" oninput="handleConsoleSearch(this.value)" style="width:100%; max-width:400px; padding:8px; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; display:block; box-sizing:border-box;">
       <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
       <span id="consoleCommitStatus" class="muted" style="margin-left:12px;"></span>
+    </div>
+    <div class="card">
+      <h2>+ Add New Supplier</h2>
+      <p class="muted" style="margin-top:-8px;">Onboard a brand-new supplier the same way as any existing one's price sheet import — nothing is saved until Commit Changes below, same as everywhere else on this screen.</p>
+      <div class="field"><label>Supplier name</label><input type="text" id="newSupplierName" value="${newSupplierNameDraft}" oninput="newSupplierNameDraft = this.value" placeholder="e.g. Continental Flooring" style="max-width:400px;"></div>
+      <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
+      <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
+      <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
+      <input type="file" accept=".pdf,image/*" onchange="handleNewSupplierImportFile(this)">
+      <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
     </div>
     ${supplierSections}
     ${noResults}
@@ -1441,20 +1568,29 @@ function stageChange(inputEl) {
 async function commitSupplierConsoleChanges() {
   const changes = Object.values(stagedChanges);
   const new_entities = stagedNewEntities.map(e => ({ entity_type: e.entityType, supplier: e.supplier, fields: e.fields }));
-  if (!changes.length && !new_entities.length) return;
+  const deletions = stagedDeletions.map(d => ({ entity_type: d.entityType, entity_id: d.entityId }));
+  if (!changes.length && !new_entities.length && !deletions.length) return;
   const statusEl = document.getElementById('consoleCommitStatus');
   statusEl.textContent = 'Committing...';
   const res = await fetch(`${API}/admin/supplier-console/commit`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ changes, new_entities }),
+    body: JSON.stringify({ changes, new_entities, deletions }),
   });
   if (!res.ok) {
-    statusEl.textContent = '❌ Commit failed — nothing was saved.';
+    // Confirmed Aug 2026: this used to show a generic "Commit failed"
+    // regardless of why — swallowed the actual reason, which matters a
+    // lot now that a deletion can be REFUSED with a specific, actionable
+    // message (e.g. "it's used on quote #42") rather than a plain
+    // validation failure. Whole commit is still atomic either way —
+    // nothing (changes, new_entities, OR deletions) was saved.
+    const err = await res.json().catch(() => ({}));
+    statusEl.textContent = `❌ ${err.detail || 'Commit failed'} — nothing was saved.`;
     return;
   }
   const result = await res.json();
   stagedChanges = {};
   stagedNewEntities = [];
+  stagedDeletions = [];
   // Immediately after committing: show exactly what changed, one line
   // per field — not just "Saved", per the brief.
   const summaryHtml = result.summary.length
