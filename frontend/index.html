@@ -1089,11 +1089,29 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
   formData.append('file', file);
   const params = new URLSearchParams({ supplier, instructions });
   let res;
+  // Real bug found and fixed here (confirmed Aug 2026): the global
+  // fetch() wrapper (shared.js) aborts any API request after 20s by
+  // default — correct for normal page loads, wrong for THIS call, which
+  // this very status message already says can take a minute (a real AI
+  // extraction call to Claude's API, not a quick DB read). Every import
+  // was being killed by that 20s ceiling before the extraction could
+  // finish, then reported as "Could not reach the server" — a
+  // deliberate timeout mislabeled as a connectivity failure. Existed
+  // for both existing-supplier and new-supplier imports equally (same
+  // shared function); only surfaced now via new-supplier testing.
+  // Fixed by supplying our own, much longer signal — the wrapper only
+  // applies its 20s default when the caller hasn't already set one.
+  const importController = new AbortController();
+  const importTimeout = setTimeout(() => importController.abort(), 120000);
   try {
-    res = await fetch(`${API}/admin/supplier-console/import?${params}`, { method: 'POST', body: formData });
+    res = await fetch(`${API}/admin/supplier-console/import?${params}`, { method: 'POST', body: formData, signal: importController.signal });
   } catch (e) {
-    if (statusEl) statusEl.textContent = '❌ Could not reach the server.';
+    if (statusEl) statusEl.textContent = e.name === 'AbortError'
+      ? '❌ Timed out after 2 minutes — the extraction is taking unusually long. Try again, or a smaller/clearer file.'
+      : '❌ Could not reach the server.';
     return null;
+  } finally {
+    clearTimeout(importTimeout);
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
