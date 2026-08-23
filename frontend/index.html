@@ -1793,19 +1793,44 @@ async function commitSupplierConsoleChanges() {
     statusEl.textContent = `❌ ${err.detail || 'Commit failed'} — nothing was saved.`;
     return;
   }
-  const result = await res.json();
-  stagedChanges = {};
-  stagedNewEntities = [];
-  stagedDeletions = [];
-  // Immediately after committing: show exactly what changed, one line
-  // per field — not just "Saved", per the brief.
-  const summaryHtml = result.summary.length
-    ? `<div class="card" style="border:2px solid var(--teal);"><h2>✓ ${result.changed_count} field(s) updated</h2>` +
-      result.summary.map(line => `<div style="padding:4px 0; border-bottom:1px solid var(--border);">${line}</div>`).join('') +
-      `</div>`
-    : `<div class="card"><p class="muted">Nothing actually changed.</p></div>`;
-  await renderSupplierConsole(document.getElementById('landing'));
-  document.getElementById('landing').insertAdjacentHTML('afterbegin', summaryHtml);
+  // Real bug found and fixed here (confirmed Aug 2026 — Como Flooring's
+  // second commit attempt: staged data visibly cleared, 0 pending, but
+  // NO summary card or error ever appeared — a genuine silent failure,
+  // not a perception issue). Everything from here down used to run with
+  // no protection at all: res.json() parsing a real response body (up
+  // to ~900+ lines for a 94-product batch, since every field on every
+  // new product gets its own summary line — a much bigger body than
+  // this code was ever exercised against before), result.summary.length
+  // (throws if the response shape is ever unexpected), the follow-up
+  // renderSupplierConsole() re-render, and the final insertAdjacentHTML
+  // call. ANY of those throwing after this point left the user with
+  // nothing — no success, no error, matching exactly what was reported.
+  // Wrapped in its own try/catch, deliberately SEPARATE from the one
+  // around fetch() above and worded differently: by this point res.ok
+  // was already true, meaning the SERVER already confirmed the commit
+  // succeeded — a failure here is a display problem, not evidence the
+  // save failed, so the message says that explicitly instead of
+  // sounding like a generic failure that might make someone retry a
+  // commit that already actually went through.
+  try {
+    const result = await res.json();
+    stagedChanges = {};
+    stagedNewEntities = [];
+    stagedDeletions = [];
+    // Immediately after committing: show exactly what changed, one line
+    // per field — not just "Saved", per the brief.
+    const summary = result.summary || [];
+    const summaryHtml = summary.length
+      ? `<div class="card" style="border:2px solid var(--teal);"><h2>✓ ${result.changed_count} field(s) updated</h2>` +
+        summary.map(line => `<div style="padding:4px 0; border-bottom:1px solid var(--border);">${line}</div>`).join('') +
+        `</div>`
+      : `<div class="card"><p class="muted">Nothing actually changed.</p></div>`;
+    await renderSupplierConsole(document.getElementById('landing'));
+    document.getElementById('landing').insertAdjacentHTML('afterbegin', summaryHtml);
+    statusEl.textContent = '';
+  } catch (e) {
+    statusEl.textContent = `⚠ The commit reached the server and it confirmed success, but showing the confirmation here failed (${e.message}). Check the Change Log to see exactly what was saved — the data itself should be fine even though this summary isn't.`;
+  }
 }
 
 // ===== Change Log (Audit Log) — confirmed Aug 2026, Owner-only =====
