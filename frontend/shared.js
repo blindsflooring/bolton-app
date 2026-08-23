@@ -31,6 +31,27 @@ const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 �
 // existing fetch(`${API}/...`) call sites.
 let previewRole = null;   // null | 'sales' | 'admin'
 
+// Timeout, confirmed Aug 2026 — real bug, mobile-specific: native
+// fetch() has no default timeout, so a stalled connection just hangs
+// forever, with the returned promise never resolving OR rejecting.
+// Confirmed via code audit: every "Loading..." landing section
+// (Flooring Quotes, Order Index, Clients, Business Overview, Supplier
+// Console, etc.) awaits a plain fetch() with no try/catch anywhere —
+// if that promise never settles, nothing ever replaces "Loading...",
+// with no error and no way out. Most likely trigger on mobile
+// specifically: a cellular carrier silently drops an idle TCP
+// connection that's been waiting 30+ seconds for a response (e.g.
+// during a Render free-tier cold start) WITHOUT the browser ever
+// getting a clean network error to reject the fetch promise with — on
+// desktop/broadband the same slow cold start just means a longer wait
+// that eventually resolves successfully.
+// Bound to the same wrapper credentials/preview-role already use
+// (rather than a separate fetchWithTimeout() helper requiring every
+// call site to opt in) so this protection is automatic on all ~65
+// existing and future fetch(`${API}/...`) calls with zero changes
+// needed at any of them — same reasoning as the credentials trick just
+// above. 20s: comfortably longer than a normal request, short enough
+// that "hangs forever" becomes "fails within 20s" instead.
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = function(url, options = {}) {
   if (typeof url === 'string' && url.startsWith(API)) {
@@ -38,9 +59,44 @@ window.fetch = function(url, options = {}) {
     if (previewRole && realRole() === 'owner') {
       options.headers = Object.assign({}, options.headers || {}, {'X-Preview-Role': previewRole});
     }
+    if (!options.signal) {   // don't clobber a caller-supplied signal — none exist today, but stay safe
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 20000);
+      options.signal = controller.signal;
+    }
   }
   return _nativeFetch(url, options);
 };
+
+// Shared retry-and-fail-visibly wrapper for every landing "Loading..."
+// section — the other half of the timeout fix above. A bounded timeout
+// alone would only turn "hangs forever silently" into "throws an
+// uncaught rejection silently" (still stuck on "Loading..." — the
+// exception has nowhere to go) unless something actually catches it and
+// updates the DOM. renderFn is the real work (set "Loading...", fetch,
+// build the real content, set the final innerHTML) — on any failure
+// (timeout, network error, anything thrown while building the view)
+// it's retried automatically once after a short delay, since a cold
+// start is an expected, self-resolving occurrence, not a bug — the
+// first failure shouldn't alarm anyone. Only shows a real error state,
+// with a manual retry button, if the second attempt also fails.
+async function renderWithRetry(el, label, renderFn) {
+  try {
+    await renderFn();
+  } catch (e) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      await renderFn();
+    } catch (e2) {
+      el.innerHTML = `
+        <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+        <div class="card">
+          <p class="muted">Couldn't load ${label} — the server may still be waking up from idle, or your connection dropped. Safe to retry.</p>
+          <button class="primary" onclick="renderLanding()">Tap to retry</button>
+        </div>`;
+    }
+  }
+}
 
 let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad(). This is always the REAL identity, never swapped by preview.
 

@@ -589,6 +589,7 @@ function onTileClick(tileId) {
 }
 
 async function renderFlooringDrill(el) {
+  await renderWithRetry(el, 'Flooring Quotes', async () => {
   // Real bug found via staff-testing the deployed app: this used to read
   // flooringProducts synchronously, assuming the page-load loadFlooring()
   // call (fired without await, in the init sequence at the bottom of this
@@ -641,6 +642,7 @@ async function renderFlooringDrill(el) {
       <div class="drill-tree">${catHtml}</div>
     </div>
   `;
+  });
 }
 
 async function startQuoteWithVinylRange(range) {
@@ -658,6 +660,7 @@ async function startQuoteWithVinylRange(range) {
 }
 
 async function renderPrintInvoicePicker(el, searchTerm) {
+  await renderWithRetry(el, 'Print Invoice', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Print Invoice</h2><p class="muted">Loading...</p></div>`;
   const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
   const res = await fetch(`${API}/quotes${params}`);
@@ -684,6 +687,7 @@ async function renderPrintInvoicePicker(el, searchTerm) {
   const input = document.getElementById('invoiceSearchInput');
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
+  });
 }
 
 async function printInvoiceForQuote(quoteId) {
@@ -691,6 +695,7 @@ async function printInvoiceForQuote(quoteId) {
 }
 
 async function renderBusinessOverview(el) {
+  await renderWithRetry(el, 'Business Overview', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Business Overview</h2><p class="muted">Loading...</p></div>`;
   const res = await fetch(`${API}/analytics/overview`);
   const data = await res.json();
@@ -748,6 +753,7 @@ async function renderBusinessOverview(el) {
       <p class="muted" style="margin:0;">⚠️ Conversion rate needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count either way. Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
     </div>
   `;
+  });
 }
 
 // Login & Session Activity Log, Phase 1 (confirmed Aug 2026) — Owner-only
@@ -781,11 +787,19 @@ async function renderSessionLog(el) {
 }
 
 async function loadSessionLog(range) {
-  sessionLogRange = range;
-  const params = new URLSearchParams(sessionLogDateRange(range));
-  const res = await fetch(`${API}/admin/session-log?${params}`);
-  sessionLogRows = res.ok ? await res.json() : [];
-  renderSessionLogTable();
+  // Wrapped here rather than in renderSessionLog() above — this is the
+  // one choke point both the initial page load AND the "All time/This
+  // week/This month" filter buttons call directly (renderSessionLogTable
+  // wires onclick="loadSessionLog(...)" straight to this function), so
+  // this is where a hung/failed fetch actually needs to be caught,
+  // whichever triggered it.
+  await renderWithRetry(document.getElementById('landing'), 'Login Activity', async () => {
+    sessionLogRange = range;
+    const params = new URLSearchParams(sessionLogDateRange(range));
+    const res = await fetch(`${API}/admin/session-log?${params}`);
+    sessionLogRows = res.ok ? await res.json() : [];
+    renderSessionLogTable();
+  });
 }
 
 function renderSessionLogTable() {
@@ -881,6 +895,7 @@ const BLINDS_CONSOLE_FIELDS = [
 let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
 
 async function renderSupplierConsole(el) {
+  await renderWithRetry(el, 'Supplier Console', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Supplier Console</h2><p class="muted">Loading...</p></div>`;
   const [flr, bld, trm] = await Promise.all([
     fetch(`${API}/price-book/flooring`).then(r => r.json()),
@@ -892,6 +907,7 @@ async function renderSupplierConsole(el) {
   stagedNewEntities = [];
   consoleSearchQuery = '';
   renderSupplierConsoleTable();
+  });
 }
 
 function supplierConsoleRow(entityType, fields, product) {
@@ -1438,10 +1454,15 @@ async function renderChangeLog(el) {
 }
 
 async function loadChangeLog(filters) {
-  const params = new URLSearchParams(filters || {});
-  const res = await fetch(`${API}/admin/audit-log?${params}`);
-  const rows = res.ok ? await res.json() : [];
-  renderChangeLogTable(rows);
+  // Wrapped here, not in renderChangeLog() above — same reasoning as
+  // loadSessionLog: this is the one choke point both the initial page
+  // load AND the Filter/Clear filter buttons call directly.
+  await renderWithRetry(document.getElementById('landing'), 'Change Log', async () => {
+    const params = new URLSearchParams(filters || {});
+    const res = await fetch(`${API}/admin/audit-log?${params}`);
+    const rows = res.ok ? await res.json() : [];
+    renderChangeLogTable(rows);
+  });
 }
 
 function renderChangeLogTable(rows) {

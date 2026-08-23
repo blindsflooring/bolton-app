@@ -11,6 +11,7 @@
 // Builder concern, not client CRM management.
 
 async function renderClients(el, searchTerm) {
+  await renderWithRetry(el, 'Clients', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Clients</h2><p class="muted">Loading...</p></div>`;
   const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
   const res = await fetch(`${API}/clients${params}`);
@@ -43,6 +44,7 @@ async function renderClients(el, searchTerm) {
   `;
   const input = document.getElementById('clientSearchInput');
   if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  });
 }
 
 async function addClient() {
@@ -66,6 +68,7 @@ function openClientDetail(clientId) {
 }
 
 async function renderClientDetail(el) {
+  await renderWithRetry(el, 'Client Detail', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='clients'; renderLanding();">← Back to Clients</span><div class="card"><p class="muted">Loading...</p></div>`;
   const res = await fetch(`${API}/clients/${currentClientDetailId}/quotes`);
   const data = await res.json();
@@ -93,4 +96,5 @@ async function renderClientDetail(el) {
       <tbody>${rows}</tbody></table>
     </div>
   `;
+  });
 }

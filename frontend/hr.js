@@ -35,16 +35,24 @@ function hrSubnav(active) {
 }
 
 async function renderHR(el) {
+  await renderWithRetry(el, 'HR & Commission', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome"><h1>HR &amp; Commission</h1><p>Employees, hours, leave, documents, and commission — Owner/Admin tools.</p></div>
     ${hrSubnav(hrView)}
     <div id="hrContent"><p class="muted">Loading...</p></div>`;
   const content = document.getElementById('hrContent');
-  if (hrView === 'employees') renderHREmployees(content);
-  else if (hrView === 'hours') renderHRHours(content);
-  else if (hrView === 'leave') renderHRLeave(content);
-  else if (hrView === 'documents') renderHRDocuments(content);
-  else if (hrView === 'commission') renderHRCommission(content);
+  // Confirmed Aug 2026: these weren't awaited before — a rejection
+  // inside any of the 5 sub-views (e.g. the fetch timeout below firing)
+  // would have become a silent unhandled promise rejection, invisible
+  // to this function's own try/catch (added as part of the retry-and-
+  // fail-visibly fix) since an un-awaited call's rejection never
+  // propagates to its caller. Now it does.
+  if (hrView === 'employees') await renderHREmployees(content);
+  else if (hrView === 'hours') await renderHRHours(content);
+  else if (hrView === 'leave') await renderHRLeave(content);
+  else if (hrView === 'documents') await renderHRDocuments(content);
+  else if (hrView === 'commission') await renderHRCommission(content);
+  });
 }
 
 // ---- Employees ----

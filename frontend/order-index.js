@@ -36,6 +36,7 @@ function computeOrderStatus(q) {
 }
 
 async function renderOrderIndex(el, searchTerm) {
+  await renderWithRetry(el, 'Order Index', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Order Index</h2><p class="muted">Loading...</p></div>`;
   const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
   const res = await fetch(`${API}/quotes${params}`);
@@ -89,6 +90,7 @@ async function renderOrderIndex(el, searchTerm) {
   const input = document.getElementById('orderSearchInput');
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
+  });
 }
 
 async function deleteQuoteFromIndex(quoteId) {
