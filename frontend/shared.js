@@ -1,4 +1,10 @@
 // ===== SHARED FOUNDATION =====
+// cache-bust: 2026-08-23T14:55Z — forcing a fresh Render deploy to clear
+// a Cloudflare edge cache that got poisoned with a transient 502 error
+// page during the previous deploy (confirmed: real origin content was
+// always correct — cf-cache-status varied HIT/MISS by edge PoP, which
+// is why mobile consistently failed while one desktop request worked).
+// No logic change in this commit.
 // Loaded first — everything else depends on this. Confirmed Aug 2026,
 // Stage 2 of the foundation refactor: only genuinely cross-feature code
 // lives here (used by more than one feature area). Feature-specific
