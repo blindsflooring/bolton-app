@@ -42,6 +42,7 @@ def calculate_flooring_line(
     own_staff: bool = True,
     markup_override: float = None,   # confirmed Aug 2026: per-quote markup override — actually applied to the saved line, not just a live-preview-only value
     include_tile_removal_fee: bool = False,   # screed only — explicit per-line toggle, not auto-tied to job_type (a job can need tile removal billed independent of the Smooth/Over Tiles/Removed Tiles prep rate selected)
+    apply_delivery_fee: bool = True,   # confirmed Aug 2026, Transport/Courier Toggle Relocation brief — per-job override of product.delivery_fee_per_m2; True preserves the pre-existing always-on behaviour for any caller that doesn't pass this explicitly
     margin_warn_threshold: float = FLOORING_MARGIN_WARN_THRESHOLD,   # multi-tenant groundwork (confirmed Aug 2026): now settings-driven — main.py passes BusinessSettings.flooring_margin_warn_threshold; this default is only a safety net for any caller that doesn't
     tile_removal_fee_per_m2_incl_vat: float = TILE_REMOVAL_FEE_PER_M2_INCL_VAT,   # settings-driven — see above
     vat_pct: float = 0.15,   # only used to convert tile_removal_fee_per_m2_incl_vat to its ex-VAT equivalent — main.py passes BusinessSettings.vat_pct
@@ -193,7 +194,14 @@ def calculate_flooring_line(
         # glue... now do my markup") — so you're not just recovering the
         # delivery cost, you're earning your normal margin on it too.
         # Defaults to 0 for every other supplier, so this never affects them.
-        delivery_fee_total = quantity_m2 * product.delivery_fee_per_m2
+        # apply_delivery_fee (confirmed Aug 2026, Transport/Courier Toggle
+        # Relocation brief): a per-JOB override, not a per-product one — the
+        # product's own delivery_fee_per_m2 is completely untouched either
+        # way; this only controls whether THIS specific line applies it,
+        # e.g. Burgert turning it off for one Aspen room that's being
+        # collected rather than delivered, without changing Aspen's
+        # supplier-wide default for every other job.
+        delivery_fee_total = (quantity_m2 * product.delivery_fee_per_m2) if apply_delivery_fee else 0.0
         subtotal = box_total_cost + glue_cost_total + delivery_fee_total
         effective_markup = markup_override if markup_override is not None else product.sell_markup_multiplier
         marked_up = subtotal * effective_markup

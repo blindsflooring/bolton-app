@@ -191,6 +191,14 @@ function onVinylProductChange() {
     document.getElementById('fj_labour_rate').value = p.labour_rate_per_m2;
   }
   document.getElementById('fj_own_staff').value = (p.default_own_staff === false) ? 'false' : 'true';
+  // Courier toggle default (confirmed Aug 2026, Transport/Courier Toggle
+  // Relocation brief, Section 4) — "Default state follows the product's/
+  // supplier's existing setting" — re-defaults every time a different
+  // colour/product is picked (not sticky across a product change), since
+  // a different product can have a completely different courier rate/
+  // applicability. Still freely overridable per room afterward.
+  const courierToggle = document.getElementById('fj_courier_toggle');
+  if (courierToggle) courierToggle.checked = !!(p.delivery_fee_per_m2 && p.delivery_fee_per_m2 > 0);
   fjCalc();
 }
 
@@ -280,13 +288,26 @@ function fjCalc() {
   // still lands on exactly R45 incl VAT to the client.
   const tile_removal_rate_ex_vat = 45.0 / 1.15;
 
+  // Courier/delivery fee preview (confirmed Aug 2026, Transport/Courier
+  // Toggle Relocation brief) — same treatment as the real backend
+  // (calculate_flooring_line, calculations.py): bundled into the
+  // pre-markup subtotal alongside boxes+glue, so it IS marked up here
+  // too, matching exactly what "Add Floor Job to Quote" will actually
+  // save. Reads the rate from the currently-selected product, gated by
+  // the Courier toggle — the toggle controls THIS job only, the
+  // product's own stored rate is never touched by this preview.
+  const courierOn = document.getElementById('fj_courier_toggle')?.checked ?? false;
+  const selectedVinylProduct = (typeof flooringProducts !== 'undefined') ? flooringProducts.find(x => x.id == document.getElementById('fj_vinyl_product').value) : null;
+  const delivery_fee_rate = (courierOn && selectedVinylProduct && selectedVinylProduct.delivery_fee_per_m2) ? selectedVinylProduct.delivery_fee_per_m2 : 0;
+
   const m2_needed = floor_m2 * (1 + wastage);
   const boxes = includeVinyl ? Math.ceil(m2_needed / m2_per_box) : 0;
   const list_box_price = box_price * m2_per_box; // confirmed Aug 2026: the real box price, shown explicitly so "222" is never mistaken for a box price — it's the per-m2 rate the box price is derived from
   const net_box_price = box_price * (1 - trade_discount) * m2_per_box; // per-box cost, converted from the per-m2 price book rate
   const box_total = includeVinyl ? boxes * net_box_price : 0;
   const glue_total = (includeVinyl && !materialOnly) ? floor_m2 * glue_rate : 0;
-  const subtotal = box_total + glue_total;
+  const delivery_fee_total = includeVinyl ? floor_m2 * delivery_fee_rate : 0;
+  const subtotal = box_total + glue_total + delivery_fee_total;
   const marked_up = subtotal * (1 + markup);
   const labour_total = (includeVinyl && !materialOnly) ? floor_m2 * labour_rate : 0;
   const vinyl_ex = includeVinyl ? marked_up + labour_total : 0;
@@ -306,7 +327,11 @@ function fjCalc() {
   // Tile removal fee is a pure pass-through — billed and costed at the
   // same figure, same as the confirmed pattern for stairwell labour — so
   // it dilutes overall margin % without ever being marked up itself.
-  const total_real_cost = box_total + glue_total + screed_cost_total + tile_removal_total;
+  // delivery_fee_total is genuinely marked up (see above) so, unlike
+  // tile removal, it's real cost AND contributes its markup to revenue —
+  // included here so GP Rand/% reflect it the same way the real backend
+  // (material_cost_total, calculations.py) does.
+  const total_real_cost = box_total + glue_total + delivery_fee_total + screed_cost_total + tile_removal_total;
   const total_revenue = total_ex;
   const gp_rand = total_revenue - total_real_cost;
   const gp_pct = total_revenue ? (gp_rand / total_revenue) * 100 : 0;
@@ -321,6 +346,8 @@ function fjCalc() {
   document.getElementById('fj_out_net_box').textContent = R(net_box_price) + '/box';
   document.getElementById('fj_out_box_total').textContent = R(box_total);
   document.getElementById('fj_out_glue_total').textContent = R(glue_total);
+  document.getElementById('fj_row_delivery_fee').style.display = delivery_fee_total > 0 ? '' : 'none';
+  document.getElementById('fj_out_delivery_fee').textContent = R(delivery_fee_total);
   document.getElementById('fj_out_subtotal').textContent = R(subtotal);
   document.getElementById('fj_out_marked_up').textContent = R(marked_up) + ` (×${(1+markup).toFixed(2)})`;
   document.getElementById('fj_out_labour').textContent = R(labour_total);
@@ -391,6 +418,11 @@ async function addFloorJob() {
       labour_rate_per_m2: materialOnly ? 0 : (document.getElementById('fj_labour_rate').value || 0),
       own_staff: document.getElementById('fj_own_staff').value,
       markup_override: 1 + (parseFloat(document.getElementById('fj_markup').value) / 100 || 0),
+      // Courier toggle (confirmed Aug 2026, Transport/Courier Toggle
+      // Relocation brief) — per-JOB override submitted with this specific
+      // line; the product's own delivery_fee_per_m2 is never modified by
+      // this, only whether THIS line applies it.
+      apply_delivery_fee: document.getElementById('fj_courier_toggle')?.checked ?? false,
       role,
     });
     const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${params}`, {method:'POST'});
@@ -495,8 +527,14 @@ function clearStaleQuoteResidue() {
   if (tbody) tbody.innerHTML = '';
   const totalEl = document.getElementById('quoteTotal');
   if (totalEl) totalEl.innerHTML = '';
-  const levyEl = document.getElementById('q_transport_levy');
-  if (levyEl) levyEl.value = 0;
+  const levyAmountEl = document.getElementById('fj_transport_amount');
+  if (levyAmountEl) levyAmountEl.value = 0;
+  const levyToggleEl = document.getElementById('fj_transport_toggle');
+  if (levyToggleEl) levyToggleEl.checked = false;
+  const levyFieldEl = document.getElementById('fj_transport_amount_field');
+  if (levyFieldEl) levyFieldEl.style.display = 'none';
+  const courierToggleEl = document.getElementById('fj_courier_toggle');
+  if (courierToggleEl) courierToggleEl.checked = false;
   const statusSelect = document.getElementById('q_status');
   if (statusSelect) statusSelect.value = 'draft';
   const saveStatusEl = document.getElementById('saveStatus');
@@ -665,9 +703,26 @@ async function viewColourHistory(lineId) {
 // independently, any time, not tied to adding a line. Same "set/change
 // after the fact" PUT pattern as the discount endpoint.
 async function updateTransportLevy() {
-  const value = parseFloat(document.getElementById('q_transport_levy').value) || 0;
+  if (!currentQuoteId) return;   // toggle can be flicked before a quote even exists yet
+  const value = parseFloat(document.getElementById('fj_transport_amount').value) || 0;
   await fetch(`${API}/quotes/${currentQuoteId}/transport-levy?transport_levy=${value}`, { method: 'PUT' });
   loadQuote();   // refresh the totals so the new levy is reflected immediately
+}
+
+// Transport toggle (confirmed Aug 2026, Transport/Courier Toggle
+// Relocation brief) — OFF genuinely means "applies nothing", not just
+// "hidden": zeroes the amount and pushes that to the backend immediately,
+// same as if Burgert had typed 0 in by hand. ON reveals the field but
+// deliberately does NOT push anything until a real amount is typed —
+// switching it on with no value yet must not silently write a stray 0.
+function onTransportToggleChange() {
+  const on = document.getElementById('fj_transport_toggle').checked;
+  const field = document.getElementById('fj_transport_amount_field');
+  field.style.display = on ? '' : 'none';
+  if (!on) {
+    document.getElementById('fj_transport_amount').value = 0;
+    updateTransportLevy();
+  }
 }
 
 async function loadQuote() {
@@ -676,12 +731,24 @@ async function loadQuote() {
   const data = await res.json();
   const statusEl = document.getElementById('q_status');
   if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
-  // Transport Levy (confirmed Aug 2026) — reflect whatever's actually
-  // stored, not just whatever's sitting in the input from a previous
-  // quote load; onchange (not oninput) on the field itself means this
-  // never fights with someone mid-edit.
-  const levyEl = document.getElementById('q_transport_levy');
-  if (levyEl && data.quote) { levyEl.value = data.quote.transport_levy || 0; }
+  // Transport Levy (confirmed Aug 2026, relocated into the floor job
+  // calculator — Transport/Courier Toggle Relocation brief) — reflect
+  // whatever's actually stored, not just whatever's sitting in the
+  // input from a previous quote load. Quote-level, not per-room: this
+  // is the ONE toggle/field in the whole page, so re-populating it here
+  // on every loadQuote() (which runs after every add/edit/delete,
+  // regardless of which room triggered it) is what keeps it correctly
+  // showing the single shared value no matter how many rooms are on
+  // this quote.
+  const levyAmountEl = document.getElementById('fj_transport_amount');
+  const levyToggleEl = document.getElementById('fj_transport_toggle');
+  const levyFieldEl = document.getElementById('fj_transport_amount_field');
+  if (levyAmountEl && data.quote) {
+    const levy = data.quote.transport_levy || 0;
+    levyAmountEl.value = levy;
+    if (levyToggleEl) levyToggleEl.checked = levy > 0;
+    if (levyFieldEl) levyFieldEl.style.display = levy > 0 ? '' : 'none';
+  }
   const tbody = document.querySelector('#linesTable tbody');
   tbody.innerHTML = data.lines.map(l => {
     let detail = l.category === 'flooring'

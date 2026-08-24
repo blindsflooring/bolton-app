@@ -2424,6 +2424,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        bag_cost: float = 235.0, bag_coverage_m2: float = None,
                        own_staff: bool = True, markup_override: float = None,
                        include_tile_removal_fee: bool = False,
+                       apply_delivery_fee: bool = True,
                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """
     Material lines: glue_cost_per_unit / glue_coverage_m2 (e.g. Techem Tek
@@ -2435,6 +2436,11 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
     (default varies by job_type — Smooth 4, Over Tiles 3, Removed Tiles 2 —
     pass to override). include_tile_removal_fee: explicit toggle for the
     confirmed R45/m² incl VAT tile removal fee — not auto-tied to job_type.
+    apply_delivery_fee (confirmed Aug 2026, Transport/Courier Toggle
+    Relocation brief): defaults True (unchanged behaviour for any caller
+    that doesn't pass it) — per-JOB override of the product's own
+    delivery_fee_per_m2, so Burgert can turn courier off for one specific
+    room without touching the supplier-wide default.
     """
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
@@ -2446,6 +2452,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
             glue_cost_per_unit, glue_coverage_m2, labour_rate_per_m2,
             bag_cost, bag_coverage_m2, own_staff, markup_override,
             include_tile_removal_fee,
+            apply_delivery_fee=apply_delivery_fee,
             margin_warn_threshold=settings.flooring_margin_warn_threshold,
             tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
             vat_pct=settings.vat_pct,

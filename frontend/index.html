@@ -252,6 +252,33 @@
           <p class="muted" id="materialOnlyNote" style="display:none;">Line price is box cost × markup only (VAT still applied once at the end, same as every other line).</p>
         </div>
 
+        <!-- Transport + Courier toggles (confirmed Aug 2026, Transport/
+        Courier Toggle Relocation brief) — Transport replaces the old
+        always-visible field that used to sit at the bottom of the Quote
+        Lines section. IMPORTANT: Transport is QUOTE-level, not per floor
+        job — there is only ONE #fj_transport_amount input in the whole
+        page (this card isn't re-created per room), so it always reads/
+        writes the SAME underlying Quote.transport_levy value no matter
+        how many floor job tiles get added to this quote. Courier is
+        genuinely per-job (Section 4) — it defaults from the selected
+        product's own delivery_fee_per_m2 (onVinylProductChange()) but is
+        independently overridable per room, submitted as apply_delivery_fee
+        on THIS line only; the product's/supplier's own stored rate is
+        never touched by toggling this. -->
+        <div class="card" id="transportCourierCard">
+          <h2>Transport &amp; Courier</h2>
+          <div class="field">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_transport_toggle" onchange="onTransportToggleChange()" style="width:auto; margin-right:6px;"> Transport levy <span class="adj">(whole quote, ex VAT, one-off — e.g. out-of-town site or awkward delivery. Same single amount regardless of how many rooms are on this quote)</span></label>
+          </div>
+          <div class="field" id="fj_transport_amount_field" style="display:none; margin-top:6px;">
+            <label>Amount (R, ex VAT)</label>
+            <input type="number" id="fj_transport_amount" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_courier_toggle" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Courier/delivery fee for this room <span class="adj">(reflects the selected product's/supplier's own rate — defaults to that product's current setting when you pick a colour, editable per room without changing the supplier-wide default)</span></label>
+          </div>
+        </div>
+
         <div class="card" id="screedCard">
           <h2>Screed <span class="adj-badge">ADJUSTABLE</span></h2>
           <p class="muted" id="screedEmptyNote" style="display:none; color:var(--coral); font-weight:600;">No screed products in your price book yet — add one under Price Book first, or uncheck "Include screed" above.</p>
@@ -298,7 +325,8 @@
             <div class="fj-line step"><span>Net price/box (after trade discount)</span><span id="fj_out_net_box"></span></div>
             <div class="fj-line step"><span>Box total</span><span id="fj_out_box_total"></span></div>
             <div class="fj-line step"><span>Glue total</span><span id="fj_out_glue_total"></span></div>
-            <div class="fj-line step"><span>Subtotal (boxes + glue)</span><span id="fj_out_subtotal"></span></div>
+            <div class="fj-line step" id="fj_row_delivery_fee" style="display:none;"><span>Courier/delivery fee (marked up with the rest)</span><span id="fj_out_delivery_fee"></span></div>
+            <div class="fj-line step"><span>Subtotal (boxes + glue + courier)</span><span id="fj_out_subtotal"></span></div>
             <div class="fj-line step"><span>After markup</span><span id="fj_out_marked_up"></span></div>
             <div class="fj-line step"><span>+ Labour</span><span id="fj_out_labour"></span></div>
             <div class="fj-line result"><span>Vinyl line, ex VAT</span><span id="fj_out_vinyl_ex"></span></div>
@@ -387,9 +415,6 @@
       <h2>Quote Lines</h2>
       <table id="linesTable"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
       <div class="total-row" id="quoteTotal"></div>
-      <div class="field" style="margin-top:16px;"><label>Transport levy <span class="adj">(manual, one-off, ex VAT — leave blank/0 unless this specific job needs it, e.g. an out-of-town site or awkward delivery. Separate from any per-product courier cost, which still applies on top if relevant)</span></label>
-        <input type="number" id="q_transport_levy" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
-      </div>
       <div class="field" style="margin-top:16px;"><label>Quote status</label>
         <select id="q_status">
           <option value="draft">Draft</option>
