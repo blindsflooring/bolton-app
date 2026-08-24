@@ -608,12 +608,30 @@ async function viewColourHistory(lineId) {
   alert(msg);
 }
 
+// Transport Levy (confirmed Aug 2026, Courier Toggle brief Section 6) —
+// manual, job-level, one-off amount, deliberately its own field/endpoint
+// separate from the quote-level Discount % above (which is set via
+// addFloorJob() as part of building a floor job line) — this is set
+// independently, any time, not tied to adding a line. Same "set/change
+// after the fact" PUT pattern as the discount endpoint.
+async function updateTransportLevy() {
+  const value = parseFloat(document.getElementById('q_transport_levy').value) || 0;
+  await fetch(`${API}/quotes/${currentQuoteId}/transport-levy?transport_levy=${value}`, { method: 'PUT' });
+  loadQuote();   // refresh the totals so the new levy is reflected immediately
+}
+
 async function loadQuote() {
   if (!currentQuoteId) return;
   const res = await fetch(`${API}/quotes/${currentQuoteId}?role=${currentRole()}`);
   const data = await res.json();
   const statusEl = document.getElementById('q_status');
   if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
+  // Transport Levy (confirmed Aug 2026) — reflect whatever's actually
+  // stored, not just whatever's sitting in the input from a previous
+  // quote load; onchange (not oninput) on the field itself means this
+  // never fights with someone mid-edit.
+  const levyEl = document.getElementById('q_transport_levy');
+  if (levyEl && data.quote) { levyEl.value = data.quote.transport_levy || 0; }
   const tbody = document.querySelector('#linesTable tbody');
   tbody.innerHTML = data.lines.map(l => {
     let detail = l.category === 'flooring'
@@ -639,6 +657,19 @@ async function loadQuote() {
     }
     if ((l.category === 'flooring' || l.category === 'stairwell') && l.labour_charged_total > 0) {
       detail += `<br><span class="muted">labour: R${l.labour_charged_total.toFixed(2)} charged (${l.own_staff ? 'own staff — pure margin' : 'outside — real cost'})</span>`;
+    }
+    // Courier/delivery fee visibility (confirmed Aug 2026, Courier
+    // Toggle brief — "not a pricing change, add visibility"): this was
+    // computed and stored all along (delivery_fee_total) but never shown
+    // anywhere on screen, internal or otherwise. Real bug found and
+    // fixed while adding this (main.py's strip_sensitive_fields):
+    // delivery_fee_total was DOCUMENTED as sales-hidden but never
+    // actually added to the strip list — fixed there first, so this
+    // field genuinely won't be present here for the sales role now, no
+    // extra role check needed on this side, same pattern glue/labour
+    // above already rely on.
+    if (l.category === 'flooring' && l.delivery_fee_total > 0) {
+      detail += `<br><span class="muted">delivery/courier: R${l.delivery_fee_total.toFixed(2)} (marked up with the rest of the line, not a separate charge)</span>`;
     }
     const qty = l.category === 'flooring' ? (l.quantity_m2 || 1) : (l.category === 'trim' ? (l.length_m || 1) : 1);
     const totalCost = (l.category === 'flooring' || l.category === 'stairwell') && l.total_job_cost !== undefined
@@ -669,7 +700,15 @@ async function loadQuote() {
   // of a second, drift-prone calculation of the same number.
   const vatPct = businessSettings?.vat_pct ?? 0.15;
   const inclVat = data.total_incl_vat;
-  let totalText = `Total ex VAT: R${data.total_ex_vat.toFixed(2)}<br><span style="color:var(--teal);">Total incl. VAT (${(vatPct*100).toFixed(0)}%): R${inclVat.toFixed(2)}</span>`;
+  // Transport Levy shown as its own clearly labelled line (confirmed
+  // Aug 2026, brief Section 6) — the backend already folds it into
+  // subtotal_ex_vat/total_ex_vat/total_incl_vat (same discount/VAT
+  // treatment as any other line item), so this is purely a display
+  // addition, not a second calculation of anything. Blank/0 by default
+  // — only shown at all when Burgert has actually set one.
+  const transportLevy = data.quote && data.quote.transport_levy;
+  const transportLevyLine = transportLevy ? `<br>Transport levy: R${transportLevy.toFixed(2)}` : '';
+  let totalText = `Total ex VAT: R${data.total_ex_vat.toFixed(2)}${transportLevyLine}<br><span style="color:var(--teal);">Total incl. VAT (${(vatPct*100).toFixed(0)}%): R${inclVat.toFixed(2)}</span>`;
   if (data.overall_margin_pct !== undefined && currentRole() !== 'sales') {
     const pct = (data.overall_margin_pct * 100).toFixed(1);
     const flag = data.overall_margin_pct < 0.30 ? ' ⚠️' : ' ✓';

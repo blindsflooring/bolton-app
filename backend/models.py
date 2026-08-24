@@ -204,7 +204,29 @@ class FlooringProduct(SQLModel, table=True):
     # not an automatic removal. See import_master_spreadsheet() (main.py)
     # for where this gets staged during a re-import.
     discontinued: bool = False
-    delivery_fee_per_m2: float = 0.0  # confirmed Aug 2026: some suppliers (e.g. Aspen) charge delivery on top, no trade discount to offset it. Pass-through, same treatment as glue — real cost AND charged in full, never marked up. Defaults to 0 so it never affects any other supplier.
+    # Courier/Delivery Cost Toggle (confirmed Aug 2026, Courier Toggle
+    # brief) — reuses THIS existing field, deliberately no separate
+    # courier_enabled/courier_rate_per_m2 pair: courier IS this cost,
+    # confirmed by Burgert directly (the brief's proposed R15/m² for
+    # Aspen is this exact same figure this field already exists for).
+    # A nonzero value here IS the "on" state — no separate boolean, so
+    # there's no way for a toggle and a rate to disagree with each
+    # other. CORRECTED Aug 2026 (the line below used to say "never
+    # marked up" — that was simply wrong, not a deliberate-then-changed
+    # design: the real formula, calculate_flooring_line() in
+    # calculations.py, bundles this into the pre-markup subtotal
+    # alongside boxes+glue, so it IS marked up — confirmed deliberate by
+    # Burgert directly, Aug 2026, not a bug). A Bolton-NATIVE business
+    # setting, same family as trade_discount_pct/wastage_pct/glue_rate_
+    # per_m2/labour_rate_per_m2 — reflects Burgert's own cost structure
+    # with this specific supplier, never anything the supplier's own
+    # price list states, so it's deliberately NOT in the spreadsheet
+    # re-import's GOVERNED_FLOORING_FIELDS whitelist (index.html) —
+    # never touched by a re-import. 0.0 (off) by default for every
+    # supplier — hardwired to R15.00/m² for Aspen specifically via a
+    # one-time startup migration + SupplierDefault backfill, see
+    # on_startup() (main.py).
+    delivery_fee_per_m2: float = 0.0
     over_tiles_multiplier: float = 1.5    # SCREED only, editable per product (confirmed Aug 2026: your real 8-year rates are NOT a clean 1.5x/2x — e.g. deZIGN S200 screed is 130/160/250, ratios ~1.23x/1.92x, not 1.5x/2x. Default 1.5 is a generic placeholder — set your real number per product.
     removed_tiles_multiplier: float = 2.0  # SCREED only, editable per product — same as above
     m2_per_pack: Optional[float] = None  # for purchase-order pack-quantity calc (Phase 3, §13)
@@ -285,12 +307,24 @@ class SupplierDefault(SQLModel, table=True):
     commit endpoint's own logic (reusing the existing CommitChange path
     once a row exists, NewEntityImport only for the first one) is what
     keeps this to one row per supplier per tenant, same trust boundary
-    as everything else the Console writes through that one endpoint."""
+    as everything else the Console writes through that one endpoint.
+
+    default_delivery_fee_per_m2 (confirmed Aug 2026, Courier Toggle
+    brief — reuses FlooringProduct.delivery_fee_per_m2, no separate
+    courier field): same pre-fill-new-products-only, non-retroactive
+    pattern as default_trade_discount_pct — None means "no supplier-
+    level default set," which lets a brand-new product fall through to
+    FlooringProduct.delivery_fee_per_m2's own default (0.0/off) with no
+    special-casing needed. Hardwired to 15.00 for Aspen specifically via
+    a one-time startup backfill (on_startup(), main.py) — every other
+    supplier gets no row/no override, i.e. off, exactly as the brief
+    specifies."""
     id: Optional[int] = Field(default=None, primary_key=True)
     tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     supplier: str = Field(index=True)
     default_trade_discount_pct: Optional[float] = None
     pricing_zone: Optional[str] = None
+    default_delivery_fee_per_m2: Optional[float] = None
 
 
 class BlindsProduct(SQLModel, table=True):
@@ -541,6 +575,17 @@ class Quote(SQLModel, table=True):
     blinds_measurements_visible: bool = True   # client-facing toggle, internal data always kept
     status: str = "draft"     # draft -> sent -> accepted -> invoiced -> paid, OR draft/sent -> declined. "declined" added Aug 2026 specifically so conversion rate is computable (previously only "reached accepted" vs "still open" existed, which conflates "not yet decided" with "actually lost")
     discount_pct: float = 0.0   # confirmed Aug 2026: applied to the whole quote's ex-VAT subtotal, before VAT — not per line
+    # Transport Levy (confirmed Aug 2026, Courier Toggle brief Section 6
+    # — explicitly a DIFFERENT feature from the per-product delivery
+    # fee, do not merge the two): a manual, one-off, job-level amount
+    # for jobs that need it (out-of-town site, awkward delivery, etc) —
+    # opt-in, blank/zero on every quote by default. Shows as its own
+    # line ("Transport levy: R...") and is added into subtotal_ex_vat
+    # alongside the real line items (get_quote(), main.py) — same
+    # discount/VAT treatment as every other line on the quote. Fully
+    # independent of FlooringProduct.delivery_fee_per_m2 — both can
+    # apply to the same quote at once (e.g. an out-of-town Aspen job).
+    transport_levy: float = 0.0
     deposit_pct: float = 0.70   # confirmed Aug 2026: 70% deposit, balance on completion
     created_at: datetime = Field(default_factory=datetime.utcnow)
     xero_quote_id: Optional[str] = None   # populated once pushed to Xero (Phase 2)

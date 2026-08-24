@@ -314,11 +314,13 @@ async function renderPrintDoc(quoteId, docType) {
         <tbody>${rows}</tbody>
       </table>
       <div class="totals">
+        ${data.quote.transport_levy ? `<div class="row"><span>Transport levy</span><span>R${data.quote.transport_levy.toFixed(2)}</span></div>` : ''}
         <div class="row"><span>Subtotal (ex VAT)</span><span>R${data.subtotal_ex_vat.toFixed(2)}</span></div>
         ${data.discount_amount ? `<div class="row" style="color:var(--coral);"><span>Discount</span><span>-R${data.discount_amount.toFixed(2)}</span></div>
         <div class="row"><span>Net (ex VAT)</span><span>R${data.total_ex_vat.toFixed(2)}</span></div>` : ''}
         <div class="row"><span>VAT (${((businessSettings?.vat_pct ?? 0.15)*100).toFixed(0)}%)</span><span>R${(data.total_incl_vat - data.total_ex_vat).toFixed(2)}</span></div>
         <div class="row grand"><span>Total (incl VAT)</span><span>R${data.total_incl_vat.toFixed(2)}</span></div>
+        ${data.lines.some(l => l.has_delivery_fee) ? `<div class="row" style="color:#6b7280; font-style:italic; font-size:11px;"><span>Delivery included</span><span></span></div>` : ''}
         <div class="row" style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--border);"><span>Deposit (${(data.quote.deposit_pct*100).toFixed(0)}%, due to start)</span><span>R${data.deposit_amount.toFixed(2)}</span></div>
         <div class="row"><span>Balance (on completion)</span><span>R${data.balance_amount.toFixed(2)}</span></div>
       </div>

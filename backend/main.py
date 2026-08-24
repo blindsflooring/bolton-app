@@ -214,6 +214,19 @@ def _ensure_new_columns():
         ("flooringproduct", "wear_layer_mm", "FLOAT", "NULL"),
         # Master Spreadsheet System of Record (confirmed Aug 2026):
         ("flooringproduct", "discontinued", "BOOLEAN", "FALSE"),
+        # Courier/Delivery Cost Toggle (confirmed Aug 2026) — reuses the
+        # EXISTING flooringproduct.delivery_fee_per_m2 column (already
+        # in the schema, no migration needed for it) rather than a new
+        # courier field — confirmed by Burgert directly that this is the
+        # same real cost, deliberately still marked up (see models.py's
+        # FlooringProduct.delivery_fee_per_m2 docstring). Only the
+        # supplier-level default is new. NULL default, not 0 — mirrors
+        # default_trade_discount_pct's own reasoning (None means "no
+        # default set", not "default is zero").
+        ("supplierdefault", "default_delivery_fee_per_m2", "FLOAT", "NULL"),
+        # Transport Levy (confirmed Aug 2026) — manual, per-job, opt-in;
+        # 0.0 default so every existing quote is completely unaffected.
+        ("quote", "transport_levy", "FLOAT", "0.0"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -402,6 +415,64 @@ def on_startup():
                 migrated_products += 1
         if migrated_products:
             print(f"Migration: price-per-box field sequence redesign — migrated {migrated_products} FlooringProduct row(s)")
+        session.commit()
+
+        # Courier/Delivery Cost Toggle (confirmed Aug 2026, Courier
+        # Toggle brief) — hardwired for Aspen, reusing the EXISTING
+        # delivery_fee_per_m2 field (confirmed by Burgert directly: this
+        # IS the courier cost, not a separate thing — no new product
+        # field). Two parts, both idempotent and safe to run on every
+        # startup:
+        #  1. SupplierDefault backfill, same "only set if not already
+        #     set" pattern as the zone-pricing backfill above — so any
+        #     NEW Aspen product created from now on pre-fills correctly.
+        #  2. One-time bulk update (Section 4 of the brief) on Aspen
+        #     products ALREADY in Bolton. delivery_fee_per_m2 defaults to
+        #     0.0, not NULL, so — unlike the price-per-box migration
+        #     above — "still at 0.0" can't be told apart from "Burgert
+        #     deliberately set this Aspen product's delivery fee to R0"
+        #     using this field alone. Deliberately conservative: only
+        #     touches rows CURRENTLY AT EXACTLY 0.0 (the untouched
+        #     default), never overwrites any other already-set value, so
+        #     this can never clobber a real per-product customization —
+        #     matches this project's standing rule of never silently
+        #     overwriting data it can't be certain about.
+        aspen_pairs = {
+            (p.tenant_id, p.supplier)
+            for p in session.exec(select(FlooringProduct).where(FlooringProduct.supplier.ilike("%aspen%"))).all()
+        }
+        for aspen_tenant_id, aspen_supplier in aspen_pairs:
+            existing_default = session.exec(
+                select(SupplierDefault).where(
+                    SupplierDefault.tenant_id == aspen_tenant_id,
+                    SupplierDefault.supplier == aspen_supplier,
+                )
+            ).first()
+            if existing_default:
+                if existing_default.default_delivery_fee_per_m2 is None:
+                    existing_default.default_delivery_fee_per_m2 = 15.00
+                    session.add(existing_default)
+            else:
+                session.add(SupplierDefault(
+                    tenant_id=aspen_tenant_id, supplier=aspen_supplier,
+                    default_delivery_fee_per_m2=15.00,
+                ))
+
+        aspen_unmigrated = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.delivery_fee_per_m2 == 0.0,
+                FlooringProduct.supplier.ilike("%aspen%"),
+            )
+        ).all()
+        for p in aspen_unmigrated:
+            p.delivery_fee_per_m2 = 15.00
+            session.add(p)
+            session.add(AuditLog(
+                tenant_id=p.tenant_id, username="system-migration", entity_type="FlooringProduct", entity_id=p.id,
+                field="delivery_fee_per_m2", old_value="0.0", new_value="15.0",
+            ))
+        if aspen_unmigrated:
+            print(f"Migration: courier/delivery fee bulk update — set R15.00/m² for {len(aspen_unmigrated)} Aspen FlooringProduct row(s)")
         session.commit()
 
 
@@ -647,6 +718,19 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
             "unit_cost", "margin_pct", "glue_cost_total",
             "labour_cost_total", "compound_cost_total", "total_job_cost",
             "vinyl_cost_total", "nosing_cost_total",
+            # BUG FOUND AND FIXED (Aug 2026, Courier Toggle brief — caught
+            # while adding delivery/courier fee visibility to the
+            # internal quote-builder view, not something the brief itself
+            # asked for): delivery_fee_total has ALWAYS been genuinely
+            # cost data (real pass-through spend, same class as glue/
+            # labour) and supabase_schema.sql's own column comment
+            # already claimed it was "RLS: hide from sales role" — but it
+            # was never actually added to this strip list, so it's been
+            # silently visible to Sales this whole time. Closing that
+            # gap now, before making it more visible elsewhere (this
+            # brief's new internal quote-line display) would have made
+            # the existing leak worse, not better.
+            "delivery_fee_total",
         ):
             line_item.pop(field, None)
     return line_item
@@ -1046,6 +1130,7 @@ FIELD_LABELS = {
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
     "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
+    "default_delivery_fee_per_m2": "Delivery fee default (R/m², for new products)",
     "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
@@ -2214,6 +2299,23 @@ def update_quote_discount(quote_id: int, discount_pct: float, tenant_id: str = D
         return quote
 
 
+@app.put("/quotes/{quote_id}/transport-levy")
+def update_quote_transport_levy(quote_id: int, transport_levy: float, tenant_id: str = Depends(get_current_tenant)):
+    """Transport Levy (confirmed Aug 2026, Courier Toggle brief Section 6)
+    — manual, per-job, opt-in amount, same "set/change after the fact"
+    pattern as update_quote_discount above. Explicitly a DIFFERENT thing
+    from the per-product delivery fee (FlooringProduct.delivery_fee_per_m2)
+    — this is a single ad-hoc amount typed in for a specific job, not
+    tied to any product or supplier."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote.transport_levy = transport_levy
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
 @app.put("/quotes/{quote_id}")
 def update_quote_details(quote_id: int, client_name: str = None, sales_owner: str = None,
                           branch: str = None, status: str = None,
@@ -2566,7 +2668,28 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
         lines_out = [strip_sensitive_fields(l.dict(), role) for l in lines]
-        subtotal_ex_vat = sum(l["line_total"] for l in lines_out)
+        # Courier/delivery fee — client-facing confirmation, NOT the
+        # amount (confirmed Aug 2026, Courier Toggle brief: "delivery
+        # stays folded into the total... no separate cost shown to the
+        # client, but add a plain note... 'Delivery included' — no
+        # amount, just the confirmation"). has_delivery_fee is a plain
+        # boolean, computed from the ORIGINAL (pre-strip) line objects —
+        # deliberately added AFTER strip_sensitive_fields, on every
+        # role including sales, since a yes/no fact reveals nothing
+        # about the actual cost/margin the real delivery_fee_total
+        # figure would. This is what the print view (shared.js) reads
+        # to decide whether to show the note, instead of needing the
+        # real (correctly role-stripped) figure.
+        for l, l_out in zip(lines, lines_out):
+            l_out["has_delivery_fee"] = bool(l.delivery_fee_total)
+        # Transport Levy (confirmed Aug 2026, Courier Toggle brief
+        # Section 6) — a manual, opt-in, job-level amount, added into
+        # subtotal_ex_vat alongside the real line items so it gets
+        # exactly the same discount/VAT treatment as every other line on
+        # the quote ("added to the total the same way other line items
+        # are"). 0.0 on every quote unless Burgert explicitly sets one —
+        # completely inert until then.
+        subtotal_ex_vat = sum(l["line_total"] for l in lines_out) + quote.transport_levy
 
         # Client-facing measurement toggle: strip width/drop from blinds
         # lines if the quote's toggle is off. Internal DB record is untouched.
@@ -2706,7 +2829,12 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
-            subtotal_ex_vat = sum(l.line_total for l in lines)
+            # Transport Levy included here too (confirmed Aug 2026) — same
+            # reasoning as get_quote() above; keeps the Order Index's own
+            # totals consistent with the quote detail screen's, same "one
+            # settings source, never two places that could quietly disagree"
+            # discipline VAT_PCT already follows in this function.
+            subtotal_ex_vat = sum(l.line_total for l in lines) + q.transport_levy
             discount_amount = subtotal_ex_vat * q.discount_pct
             total_ex_vat = subtotal_ex_vat - discount_amount
             total_incl_vat = total_ex_vat * (1 + VAT_PCT)
