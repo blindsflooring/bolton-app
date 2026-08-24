@@ -396,6 +396,7 @@ function fjCalc() {
 async function addFloorJob() {
   const floorM2 = parseFloat(document.getElementById('fj_floor_m2').value);
   if (!floorM2 || floorM2 <= 0) { alert('Enter a floor size first.'); return; }
+  if (!confirmPostAcceptChange(editingLineId ? 'saving this change' : 'adding this line')) return;
   await deleteLineBeingEditedIfAny();   // if this is a Save on an in-progress edit, remove the old version of this line first
   const includeVinyl = document.getElementById('fj_include_vinyl').checked;
   const includeScreed = document.getElementById('fj_include_screed').checked;
@@ -482,6 +483,7 @@ async function createQuote() {
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
+  document.getElementById('orderDetailsCard').style.display = 'block';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -524,6 +526,9 @@ async function createQuote() {
 // (adds clearing q_client itself + the Start Quote button state), for
 // entry points where no quote is being submitted in the same breath.
 function clearStaleQuoteResidue() {
+  currentQuoteStatus = 'draft';   // a brand-new quote is always draft — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
+  const printInvoiceBtn = document.getElementById('printInvoiceBtn');
+  if (printInvoiceBtn) printInvoiceBtn.style.display = 'none';
   const tbody = document.querySelector('#linesTable tbody');
   if (tbody) tbody.innerHTML = '';
   const totalEl = document.getElementById('quoteTotal');
@@ -541,6 +546,18 @@ function clearStaleQuoteResidue() {
   const saveStatusEl = document.getElementById('saveStatus');
   if (saveStatusEl) saveStatusEl.textContent = '';
   clearLandingRows();   // stairwell landing rows are per-quote scratch state too
+  // Order Details / Follow-Ups (confirmed Aug 2026, Sprint D) — same
+  // stale-residue risk as everything else on this screen: without this,
+  // a previous quote's site address/payment dates/follow-up notes could
+  // still be sitting in these fields when the card is shown again for a
+  // different quote, before loadQuote() gets a chance to repopulate them.
+  ['od_site_address', 'od_installation_date', 'od_invoice_sent_date', 'od_deposit_paid_date',
+   'od_deposit_payment_method', 'od_final_payment_date', 'od_final_payment_method', 'fu_date', 'fu_notes']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const orderDetailsStatusEl = document.getElementById('orderDetailsSaveStatus');
+  if (orderDetailsStatusEl) orderDetailsStatusEl.textContent = '';
+  const followUpListEl = document.getElementById('followUpList');
+  if (followUpListEl) followUpListEl.innerHTML = '';
   // Real bug found while building Sprint B's line editing: without this,
   // editingLineId could survive into a DIFFERENT quote (started right
   // after cancelling out of an edit mid-flow) — the next "Add" click in
@@ -555,6 +572,7 @@ function resetQuoteBuilderUI() {
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
+  document.getElementById('orderDetailsCard').style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';
@@ -618,6 +636,7 @@ async function addLine() {
   const productId = document.getElementById('line_product').value;
   const discount = parseFloat(document.getElementById('line_discount').value) / 100;
   const role = currentRole();
+  if (!confirmPostAcceptChange(editingLineId ? 'saving this change' : 'adding this line')) return;
   if (cat !== 'stairwell') { await deleteLineBeingEditedIfAny(); }   // if this is a Save on an in-progress edit, remove the old version of this line first (stairwell lines are never in edit mode — no Edit button offered for them)
 
   if (cat === 'stairwell') {
@@ -677,8 +696,28 @@ async function addLine() {
   loadQuote();
 }
 
+// Controlled post-accept adjustments (confirmed Aug 2026, Client-Side
+// Commercial Workflow brief, Sprint D) — "controlled" means a
+// deliberate heads-up, not a block: extra screed/trims/site extras
+// genuinely do need adding after a quote's been accepted, that's the
+// whole point of this sprint item. Nothing prevented this before (no
+// status check existed anywhere on the add/edit/delete path), which
+// also meant nothing FLAGGED it either — a line could be silently
+// added to an already-accepted/invoiced/paid quote with zero
+// indication anything unusual was happening. Genuinely draft/sent
+// quotes are completely unaffected — no new dialog, same one-click
+// editing Sprint B already built.
+const POST_ACCEPT_LOCKED_STATUSES = ['accepted', 'invoiced', 'paid'];
+function confirmPostAcceptChange(actionLabel) {
+  if (!POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus)) return true;
+  return confirm(`This quote is already marked "${currentQuoteStatus}" — ${actionLabel} now could affect billing already communicated to the client.\n\nThis is allowed (e.g. extra screed, trims, or site extras found after acceptance) — just make sure the client knows about the change. Continue?`);
+}
+
 async function deleteQuoteLine(lineId) {
-  if (!confirm('Delete this line from the quote?')) return;
+  const msg = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus)
+    ? `This quote is already marked "${currentQuoteStatus}" — delete this line anyway? This could affect billing already communicated to the client; make sure the client knows.`
+    : 'Delete this line from the quote?';
+  if (!confirm(msg)) return;
   await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}`, {method:'DELETE'});
   loadQuote();
 }
@@ -833,14 +872,37 @@ function onTransportToggleChange() {
 // (product_id, job_type, discount_pct, etc.), not just what's rendered
 // in the table's own cells, to pre-fill an edit form.
 let currentQuoteLinesCache = [];
+// Cached alongside the lines (confirmed Aug 2026, Client-Side Commercial
+// Workflow brief, Sprint D — "Allow CONTROLLED post-accept adjustments")
+// — used by confirmPostAcceptChange() below to decide whether adding/
+// deleting a line needs an explicit heads-up first.
+let currentQuoteStatus = 'draft';
 
 async function loadQuote() {
   if (!currentQuoteId) return;
   const res = await fetch(`${API}/quotes/${currentQuoteId}?role=${currentRole()}`);
   const data = await res.json();
   currentQuoteLinesCache = data.lines;
+  if (data.quote && data.quote.status) { currentQuoteStatus = data.quote.status; }
+  const printInvoiceBtn = document.getElementById('printInvoiceBtn');
+  if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
   const statusEl = document.getElementById('q_status');
   if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
+  // Order Details (confirmed Aug 2026, Sprint D) — reflect whatever's
+  // actually stored, same "real data on load, not last-typed-in-value"
+  // discipline as Transport Levy just below. Date fields come back from
+  // the API as ISO date strings or null — <input type="date"> wants
+  // exactly that format or an empty string, never null itself.
+  if (data.quote) {
+    const odFields = {
+      od_site_address: data.quote.site_address, od_installation_date: data.quote.installation_date,
+      od_invoice_sent_date: data.quote.invoice_sent_date, od_deposit_paid_date: data.quote.deposit_paid_date,
+      od_deposit_payment_method: data.quote.deposit_payment_method, od_final_payment_date: data.quote.final_payment_date,
+      od_final_payment_method: data.quote.final_payment_method,
+    };
+    Object.entries(odFields).forEach(([id, value]) => { const el = document.getElementById(id); if (el) el.value = value || ''; });
+  }
+  loadFollowUps();
   // Transport Levy (confirmed Aug 2026, relocated into the floor job
   // calculator — Transport/Courier Toggle Relocation brief) — reflect
   // whatever's actually stored, not just whatever's sitting in the
