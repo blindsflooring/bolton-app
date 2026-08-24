@@ -7,3 +7,4 @@ starlette==1.6.0
 uvicorn==0.52.3
 python-multipart==0.0.20
 psycopg2-binary>=2.9.9
+openpyxl==3.1.5

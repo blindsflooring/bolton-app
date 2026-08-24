@@ -27,6 +27,7 @@ from models import (
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
+from spreadsheet_import import parse_master_spreadsheet
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
 # environment (set in Render's dashboard, never committed to the repo)
@@ -203,6 +204,14 @@ def _ensure_new_columns():
         ("flooringproduct", "price_per_box_zone_a", "FLOAT", "NULL"),
         ("flooringproduct", "price_per_box_zone_b", "FLOAT", "NULL"),
         ("flooringproduct", "price_per_box_zone_c", "FLOAT", "NULL"),
+        # Standard Import Format (confirmed Aug 2026 — deterministic
+        # spreadsheet import replacing direct AI-PDF extraction going
+        # forward): two fields the master spreadsheet format asks for
+        # that had nowhere to go before — same "add the field rather
+        # than silently drop the data" lesson as price_per_box_ex_vat
+        # above.
+        ("flooringproduct", "sku", "VARCHAR", "NULL"),
+        ("flooringproduct", "wear_layer_mm", "FLOAT", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1034,6 +1043,7 @@ FIELD_LABELS = {
     "default_own_staff": "Labour source",
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
+    "sku": "Product code", "wear_layer_mm": "Wear layer (mm)",
     "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
@@ -1447,6 +1457,34 @@ async def import_price_sheet(
         return extract_price_sheet(file_bytes, media_type, supplier, instructions)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+
+
+@app.post("/admin/supplier-console/import-spreadsheet")
+async def import_master_spreadsheet(
+    supplier: str, file: UploadFile = File(...),
+    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+):
+    """Standard Import Format — deterministic spreadsheet import (confirmed
+    Aug 2026, Standard Import Format brief). The new PRIMARY supplier
+    import path, replacing direct AI-PDF extraction: no AI call, no
+    inference, straight column-name-to-field mapping (spreadsheet_import.py)
+    against a fixed, exact header format — either the whole file parses
+    cleanly or the whole request is rejected with a clear, specific
+    error, same "returns PROPOSED staging rows only, writes NOTHING"
+    contract as the AI import above (nothing is saved until the owner
+    reviews and clicks Commit Changes). 400, not 502, on a rejected file
+    — this is a validation failure (bad input), not an upstream service
+    failure like a Claude API error would be.
+
+    The AI-PDF import endpoint above is NOT retired by this existing —
+    kept in place per the brief's explicit instruction, just no longer
+    the recommended path for ongoing supplier imports."""
+    file_bytes = await file.read()
+    try:
+        rows = parse_master_spreadsheet(file_bytes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"rows": rows}
 
 
 @app.get("/admin/supplier-defaults", response_model=List[SupplierDefault])

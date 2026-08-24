@@ -898,6 +898,7 @@ let stagedChanges = {};   // key: "entityType:entityId:field" -> {entity_type, e
 const FLOORING_CONSOLE_FIELDS = [
   ['product_name', 'Range', 'text'],
   ['colour', 'Colour', 'text'],
+  ['sku', 'Product code', 'text'],
   ['price_per_box_ex_vat', 'Price per box ex VAT', 'number', '0.01'],
   ['m2_per_pack', 'm² per box', 'number', '0.001'],
   ['base_cost_ex_vat', 'Price/m² ex VAT (calculated)', 'calc'],
@@ -911,6 +912,7 @@ const FLOORING_CONSOLE_FIELDS = [
   ['tile_length_mm', 'Plank length mm', 'number', '0.01'],
   ['tile_width_mm', 'Plank width mm', 'number', '0.01'],
   ['tile_thickness_mm', 'Plank thickness mm', 'number', '0.01'],
+  ['wear_layer_mm', 'Wear layer mm', 'number', '0.01'],
   ['tiles_per_pack', 'Planks/box (auto if dims set)', 'number', '1'],
   ['price_per_box_zone_a', 'Zone A price per box', 'number', '0.01'],
   ['price_per_box_zone_b', 'Zone B price per box', 'number', '0.01'],
@@ -985,6 +987,7 @@ async function renderSupplierConsole(el) {
   newSupplierNameDraft = '';
   newSupplierInstructionsDraft = '';
   importStatusMessages = {};
+  spreadsheetImportStatusMessages = {};
   newSupplierStagedBatches = [];
   renderSupplierConsoleTable();
   });
@@ -1145,6 +1148,7 @@ let newSupplierInstructionsDraft = '';
 // collapsed. Persisted here (survives the re-render that would
 // otherwise erase it), keyed by supplier for existing sections.
 let importStatusMessages = {};        // supplier -> message, existing-supplier import boxes
+let spreadsheetImportStatusMessages = {};   // supplier -> message, same persistence reasoning, for the new Standard Import Format upload box (confirmed Aug 2026)
 
 // New Supplier confirmations, clarified Aug 2026 — one shared message
 // wasn't enough: the "+ Add New Supplier" box resets and can be reused
@@ -1445,81 +1449,7 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
   }
   const result = await res.json();
   for (const row of (result.rows || [])) {
-    const uncertain = new Set(row.uncertain_fields || []);
-    const fields = {
-      product_name: row.product_name || '',
-      colour: row.colour || '',
-      pricing_type: 'material',
-      m2_per_pack: row.m2_per_pack ?? null,
-    };
-    // Supplier-level trade discount default (confirmed Aug 2026): a
-    // price sheet never states a trade discount itself (it's a
-    // negotiated business term, not printed pricing), so every AI-
-    // imported product used to silently fall back to the database
-    // model's own default (0%) unless corrected by hand afterward —
-    // tedious across dozens of rows. Pre-filled here ONLY at creation
-    // time, from whatever this supplier's own default is right now
-    // (staged or already-saved) — the field stays individually
-    // editable per product after that, and changing the supplier
-    // default later never touches rows already staged/created before
-    // that change, per the brief.
-    const stagedForSupplier = stagedSupplierDefaults[supplier] || {};
-    const supplierDefaultNow = stagedForSupplier.hasOwnProperty('default_trade_discount_pct')
-      ? stagedForSupplier.default_trade_discount_pct
-      : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
-    if (supplierDefaultNow !== null && supplierDefaultNow !== undefined) {
-      fields.trade_discount_pct = supplierDefaultNow;
-    }
-    // Field Sequence Redesign (confirmed Aug 2026 — root-cause fix for
-    // the Como Flooring pricing bug): base_cost_ex_vat / price_zone_a/b/c
-    // are calculated fields now, never set directly from an import —
-    // the commit endpoint rejects staging them. This maps into
-    // price_per_box_ex_vat / price_per_box_zone_a/b/c instead (the
-    // brief's Section 1/2): use the sheet's own stated box price when
-    // given (row.price_per_box / row.zone_box_prices — the MORE
-    // reliable number, since it's what's usually printed plainly,
-    // rather than asking the AI to pick the right one of two nearby
-    // numbers, which is exactly how the original bug happened); if the
-    // sheet only gives a per-m² price with no box price stated at all,
-    // back-calculate it once here (per-m² x m²/box, per Section 2) and
-    // flag it uncertain since that's a genuine, reviewer-worthy
-    // derivation, not something read directly off the sheet.
-    const round2 = n => Math.round(n * 100) / 100;
-    if (row.price_per_box != null) {
-      fields.price_per_box_ex_vat = row.price_per_box;
-    } else if (row.unit_basis === 'per_m2' && row.price != null && fields.m2_per_pack) {
-      fields.price_per_box_ex_vat = round2(row.price * fields.m2_per_pack);
-      uncertain.add('price_per_box_ex_vat');
-    } else if (row.unit_basis === 'per_box' && row.price != null) {
-      fields.price_per_box_ex_vat = row.price;
-    } else {
-      fields.price_per_box_ex_vat = null;
-      uncertain.add('price_per_box_ex_vat');
-    }
-    if (row.zone_box_prices) {
-      fields.price_per_box_zone_a = row.zone_box_prices.A ?? null;
-      fields.price_per_box_zone_b = row.zone_box_prices.B ?? null;
-      fields.price_per_box_zone_c = row.zone_box_prices.C ?? null;
-    } else if (row.zone_prices && fields.m2_per_pack) {
-      fields.price_per_box_zone_a = row.zone_prices.A != null ? round2(row.zone_prices.A * fields.m2_per_pack) : null;
-      fields.price_per_box_zone_b = row.zone_prices.B != null ? round2(row.zone_prices.B * fields.m2_per_pack) : null;
-      fields.price_per_box_zone_c = row.zone_prices.C != null ? round2(row.zone_prices.C * fields.m2_per_pack) : null;
-      if (fields.price_per_box_zone_a != null) uncertain.add('price_per_box_zone_a');
-    }
-    // If this is a zone-priced product and price_per_box_ex_vat wasn't
-    // separately stated, default it to Zone A's box price — same
-    // fallback role base_cost_ex_vat's Zone-A default already played
-    // (resolve_zone_price(), main.py, treats base_cost_ex_vat as only a
-    // fallback; every real quote overrides it with the resolved zone).
-    if (fields.price_per_box_ex_vat == null && fields.price_per_box_zone_a != null) {
-      fields.price_per_box_ex_vat = fields.price_per_box_zone_a;
-      uncertain.delete('price_per_box_ex_vat');   // not a separate uncertainty — same value as zone A, already flagged (or not) above
-    }
-    if (row.dimensions_mm) {
-      fields.tile_length_mm = row.dimensions_mm.length ?? null;
-      fields.tile_width_mm = row.dimensions_mm.width ?? null;
-      fields.tile_thickness_mm = row.dimensions_mm.thickness ?? null;
-    }
+    const { fields, uncertain } = mapExtractedRowToFields(supplier, row);
     stagedNewEntities.push({
       tempId: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       entityType: 'FlooringProduct', supplier, fields, uncertainFields: uncertain,
@@ -1527,6 +1457,168 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
     });
   }
   return (result.rows || []).length;
+}
+
+// Shared row -> product-fields mapping (confirmed Aug 2026, Standard
+// Import Format brief) — extracted out of processImportUpload so BOTH
+// import paths (AI-PDF extraction above, and the new deterministic
+// spreadsheet import below) go through the exact same mapping logic,
+// nothing duplicated to drift out of sync. Both endpoints return rows
+// in this same shape (product_name, colour, sku, m2_per_pack,
+// price_per_box, zone_prices, dimensions_mm, wear_layer_mm,
+// uncertain_fields) by design — see spreadsheet_import.py's own
+// docstring for why.
+function mapExtractedRowToFields(supplier, row) {
+  const uncertain = new Set(row.uncertain_fields || []);
+  const fields = {
+    product_name: row.product_name || '',
+    colour: row.colour || '',
+    pricing_type: 'material',
+    m2_per_pack: row.m2_per_pack ?? null,
+    sku: row.sku ?? null,
+    wear_layer_mm: row.wear_layer_mm ?? null,
+  };
+  // Supplier-level trade discount default (confirmed Aug 2026): a
+  // price sheet never states a trade discount itself (it's a
+  // negotiated business term, not printed pricing), so every AI-
+  // imported product used to silently fall back to the database
+  // model's own default (0%) unless corrected by hand afterward —
+  // tedious across dozens of rows. Pre-filled here ONLY at creation
+  // time, from whatever this supplier's own default is right now
+  // (staged or already-saved) — the field stays individually
+  // editable per product after that, and changing the supplier
+  // default later never touches rows already staged/created before
+  // that change, per the brief.
+  const stagedForSupplier = stagedSupplierDefaults[supplier] || {};
+  const supplierDefaultNow = stagedForSupplier.hasOwnProperty('default_trade_discount_pct')
+    ? stagedForSupplier.default_trade_discount_pct
+    : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_trade_discount_pct : null);
+  if (supplierDefaultNow !== null && supplierDefaultNow !== undefined) {
+    fields.trade_discount_pct = supplierDefaultNow;
+  }
+  // Field Sequence Redesign (confirmed Aug 2026 — root-cause fix for
+  // the Como Flooring pricing bug): base_cost_ex_vat / price_zone_a/b/c
+  // are calculated fields now, never set directly from an import —
+  // the commit endpoint rejects staging them. This maps into
+  // price_per_box_ex_vat / price_per_box_zone_a/b/c instead (the
+  // brief's Section 1/2): use the sheet's own stated box price when
+  // given (row.price_per_box / row.zone_box_prices — the MORE
+  // reliable number, since it's what's usually printed plainly,
+  // rather than asking the AI to pick the right one of two nearby
+  // numbers, which is exactly how the original bug happened); if the
+  // sheet only gives a per-m² price with no box price stated at all,
+  // back-calculate it once here (per-m² x m²/box, per Section 2) and
+  // flag it uncertain since that's a genuine, reviewer-worthy
+  // derivation, not something read directly off the sheet.
+  const round2 = n => Math.round(n * 100) / 100;
+  if (row.price_per_box != null) {
+    fields.price_per_box_ex_vat = row.price_per_box;
+  } else if (row.unit_basis === 'per_m2' && row.price != null && fields.m2_per_pack) {
+    fields.price_per_box_ex_vat = round2(row.price * fields.m2_per_pack);
+    uncertain.add('price_per_box_ex_vat');
+  } else if (row.unit_basis === 'per_box' && row.price != null) {
+    fields.price_per_box_ex_vat = row.price;
+  } else {
+    fields.price_per_box_ex_vat = null;
+    uncertain.add('price_per_box_ex_vat');
+  }
+  if (row.zone_box_prices) {
+    fields.price_per_box_zone_a = row.zone_box_prices.A ?? null;
+    fields.price_per_box_zone_b = row.zone_box_prices.B ?? null;
+    fields.price_per_box_zone_c = row.zone_box_prices.C ?? null;
+  } else if (row.zone_prices && fields.m2_per_pack) {
+    fields.price_per_box_zone_a = row.zone_prices.A != null ? round2(row.zone_prices.A * fields.m2_per_pack) : null;
+    fields.price_per_box_zone_b = row.zone_prices.B != null ? round2(row.zone_prices.B * fields.m2_per_pack) : null;
+    fields.price_per_box_zone_c = row.zone_prices.C != null ? round2(row.zone_prices.C * fields.m2_per_pack) : null;
+    if (fields.price_per_box_zone_a != null) uncertain.add('price_per_box_zone_a');
+  }
+  // If this is a zone-priced product and price_per_box_ex_vat wasn't
+  // separately stated, default it to Zone A's box price — same
+  // fallback role base_cost_ex_vat's Zone-A default already played
+  // (resolve_zone_price(), main.py, treats base_cost_ex_vat as only a
+  // fallback; every real quote overrides it with the resolved zone).
+  if (fields.price_per_box_ex_vat == null && fields.price_per_box_zone_a != null) {
+    fields.price_per_box_ex_vat = fields.price_per_box_zone_a;
+    uncertain.delete('price_per_box_ex_vat');   // not a separate uncertainty — same value as zone A, already flagged (or not) above
+  }
+  if (row.dimensions_mm) {
+    fields.tile_length_mm = row.dimensions_mm.length ?? null;
+    fields.tile_width_mm = row.dimensions_mm.width ?? null;
+    fields.tile_thickness_mm = row.dimensions_mm.thickness ?? null;
+  }
+  return { fields, uncertain };
+}
+
+// Standard Import Format — deterministic spreadsheet import (confirmed
+// Aug 2026, Standard Import Format brief): the new PRIMARY import path.
+// No AI call, so no minutes-long wait and no 150s-timeout dance — a
+// short, generous 30s timeout is plenty for a file this size to reach
+// the backend, get parsed by openpyxl, and come back. Either the whole
+// file is accepted (every row staged) or the whole request is rejected
+// with a clear, specific, complete error (spreadsheet_import.py collects
+// every problem found, not just the first) — same "never partially
+// complete" contract the brief requires. Reuses mapExtractedRowToFields()
+// — same downstream mapping as the AI-PDF path, nothing duplicated.
+async function processSpreadsheetImportUpload(supplier, file, statusEl) {
+  if (statusEl) statusEl.innerHTML = '<span class="mini-spinner"></span>Uploading and reading the spreadsheet...';
+  const formData = new FormData();
+  formData.append('file', file);
+  const params = new URLSearchParams({ supplier });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(`${API}/admin/supplier-console/import-spreadsheet?${params}`, { method: 'POST', body: formData, signal: controller.signal });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = e.name === 'AbortError'
+      ? '❌ Timed out after 30s with no response — genuinely unusual for a file this size; try again.'
+      : '❌ Could not reach the server.';
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    // detail may be a multi-line "N problem(s) found" list (see
+    // spreadsheet_import.py) — <pre> preserves the line breaks instead
+    // of running them together, since each line names a different row.
+    if (statusEl) statusEl.innerHTML = `❌ <pre style="white-space:pre-wrap; margin:4px 0 0; font:inherit;">${(err.detail || 'Import failed.').replace(/</g, '&lt;')}</pre>`;
+    return null;
+  }
+  const result = await res.json();
+  for (const row of (result.rows || [])) {
+    const { fields, uncertain } = mapExtractedRowToFields(supplier, row);
+    stagedNewEntities.push({
+      tempId: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      entityType: 'FlooringProduct', supplier, fields, uncertainFields: uncertain,
+      rawPrice: null, rawUnitBasis: null,
+    });
+  }
+  return (result.rows || []).length;
+}
+
+// Two-step upload, same pattern as the AI-PDF one below (choosing a file
+// only enables the button; the actual upload/parse only starts on
+// click) — deliberately consistent UX between the two import paths,
+// even though this one doesn't need the "billed API call" justification
+// the AI path has.
+async function handleSpreadsheetImportFile(supplier, inputEl, btnEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById(`spreadsheet-import-status-${cssSafeId(supplier)}`);
+  if (btnEl) btnEl.disabled = true;   // prevent a double-submit while this is running
+  const count = await processSpreadsheetImportUpload(supplier, file, statusEl);
+  if (count !== null) {
+    // Persisted, not left on the live DOM node (confirmed Aug 2026 —
+    // same real bug importStatusMessages was built to fix: renderSupplierConsoleTable()
+    // below replaces this exact DOM node, which would silently wipe any
+    // message set directly on it before this render ever ran).
+    spreadsheetImportStatusMessages[supplier] = `✓ ${count} product${count !== 1 ? 's' : ''} staged from the spreadsheet — check the highlighted rows below, then click Commit Changes above to save.`;
+    inputEl.value = '';
+    renderSupplierConsoleTable();
+  } else if (btnEl) {
+    btnEl.disabled = false;   // failed — the file is still selected, let them retry without re-choosing it
+  }
 }
 
 // Two-step upload, confirmed Aug 2026 (choosing a file used to trigger
@@ -1625,6 +1717,48 @@ async function handleNewSupplierImportFile(inputEl, btnEl) {
     renderSupplierConsoleTable();   // fresh render puts the button back to its normal (disabled, no file chosen) state
   } else if (btnEl) {
     btnEl.disabled = false;   // failed — the file is still selected, let them retry without re-choosing it
+  }
+}
+
+// New Supplier Creation via Standard Format spreadsheet (confirmed Aug
+// 2026, Standard Import Format brief) — same shape as
+// handleNewSupplierImportFile above, just calling
+// processSpreadsheetImportUpload instead of the AI path. Kept as its
+// own function rather than a shared one with a path parameter: the two
+// already diverge slightly (no instructions textarea here, since the
+// deterministic path has nothing for free text to influence) and a
+// shared function would need a branch for that anyway.
+async function handleNewSupplierSpreadsheetImportFile(inputEl, btnEl) {
+  const file = inputEl.files[0];
+  if (!file) return;
+  const nameEl = document.getElementById('newSupplierName');
+  const supplier = nameEl.value.trim();
+  const statusEl = document.getElementById('newSupplierSpreadsheetImportStatus');
+  if (!supplier) {
+    if (statusEl) statusEl.textContent = '❌ Enter a supplier name first.';
+    return;
+  }
+  const existingSuppliers = new Set([
+    ...supplierConsoleData.flooring.map(p => p.supplier),
+    ...supplierConsoleData.blinds.map(p => p.supplier),
+    ...supplierConsoleData.trims.map(p => p.supplier),
+    ...stagedNewEntities.map(e => e.supplier),
+  ]);
+  if (existingSuppliers.has(supplier)) {
+    if (statusEl) statusEl.textContent = `"${supplier}" already exists — use that supplier's own import box below instead.`;
+    return;
+  }
+  if (btnEl) btnEl.disabled = true;
+  const count = await processSpreadsheetImportUpload(supplier, file, statusEl);
+  if (count !== null) {
+    newSupplierStagedBatches.push({ id: `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`, supplier, count });
+    expandedSuppliers.add(supplier);
+    localStorage.setItem('supplierConsoleExpanded', JSON.stringify([...expandedSuppliers]));
+    inputEl.value = '';
+    nameEl.value = '';
+    renderSupplierConsoleTable();
+  } else if (btnEl) {
+    btnEl.disabled = false;
   }
 }
 
@@ -1946,14 +2080,25 @@ function renderSupplierConsoleTable() {
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
           ${supplier.toLowerCase().includes('como') ? `
           <button onclick="stageComoVerifiedCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; margin-left:8px; font-size:12px; background:var(--teal); color:white;" title="Uses all 17 ranges' real Zone A/B/C and m²/box values, hand-extracted from the actual Como Flooring Price List PDF (LVT, SPC, Laminate, Parquet) — not derived from currently-stored data">Stage VERIFIED correction (from source PDF) + show comparison table</button>` : ''}
-          <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
-          <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
-          <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
-          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <input type="file" id="import-file-${cssSafeId(supplier)}" accept=".pdf,image/*" onchange="document.getElementById('import-extract-btn-${cssSafeId(supplier)}').disabled = !this.files.length">
-            <button id="import-extract-btn-${cssSafeId(supplier)}" onclick="handleImportFile('${supplier.replace(/'/g,"\\'")}', document.getElementById('import-file-${cssSafeId(supplier)}'), this)" disabled>Upload &amp; Extract</button>
-            <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${importStatusMessages[supplier] || ''}</span>
+          <label style="font-size:12px; font-weight:600;">Import from Standard Format spreadsheet (.xlsx) <span class="adj">(recommended — confirmed Aug 2026, Standard Import Format brief: no AI call, deterministic column mapping, either the whole file is accepted or clearly rejected. Convert the supplier's PDF to this fixed format outside Bolton first, and review it against the source PDF by hand before uploading here)</span></label>
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+            <input type="file" id="spreadsheet-import-file-${cssSafeId(supplier)}" accept=".xlsx" onchange="document.getElementById('spreadsheet-import-btn-${cssSafeId(supplier)}').disabled = !this.files.length">
+            <button id="spreadsheet-import-btn-${cssSafeId(supplier)}" onclick="handleSpreadsheetImportFile('${supplier.replace(/'/g,"\\'")}', document.getElementById('spreadsheet-import-file-${cssSafeId(supplier)}'), this)" disabled>Upload spreadsheet</button>
+            <span id="spreadsheet-import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${spreadsheetImportStatusMessages[supplier] || ''}</span>
           </div>
+          <details style="margin-bottom:14px;">
+            <summary style="cursor:pointer; font-size:12px; font-weight:600;">AI-read a price sheet directly instead (PDF/photo, slower, no human-format conversion step)</summary>
+            <div style="margin-top:8px;">
+              <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
+              <textarea id="import-instructions-${cssSafeId(supplier)}" rows="2" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour"></textarea>
+              <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <input type="file" id="import-file-${cssSafeId(supplier)}" accept=".pdf,image/*" onchange="document.getElementById('import-extract-btn-${cssSafeId(supplier)}').disabled = !this.files.length">
+                <button id="import-extract-btn-${cssSafeId(supplier)}" onclick="handleImportFile('${supplier.replace(/'/g,"\\'")}', document.getElementById('import-file-${cssSafeId(supplier)}'), this)" disabled>Upload &amp; Extract</button>
+                <span id="import-status-${cssSafeId(supplier)}" class="muted" style="font-size:12px;">${importStatusMessages[supplier] || ''}</span>
+              </div>
+            </div>
+          </details>
         </div>
         ${tables || '<p class="muted">No products from this supplier yet.</p>'}
         ` : ''}
@@ -1965,7 +2110,7 @@ function renderSupplierConsoleTable() {
 
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
-    <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below. Rows marked "NEW (import)" came from an AI-read price sheet — review every field, especially anything highlighted, before committing.</p></div>
+    <div class="landing-welcome"><h1>Supplier Console</h1><p>Every supplier's real data, one place — edits are staged here and only take effect when you click Commit Changes below. Rows marked "NEW (import)" came from a spreadsheet or AI-read price sheet import — review every field, especially anything highlighted, before committing.</p></div>
     <div class="card" id="consoleSearchCard" style="position:sticky; top:0; z-index:50;">
       <input type="text" id="consoleSearchBox" placeholder="Search by range, colour, or supplier..." value="${query}" oninput="handleConsoleSearch(this.value)" style="width:100%; max-width:400px; padding:8px; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; display:block; box-sizing:border-box;">
       <button class="primary" id="commitChangesBtn" onclick="commitSupplierConsoleChanges()" disabled>Commit Changes (0 pending)</button>
@@ -1975,14 +2120,25 @@ function renderSupplierConsoleTable() {
       <h2>+ Add New Supplier</h2>
       <p class="muted" style="margin-top:-8px;">Onboard a brand-new supplier the same way as any existing one's price sheet import — nothing is saved until Commit Changes below, same as everywhere else on this screen.</p>
       <div class="field"><label>Supplier name</label><input type="text" id="newSupplierName" value="${newSupplierNameDraft}" oninput="newSupplierNameDraft = this.value" placeholder="e.g. Continental Flooring" style="max-width:400px;"></div>
-      <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
-      <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
-      <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
-      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <input type="file" id="newSupplierFile" accept=".pdf,image/*" onchange="document.getElementById('newSupplierExtractBtn').disabled = !this.files.length">
-        <button id="newSupplierExtractBtn" onclick="handleNewSupplierImportFile(document.getElementById('newSupplierFile'), this)" disabled>Upload &amp; Extract</button>
-        <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+      <label style="font-size:12px; font-weight:600;">Import from Standard Format spreadsheet (.xlsx) <span class="adj">(recommended — see Supplier Console tip above)</span></label>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+        <input type="file" id="newSupplierSpreadsheetFile" accept=".xlsx" onchange="document.getElementById('newSupplierSpreadsheetExtractBtn').disabled = !this.files.length">
+        <button id="newSupplierSpreadsheetExtractBtn" onclick="handleNewSupplierSpreadsheetImportFile(document.getElementById('newSupplierSpreadsheetFile'), this)" disabled>Upload spreadsheet</button>
+        <span id="newSupplierSpreadsheetImportStatus" class="muted" style="font-size:12px;"></span>
       </div>
+      <details style="margin-bottom:6px;">
+        <summary style="cursor:pointer; font-size:12px; font-weight:600;">AI-read a price sheet directly instead (PDF/photo, slower, no human-format conversion step)</summary>
+        <div style="margin-top:8px;">
+          <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
+          <textarea id="newSupplierInstructions" rows="2" oninput="newSupplierInstructionsDraft = this.value" style="width:100%; max-width:500px; font-family:inherit; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:6px; display:block; margin-bottom:6px;" placeholder="Leave blank for the default extraction behaviour">${newSupplierInstructionsDraft}</textarea>
+          <label style="font-size:12px; font-weight:600;">Import from price sheet (PDF/photo): </label>
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <input type="file" id="newSupplierFile" accept=".pdf,image/*" onchange="document.getElementById('newSupplierExtractBtn').disabled = !this.files.length">
+            <button id="newSupplierExtractBtn" onclick="handleNewSupplierImportFile(document.getElementById('newSupplierFile'), this)" disabled>Upload &amp; Extract</button>
+            <span id="newSupplierImportStatus" class="muted" style="font-size:12px;"></span>
+          </div>
+        </div>
+      </details>
       ${newSupplierStagedBatches.length ? `
       <div style="margin-top:10px;">
         ${newSupplierStagedBatches.map(b => `
