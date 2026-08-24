@@ -221,6 +221,37 @@ function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : '�
 // differing. Consolidated the shared mechanics here; each caller still
 // builds its own content, since that part is genuinely different per
 // document type.
+// Simple send path (confirmed Aug 2026, Client-Side Commercial Workflow
+// brief, Sprint C) — a small floating panel, created once and reused,
+// appended straight to <body> so it works identically regardless of
+// which screen called renderPrintDoc() (Quote Builder's "Print / PDF"
+// button and the separate Print Invoice landing tile both reach this).
+// Genuinely on-screen (unlike anything placed inside #printArea, which
+// is invisible outside of an actual print render — see renderPrintDoc()'s
+// own comment) and has nothing to do with the print stylesheet at all,
+// so no @media print exclusion is needed — it simply isn't part of
+// #printArea's contents.
+function showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail) {
+  let panel = document.getElementById('sendActionsPanel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'sendActionsPanel';
+    panel.style.cssText = 'position:fixed; bottom:16px; right:16px; z-index:1000; background:white; border:2px solid var(--teal); border-radius:10px; padding:14px 16px; box-shadow:0 6px 20px rgba(0,0,0,0.15); font-family:"Figtree",sans-serif; max-width:280px;';
+    document.body.appendChild(panel);
+  }
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <b style="font-size:13px; color:var(--navy);">Send this ${docLabel.toLowerCase()}</b>
+      <span onclick="document.getElementById('sendActionsPanel').remove()" style="cursor:pointer; font-size:16px; color:#9aa0a6; line-height:1;">&times;</span>
+    </div>
+    <p class="muted" style="font-size:11px; margin:0 0 10px;">Use Print → "Save as PDF" to get a file, then attach it below.</p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <a href="${mailtoLink}" style="flex:1; text-align:center; background:var(--navy); color:white; text-decoration:none; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:600;">📧 Email${clientEmail ? '' : ' (no address)'}</a>
+      <a href="${waLink}" target="_blank" rel="noopener" style="flex:1; text-align:center; background:#25D366; color:white; text-decoration:none; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:600;">💬 WhatsApp</a>
+    </div>
+  `;
+}
+
 function triggerPrint(html) {
   document.getElementById('printArea').innerHTML = html;
   window.print();
@@ -264,6 +295,39 @@ async function renderPrintDoc(quoteId, docType) {
 
   const biz = await (await fetch(`${API}/business-settings`)).json();
 
+  // Simple send path (confirmed Aug 2026, Client-Side Commercial
+  // Workflow brief, Sprint C — "download / share-ready file, email or
+  // WhatsApp-ready. Do not over-build CRM automation this sprint").
+  // Deliberately NOT a real attachment-send integration (that's the
+  // over-build this brief explicitly warns against) — window.print()'s
+  // own "Save as PDF" is still the actual file-download step, same as
+  // before; these are pre-filled email/WhatsApp starters so getting the
+  // saved PDF to the client is one click of composing, not a blank
+  // message typed from scratch every time.
+  const docLabel = isInvoice ? 'Invoice' : 'Quote';
+  const emailSubject = encodeURIComponent(`${docLabel} #${quoteId} from ${biz.business_name || 'us'}`);
+  const emailBody = encodeURIComponent(
+    `Hi ${data.quote.client_name},\n\nPlease find attached your ${docLabel.toLowerCase()} #${quoteId}, total R${data.total_incl_vat.toFixed(2)} incl VAT.\n\n(Save this page as a PDF first — Print / Save as PDF below — then attach it here before sending.)\n\nKind regards,\n${biz.business_name || ''}`
+  );
+  const clientEmail = (client && client.email) ? client.email : '';
+  const mailtoLink = `mailto:${clientEmail}?subject=${emailSubject}&body=${emailBody}`;
+  const waText = encodeURIComponent(
+    `Hi ${data.quote.client_name}, here's your ${docLabel.toLowerCase()} #${quoteId} from ${biz.business_name || 'us'} — total R${data.total_incl_vat.toFixed(2)} incl VAT. I'll send the PDF separately.`
+  );
+  // South African numbers are stored as free text, usually local format
+  // (e.g. "082 555 1234") — wa.me needs international format with no
+  // leading 0. Only converts when the local-SA-mobile shape is
+  // unambiguous (10 digits starting with 0); anything else falls back
+  // to NO number (wa.me/?text=... still opens WhatsApp's own contact
+  // picker with the message pre-filled) rather than risk guessing wrong
+  // and pointing at a stranger's chat.
+  const waDigitsRaw = (client && client.phone) ? client.phone.replace(/[^0-9]/g, '') : '';
+  const waPhone = (client && client.phone && client.phone.trim().startsWith('+')) ? waDigitsRaw
+    : (waDigitsRaw.startsWith('27') && waDigitsRaw.length >= 11) ? waDigitsRaw
+    : (waDigitsRaw.startsWith('0') && waDigitsRaw.length === 10) ? ('27' + waDigitsRaw.slice(1))
+    : '';
+  const waLink = `https://wa.me/${waPhone}?text=${waText}`;
+
   const rows = data.lines.map(l => {
     let detail = l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
       : l.category === 'trim' ? `${l.length_m} lm`
@@ -283,6 +347,19 @@ async function renderPrintDoc(quoteId, docType) {
     const colourLine = l.colour ? `<br><b style="color:var(--teal);">Colour: ${l.colour}</b>` : '';
     return `<tr><td>${l.product_name}${colourLine}${bagNote}</td><td class="num">${detail}</td><td class="num">R${l.line_total.toFixed(2)}</td></tr>`;
   }).join('');
+
+  // Real gap found building this (confirmed Aug 2026): #printArea is
+  // display:none on screen ALWAYS, except during the browser's own
+  // print rendering pass (styles.css's @media print rule) — anything
+  // placed inside it is genuinely invisible/unclickable in the normal
+  // page, only "visible" in the print output itself, which is exactly
+  // backwards from what a clickable Email/WhatsApp action needs. Shown
+  // in a real, always-on-screen panel instead (showSendActionsPanel()
+  // below), separate from triggerPrint()'s own printArea/window.print()
+  // — deliberately NOT touching triggerPrint() itself, since hr.js also
+  // calls it for unrelated printable documents that have nothing to do
+  // with this brief.
+  showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail);
 
   triggerPrint(`
     <div class="print-doc">
