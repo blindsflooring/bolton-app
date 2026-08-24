@@ -1712,6 +1712,16 @@ function newEntityRow(entity, fields) {
       // flagged uncertain so it gets a deliberate look, same spirit as
       // the old per-box/per-piece conversion note it replaces.
       note = `<br><span class="muted" style="font-size:10px;">back-calculated from the sheet's per-m² price x m²/box — sheet didn't state a box price directly, confirm this looks right</span>`;
+    } else if (isUncertain) {
+      // Generic fallback (confirmed Aug 2026, Azura Missing Fields brief
+      // — "make any incomplete extraction visibly flagged, never
+      // silently reported as a full success"): every uncertain_fields
+      // entry already gets the yellow highlight above, but a highlight
+      // alone with no explanation is easy to skim past on a 40-product
+      // import. Any uncertain field WITHOUT a more specific note (the
+      // box-price one above, e.g.) gets this generic one instead — still
+      // better than a silent blank.
+      note = `<br><span class="muted" style="font-size:10px;">⚠ AI wasn't confident about this field — check it against the source sheet before committing</span>`;
     }
     return `<td>${inputHtml}${note}</td>`;
   }).join('');
