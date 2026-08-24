@@ -123,7 +123,16 @@ function populateVinylRangeDropdown(preselectRange) {
     document.getElementById('fj_vinyl_colour').innerHTML = '';
     return;
   }
-  rangeSelect.innerHTML = ranges.map(r => `<option value="${r}" ${r===preselectRange?'selected':''}>${r}</option>`).join('');
+  // Discontinued (confirmed Aug 2026, Master Sheet System of Record
+  // brief): still fully selectable — the brief is explicit that this
+  // must never be hidden or blocked here — just visibly labelled so
+  // whoever's building the quote can see it and decide, same "warning
+  // flag, not a soft-delete" spirit as the Supplier Console's own badge.
+  // A whole RANGE is only marked here if every colour under it is
+  // discontinued (a range with a live colour left isn't discontinued
+  // itself).
+  const rangeAllDiscontinued = r => vinylProducts.filter(p => p.product_name === r).every(p => p.discontinued);
+  rangeSelect.innerHTML = ranges.map(r => `<option value="${r}" ${r===preselectRange?'selected':''}>${r}${rangeAllDiscontinued(r) ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylRangeChange();
 }
 
@@ -131,7 +140,7 @@ function onVinylRangeChange() {
   const range = document.getElementById('fj_vinyl_range').value;
   const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && p.product_name === range));
   const colourSelect = document.getElementById('fj_vinyl_colour');
-  colourSelect.innerHTML = colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}</option>`).join('');
+  colourSelect.innerHTML = colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylColourChange();
 }
 

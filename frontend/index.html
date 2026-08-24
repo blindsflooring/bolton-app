@@ -898,6 +898,7 @@ let stagedChanges = {};   // key: "entityType:entityId:field" -> {entity_type, e
 const FLOORING_CONSOLE_FIELDS = [
   ['product_name', 'Range', 'text'],
   ['colour', 'Colour', 'text'],
+  ['discontinued', 'Status', 'bool_discontinued'],
   ['sku', 'Product code', 'text'],
   ['price_per_box_ex_vat', 'Price per box ex VAT', 'number', '0.01'],
   ['m2_per_pack', 'm² per box', 'number', '0.001'],
@@ -1034,6 +1035,19 @@ function supplierConsoleRow(entityType, fields, product) {
     const attrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="${type}" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
     if (type === 'bool') {
       return `<td><select style="${stagedHighlight}" ${attrs}><option value="true" ${val ? 'selected' : ''}>Own staff</option><option value="false" ${!val ? 'selected' : ''}>Outside</option></select></td>`;
+    }
+    if (type === 'bool_discontinued') {
+      // Master Spreadsheet System of Record (confirmed Aug 2026, Section
+      // 3): supplier-driven ("no longer in the latest sheet") AND
+      // manually settable here — same field, same staging discipline as
+      // everything else. Deliberately NOT hidden/greyed-out when true —
+      // "keep it fully visible and usable... until Burgert manually
+      // decides" — this is a visible warning badge, not a soft-delete.
+      // data-input-type is forced to "bool" (not this cell's own `type`)
+      // so stageChange() parses true/false correctly — same trick as
+      // every other non-generic type here.
+      const discAttrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="bool" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
+      return `<td><select style="${stagedHighlight} ${val ? 'background:var(--coral); color:white; font-weight:700;' : ''}" ${discAttrs}><option value="false" ${!val ? 'selected' : ''}>Active</option><option value="true" ${val ? 'selected' : ''}>Discontinued</option></select></td>`;
     }
     if (type === 'pct') {
       return `<td><input type="number" step="0.1" style="width:80px; ${stagedHighlight}" value="${val !== null && val !== undefined ? (val * 100).toFixed(1) : ''}" ${attrs}></td>`;
@@ -1586,15 +1600,97 @@ async function processSpreadsheetImportUpload(supplier, file, statusEl) {
     return null;
   }
   const result = await res.json();
-  for (const row of (result.rows || [])) {
+  const summary = stageSpreadsheetUpdateCycle(supplier, result.rows || []);
+  return { count: (result.rows || []).length, summary };
+}
+
+// Master Spreadsheet System of Record — update cycle (confirmed Aug
+// 2026, Master Sheet System of Record brief). This is what makes a
+// spreadsheet upload a genuine RE-import, not just always-new rows:
+// every parsed row is matched against this supplier's CURRENT products
+// (already loaded in supplierConsoleData — no extra fetch needed) by
+// (product name, colour). Matched -> stage an edit for the GOVERNED
+// fields only (Section 1's explicit list — Burgert's own trade
+// discount/wastage/markup/glue/labour settings are never touched,
+// deliberately not in GOVERNED_FLOORING_FIELDS). Unmatched row -> new
+// product, same as before. Existing product with NO matching row in
+// this sheet -> flagged Discontinued (never deleted — Section 3).
+// A brand-new supplier's first-ever import has zero existing products,
+// so this degenerates safely to "everything is new, nothing
+// discontinued" — same function handles both cases, no special-casing.
+const GOVERNED_FLOORING_FIELDS = ['product_name', 'colour', 'sku', 'm2_per_pack', 'price_per_box_ex_vat', 'price_per_box_zone_a', 'price_per_box_zone_b', 'price_per_box_zone_c', 'tile_length_mm', 'tile_width_mm', 'tile_thickness_mm', 'wear_layer_mm'];
+
+function normalizeProductMatchKey(name, colour) {
+  return `${(name || '').trim().toLowerCase()}|||${(colour || '').trim().toLowerCase()}`;
+}
+
+function stageSpreadsheetUpdateCycle(supplier, rows) {
+  const existingProducts = supplierConsoleData.flooring.filter(p => p.supplier === supplier);
+  const existingByKey = new Map();
+  existingProducts.forEach(p => existingByKey.set(normalizeProductMatchKey(p.product_name, p.colour), p));
+  const matchedIds = new Set();
+  const summary = { updated: [], newCount: 0, discontinued: [] };
+
+  rows.forEach(row => {
     const { fields, uncertain } = mapExtractedRowToFields(supplier, row);
-    stagedNewEntities.push({
-      tempId: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      entityType: 'FlooringProduct', supplier, fields, uncertainFields: uncertain,
-      rawPrice: null, rawUnitBasis: null,
-    });
-  }
-  return (result.rows || []).length;
+    const existingProduct = existingByKey.get(normalizeProductMatchKey(row.product_name, row.colour));
+    if (existingProduct) {
+      matchedIds.add(existingProduct.id);
+      let changedCount = 0;
+      GOVERNED_FLOORING_FIELDS.forEach(field => {
+        const newValue = fields[field];
+        const oldValue = existingProduct[field];
+        const unchanged = (newValue === oldValue) || (newValue == null && oldValue == null) ||
+          (typeof newValue === 'number' && typeof oldValue === 'number' && Math.abs(newValue - oldValue) < 1e-9);
+        if (!unchanged) {
+          stagedChanges[`FlooringProduct:${existingProduct.id}:${field}`] = { entity_type: 'FlooringProduct', entity_id: existingProduct.id, field, new_value: newValue };
+          changedCount++;
+        }
+      });
+      // A product that WAS flagged Discontinued but is back in the
+      // latest sheet is un-flagged automatically — the supplier is
+      // clearly still selling it, no reason to make Burgert do this by
+      // hand too.
+      if (existingProduct.discontinued) {
+        stagedChanges[`FlooringProduct:${existingProduct.id}:discontinued`] = { entity_type: 'FlooringProduct', entity_id: existingProduct.id, field: 'discontinued', new_value: false };
+        changedCount++;
+      }
+      if (changedCount > 0) summary.updated.push({ product: row.product_name, colour: row.colour || '', fieldsChanged: changedCount });
+    } else {
+      stagedNewEntities.push({
+        tempId: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        entityType: 'FlooringProduct', supplier, fields, uncertainFields: uncertain,
+        rawPrice: null, rawUnitBasis: null,
+      });
+      summary.newCount++;
+    }
+  });
+
+  existingProducts.forEach(p => {
+    if (!matchedIds.has(p.id) && !p.discontinued) {
+      stagedChanges[`FlooringProduct:${p.id}:discontinued`] = { entity_type: 'FlooringProduct', entity_id: p.id, field: 'discontinued', new_value: true };
+      summary.discontinued.push({ product: p.product_name, colour: p.colour || '' });
+    }
+  });
+
+  return summary;
+}
+
+// Same on-screen-table pattern as stageComoVerifiedCorrections — a real
+// comparison, not an alert(), shown for review before Commit Changes.
+function renderImportUpdateCycleSummary(supplier, summary) {
+  if (!summary.updated.length && !summary.newCount && !summary.discontinued.length) return;
+  const updatedRows = summary.updated.map(u => `<tr><td>${u.product}</td><td>${u.colour}</td><td>${u.fieldsChanged} field(s) changed</td></tr>`).join('');
+  const discontinuedRows = summary.discontinued.map(d => `<tr><td>${d.product}</td><td>${d.colour}</td><td class="muted">Not in this sheet — flagged Discontinued, still selectable in quotes until you remove it</td></tr>`).join('');
+  const html = `
+    <div class="card" style="border:2px solid var(--teal);">
+      <h2>Update cycle staged for "${supplier}"</h2>
+      <p class="muted">${summary.updated.length} existing product(s) updated, ${summary.newCount} new product(s) added, ${summary.discontinued.length} existing product(s) flagged Discontinued. Your own trade discount / wastage / markup / glue / labour settings on existing products are never touched by a re-import. Nothing is saved yet — review below, then press Commit Changes above.</p>
+      ${summary.updated.length ? `<div style="overflow-x:auto;"><table><thead><tr><th>Product</th><th>Colour</th><th>Change</th></tr></thead><tbody>${updatedRows}</tbody></table></div>` : ''}
+      ${summary.discontinued.length ? `<div style="overflow-x:auto; margin-top:10px;"><table><thead><tr><th>Product</th><th>Colour</th><th>Status</th></tr></thead><tbody>${discontinuedRows}</tbody></table></div>` : ''}
+    </div>`;
+  document.getElementById('landing').insertAdjacentHTML('afterbegin', html);
+  document.getElementById('landing').scrollIntoView({ behavior: 'smooth' });
 }
 
 // Two-step upload, same pattern as the AI-PDF one below (choosing a file
@@ -1607,15 +1703,17 @@ async function handleSpreadsheetImportFile(supplier, inputEl, btnEl) {
   if (!file) return;
   const statusEl = document.getElementById(`spreadsheet-import-status-${cssSafeId(supplier)}`);
   if (btnEl) btnEl.disabled = true;   // prevent a double-submit while this is running
-  const count = await processSpreadsheetImportUpload(supplier, file, statusEl);
-  if (count !== null) {
+  const result = await processSpreadsheetImportUpload(supplier, file, statusEl);
+  if (result !== null) {
+    const { count, summary } = result;
     // Persisted, not left on the live DOM node (confirmed Aug 2026 —
     // same real bug importStatusMessages was built to fix: renderSupplierConsoleTable()
     // below replaces this exact DOM node, which would silently wipe any
     // message set directly on it before this render ever ran).
-    spreadsheetImportStatusMessages[supplier] = `✓ ${count} product${count !== 1 ? 's' : ''} staged from the spreadsheet — check the highlighted rows below, then click Commit Changes above to save.`;
+    spreadsheetImportStatusMessages[supplier] = `✓ ${count} row(s) read from the spreadsheet (${summary.updated.length} updated, ${summary.newCount} new, ${summary.discontinued.length} discontinued) — check the summary and highlighted rows below, then click Commit Changes above to save.`;
     inputEl.value = '';
-    renderSupplierConsoleTable();
+    renderSupplierConsoleTable();   // MUST run before the summary table insert below — it fully replaces #landing's content, which would otherwise wipe the insert
+    renderImportUpdateCycleSummary(supplier, summary);
   } else if (btnEl) {
     btnEl.disabled = false;   // failed — the file is still selected, let them retry without re-choosing it
   }
@@ -1749,14 +1847,16 @@ async function handleNewSupplierSpreadsheetImportFile(inputEl, btnEl) {
     return;
   }
   if (btnEl) btnEl.disabled = true;
-  const count = await processSpreadsheetImportUpload(supplier, file, statusEl);
-  if (count !== null) {
+  const result = await processSpreadsheetImportUpload(supplier, file, statusEl);
+  if (result !== null) {
+    const { count, summary } = result;
     newSupplierStagedBatches.push({ id: `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`, supplier, count });
     expandedSuppliers.add(supplier);
     localStorage.setItem('supplierConsoleExpanded', JSON.stringify([...expandedSuppliers]));
     inputEl.value = '';
     nameEl.value = '';
-    renderSupplierConsoleTable();
+    renderSupplierConsoleTable();   // MUST run before the summary insert below — see handleSpreadsheetImportFile's own comment
+    renderImportUpdateCycleSummary(supplier, summary);
   } else if (btnEl) {
     btnEl.disabled = false;
   }
@@ -1810,7 +1910,13 @@ function newEntityRow(entity, fields) {
     const highlight = isUncertain ? 'background:#fff3cd; border:1px solid #e0a800;' : '';
     const oninput = `stageNewEntityField('${entity.tempId}','${field}','${type}', this.value)`;
     let inputHtml;
-    if (type === 'calc') {
+    if (type === 'bool_discontinued') {
+      // A freshly-imported/new product is never pre-flagged discontinued
+      // (confirmed Aug 2026) — nothing to stage here, just a plain
+      // status label, same reasoning as newEntityRow having no equivalent
+      // for other backend-only-derived fields.
+      inputHtml = `<span class="muted">Active</span>`;
+    } else if (type === 'calc') {
       // Read-only preview (confirmed Aug 2026, Field Sequence Redesign)
       // of what the backend will actually calculate on Commit — box
       // price ÷ m² per box. Nothing to stage here; box price and

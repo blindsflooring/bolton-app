@@ -212,6 +212,8 @@ def _ensure_new_columns():
         # above.
         ("flooringproduct", "sku", "VARCHAR", "NULL"),
         ("flooringproduct", "wear_layer_mm", "FLOAT", "NULL"),
+        # Master Spreadsheet System of Record (confirmed Aug 2026):
+        ("flooringproduct", "discontinued", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1043,7 +1045,7 @@ FIELD_LABELS = {
     "default_own_staff": "Labour source",
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
-    "sku": "Product code", "wear_layer_mm": "Wear layer (mm)",
+    "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
     "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
@@ -1063,7 +1065,19 @@ def format_field_value(field: str, value) -> str:
     if value is None:
         return "(not set)"
     if isinstance(value, bool):
-        return "Own staff (salaried)" if value else "Outside/subcontracted"
+        # BUG FOUND AND FIXED (Aug 2026, Master Sheet System of Record —
+        # caught before shipping the `discontinued` field, not a live
+        # incident): this used to hardcode default_own_staff's own two
+        # labels for EVERY bool field, which would have produced a
+        # nonsensical "changed from Outside/subcontracted to Own staff"
+        # message for a Discontinued flag change. Field-name-specific
+        # now, generic True/False fallback for any future bool field
+        # that isn't explicitly one of these two.
+        if field == "discontinued":
+            return "Discontinued" if value else "Active"
+        if field == "default_own_staff":
+            return "Own staff (salaried)" if value else "Outside/subcontracted"
+        return "True" if value else "False"
     fl = field.lower()
     if isinstance(value, (int, float)):
         if "pct" in fl or "discount" in fl:
@@ -1478,7 +1492,18 @@ async def import_master_spreadsheet(
 
     The AI-PDF import endpoint above is NOT retired by this existing —
     kept in place per the brief's explicit instruction, just no longer
-    the recommended path for ongoing supplier imports."""
+    the recommended path for ongoing supplier imports.
+
+    Master Spreadsheet System of Record (confirmed Aug 2026): this
+    endpoint always returns every parsed row as if new — it doesn't
+    query the database at all. The actual re-import UPDATE CYCLE
+    (matching rows against this supplier's current products, staging
+    edits to only the GOVERNED fields for a match, flagging an
+    unmatched existing product Discontinued) happens entirely in the
+    frontend (stageSpreadsheetUpdateCycle(), index.html), which already
+    has this supplier's current product list loaded for review anyway —
+    no reason to duplicate that matching logic or add a second DB round
+    trip here."""
     file_bytes = await file.read()
     try:
         rows = parse_master_spreadsheet(file_bytes)

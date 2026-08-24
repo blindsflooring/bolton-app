@@ -193,6 +193,17 @@ class FlooringProduct(SQLModel, table=True):
     tile_thickness_mm: Optional[float] = None
     sku: Optional[str] = None            # confirmed Aug 2026, Standard Import Format brief — a supplier's own product code, where they provide one. Purely informational, nothing else keys off it.
     wear_layer_mm: Optional[float] = None  # confirmed Aug 2026, Standard Import Format brief — vinyl/LVT wear layer thickness, where applicable (not every supplier states one). Purely informational, same as SKU — no pricing/quote logic reads this.
+    # Master Spreadsheet System of Record (confirmed Aug 2026): a
+    # product that existed in Bolton but is absent from a supplier's
+    # newly re-imported master sheet has been discontinued BY THE
+    # SUPPLIER — flagged here, never auto-deleted and never silently
+    # left looking current (Section 3 of the brief). Deliberately does
+    # NOT hide the product from anything — still selectable in quotes,
+    # still appears in the flooring calculator, exactly as before —
+    # this is a visible warning flag for Burgert to act on manually,
+    # not an automatic removal. See import_master_spreadsheet() (main.py)
+    # for where this gets staged during a re-import.
+    discontinued: bool = False
     delivery_fee_per_m2: float = 0.0  # confirmed Aug 2026: some suppliers (e.g. Aspen) charge delivery on top, no trade discount to offset it. Pass-through, same treatment as glue — real cost AND charged in full, never marked up. Defaults to 0 so it never affects any other supplier.
     over_tiles_multiplier: float = 1.5    # SCREED only, editable per product (confirmed Aug 2026: your real 8-year rates are NOT a clean 1.5x/2x — e.g. deZIGN S200 screed is 130/160/250, ratios ~1.23x/1.92x, not 1.5x/2x. Default 1.5 is a generic placeholder — set your real number per product.
     removed_tiles_multiplier: float = 2.0  # SCREED only, editable per product — same as above
