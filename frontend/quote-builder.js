@@ -438,6 +438,14 @@ async function createQuote() {
   const res = await fetch(`${API}/quotes?${params}`, {method:'POST'});
   const quote = await res.json();
   currentQuoteId = quote.id;
+  // Defensive backstop against stale-quote residue (confirmed Aug 2026,
+  // Client-Side Commercial Workflow brief) — a brand-new quote is
+  // genuinely empty server-side, but the DOM (#linesTable, #quoteTotal,
+  // etc.) could still be showing whatever a PREVIOUS quote left behind
+  // if this entry point is ever reached without going through
+  // resetQuoteBuilderUI() first. Cheap and always correct to clear here
+  // too, regardless of how this was reached.
+  clearStaleQuoteResidue();
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
@@ -459,15 +467,57 @@ async function createQuote() {
   pendingCategory = null;
 }
 
-function startFreshQuote() {
+// Zero data leakage between quotes (confirmed Aug 2026, Client-Side
+// Commercial Workflow brief, Sprint A item #2) — real bug found tracing
+// this exact concern: startFreshQuote() previously only HID
+// linesCard/addLineCard, it never actually cleared #linesTable's rows
+// or #quoteTotal's text. Since those two elements are only ever
+// repopulated by loadQuote() (which only runs again once the FIRST new
+// line is added), the previous quote's line items and total sat there,
+// still in the DOM, just invisible — the instant linesCard was shown
+// again (createQuote(), right after "Start Quote"), the OLD quote's
+// lines would flash back into view until a new line was added. Same gap
+// existed via startQuoteForClient() (clients.js/index.html — "+ New
+// Quote" from a client's own page), which never called any reset at
+// all, and is actually the MORE likely real path into this bug (browse
+// to a different client, click "+ New Quote" directly, no deliberate
+// "New Quote (different client)" click in between). Centralized here so
+// every entry point into "start a quote" shares one true reset,
+// including createQuote() itself as a defensive backstop.
+// Split in two deliberately: clearStaleQuoteResidue() is safe to call
+// at ANY point, including right before reading q_client/q_owner/q_branch
+// to create a new quote (createQuote() does exactly that) — it never
+// touches those three fields. resetQuoteBuilderUI() is the FULL reset
+// (adds clearing q_client itself + the Start Quote button state), for
+// entry points where no quote is being submitted in the same breath.
+function clearStaleQuoteResidue() {
+  const tbody = document.querySelector('#linesTable tbody');
+  if (tbody) tbody.innerHTML = '';
+  const totalEl = document.getElementById('quoteTotal');
+  if (totalEl) totalEl.innerHTML = '';
+  const levyEl = document.getElementById('q_transport_levy');
+  if (levyEl) levyEl.value = 0;
+  const statusSelect = document.getElementById('q_status');
+  if (statusSelect) statusSelect.value = 'draft';
+  const saveStatusEl = document.getElementById('saveStatus');
+  if (saveStatusEl) saveStatusEl.textContent = '';
+  clearLandingRows();   // stairwell landing rows are per-quote scratch state too
+}
+
+function resetQuoteBuilderUI() {
   currentQuoteId = null;
   document.getElementById('q_client').value = '';
+  clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';
   document.getElementById('quoteStatus').textContent = '';
+}
+
+function startFreshQuote() {
+  resetQuoteBuilderUI();
 }
 
 async function saveQuote() {

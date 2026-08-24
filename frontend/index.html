@@ -2558,6 +2558,18 @@ function startQuoteForClient(clientId, clientName, preferredBranch) {
   // at one call site (below) but never did anything with it — site
   // address is pre-filled server-side via client_id in POST /quotes, but
   // branch never was. Now applied when the caller has it.
+  //
+  // Zero data leakage (confirmed Aug 2026, Client-Side Commercial
+  // Workflow brief) — real bug found: this was the MORE likely real path
+  // into the stale-quote-residue bug (see resetQuoteBuilderUI(), quote-
+  // builder.js) — browsing to a different client's page and clicking
+  // "+ New Quote" here never reset anything at all, not even
+  // currentQuoteId/the Start Quote button's disabled state, unlike the
+  // deliberate "New Quote (different client)" button. If a quote was
+  // already open when this is clicked, its lines/total would still be
+  // showing, and Start Quote could still be disabled from the previous
+  // quote — reset first, exactly like starting fresh does.
+  resetQuoteBuilderUI();
   pendingClientId = clientId;
   pendingClientName = clientName;
   goToTab('quoteBuilder');
