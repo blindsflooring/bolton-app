@@ -396,6 +396,7 @@ function fjCalc() {
 async function addFloorJob() {
   const floorM2 = parseFloat(document.getElementById('fj_floor_m2').value);
   if (!floorM2 || floorM2 <= 0) { alert('Enter a floor size first.'); return; }
+  await deleteLineBeingEditedIfAny();   // if this is a Save on an in-progress edit, remove the old version of this line first
   const includeVinyl = document.getElementById('fj_include_vinyl').checked;
   const includeScreed = document.getElementById('fj_include_screed').checked;
   const role = currentRole();
@@ -540,6 +541,12 @@ function clearStaleQuoteResidue() {
   const saveStatusEl = document.getElementById('saveStatus');
   if (saveStatusEl) saveStatusEl.textContent = '';
   clearLandingRows();   // stairwell landing rows are per-quote scratch state too
+  // Real bug found while building Sprint B's line editing: without this,
+  // editingLineId could survive into a DIFFERENT quote (started right
+  // after cancelling out of an edit mid-flow) — the next "Add" click in
+  // that new quote would then wrongly delete a line ID belonging to the
+  // PREVIOUS quote.
+  cancelLineEdit();
 }
 
 function resetQuoteBuilderUI() {
@@ -611,6 +618,7 @@ async function addLine() {
   const productId = document.getElementById('line_product').value;
   const discount = parseFloat(document.getElementById('line_discount').value) / 100;
   const role = currentRole();
+  if (cat !== 'stairwell') { await deleteLineBeingEditedIfAny(); }   // if this is a Save on an in-progress edit, remove the old version of this line first (stairwell lines are never in edit mode — no Edit button offered for them)
 
   if (cat === 'stairwell') {
     const vinylProductId = document.getElementById('line_stair_vinyl').value;
@@ -675,6 +683,100 @@ async function deleteQuoteLine(lineId) {
   loadQuote();
 }
 
+// Edit an existing line (confirmed Aug 2026, Client-Side Commercial
+// Workflow brief, Sprint B — "Edit quantity, product, job type, extras
+// without total corruption"). Real constraint found while building
+// this: QuoteLineItem only ever stores the CALCULATED outputs
+// (unit_cost, line_total, labour_charged_total...), never the raw
+// inputs that produced them (wastage %, trade discount %, markup %,
+// glue/labour rate) — those were never persisted, so a flooring line's
+// exact original inputs can't be recovered once saved. Rather than
+// build a second, approximate recalculation engine here (the exact
+// class of bug this project has repeatedly found and fixed — a
+// frontend shadow-calc silently drifting from the real backend
+// formula), editing works by pre-filling the Add Line form with
+// whatever CAN be recovered (product, quantity/length/width/drop,
+// discount) plus the CURRENT price book defaults for anything else,
+// then deleting the old line and creating a fresh one through the SAME
+// trusted backend endpoint used for a brand new line (see
+// deleteLineBeingEditedIfAny(), called from addFloorJob()/addLine()) —
+// so "total corruption" is structurally impossible: the total is
+// always freshly computed server-side from whatever lines currently
+// exist, never patched in place. Stairwell lines are excluded for now
+// (landings/nosing make a faithful pre-fill materially more complex) —
+// flagged honestly rather than shipped half-working.
+let editingLineId = null;
+
+function editQuoteLine(lineId) {
+  const line = currentQuoteLinesCache.find(l => l.id === lineId);
+  if (!line) return;
+  document.getElementById('line_category').value = line.category;
+  toggleLineFields().then(() => {
+    if (line.category === 'flooring') {
+      prefillFlooringEdit(line);
+    } else if (line.category === 'blinds') {
+      document.getElementById('line_product').value = line.product_id;
+      document.getElementById('line_width').value = line.width_mm || '';
+      document.getElementById('line_drop').value = line.drop_mm || '';
+      document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+    } else if (line.category === 'trim' || line.category === 'skirting') {
+      document.getElementById('line_product').value = line.product_id;
+      document.getElementById('line_length').value = line.length_m || '';
+      document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+    } else if (line.category === 'misc') {
+      document.getElementById('line_misc_desc').value = line.product_name || '';
+      document.getElementById('line_misc_amount').value = line.unit_price || 0;
+      document.getElementById('line_misc_cost').value = line.unit_cost || 0;
+    }
+    editingLineId = lineId;
+    const banner = document.getElementById('editLineBanner');
+    if (banner) {
+      banner.style.display = '';
+      banner.querySelector('span').textContent = line.category === 'flooring'
+        ? 'Editing this line — adjust the fields, then click "Add Floor Job to Quote" to save your changes, or Cancel.'
+        : 'Editing this line — adjust the fields, then click "Add Line" to save your changes, or Cancel.';
+    }
+    document.getElementById('addLineCard').scrollIntoView({ behavior: 'smooth' });
+  });
+}
+
+function prefillFlooringEdit(line) {
+  document.getElementById('fj_include_vinyl').checked = true;
+  document.getElementById('fj_include_screed').checked = false;   // editing ONLY this vinyl line — a screed line on the same quote, if any, is a separate line item and untouched
+  document.getElementById('fj_floor_m2').value = line.quantity_m2 || '';
+  const product = flooringProducts.find(p => p.id === line.product_id);
+  if (product) {
+    populateVinylRangeDropdown(product.product_name);
+    document.getElementById('fj_vinyl_colour').value = product.id;
+    onVinylColourChange();   // sets fj_vinyl_product + pre-fills wastage/box price/trade discount/markup/labour/courier from this product's CURRENT price book entry (see this function's own doc comment for why the ORIGINAL inputs can't be recovered instead)
+  } else {
+    // Real edge case worth guarding, not silently mismatching: the
+    // product this line was originally quoted against no longer exists
+    // in the price book at all (hard-deleted, not just discontinued).
+    // Whatever range/colour happened to be selected by default is NOT
+    // the original product — say so rather than let it look correct.
+    alert('The original product for this line no longer exists in the price book — pick the replacement product manually before saving.');
+  }
+  fjOnIncludeChange();
+  fjCalc();
+}
+
+function cancelLineEdit() {
+  editingLineId = null;
+  const banner = document.getElementById('editLineBanner');
+  if (banner) banner.style.display = 'none';
+}
+
+// Called at the top of both addFloorJob() and addLine() — if a line is
+// currently being edited, its old version is deleted first so the
+// "Add" click that follows creates its replacement rather than an
+// extra duplicate line.
+async function deleteLineBeingEditedIfAny() {
+  if (!editingLineId) return;
+  await fetch(`${API}/quotes/${currentQuoteId}/lines/${editingLineId}`, { method: 'DELETE' });
+  cancelLineEdit();
+}
+
 async function changeLineColour(lineId) {
   const newColour = prompt('New colour:');
   if (!newColour) return;
@@ -725,10 +827,18 @@ function onTransportToggleChange() {
   }
 }
 
+// Cached by every loadQuote() (confirmed Aug 2026, Client-Side
+// Commercial Workflow brief, Sprint B — "Edit quantity, product, job
+// type, extras") — editQuoteLine() below needs the FULL line record
+// (product_id, job_type, discount_pct, etc.), not just what's rendered
+// in the table's own cells, to pre-fill an edit form.
+let currentQuoteLinesCache = [];
+
 async function loadQuote() {
   if (!currentQuoteId) return;
   const res = await fetch(`${API}/quotes/${currentQuoteId}?role=${currentRole()}`);
   const data = await res.json();
+  currentQuoteLinesCache = data.lines;
   const statusEl = document.getElementById('q_status');
   if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
   // Transport Levy (confirmed Aug 2026, relocated into the floor job
@@ -805,7 +915,7 @@ async function loadQuote() {
       <td>${l.product_name}${colourHtml}</td><td>${detail}</td>
       <td>R${l.line_total.toFixed(2)}</td>
       <td class="cost-col">${cost}</td><td class="cost-col">${margin}</td>
-      <td><button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
+      <td>${l.category === 'stairwell' ? '' : `<button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button>`}<button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
     </tr>`;
   }).join('');
 
