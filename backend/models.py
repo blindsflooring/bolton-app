@@ -172,7 +172,18 @@ class FlooringProduct(SQLModel, table=True):
     pricing_type: str = "material"   # "screed" | "material"
     flooring_category: str = "vinyl"  # "vinyl" | "laminate" | "spc" | "novilon" | "carpet" | "engineered_wood" | "screed" — for dashboard grouping
     display_order: int = 100         # confirmed Aug 2026: lower number = shown first in dropdowns/price book — manual priority, not auto usage tracking (not enough real quote history to learn from yet). Set your best-sellers low, e.g. series 200 at 10.
-    base_cost_ex_vat: float          # supplier cost per m² (screed: base rate; material: RRP/cost basis — see sell_markup_multiplier for actual sell price)
+    # Supplier Console Field Sequence Redesign (confirmed Aug 2026 —
+    # root cause of the Como Flooring pricing bug, finally identified:
+    # the Console never had a dedicated "price per box" field, so when a
+    # supplier's sheet states box price, it had nowhere correct to go
+    # and got written into base_cost_ex_vat instead). base_cost_ex_vat
+    # (and price_zone_a/b/c below) are now SYSTEM-CALCULATED —
+    # price_per_box_ex_vat / m2_per_pack — recomputed and overwritten by
+    # the Supplier Console commit endpoint (see recompute_calculated_
+    # prices() in main.py) every time price_per_box_ex_vat or
+    # m2_per_pack changes, and read-only in the Console UI. Never set
+    # these directly from an edit or an AI-import mapping again.
+    base_cost_ex_vat: float          # supplier cost per m² (screed: base rate; material: RRP/cost basis — see sell_markup_multiplier for actual sell price). CALCULATED, see price_per_box_ex_vat below.
     sell_markup_multiplier: float = 1.3  # MATERIAL only (confirmed Aug 2026): sell = base_cost_ex_vat x this. Default changed to your confirmed real markup (×1.3, 30%) so it's automatic without setup — still fully adjustable per product or per quote.
     wastage_pct: float = 0.08        # 8% default wastage
     trade_discount_pct: float = 0.0  # e.g. 0.30 for Azura vinyl
@@ -202,10 +213,31 @@ class FlooringProduct(SQLModel, table=True):
     # resolve_zone_price() in main.py, based on BusinessSettings.
     # pricing_zone — never a per-quote manual choice. None on every
     # non-Azura product; base_cost_ex_vat is used directly for those,
-    # completely unchanged.
+    # completely unchanged. CALCULATED as of the Field Sequence Redesign
+    # (Aug 2026) — see price_per_box_zone_a/b/c below, same rule as
+    # base_cost_ex_vat: never set these three directly again.
     price_zone_a: Optional[float] = None
     price_zone_b: Optional[float] = None
     price_zone_c: Optional[float] = None
+    # Price per box (confirmed Aug 2026, Supplier Console Field Sequence
+    # Redesign brief — the actual root cause of the Como Flooring
+    # pricing bug). These are now the RAW INPUT fields, always populated
+    # for every product: either read directly off the source sheet
+    # (suppliers like Como that state box price), or back-calculated
+    # ONCE at entry/import time (price_per_m2 x m2_per_pack) for
+    # suppliers whose sheet only states per-m2 (e.g. Azura) — see
+    # Section 2 of the brief. base_cost_ex_vat / price_zone_a/b/c above
+    # are always DERIVED from these + m2_per_pack, never the other way
+    # around, so a box price can never again land directly in a per-m2
+    # field by mistake. price_per_box_ex_vat pairs with base_cost_ex_vat
+    # (non-zone-priced products); price_per_box_zone_a/b/c pair with
+    # price_zone_a/b/c (zone-priced products, e.g. Azura, Como Flooring)
+    # — a product uses one pair or the other, matching whichever of
+    # base_cost_ex_vat/price_zone_* it already used.
+    price_per_box_ex_vat: Optional[float] = None
+    price_per_box_zone_a: Optional[float] = None
+    price_per_box_zone_b: Optional[float] = None
+    price_per_box_zone_c: Optional[float] = None
 
 
 class SupplierDefault(SQLModel, table=True):

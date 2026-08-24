@@ -875,12 +875,34 @@ function renderSessionLogTable() {
 
 let stagedChanges = {};   // key: "entityType:entityId:field" -> {entity_type, entity_id, field, new_value, old_value, label, entityLabel}
 
+// Field Sequence Redesign (confirmed Aug 2026, Supplier Console Field
+// Redesign brief — root-cause fix for the Como Flooring pricing bug:
+// the Console never had a dedicated "price per box" field, so a
+// supplier's stated box price had nowhere correct to go and landed
+// directly in the per-m² field instead). New required order per the
+// brief's Section 1:
+//   1. Price per box (RAW input, always populated)
+//   2. m² per box (RAW input, as before)
+//   3. Price per m² (type 'calc' — system-calculated, box ÷ m²/box,
+//      read-only, can never again be overwritten with a box price)
+//   4. Trade discount %
+//   5. Price per m² after trade discount (type 'calc_discount' — NEW,
+//      not a real stored field, purely computed here for display; the
+//      permanent built-in sanity check the brief asks for)
+//   6. wastage/markup/glue/labour/dims/zone pricing — unchanged, after
+//      step 5 as before.
+// Zone pricing follows the identical box->calculated pattern, just
+// three columns instead of one (price_per_box_zone_a/b/c -> price_zone_a/b/c),
+// per Section 2 of the brief: no supplier-specific branching in the
+// calculation itself, every product uses the same formula.
 const FLOORING_CONSOLE_FIELDS = [
   ['product_name', 'Range', 'text'],
   ['colour', 'Colour', 'text'],
+  ['price_per_box_ex_vat', 'Price per box ex VAT', 'number', '0.01'],
   ['m2_per_pack', 'm² per box', 'number', '0.001'],
-  ['base_cost_ex_vat', 'Price/m² ex VAT', 'number', '0.01'],
+  ['base_cost_ex_vat', 'Price/m² ex VAT (calculated)', 'calc'],
   ['trade_discount_pct', 'Trade discount %', 'pct'],
+  ['price_after_discount', 'Price/m² after discount', 'calc_discount'],
   ['wastage_pct', 'Wastage %', 'pct'],
   ['sell_markup_multiplier', 'Markup %', 'markup_pct'],
   ['glue_rate_per_m2', 'Glue rate R/m²', 'number', '0.01'],
@@ -890,9 +912,12 @@ const FLOORING_CONSOLE_FIELDS = [
   ['tile_width_mm', 'Plank width mm', 'number', '0.01'],
   ['tile_thickness_mm', 'Plank thickness mm', 'number', '0.01'],
   ['tiles_per_pack', 'Planks/box (auto if dims set)', 'number', '1'],
-  ['price_zone_a', 'Zone A price', 'number', '0.01'],
-  ['price_zone_b', 'Zone B price', 'number', '0.01'],
-  ['price_zone_c', 'Zone C price', 'number', '0.01'],
+  ['price_per_box_zone_a', 'Zone A price per box', 'number', '0.01'],
+  ['price_per_box_zone_b', 'Zone B price per box', 'number', '0.01'],
+  ['price_per_box_zone_c', 'Zone C price per box', 'number', '0.01'],
+  ['price_zone_a', 'Zone A price (calculated)', 'calc'],
+  ['price_zone_b', 'Zone B price (calculated)', 'calc'],
+  ['price_zone_c', 'Zone C price (calculated)', 'calc'],
 ];
 const TRIM_CONSOLE_FIELDS = [
   ['product_name', 'Product', 'text'],
@@ -965,6 +990,22 @@ async function renderSupplierConsole(el) {
   });
 }
 
+// Effective per-m² price for a product (confirmed Aug 2026, Field
+// Sequence Redesign) — used only for the "Price/m² after discount"
+// sanity-check column. Non-zone products: base_cost_ex_vat directly.
+// Zone-priced products: whichever zone this SUPPLIER currently
+// resolves to (staged pricing_zone choice if any, else its saved
+// SupplierDefault, else Zone A) — same resolution order as the
+// backend's own _effective_pricing_zone (main.py), just read-only here.
+function effectivePerM2(product) {
+  const isZonePriced = product.price_zone_a != null || product.price_zone_b != null || product.price_zone_c != null;
+  if (!isZonePriced) return product.base_cost_ex_vat;
+  const stagedZone = stagedSupplierDefaults[product.supplier] && stagedSupplierDefaults[product.supplier].pricing_zone;
+  const savedZone = supplierDefaults[product.supplier] && supplierDefaults[product.supplier].pricing_zone;
+  const zone = (stagedZone || savedZone || 'A').toUpperCase();
+  return zone === 'C' ? product.price_zone_c : zone === 'B' ? product.price_zone_b : product.price_zone_a;
+}
+
 function supplierConsoleRow(entityType, fields, product) {
   const cells = fields.map(([field, label, type, step]) => {
     const key = `${entityType}:${product.id}:${field}`;
@@ -1004,26 +1045,42 @@ function supplierConsoleRow(entityType, fields, product) {
       // being shown as "1.3" instead of "30.0%" like everywhere else.
       return `<td><input type="number" step="0.1" style="width:80px; ${stagedHighlight}" value="${val !== null && val !== undefined ? ((val - 1) * 100).toFixed(1) : ''}" ${attrs}></td>`;
     }
+    if (type === 'calc') {
+      // System-calculated, read-only (confirmed Aug 2026, Field
+      // Sequence Redesign — root-cause fix for the Como Flooring
+      // pricing bug): base_cost_ex_vat / price_zone_a/b/c are always
+      // derived server-side from price_per_box_* ÷ m² per box, never a
+      // manual input again — the commit endpoint now REJECTS a direct
+      // staged edit to any of these. Plain text, not an <input>, so
+      // there's nothing here to accidentally type into.
+      return `<td class="muted" data-calc-field="${field}" style="${stagedHighlight}">${val !== null && val !== undefined ? 'R' + Number(val).toFixed(2) : '—'}</td>`;
+    }
+    if (type === 'calc_discount') {
+      // NEW (confirmed Aug 2026, Field Sequence Redesign, brief Section
+      // 1 step 5) — "the permanent, built-in sanity check": price per
+      // m² (whichever zone this supplier currently resolves to, or the
+      // flat price for a non-zone supplier) with trade discount %
+      // applied, purely computed here for display — not a stored field,
+      // nothing to stage or commit for this cell.
+      const discountKey = `FlooringProduct:${product.id}:trade_discount_pct`;
+      const stagedDiscount = stagedChanges[discountKey];
+      const effectiveDiscountPct = stagedDiscount ? stagedDiscount.new_value : product.trade_discount_pct;
+      const perM2 = effectivePerM2(product);
+      const afterDiscount = (perM2 != null && effectiveDiscountPct != null) ? perM2 * (1 - effectiveDiscountPct) : null;
+      return `<td data-calc-field="price_after_discount" style="font-weight:700; color:var(--teal);">${afterDiscount != null ? 'R' + afterDiscount.toFixed(2) : '—'}</td>`;
+    }
     if (type === 'number') {
-      // Sanity-check hint (confirmed Aug 2026 — real bug found live: a
-      // Como Flooring product had a box price stored directly as
-      // base_cost_ex_vat with no division, because the AI extraction
-      // itself misclassified unit_basis as "per_m2" for that row — not
-      // a mapping-code bug, since this code never does any conversion
-      // arithmetic itself, by design (see processImportUpload's own
-      // unit-basis-safety comment). Shown for EVERY FlooringProduct
-      // with both fields set, not just Como, and purely informational —
-      // never auto-applied, since only a human with the real price
-      // sheet can judge whether the stored value is genuinely a per-m²
-      // rate or actually a box price that needs dividing. Hidden once a
-      // correction is already staged for this exact cell (confirmed Aug
-      // 2026) — recalculating the hint against the NEW staged value
-      // would just divide an already-corrected price a second time,
-      // producing a meaningless number, not an update of the hint.
-      const boxSanityNote = (field === 'base_cost_ex_vat' && entityType === 'FlooringProduct' && val !== null && val !== undefined && product.m2_per_pack && !staged)
-        ? `<br><span class="muted" style="font-size:10px;">÷ ${product.m2_per_pack} m²/box = R${(val / product.m2_per_pack).toFixed(2)}/m² — sanity check: is the stored price actually a box price?</span>`
-        : '';
-      return `<td><input type="number" step="${step || 'any'}" style="width:90px; ${stagedHighlight}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}>${boxSanityNote}</td>`;
+      // Sanity-check hint RETIRED (confirmed Aug 2026, Field Sequence
+      // Redesign brief Section 4): this used to divide base_cost_ex_vat
+      // by m²/box and ask "is this actually a box price?" — necessary
+      // when base_cost_ex_vat could be either a genuine per-m² entry OR
+      // a mistakenly-stored box price, with no way to tell which from
+      // the field alone. That ambiguity is gone now that base_cost_ex_vat
+      // is a calculated field (type 'calc' above, never reaches this
+      // branch) — there's nothing left to sanity-check at THIS field.
+      // The real, permanent sanity check is now the "Price/m² after
+      // discount" column (type 'calc_discount' above), per the brief.
+      return `<td><input type="number" step="${step || 'any'}" style="width:90px; ${stagedHighlight}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
     }
     // Widened from 120px (confirmed Aug 2026 — real range names like
     // "Aspen Project Range" were being cut off to "Aspen Project R").
@@ -1143,40 +1200,27 @@ function stageSupplierDefaultField(supplier, field, newValue, inputEl) {
     stagedSupplierDefaults[supplier][field] = newValue;
     if (inputEl) inputEl.style.background = 'var(--cream)';
   }
+  // Changing pricing_zone shifts EVERY one of this supplier's product
+  // rows' "Price/m² after discount" column (confirmed Aug 2026, Field
+  // Sequence Redesign) — a full table re-render is the simplest correct
+  // way to refresh all of them at once, same as toggleStagedDeletion
+  // already does for a change that affects more than one row's display.
+  if (field === 'pricing_zone') { renderSupplierConsoleTable(); return; }
   updateCommitButton();
 }
 
-// Bulk box-price correction (confirmed Aug 2026 — real live bug: an AI
-// import misclassified box prices as per-m² prices for a supplier's
-// products, confirmed systemic by Burgert's own visual review using
-// the sanity-check hint above). Mechanically stages Price/m² = current
-// value ÷ m²/box for every product where both are set, matching the
-// exact math the sanity-check hint already displays — same staging
-// discipline as every single-field edit on this screen: this only
-// marks 94 (or however many) values as PENDING, nothing is saved to
-// the database until the existing Commit Changes button is pressed,
-// and every staged row is visible (highlighted, showing its new value)
-// in the table below for review before that. Deliberately uniform, not
-// selective: there's no way for this code to independently tell "this
-// row's stored price is already correct" apart from "this row's price
-// looks like a box price" without a human checking against the real
-// price sheet — applying the same mechanical division to every
-// eligible row and surfacing all of them for review is safer than this
-// code guessing which ones need it and which don't.
-function stageBoxPriceCorrections(supplier) {
-  const products = supplierConsoleData.flooring.filter(p => p.supplier === supplier);
-  let corrected = 0, skipped = 0;
-  products.forEach(p => {
-    if (p.base_cost_ex_vat == null || !p.m2_per_pack) { skipped++; return; }
-    const key = `FlooringProduct:${p.id}:base_cost_ex_vat`;
-    const newValue = Math.round((p.base_cost_ex_vat / p.m2_per_pack) * 100) / 100;
-    stagedChanges[key] = { entity_type: 'FlooringProduct', entity_id: p.id, field: 'base_cost_ex_vat', new_value: newValue };
-    corrected++;
-  });
-  updateCommitButton();
-  renderSupplierConsoleTable();
-  alert(`Staged a box-price correction (Price/m² ÷ m²/box) for ${corrected} of ${products.length} "${supplier}" products.\n\n${skipped} skipped — missing Price/m² or m²/box, so this formula can't be applied to them; check those individually.\n\nNothing is saved yet — review the highlighted rows below, then press Commit Changes above to save.`);
-}
+// Bulk box-price correction — RETIRED (confirmed Aug 2026, Field
+// Sequence Redesign brief): this used to mechanically stage
+// base_cost_ex_vat = current value ÷ m²/box, a stop-gap for when
+// base_cost_ex_vat could ambiguously be either a real per-m² price or
+// a mistakenly-stored box price. That ambiguity, and this tool, are
+// both gone now that base_cost_ex_vat is a genuinely calculated field
+// (never a direct input again — the commit endpoint rejects staging it
+// directly) and the actual fix ran once, automatically, as a startup
+// migration (see main.py's on_startup(), "Price-per-box migration") —
+// every existing product's price_per_box_ex_vat/price_per_box_zone_*
+// was already populated correctly on deploy, no manual button needed.
+// Kept only as a comment so the history/reasoning isn't lost.
 
 // Verified correction (confirmed Aug 2026): hand-extracted directly
 // from the real source document (Como_Price_list_June_26_General.01.pdf,
@@ -1185,10 +1229,11 @@ function stageBoxPriceCorrections(supplier) {
 // every range on the sheet (LUXURY VINYL FLOORING, RIGID SPC FLOORING,
 // LAMINATE FLOORING, PARQUET FLOORING — the whole document, not just
 // LVT), not derived or guessed. This is a STRONGER source of truth than
-// stageBoxPriceCorrections() above (which only mechanically divides
-// whatever's currently stored, still subject to whatever the AI got
-// wrong) — this instead REPLACES the stored values with the sheet's
-// own stated figures directly.
+// the automatic startup migration (main.py's on_startup(), which only
+// mechanically moves+divides whatever was already stored, still
+// subject to the two known name-contamination bugs) — this instead
+// REPLACES the stored values with the sheet's own stated figures
+// directly, by product-name match.
 //
 // Ordered longest/most-specific name first ("Como Bonsai 2.0" before
 // "Como Bonsai") — matching is prefix-based after normalizing case/
@@ -1273,15 +1318,25 @@ function stageComoVerifiedCorrections(supplier) {
     }
     if (!ref) { unmatched.push(p); return; }
     const previousValue = p.base_cost_ex_vat;   // captured BEFORE staging overwrites the display
+    // Field Sequence Redesign (confirmed Aug 2026): base_cost_ex_vat /
+    // price_zone_a/b/c are calculated fields now — the commit endpoint
+    // rejects staging them directly. Stage the RAW box price instead
+    // (sheet's per-m² x its own m²/box, both from the verified table
+    // above) and m2_per_pack; the backend recomputes base_cost_ex_vat /
+    // price_zone_a/b/c = box ÷ m²/box automatically on commit, landing
+    // back on these exact same per-m² figures (same math, just done
+    // server-side now so it can never again be skipped/overwritten).
+    const round2 = n => Math.round(n * 100) / 100;
+    const boxA = round2(ref.zoneA * ref.m2PerPack), boxB = round2(ref.zoneB * ref.m2PerPack), boxC = round2(ref.zoneC * ref.m2PerPack);
     const fieldsToSet = {
-      base_cost_ex_vat: ref.zoneA,
-      price_zone_a: ref.zoneA, price_zone_b: ref.zoneB, price_zone_c: ref.zoneC,
+      price_per_box_ex_vat: boxA,
+      price_per_box_zone_a: boxA, price_per_box_zone_b: boxB, price_per_box_zone_c: boxC,
       m2_per_pack: ref.m2PerPack,
     };
     for (const [field, newValue] of Object.entries(fieldsToSet)) {
       stagedChanges[`FlooringProduct:${p.id}:${field}`] = { entity_type: 'FlooringProduct', entity_id: p.id, field, new_value: newValue };
     }
-    matched.push({ product: p.product_name, colour: p.colour || '', matchedRange: ref.name, matchedViaAlias, sheetZoneA: ref.zoneA, previousValue, staged: ref.zoneA });
+    matched.push({ product: p.product_name, colour: p.colour || '', matchedRange: ref.name, matchedViaAlias, sheetZoneA: ref.zoneA, sheetBoxA: boxA, m2PerPack: ref.m2PerPack, previousValue, staged: ref.zoneA });
   });
   updateCommitButton();
   renderSupplierConsoleTable();
@@ -1293,21 +1348,22 @@ function stageComoVerifiedCorrections(supplier) {
       : '';
     return `<tr style="${changed ? '' : 'opacity:0.6;'}">
       <td>${m.product}${aliasFlag}</td><td>${m.colour}</td><td>${m.matchedRange}</td>
+      <td>R${m.sheetBoxA.toFixed(2)}</td><td>${m.m2PerPack}</td>
       <td>R${m.sheetZoneA.toFixed(2)}</td>
       <td>${m.previousValue != null ? 'R'+m.previousValue.toFixed(2) : '(not set)'}</td>
       <td style="${changed ? 'font-weight:700; color:var(--teal);' : ''}">R${m.staged.toFixed(2)}${changed ? '' : ' (unchanged)'}</td>
     </tr>`;
   }).join('');
-  const unmatchedRows = unmatched.map(p => `<tr><td>${p.product_name}</td><td>${p.colour || ''}</td><td colspan="4" class="muted">No matching range or known alias found in the source PDF reference table — left untouched, check manually</td></tr>`).join('');
+  const unmatchedRows = unmatched.map(p => `<tr><td>${p.product_name}</td><td>${p.colour || ''}</td><td colspan="6" class="muted">No matching range or known alias found in the source PDF reference table — left untouched, check manually</td></tr>`).join('');
   const aliasCount = matched.filter(m => m.matchedViaAlias).length;
 
   const tableHtml = `
     <div class="card" style="border:2px solid var(--teal);">
       <h2>Verified correction staged for "${supplier}" — ${matched.length} of ${products.length} products matched</h2>
-      <p class="muted">Every value below comes directly from Como_Price_list_June_26_General.01.pdf's own Zone A/B/C columns — check this against the real sheet yourself. Nothing is saved yet; press Commit Changes below once you've reviewed this.${aliasCount ? ` <b style="color:var(--coral);">${aliasCount} matched only via a known alias (⚠ flagged below) — those products' NAMES are wrong and need manual fixing, price correction alone isn't the full fix for them.</b>` : ''}</p>
+      <p class="muted">Every value below comes directly from Como_Price_list_June_26_General.01.pdf's own Zone A/B/C and m²/box columns — check this against the real sheet yourself. "Sheet box price" is this tool's own per-m² x m²/box (not read separately off a box-price column) — cross-check it against the PDF's printed box price as part of your review. Nothing is saved yet; press Commit Changes below once you've reviewed this.${aliasCount ? ` <b style="color:var(--coral);">${aliasCount} matched only via a known alias (⚠ flagged below) — those products' NAMES are wrong and need manual fixing, price correction alone isn't the full fix for them.</b>` : ''}</p>
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Product (as stored)</th><th>Colour</th><th>Matched sheet range</th><th>Sheet Zone A /m²</th><th>Previously stored</th><th>Now staged</th></tr></thead>
+          <thead><tr><th>Product (as stored)</th><th>Colour</th><th>Matched sheet range</th><th>Sheet box price (Zone A)</th><th>m²/box</th><th>Sheet Zone A /m²</th><th>Previously stored</th><th>Now staged (per m², after commit)</th></tr></thead>
           <tbody>${rows}${unmatchedRows}</tbody>
         </table>
       </div>
@@ -1414,44 +1470,50 @@ async function processImportUpload(supplier, file, instructions, statusEl) {
     if (supplierDefaultNow !== null && supplierDefaultNow !== undefined) {
       fields.trade_discount_pct = supplierDefaultNow;
     }
-    // Unit-basis safety (confirmed Aug 2026): NEVER auto-convert a
-    // non-per-m2 price into base_cost_ex_vat — that silent conversion
-    // is exactly the shape of bug that caused the real Aspen price
-    // book mix-up this project already found and fixed. Only a price
-    // already quoted per-m2 goes straight into the field; anything
-    // else is left blank, with the raw extracted value shown alongside
-    // for the owner to convert deliberately.
-    //
-    // Real bug found and fixed here (confirmed Aug 2026, Como Flooring —
-    // commit correctly refused, atomically, with nothing saved, exactly
-    // as designed, but surfaced this gap): base_cost_ex_vat is NOT NULL
-    // in the database, but a zone-priced product (Azura/Como-style)
-    // often has no single flat per-m2 price on the sheet at all — it's
-    // priced entirely via Zone A/B/C columns, so unit_basis legitimately
-    // isn't "per_m2" and the row above left it null, which is correct
-    // for a genuinely ambiguous per-box/per-piece price but WRONG here:
-    // zone_prices.A is a real, directly-extracted number straight off
-    // the sheet, not a derived/guessed conversion — using it isn't the
-    // same risk class as the per-box-to-per-m2 guess this safety exists
-    // to prevent. Matches resolve_zone_price() (main.py), which already
-    // treats a zone-priced product's stored base_cost_ex_vat as only a
-    // fallback anyway — every real quote overrides it with whichever
-    // zone the business's own pricing_zone setting selects. Still
-    // flagged uncertain (not silently accepted) since defaulting to
-    // Zone A specifically is a real, reviewer-worthy choice.
-    if (row.unit_basis === 'per_m2') {
-      fields.base_cost_ex_vat = row.price ?? null;
-    } else if (row.zone_prices && row.zone_prices.A != null) {
-      fields.base_cost_ex_vat = row.zone_prices.A;
-      uncertain.add('base_cost_ex_vat');
+    // Field Sequence Redesign (confirmed Aug 2026 — root-cause fix for
+    // the Como Flooring pricing bug): base_cost_ex_vat / price_zone_a/b/c
+    // are calculated fields now, never set directly from an import —
+    // the commit endpoint rejects staging them. This maps into
+    // price_per_box_ex_vat / price_per_box_zone_a/b/c instead (the
+    // brief's Section 1/2): use the sheet's own stated box price when
+    // given (row.price_per_box / row.zone_box_prices — the MORE
+    // reliable number, since it's what's usually printed plainly,
+    // rather than asking the AI to pick the right one of two nearby
+    // numbers, which is exactly how the original bug happened); if the
+    // sheet only gives a per-m² price with no box price stated at all,
+    // back-calculate it once here (per-m² x m²/box, per Section 2) and
+    // flag it uncertain since that's a genuine, reviewer-worthy
+    // derivation, not something read directly off the sheet.
+    const round2 = n => Math.round(n * 100) / 100;
+    if (row.price_per_box != null) {
+      fields.price_per_box_ex_vat = row.price_per_box;
+    } else if (row.unit_basis === 'per_m2' && row.price != null && fields.m2_per_pack) {
+      fields.price_per_box_ex_vat = round2(row.price * fields.m2_per_pack);
+      uncertain.add('price_per_box_ex_vat');
+    } else if (row.unit_basis === 'per_box' && row.price != null) {
+      fields.price_per_box_ex_vat = row.price;
     } else {
-      fields.base_cost_ex_vat = null;
-      uncertain.add('base_cost_ex_vat');
+      fields.price_per_box_ex_vat = null;
+      uncertain.add('price_per_box_ex_vat');
     }
-    if (row.zone_prices) {
-      fields.price_zone_a = row.zone_prices.A ?? null;
-      fields.price_zone_b = row.zone_prices.B ?? null;
-      fields.price_zone_c = row.zone_prices.C ?? null;
+    if (row.zone_box_prices) {
+      fields.price_per_box_zone_a = row.zone_box_prices.A ?? null;
+      fields.price_per_box_zone_b = row.zone_box_prices.B ?? null;
+      fields.price_per_box_zone_c = row.zone_box_prices.C ?? null;
+    } else if (row.zone_prices && fields.m2_per_pack) {
+      fields.price_per_box_zone_a = row.zone_prices.A != null ? round2(row.zone_prices.A * fields.m2_per_pack) : null;
+      fields.price_per_box_zone_b = row.zone_prices.B != null ? round2(row.zone_prices.B * fields.m2_per_pack) : null;
+      fields.price_per_box_zone_c = row.zone_prices.C != null ? round2(row.zone_prices.C * fields.m2_per_pack) : null;
+      if (fields.price_per_box_zone_a != null) uncertain.add('price_per_box_zone_a');
+    }
+    // If this is a zone-priced product and price_per_box_ex_vat wasn't
+    // separately stated, default it to Zone A's box price — same
+    // fallback role base_cost_ex_vat's Zone-A default already played
+    // (resolve_zone_price(), main.py, treats base_cost_ex_vat as only a
+    // fallback; every real quote overrides it with the resolved zone).
+    if (fields.price_per_box_ex_vat == null && fields.price_per_box_zone_a != null) {
+      fields.price_per_box_ex_vat = fields.price_per_box_zone_a;
+      uncertain.delete('price_per_box_ex_vat');   // not a separate uncertainty — same value as zone A, already flagged (or not) above
     }
     if (row.dimensions_mm) {
       fields.tile_length_mm = row.dimensions_mm.length ?? null;
@@ -1601,6 +1663,12 @@ function stageNewEntityField(tempId, field, inputType, rawValue) {
   entity.uncertainFields.delete(field);   // owner reviewed/edited it — no longer flagged
 }
 
+// Field Sequence Redesign (confirmed Aug 2026) — same per-m² field ->
+// box-price field pairing the backend uses (PRICE_PER_BOX_FIELD_MAP in
+// main.py), needed here so a staged-but-not-yet-committed new product
+// can preview its calculated per-m² price before Commit even runs.
+const PRICE_PER_BOX_FIELD_MAP_JS = { base_cost_ex_vat: 'price_per_box_ex_vat', price_zone_a: 'price_per_box_zone_a', price_zone_b: 'price_per_box_zone_b', price_zone_c: 'price_per_box_zone_c' };
+
 function newEntityRow(entity, fields) {
   const cells = fields.map(([field, label, type, step]) => {
     const val = entity.fields[field];
@@ -1608,7 +1676,23 @@ function newEntityRow(entity, fields) {
     const highlight = isUncertain ? 'background:#fff3cd; border:1px solid #e0a800;' : '';
     const oninput = `stageNewEntityField('${entity.tempId}','${field}','${type}', this.value)`;
     let inputHtml;
-    if (type === 'bool') {
+    if (type === 'calc') {
+      // Read-only preview (confirmed Aug 2026, Field Sequence Redesign)
+      // of what the backend will actually calculate on Commit — box
+      // price ÷ m² per box. Nothing to stage here; box price and
+      // m² per box are the real inputs, a few columns over.
+      const boxVal = entity.fields[PRICE_PER_BOX_FIELD_MAP_JS[field]];
+      const m2pp = entity.fields.m2_per_pack;
+      const calcVal = (boxVal != null && m2pp) ? boxVal / m2pp : null;
+      inputHtml = `<span class="muted">${calcVal != null ? 'R' + calcVal.toFixed(2) : '—'}</span>`;
+    } else if (type === 'calc_discount') {
+      const boxVal = entity.fields.price_per_box_ex_vat;
+      const m2pp = entity.fields.m2_per_pack;
+      const perM2 = (boxVal != null && m2pp) ? boxVal / m2pp : null;
+      const discount = entity.fields.trade_discount_pct;
+      const afterDiscount = (perM2 != null && discount != null) ? perM2 * (1 - discount) : null;
+      inputHtml = `<span style="font-weight:700; color:var(--teal);">${afterDiscount != null ? 'R' + afterDiscount.toFixed(2) : '—'}</span>`;
+    } else if (type === 'bool') {
       inputHtml = `<select style="${highlight}" onchange="${oninput}"><option value="true" ${val!==false?'selected':''}>Own staff</option><option value="false" ${val===false?'selected':''}>Outside</option></select>`;
     } else if (type === 'pct') {
       inputHtml = `<input type="number" step="0.1" style="width:80px; ${highlight}" value="${val!==null&&val!==undefined?(val*100).toFixed(1):''}" oninput="${oninput}">`;
@@ -1620,18 +1704,14 @@ function newEntityRow(entity, fields) {
       inputHtml = `<input type="text" style="width:200px; ${highlight}" title="${val!==null&&val!==undefined?val:''}" value="${val!==null&&val!==undefined?val:''}" oninput="${oninput}">`;
     }
     let note = '';
-    if (field === 'base_cost_ex_vat' && entity.rawUnitBasis && entity.rawUnitBasis !== 'per_m2') {
-      // Two distinct situations share the "uncertain" flag on this
-      // field (confirmed Aug 2026, real bug fix — see processImportUpload's
-      // own comment): a genuinely ambiguous per-box/per-piece price
-      // (val is null, needs manual conversion) vs. a zone-priced product
-      // where this was already defaulted to a real, directly-extracted
-      // Zone A price (val is set) — worded differently so the review
-      // note actually matches what's in the field, not a generic
-      // "convert yourself" that would be wrong/confusing for the latter.
-      note = (val !== null && val !== undefined)
-        ? `<br><span class="muted" style="font-size:10px;">defaulted to the sheet's Zone A price — confirm this is the right base rate (every quote overrides it with the business's own pricing zone anyway)</span>`
-        : `<br><span class="muted" style="font-size:10px;">sheet shows R${entity.rawPrice} ${entity.rawUnitBasis.replace('_',' ')} — convert to per-m² yourself</span>`;
+    if (field === 'price_per_box_ex_vat' && isUncertain) {
+      // Field Sequence Redesign (confirmed Aug 2026, brief Section 2):
+      // the sheet didn't state a box price directly for this product —
+      // this was back-calculated once (per-m² x m²/box) rather than
+      // left blank, since Price per box is always required now. Still
+      // flagged uncertain so it gets a deliberate look, same spirit as
+      // the old per-box/per-piece conversion note it replaces.
+      note = `<br><span class="muted" style="font-size:10px;">back-calculated from the sheet's per-m² price x m²/box — sheet didn't state a box price directly, confirm this looks right</span>`;
     }
     return `<td>${inputHtml}${note}</td>`;
   }).join('');
@@ -1854,7 +1934,6 @@ function renderSupplierConsoleTable() {
           </select>` : ''}
           <label style="font-size:12px; font-weight:600;">Trade discount % <span class="adj">(default for NEW products added under this supplier — existing products are never changed by this, and each product's own value stays individually editable afterward)</span></label>
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
-          <button onclick="stageBoxPriceCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; font-size:12px;" title="For every product where Price/m² and m²/box are both set, stage Price/m² = current value ÷ m²/box">Stage box-price correction (÷ m²/box) for all eligible products</button>
           ${supplier.toLowerCase().includes('como') ? `
           <button onclick="stageComoVerifiedCorrections('${supplier.replace(/'/g,"\\'")}')" style="margin-bottom:10px; margin-left:8px; font-size:12px; background:var(--teal); color:white;" title="Uses all 17 ranges' real Zone A/B/C and m²/box values, hand-extracted from the actual Como Flooring Price List PDF (LVT, SPC, Laminate, Parquet) — not derived from currently-stored data">Stage VERIFIED correction (from source PDF) + show comparison table</button>` : ''}
           <label style="font-size:12px; font-weight:600;">Import instructions <span class="adj">(optional — what to include/exclude when reading this sheet, e.g. "skip the clearance section")</span></label>
@@ -2005,6 +2084,48 @@ function setupStickyHeaders() {
   });
 }
 
+// Live recalculation (confirmed Aug 2026, Field Sequence Redesign,
+// brief Section 1 step 5 — "a number Burgert can eyeball... every
+// single time"): the calculated cells (base_cost_ex_vat / price_zone_*
+// / price_after_discount) need to update AS you type a new box price,
+// not only after the next full table re-render — a full re-render
+// would also lose scroll position, same reason other edits on this
+// screen already avoid it. Reads the same staged-overrides-real values
+// stageChange() just wrote, so this always reflects exactly what's
+// about to be committed. FlooringProduct only — no other entity type
+// has calculated price cells.
+function refreshCalculatedCells(entityId) {
+  const product = supplierConsoleData.flooring.find(p => p.id === entityId);
+  const row = document.getElementById(`console-row-FlooringProduct-${entityId}`);
+  if (!product || !row) return;
+  const getVal = (field) => {
+    const staged = stagedChanges[`FlooringProduct:${entityId}:${field}`];
+    return staged ? staged.new_value : product[field];
+  };
+  const m2pp = getVal('m2_per_pack');
+  const boxFieldFor = { base_cost_ex_vat: 'price_per_box_ex_vat', price_zone_a: 'price_per_box_zone_a', price_zone_b: 'price_per_box_zone_b', price_zone_c: 'price_per_box_zone_c' };
+  let effectivePerM2ForDiscount = null;
+  const isZonePriced = product.price_zone_a != null || product.price_zone_b != null || product.price_zone_c != null;
+  const stagedZone = stagedSupplierDefaults[product.supplier] && stagedSupplierDefaults[product.supplier].pricing_zone;
+  const savedZone = supplierDefaults[product.supplier] && supplierDefaults[product.supplier].pricing_zone;
+  const effectiveZone = (stagedZone || savedZone || 'A').toUpperCase();
+  Object.entries(boxFieldFor).forEach(([perM2Field, boxField]) => {
+    const cell = row.querySelector(`td[data-calc-field="${perM2Field}"]`);
+    const boxVal = getVal(boxField);
+    const calcVal = (boxVal != null && m2pp) ? boxVal / m2pp : null;
+    if (cell) cell.textContent = calcVal != null ? 'R' + calcVal.toFixed(2) : '—';
+    const isEffectiveZoneField = isZonePriced && perM2Field === `price_zone_${effectiveZone.toLowerCase()}`;
+    if (!isZonePriced && perM2Field === 'base_cost_ex_vat') effectivePerM2ForDiscount = calcVal;
+    else if (isEffectiveZoneField) effectivePerM2ForDiscount = calcVal;
+  });
+  const discountCell = row.querySelector('td[data-calc-field="price_after_discount"]');
+  if (discountCell) {
+    const discount = getVal('trade_discount_pct');
+    const afterDiscount = (effectivePerM2ForDiscount != null && discount != null) ? effectivePerM2ForDiscount * (1 - discount) : null;
+    discountCell.textContent = afterDiscount != null ? 'R' + afterDiscount.toFixed(2) : '—';
+  }
+}
+
 function stageChange(inputEl) {
   const entityType = inputEl.dataset.entityType;
   const entityId = parseInt(inputEl.dataset.entityId, 10);
@@ -2038,6 +2159,7 @@ function stageChange(inputEl) {
     stagedChanges[key] = { entity_type: entityType, entity_id: entityId, field, new_value: newValue };
     inputEl.style.background = 'var(--cream)';
   }
+  if (entityType === 'FlooringProduct') refreshCalculatedCells(entityId);
   updateCommitButton();
 }
 

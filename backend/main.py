@@ -191,6 +191,18 @@ def _ensure_new_columns():
         # dedicated startup backfill below (on_startup()) sets the real
         # value only for suppliers that actually have zone pricing.
         ("supplierdefault", "pricing_zone", "VARCHAR", "NULL"),
+        # Price per box (confirmed Aug 2026, Supplier Console Field
+        # Sequence Redesign brief — root cause fix for the Como Flooring
+        # pricing bug: base_cost_ex_vat/price_zone_a/b/c had no
+        # dedicated "price per box" field to hold a supplier's stated
+        # box price, so it landed directly in the per-m2 field instead.
+        # NULL default, not 0 — the one-time startup migration below
+        # (on_startup()) populates every existing product's real value;
+        # a fresh 0 would be indistinguishable from "genuinely zero".
+        ("flooringproduct", "price_per_box_ex_vat", "FLOAT", "NULL"),
+        ("flooringproduct", "price_per_box_zone_a", "FLOAT", "NULL"),
+        ("flooringproduct", "price_per_box_zone_b", "FLOAT", "NULL"),
+        ("flooringproduct", "price_per_box_zone_c", "FLOAT", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -292,6 +304,93 @@ def on_startup():
                     session.add(existing)
             else:
                 session.add(SupplierDefault(tenant_id=zp_tenant_id, supplier=zp_supplier, pricing_zone=zp_settings.pricing_zone))
+        session.commit()
+
+        # Price-per-box migration (confirmed Aug 2026, Supplier Console
+        # Field Sequence Redesign brief — the actual root cause of the
+        # Como Flooring pricing bug: base_cost_ex_vat/price_zone_a/b/c
+        # never had a dedicated "price per box" field, so a supplier's
+        # stated box price landed directly in the per-m2 field instead).
+        # Runs on every startup, only ever ACTS once per product — any
+        # FlooringProduct that already has price_per_box_ex_vat OR any
+        # price_per_box_zone_* set is treated as already migrated.
+        #
+        # Two different starting assumptions per product's CURRENT
+        # per-m2 value, per the brief's own Section 5 — the one
+        # deliberate supplier-specific branch in this whole feature (a
+        # one-time historical-data decision about which suppliers'
+        # existing data is already correct, not part of the ongoing
+        # calculation logic below, which has no supplier branches at
+        # all):
+        #   - Como Flooring (confirmed wrong): the value currently in
+        #     base_cost_ex_vat / price_zone_a/b/c IS a box price that
+        #     was never divided — move it AS-IS into the new box-price
+        #     field, then calculate the true per-m2 price from it for
+        #     the first time.
+        #   - every other supplier, e.g. Azura (confirmed correct): the
+        #     value currently in base_cost_ex_vat / price_zone_a/b/c is
+        #     already right — back-calculate the box price from it
+        #     (per-m2 x m2_per_pack) and leave the per-m2 fields
+        #     completely untouched.
+        # Products with no m2_per_pack are skipped entirely — neither
+        # direction of this calculation is possible without it, and
+        # this migration never guesses one; left for manual review.
+        #
+        # This is a mechanical, uniform pass — it corrects the box-
+        # price-in-the-wrong-field bug for every Como product whose
+        # OTHER stored data (m2_per_pack, matched to the right range)
+        # was already accurate. It does NOT independently catch the two
+        # separately-confirmed name-contamination bugs ("Como Bonsai
+        # 2.0 / Como Bellagio", "deZIGN series 200" aliasing) — those
+        # need the PDF-hand-verified stageComoVerifiedCorrections tool
+        # (frontend/index.html) as a second pass, same as before.
+        price_box_migration_pairs = (
+            ("base_cost_ex_vat", "price_per_box_ex_vat"),
+            ("price_zone_a", "price_per_box_zone_a"),
+            ("price_zone_b", "price_per_box_zone_b"),
+            ("price_zone_c", "price_per_box_zone_c"),
+        )
+        unmigrated = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.price_per_box_ex_vat.is_(None),
+                FlooringProduct.price_per_box_zone_a.is_(None),
+                FlooringProduct.price_per_box_zone_b.is_(None),
+                FlooringProduct.price_per_box_zone_c.is_(None),
+            )
+        ).all()
+        migrated_products = 0
+        for p in unmigrated:
+            if not p.m2_per_pack or p.m2_per_pack <= 0:
+                continue
+            is_como = "como" in (p.supplier or "").lower()
+            touched = False
+            for per_m2_field, box_field in price_box_migration_pairs:
+                per_m2_value = getattr(p, per_m2_field)
+                if per_m2_value is None:
+                    continue
+                if is_como:
+                    new_box = per_m2_value            # confirmed-wrong value IS the box price
+                    new_per_m2 = round(new_box / p.m2_per_pack, 4)
+                else:
+                    new_box = round(per_m2_value * p.m2_per_pack, 4)   # back-calculated from confirmed-correct per-m2
+                    new_per_m2 = per_m2_value          # untouched
+                setattr(p, box_field, new_box)
+                session.add(AuditLog(
+                    tenant_id=p.tenant_id, username="system-migration", entity_type="FlooringProduct", entity_id=p.id,
+                    field=box_field, old_value="(new)", new_value=str(new_box),
+                ))
+                if new_per_m2 != per_m2_value:
+                    setattr(p, per_m2_field, new_per_m2)
+                    session.add(AuditLog(
+                        tenant_id=p.tenant_id, username="system-migration", entity_type="FlooringProduct", entity_id=p.id,
+                        field=per_m2_field, old_value=str(per_m2_value), new_value=str(new_per_m2),
+                    ))
+                touched = True
+            if touched:
+                session.add(p)
+                migrated_products += 1
+        if migrated_products:
+            print(f"Migration: price-per-box field sequence redesign — migrated {migrated_products} FlooringProduct row(s)")
         session.commit()
 
 
@@ -925,7 +1024,9 @@ ENTITY_TYPE_LINE_CATEGORIES = {
 # audit log UI — e.g. "Price per m²" instead of "base_cost_ex_vat".
 FIELD_LABELS = {
     "product_name": "Range", "colour": "Colour", "supplier": "Supplier",
-    "base_cost_ex_vat": "Price per m² (ex VAT)", "m2_per_pack": "m² per box",
+    "base_cost_ex_vat": "Price per m² (ex VAT, calculated)", "m2_per_pack": "m² per box",
+    "price_per_box_ex_vat": "Price per box (ex VAT, before discount)",
+    "price_per_box_zone_a": "Zone A price per box", "price_per_box_zone_b": "Zone B price per box", "price_per_box_zone_c": "Zone C price per box",
     "trade_discount_pct": "Trade discount %", "wastage_pct": "Wastage %",
     "settlement_discount_pct": "Settlement discount %",
     "sell_markup_multiplier": "Markup", "delivery_fee_per_m2": "Delivery fee (R/m²)",
@@ -933,7 +1034,7 @@ FIELD_LABELS = {
     "default_own_staff": "Labour source",
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
-    "price_zone_a": "Zone A price", "price_zone_b": "Zone B price", "price_zone_c": "Zone C price",
+    "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
     "markup_multiplier": "Markup",
@@ -996,6 +1097,57 @@ def recompute_tiles_per_pack(product: FlooringProduct) -> Optional[float]:
     if plank_area_m2 <= 0:
         return None
     return round(product.m2_per_pack / plank_area_m2)
+
+
+PRICE_PER_BOX_FIELD_MAP = {
+    # (raw box-price field) -> (calculated per-m² field it drives)
+    "price_per_box_ex_vat": "base_cost_ex_vat",
+    "price_per_box_zone_a": "price_zone_a",
+    "price_per_box_zone_b": "price_zone_b",
+    "price_per_box_zone_c": "price_zone_c",
+}
+# Every field that can trigger a per-m² recalculation when it changes
+# (the four box-price fields themselves, or m2_per_pack, the shared
+# divisor for all four).
+PRICE_RECALC_TRIGGER_FIELDS = set(PRICE_PER_BOX_FIELD_MAP.keys()) | {"m2_per_pack"}
+
+
+def recompute_calculated_prices(entity: FlooringProduct) -> dict:
+    """Supplier Console Field Sequence Redesign (confirmed Aug 2026 —
+    root-cause fix for the Como Flooring pricing bug). base_cost_ex_vat
+    and price_zone_a/b/c are no longer editable inputs — this is the
+    ONE place they're ever derived, always as price_per_box_* /
+    m2_per_pack, straight off whatever's currently set on `entity`
+    (which may include changes just applied earlier in this same commit
+    but not yet flushed). Returns {field: new_value} only for fields
+    that actually have a computable box price; a product with no
+    m2_per_pack yet, or no box price for a given zone, keeps whatever
+    its per-m² field already held (never zeroed/nulled by this)."""
+    result = {}
+    if not entity.m2_per_pack or entity.m2_per_pack <= 0:
+        return result
+    for box_field, per_m2_field in PRICE_PER_BOX_FIELD_MAP.items():
+        box_value = getattr(entity, box_field)
+        if box_value is not None:
+            result[per_m2_field] = round(box_value / entity.m2_per_pack, 4)
+    return result
+
+
+def compute_calculated_prices_from_fields(fields: dict) -> dict:
+    """Same calculation as recompute_calculated_prices(), for a brand
+    new product's plain `fields` dict (staged via new_entities) before
+    it's ever constructed as a real FlooringProduct — needed because
+    base_cost_ex_vat is NOT NULL, so this has to run and populate it
+    BEFORE model(**fields) is called, not after."""
+    result = {}
+    m2_per_pack = fields.get("m2_per_pack")
+    if not m2_per_pack or m2_per_pack <= 0:
+        return result
+    for box_field, per_m2_field in PRICE_PER_BOX_FIELD_MAP.items():
+        box_value = fields.get(box_field)
+        if box_value is not None:
+            result[per_m2_field] = round(box_value / m2_per_pack, 4)
+    return result
 
 
 class CommitChange(BaseModel):
@@ -1096,22 +1248,55 @@ def commit_supplier_console_changes(
 
             old_tiles_per_pack = getattr(entity, "tiles_per_pack", None) if entity_type == "FlooringProduct" else None
             touched_dimension_field = False
+            touched_price_recalc_field = False
 
             for c in changes:
                 if not hasattr(entity, c.field):
                     raise HTTPException(400, f"{entity_type} has no field '{c.field}'")
+                # Field Sequence Redesign (confirmed Aug 2026): these four
+                # are calculated, not editable — never accept a direct
+                # edit to them, even from a stale/cached frontend or a
+                # direct API call, precisely the failure mode that let a
+                # box price silently land in base_cost_ex_vat in the
+                # first place. Set price_per_box_ex_vat / m2_per_pack (or
+                # the zone equivalents) instead; these recompute
+                # automatically below.
+                if entity_type == "FlooringProduct" and c.field in ("base_cost_ex_vat", "price_zone_a", "price_zone_b", "price_zone_c"):
+                    raise HTTPException(400, f"'{FIELD_LABELS.get(c.field, c.field)}' is calculated from Price per box ÷ m² per box — it can't be edited directly. Change the price per box instead.")
                 old_value = getattr(entity, c.field)
                 if old_value == c.new_value:
                     continue   # staged but genuinely unchanged — no audit entry, no confirmation line
                 setattr(entity, c.field, c.new_value)
                 if c.field in ("tile_length_mm", "tile_width_mm", "m2_per_pack"):
                     touched_dimension_field = True
+                if c.field in PRICE_RECALC_TRIGGER_FIELDS:
+                    touched_price_recalc_field = True
                 label = FIELD_LABELS.get(c.field, c.field)
                 session.add(AuditLog(
                     tenant_id=tenant_id, username=username, entity_type=entity_type, entity_id=entity_id,
                     field=c.field, old_value=str(old_value), new_value=str(c.new_value),
                 ))
                 summary_lines.append(f"{entity_label}: {label} changed from {format_field_value(c.field, old_value)} to {format_field_value(c.field, c.new_value)}")
+
+            # Recalculate base_cost_ex_vat / price_zone_a/b/c whenever a
+            # box price or m2_per_pack just changed (confirmed Aug 2026,
+            # Field Sequence Redesign) — the ONE place these ever get
+            # set for an existing product from now on. Logged as its own
+            # AuditLog row per field, same "auto-derived, still audited"
+            # pattern already established for tiles_per_pack just below.
+            if entity_type == "FlooringProduct" and touched_price_recalc_field:
+                derived_prices = recompute_calculated_prices(entity)
+                for per_m2_field, new_value in derived_prices.items():
+                    old_value = getattr(entity, per_m2_field)
+                    if old_value == new_value:
+                        continue
+                    setattr(entity, per_m2_field, new_value)
+                    label = FIELD_LABELS.get(per_m2_field, per_m2_field)
+                    session.add(AuditLog(
+                        tenant_id=tenant_id, username=username, entity_type=entity_type, entity_id=entity_id,
+                        field=per_m2_field, old_value=str(old_value), new_value=str(new_value),
+                    ))
+                    summary_lines.append(f"{entity_label}: {label} auto-calculated (price per box ÷ m² per box) from {format_field_value(per_m2_field, old_value)} to {format_field_value(per_m2_field, new_value)}")
 
             if entity_type == "FlooringProduct" and touched_dimension_field:
                 new_tiles_per_pack = recompute_tiles_per_pack(entity)
@@ -1144,6 +1329,19 @@ def commit_supplier_console_changes(
             fields = dict(ne.fields)
             fields["tenant_id"] = tenant_id
             fields["supplier"] = ne.supplier
+            # Field Sequence Redesign (confirmed Aug 2026 — root-cause
+            # fix for the Como Flooring pricing bug): base_cost_ex_vat /
+            # price_zone_a/b/c are always CALCULATED from
+            # price_per_box_ex_vat / price_per_box_zone_a/b/c ÷
+            # m2_per_pack, computed here and overwritten into `fields`
+            # BEFORE construction — never trusted from whatever a
+            # (possibly stale/cached) frontend staged directly for those
+            # four fields. base_cost_ex_vat is NOT NULL, so this has to
+            # run before model(**fields) below, not after.
+            derived_prices = {}
+            if ne.entity_type == "FlooringProduct":
+                derived_prices = compute_calculated_prices_from_fields(fields)
+                fields.update(derived_prices)
             # BUG FOUND AND FIXED (Aug 2026, caught in testing, not
             # something the brief asked for): SQLModel table models don't
             # enforce a missing required field (e.g. base_cost_ex_vat)
@@ -1170,9 +1368,12 @@ def commit_supplier_console_changes(
             if fields.get("colour"):
                 entity_label += f" ({fields['colour']})"
             new_item_kind = "new supplier default" if is_supplier_default else "new product"
+            calculated_price_fields = ("base_cost_ex_vat", "price_zone_a", "price_zone_b", "price_zone_c")
             for field, value in ne.fields.items():
                 if field in ("supplier",):
                     continue   # already reflected in entity_label, not a separately useful audit line
+                if ne.entity_type == "FlooringProduct" and field in calculated_price_fields:
+                    continue   # logged separately below as calculated, not as directly staged — see derived_prices
                 label = FIELD_LABELS.get(field, field)
                 session.add(AuditLog(
                     tenant_id=tenant_id, username=username, entity_type=ne.entity_type, entity_id=entity.id,
@@ -1181,6 +1382,13 @@ def commit_supplier_console_changes(
                 summary_lines.append(f"{entity_label}: {label} set to {format_field_value(field, value)} ({new_item_kind})")
 
             if ne.entity_type == "FlooringProduct":
+                for per_m2_field, value in derived_prices.items():
+                    label = FIELD_LABELS.get(per_m2_field, per_m2_field)
+                    session.add(AuditLog(
+                        tenant_id=tenant_id, username=username, entity_type=ne.entity_type, entity_id=entity.id,
+                        field=per_m2_field, old_value="(new)", new_value=str(value),
+                    ))
+                    summary_lines.append(f"{entity_label}: {label} calculated (price per box ÷ m² per box) to {format_field_value(per_m2_field, value)} (new product)")
                 derived = recompute_tiles_per_pack(entity)
                 if derived is not None and derived != entity.tiles_per_pack:
                     session.add(AuditLog(
