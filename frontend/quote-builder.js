@@ -185,36 +185,52 @@ function fpCalc() {
   document.getElementById('fp_out_bonding_l').textContent = bonding ? `${bondingL.toFixed(2)} L` : '—';
   document.getElementById('fp_out_containers').textContent = containerOptions.length ? containerOptions.join(' OR ') : '—';
 
+  // Confirmed Aug 2026, Extra Rooms / Floor Prep Collapsible brief,
+  // Section 1/3 — the room name is the HEADLINE (what a client sees,
+  // what's scannable collapsed), the quantities are the detail that
+  // follows. fp_technical_detail holds just the quantities part on its
+  // own (no room name) — used by addFloorPrepLine() to require it's
+  // non-empty before allowing a save, separately from the room name
+  // requirement.
+  const technicalDetail = (area && thickness && compound)
+    ? `${area}m² × ${thickness}mm ${compound.product_name} — ${compoundKg.toFixed(2)}kg (${bags} bag${bags !== 1 ? 's' : ''})${bonding && bondingL > 0 ? `, ${bondingL.toFixed(2)}L ${bonding.product_name.replace(/\s*\([^)]*\)\s*$/, '')} (${containerOptions.join(' OR ')})` : ''}`
+    : '';
   const descEl = document.getElementById('fp_calc_description');
-  if (descEl) {
-    descEl.textContent = (area && thickness && compound)
-      ? `Extra room: ${area}m² × ${thickness}mm ${compound.product_name} — ${compoundKg.toFixed(2)}kg (${bags} bag${bags !== 1 ? 's' : ''})${bonding && bondingL > 0 ? `, ${bondingL.toFixed(2)}L ${bonding.product_name.replace(/\s*\([^)]*\)\s*$/, '')} (${containerOptions.join(' OR ')})` : ''}`
-      : '';
-  }
+  if (descEl) descEl.textContent = technicalDetail;
+  return technicalDetail;
 }
 
 async function addFloorPrepLine() {
   if (!currentQuoteId) { alert('Start a quote first.'); return; }
+  const roomName = document.getElementById('fp_room_name').value.trim();
+  if (!roomName) { alert('Enter a room name / description first — this is what shows on the printed quote for this line.'); return; }
   const mode = document.querySelector('input[name="fp_mode"]:checked').value;
+  // Confirmed Aug 2026 (brief Section 1) — room name is always the
+  // headline; the technical detail (calculated mode) or free-text
+  // extra detail (manual mode) follows after an em-dash, matching the
+  // brief's own reference example format exactly: "Guest Bathroom —
+  // 224.00kg LEVELiTe F10 (12 bags)...".
   let description;
   if (mode === 'calculated') {
-    description = document.getElementById('fp_calc_description').textContent;
-    if (!description) { alert('Fill in area, thickness, and pick a compound product first.'); return; }
+    const technicalDetail = fpCalc();
+    if (!technicalDetail) { alert('Fill in area, thickness, and pick a compound product first.'); return; }
+    description = `${roomName} — ${technicalDetail}`;
   } else {
-    description = document.getElementById('fp_manual_desc').value.trim();
-    if (!description) { alert('Enter a description first.'); return; }
+    const extra = document.getElementById('fp_manual_desc').value.trim();
+    description = extra ? `${roomName} — ${extra}` : roomName;
   }
   const amount = parseFloat(document.getElementById('fp_amount').value) || 0;
   const cost = parseFloat(document.getElementById('fp_cost').value) || 0;
   if (!confirmPostAcceptChange('adding this line')) return;
-  const params = new URLSearchParams({ description, amount_ex_vat: amount, cost_ex_vat: cost, role: currentRole() });
+  const params = new URLSearchParams({ description, amount_ex_vat: amount, cost_ex_vat: cost, source_feature: 'floor_prep', role: currentRole() });
   const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/misc?${params}`, { method: 'POST' });
   const line = await res.json();
   if (line.warning) alert(line.warning);
   // Reset for the next room, per the brief's own "a quote can contain
   // multiple extra rooms" requirement — deliberately does NOT reset the
   // compound/bonding product choice (often the same product across
-  // several rooms on one job), only the per-room quantities and amounts.
+  // several rooms on one job), only the per-room name/quantities/amounts.
+  document.getElementById('fp_room_name').value = '';
   document.getElementById('fp_area').value = '';
   document.getElementById('fp_thickness').value = '';
   document.getElementById('fp_manual_desc').value = '';
@@ -222,6 +238,45 @@ async function addFloorPrepLine() {
   document.getElementById('fp_cost').value = 0;
   fpCalc();
   loadQuote();
+}
+
+// Collapsible room cards (confirmed Aug 2026, Extra Rooms / Floor Prep
+// Collapsible brief) — each already-added floor-prep line gets its own
+// card, collapsed by default, nested inside floorPrepCard (not a
+// separate section). Sourced from currentQuoteLinesCache (already
+// loaded by loadQuote() below) filtered by source_feature — the ONLY
+// reliable way to tell an Extra Room line apart from any other
+// freeform misc line (e.g. "extra Saturday labour"), category alone
+// can't distinguish them. The collapsed header IS the full description
+// text (room name + quantities, per Section 1/3 — both already baked
+// into product_name by addFloorPrepLine() above), so "visible
+// quantities without expanding" needs no separate summary field to
+// keep in sync — expanding only reveals the Edit/Delete actions,
+// reusing Sprint B's existing editQuoteLine()/deleteQuoteLine() rather
+// than a second edit path.
+function renderFloorPrepRoomCards() {
+  const container = document.getElementById('floorPrepRoomCards');
+  if (!container) return;
+  const rooms = currentQuoteLinesCache.filter(l => l.category === 'misc' && l.source_feature === 'floor_prep');
+  container.innerHTML = rooms.length ? rooms.map(l => `
+    <div style="border:1px solid var(--border); border-radius:6px; margin-bottom:6px; overflow:hidden;">
+      <div onclick="toggleFloorPrepRoomCard(this)" style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; cursor:pointer; background:var(--card);">
+        <span style="font-size:13px;"><span class="fp-caret" style="display:inline-block; width:14px;">▶</span>${l.product_name}</span>
+        <b style="font-size:13px; white-space:nowrap;">R${l.line_total.toFixed(2)}</b>
+      </div>
+      <div style="display:none; padding:8px 12px 12px 26px; border-top:1px solid var(--border);">
+        <button onclick="editQuoteLine(${l.id})" style="font-size:11px; margin-right:6px;">Edit</button>
+        <button class="delete-btn" onclick="deleteQuoteLine(${l.id})" style="font-size:11px;">Delete</button>
+      </div>
+    </div>`).join('')
+    : '<p class="muted" style="font-size:12px;">No extra rooms added yet.</p>';
+}
+
+function toggleFloorPrepRoomCard(headerEl) {
+  const body = headerEl.nextElementSibling;
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? '' : 'none';
+  headerEl.querySelector('.fp-caret').textContent = collapsed ? '▼' : '▶';
 }
 
 // Two-step selection (confirmed Aug 2026): pick a Range first, then a
@@ -678,7 +733,9 @@ function clearStaleQuoteResidue() {
   if (followUpListEl) followUpListEl.innerHTML = '';
   // Extra Rooms / Floor Prep (confirmed Aug 2026) — per-room scratch
   // state, same reasoning as the stairwell landing rows above.
-  ['fp_area', 'fp_thickness', 'fp_manual_desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['fp_room_name', 'fp_area', 'fp_thickness', 'fp_manual_desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const fpRoomCardsEl = document.getElementById('floorPrepRoomCards');
+  if (fpRoomCardsEl) fpRoomCardsEl.innerHTML = '';
   ['fp_amount', 'fp_cost'].forEach(id => { const el = document.getElementById(id); if (el) el.value = 0; });
   const fpDescEl = document.getElementById('fp_calc_description');
   if (fpDescEl) fpDescEl.textContent = '';
@@ -1008,6 +1065,7 @@ async function loadQuote() {
   const res = await fetch(`${API}/quotes/${currentQuoteId}?role=${currentRole()}`);
   const data = await res.json();
   currentQuoteLinesCache = data.lines;
+  renderFloorPrepRoomCards();
   if (data.quote && data.quote.status) { currentQuoteStatus = data.quote.status; }
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }

@@ -227,6 +227,11 @@ def _ensure_new_columns():
         # Transport Levy (confirmed Aug 2026) — manual, per-job, opt-in;
         # 0.0 default so every existing quote is completely unaffected.
         ("quote", "transport_levy", "FLOAT", "0.0"),
+        # Extra Rooms / Floor Prep collapsible cards (confirmed Aug 2026)
+        # — NULL default: every existing misc line is a genuine ordinary
+        # misc line, not a floor-prep entry, so NULL ("not this feature")
+        # is correct for all of them, not just a safe placeholder.
+        ("quotelineitem", "source_feature", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2695,19 +2700,27 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
 
 @app.post("/quotes/{quote_id}/lines/misc")
 def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
+                   source_feature: str = None,
                    role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — freeform line for anything that doesn't fit
     an existing category: extra Saturday/Sunday labour, a one-off
     special request, anything not covered by a real product record.
     cost_ex_vat is optional (defaults to 0, i.e. pure margin) — useful
     for things like weekend labour where there's genuinely no
-    additional cost beyond what's already being paid in salary."""
+    additional cost beyond what's already being paid in salary.
+
+    source_feature (confirmed Aug 2026, Extra Rooms / Floor Prep
+    Collapsible brief): None for an ordinary misc line (unchanged
+    default — every existing caller of this endpoint keeps working
+    exactly as before); "floor_prep" when quote-builder.js's
+    addFloorPrepLine() is the caller, so the frontend can pick those
+    lines back out for their own collapsible-card rendering."""
     with Session(engine) as session:
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
         line = QuoteLineItem(
             quote_id=quote_id, category="misc", product_id=0, tenant_id=tenant_id,
-            product_name=description,
+            product_name=description, source_feature=source_feature,
             unit_cost=cost_ex_vat, unit_price=amount_ex_vat,
             line_total=amount_ex_vat, margin_pct=margin_pct,
         )

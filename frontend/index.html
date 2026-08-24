@@ -384,6 +384,15 @@
     <div class="card" id="floorPrepCard" style="display:none;">
       <h2>Extra Rooms / Floor Prep</h2>
       <p class="muted" style="margin-top:-8px;">Add extra screed/levelling for a second room, patching, or any floor-prep material — each one becomes its own quote line, in addition to the main floor job above.</p>
+
+      <!-- Confirmed Aug 2026, Extra Rooms / Floor Prep Collapsible brief
+      — already-added rooms, one collapsible card each, nested here
+      inside the Screed calculator area (not a separate section). Filled
+      in by renderFloorPrepRoomCards() (quote-builder.js), called every
+      loadQuote(). -->
+      <div id="floorPrepRoomCards" style="margin-bottom:14px;"></div>
+
+      <div class="field"><label>Room name / description <span class="adj">(appears on the printed/sent quote for this line — e.g. "Guest Bathroom", not a generic label)</span></label><input type="text" id="fp_room_name" placeholder="e.g. Guest Bathroom"></div>
       <div class="field">
         <label style="font-weight:600; display:inline;"><input type="radio" name="fp_mode" value="calculated" checked onchange="fpOnModeChange()" style="width:auto;"> Calculated</label>
         <label style="font-weight:600; display:inline; margin-left:20px;"><input type="radio" name="fp_mode" value="manual" onchange="fpOnModeChange()" style="width:auto;"> Manual / estimate</label>
@@ -404,7 +413,7 @@
       </div>
 
       <div id="fpManualFields" style="display:none; margin-top:10px;">
-        <div class="field"><label>Description</label><input type="text" id="fp_manual_desc" placeholder="e.g. Extra patching, guest bathroom"></div>
+        <div class="field"><label>Additional detail <span class="adj">(optional — appended after the room name above, e.g. "extra patching, 2 bags")</span></label><input type="text" id="fp_manual_desc" placeholder="e.g. extra patching, 2 bags"></div>
       </div>
 
       <div class="grid" style="margin-top:12px;">

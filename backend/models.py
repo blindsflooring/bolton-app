@@ -664,6 +664,14 @@ class QuoteLineItem(SQLModel, table=True):
     category: str              # "flooring" | "blinds"
     product_id: int
     product_name: str          # denormalized snapshot at time of quoting
+    # source_feature (confirmed Aug 2026, Extra Rooms / Floor Prep
+    # Collapsible brief) — a misc line's category alone can't tell "an
+    # Extra Room/Floor Prep entry" apart from any other freeform misc
+    # line (e.g. "extra Saturday labour") to render it as its own
+    # collapsible card. None for every ordinary misc line (and every
+    # other category — flooring/blinds/trim/stairwell already have
+    # their own dedicated category value, they don't need this).
+    source_feature: Optional[str] = None   # None | "floor_prep"
     colour: str = ""            # confirmed Aug 2026: denormalized snapshot too — locks the exact colour that was actually quoted, even if the price book entry is later edited or the colour discontinued. This is what gets ordered.
     original_colour: str = ""   # confirmed Aug 2026: set once when the line is first created, never touched again — the true original, even if `colour` above gets changed later (e.g. out of stock, substituted). Full change history lives in ColourChangeLog.
     job_type: Optional[str] = None       # flooring only
