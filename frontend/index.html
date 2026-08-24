@@ -1203,12 +1203,24 @@ function stageBoxPriceCorrections(supplier) {
 // range the name starts with, even though the name itself also needs a
 // manual fix this tool doesn't attempt (renaming isn't a price
 // correction, and guessing the "right" name back is a separate risk).
+// aliases (confirmed Aug 2026 — real find, second confirmed example:
+// "deZIGN series 200 (Mojave)" stored R1537.20, m²/box 5.3016 ->
+// 1537.20/5.3016 = 289.95, matching Como Desert's real Zone A price
+// exactly, even though "deZIGN series 200" isn't a Como Flooring name
+// anywhere on the real sheet — it's Azura's own naming convention from
+// an unrelated historical CSV in this repo. A second, separate name-
+// contamination bug beyond "Como Bonsai 2.0 / Como Bellagio": at least
+// one Como product got a completely different supplier's product name
+// attached to it. Prefix-matching against the real range name alone
+// would NOT have caught this row — it needed an explicit alias.
+// "Mojave" itself is a genuine Como Desert colour code (CZ1101), which
+// is how this was traced back with confidence rather than guessed.
 const COMO_VERIFIED_PRICING = [
   // LUXURY VINYL FLOORING
   { name: 'Numi LVT 2.0', zoneA: 219.95, zoneB: 236.95, zoneC: 242.95, m2PerPack: 5.020 },
   { name: 'Como Lake', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 5.560 },
   { name: 'Como Bonsai 2.0', zoneA: 269.95, zoneB: 286.95, zoneC: 292.95, m2PerPack: 3.600 },
-  { name: 'Como Desert', zoneA: 289.95, zoneB: 306.95, zoneC: 312.95, m2PerPack: 5.3016 },
+  { name: 'Como Desert', aliases: ['deZIGN series 200'], zoneA: 289.95, zoneB: 306.95, zoneC: 312.95, m2PerPack: 5.3016 },
   { name: 'Como Mountain', zoneA: 359.95, zoneB: 376.95, zoneC: 382.95, m2PerPack: 3.900 },
   { name: 'Como Mineral', zoneA: 369.95, zoneB: 386.95, zoneC: 392.95, m2PerPack: 4.418 },
   { name: 'Como Bonsai', zoneA: 409.95, zoneB: 426.95, zoneC: 432.95, m2PerPack: 2.475 },
@@ -1247,7 +1259,18 @@ function stageComoVerifiedCorrections(supplier) {
   const unmatched = [];
   products.forEach(p => {
     const normalized = normalizeComoRangeName(p.product_name);
-    const ref = COMO_VERIFIED_PRICING.find(r => normalized.startsWith(normalizeComoRangeName(r.name)));
+    // Checks the real range name first, then any known aliases (see
+    // COMO_VERIFIED_PRICING's own comment — a real product was found
+    // carrying a completely different supplier's naming convention).
+    // matchedViaAlias tracked separately so the table below can flag
+    // it distinctly — an alias match means the PRICE is now correct
+    // but the product's NAME is still wrong and needs a manual fix
+    // this tool doesn't attempt.
+    let ref = null, matchedViaAlias = false;
+    for (const r of COMO_VERIFIED_PRICING) {
+      if (normalized.startsWith(normalizeComoRangeName(r.name))) { ref = r; break; }
+      if ((r.aliases || []).some(a => normalized.startsWith(normalizeComoRangeName(a)))) { ref = r; matchedViaAlias = true; break; }
+    }
     if (!ref) { unmatched.push(p); return; }
     const previousValue = p.base_cost_ex_vat;   // captured BEFORE staging overwrites the display
     const fieldsToSet = {
@@ -1258,26 +1281,30 @@ function stageComoVerifiedCorrections(supplier) {
     for (const [field, newValue] of Object.entries(fieldsToSet)) {
       stagedChanges[`FlooringProduct:${p.id}:${field}`] = { entity_type: 'FlooringProduct', entity_id: p.id, field, new_value: newValue };
     }
-    matched.push({ product: p.product_name, colour: p.colour || '', matchedRange: ref.name, sheetZoneA: ref.zoneA, previousValue, staged: ref.zoneA });
+    matched.push({ product: p.product_name, colour: p.colour || '', matchedRange: ref.name, matchedViaAlias, sheetZoneA: ref.zoneA, previousValue, staged: ref.zoneA });
   });
   updateCommitButton();
   renderSupplierConsoleTable();
 
   const rows = matched.map(m => {
     const changed = m.previousValue !== m.staged;
+    const aliasFlag = m.matchedViaAlias
+      ? `<br><span style="color:var(--coral); font-weight:700; font-size:11px;">⚠ matched via alias — this product's NAME appears wrong (not a real Como range name), only the PRICE has been corrected here; fix the name manually</span>`
+      : '';
     return `<tr style="${changed ? '' : 'opacity:0.6;'}">
-      <td>${m.product}</td><td>${m.colour}</td><td>${m.matchedRange}</td>
+      <td>${m.product}${aliasFlag}</td><td>${m.colour}</td><td>${m.matchedRange}</td>
       <td>R${m.sheetZoneA.toFixed(2)}</td>
       <td>${m.previousValue != null ? 'R'+m.previousValue.toFixed(2) : '(not set)'}</td>
       <td style="${changed ? 'font-weight:700; color:var(--teal);' : ''}">R${m.staged.toFixed(2)}${changed ? '' : ' (unchanged)'}</td>
     </tr>`;
   }).join('');
-  const unmatchedRows = unmatched.map(p => `<tr><td>${p.product_name}</td><td>${p.colour || ''}</td><td colspan="4" class="muted">No matching range found in the source PDF reference table — left untouched, check manually</td></tr>`).join('');
+  const unmatchedRows = unmatched.map(p => `<tr><td>${p.product_name}</td><td>${p.colour || ''}</td><td colspan="4" class="muted">No matching range or known alias found in the source PDF reference table — left untouched, check manually</td></tr>`).join('');
+  const aliasCount = matched.filter(m => m.matchedViaAlias).length;
 
   const tableHtml = `
     <div class="card" style="border:2px solid var(--teal);">
       <h2>Verified correction staged for "${supplier}" — ${matched.length} of ${products.length} products matched</h2>
-      <p class="muted">Every value below comes directly from Como_Price_list_June_26_General.01.pdf's own Zone A/B/C columns — check this against the real sheet yourself. Nothing is saved yet; press Commit Changes below once you've reviewed this.</p>
+      <p class="muted">Every value below comes directly from Como_Price_list_June_26_General.01.pdf's own Zone A/B/C columns — check this against the real sheet yourself. Nothing is saved yet; press Commit Changes below once you've reviewed this.${aliasCount ? ` <b style="color:var(--coral);">${aliasCount} matched only via a known alias (⚠ flagged below) — those products' NAMES are wrong and need manual fixing, price correction alone isn't the full fix for them.</b>` : ''}</p>
       <div style="overflow-x:auto;">
         <table>
           <thead><tr><th>Product (as stored)</th><th>Colour</th><th>Matched sheet range</th><th>Sheet Zone A /m²</th><th>Previously stored</th><th>Now staged</th></tr></thead>
