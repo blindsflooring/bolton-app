@@ -61,7 +61,7 @@ async function toggleLineFields() {
   // start (30-60+s to wake). Now awaits all three caches up front,
   // regardless of which category is selected, before anything below
   // reads any of them.
-  await Promise.all([loadFlooring(), loadBlinds(), loadTrims()]);
+  await Promise.all([loadFlooring(), loadBlinds(), loadTrims(), loadFloorPrep()]);
   if (isFlooring) {
     populateFloorProductDropdowns();
     // Labour rate default from Business Settings — set once here, NOT
@@ -105,6 +105,123 @@ function populateFloorProductDropdowns() {
   if (!screedProducts.length) { screedCheckbox.checked = false; }
   onScreedProductChange();
   fjOnIncludeChange();
+}
+
+// ===== Extra Rooms / Floor Prep (confirmed Aug 2026, Screed Calculator:
+// Extra Rooms brief) — separate from the main Vinyl/Screed floor job
+// above: any number of these can be added to one quote, each becoming
+// its own "misc" quote line (reuses the existing, already-correct
+// /quotes/{id}/lines/misc endpoint — no new line-creation endpoint
+// needed, same "don't build a parallel calc/save path" discipline this
+// project has followed all session). Calculated mode implements the
+// brief's own Section 3 formula, verified against its Section 6
+// reference case (16m², 10mm, LEVELiTe F10 -> 224.00kg, 12 bags, 4.00L
+// BONDiTe, 1×25L drum OR 1×5L bottle) — see fpCalc() below.
+let floorPrepProducts = [];
+
+async function loadFloorPrep() {
+  const res = await fetch(`${API}/price-book/floor-prep`);
+  floorPrepProducts = await res.json();
+  populateFloorPrepDropdowns();
+}
+
+function populateFloorPrepDropdowns() {
+  // Only the two coverage_basis shapes the brief's Section 3 formula
+  // actually covers get a dropdown here (kg/m²/mm compounds, m²/L
+  // bonding agents) — the other reference products (iTe SLURRY,
+  // VAPORiTe, GRIPiTe H80) live in the Supplier Console as reference
+  // data per Section 5 but aren't wired into a calculator formula of
+  // their own by this brief.
+  const compounds = floorPrepProducts.filter(p => p.coverage_basis === 'kg_per_m2_per_mm');
+  const bondingAgents = floorPrepProducts.filter(p => p.coverage_basis === 'm2_per_L');
+  const compoundSelect = document.getElementById('fp_compound_product');
+  const bondingSelect = document.getElementById('fp_bonding_product');
+  if (!compoundSelect || !bondingSelect) return;   // card not in the DOM yet on first script load
+  compoundSelect.innerHTML = compounds.length
+    ? compounds.map(p => `<option value="${p.id}">${p.product_name} (${p.pack_size}${p.pack_unit})</option>`).join('')
+    : '<option value="">No levelling/patching compound in the price book yet</option>';
+  bondingSelect.innerHTML = bondingAgents.length
+    ? bondingAgents.map(p => `<option value="${p.id}">${p.product_name} (${p.pack_size}${p.pack_unit})</option>`).join('')
+    : '<option value="">No bonding agent in the price book yet</option>';
+  fpCalc();
+}
+
+function fpOnModeChange() {
+  const mode = document.querySelector('input[name="fp_mode"]:checked').value;
+  document.getElementById('fpCalculatedFields').style.display = mode === 'calculated' ? '' : 'none';
+  document.getElementById('fpManualFields').style.display = mode === 'manual' ? '' : 'none';
+}
+
+// Live calculation, Section 3's formula exactly:
+//   compound kg = area x thickness x coverage_rate (kg_per_m2_per_mm)
+//   bags = ROUND UP(kg / pack_size) — always up, never fractional
+//   bonding L = area / coverage_rate (m2_per_L), conservative (lower) rate
+//   containers = ROUND UP(L / pack_size), shown per available pack size
+//     as alternatives (e.g. one row per size Bolton has for that product)
+function fpCalc() {
+  const area = parseFloat(document.getElementById('fp_area').value) || 0;
+  const thickness = parseFloat(document.getElementById('fp_thickness').value) || 0;
+  const compound = floorPrepProducts.find(p => p.id == document.getElementById('fp_compound_product').value);
+  const bonding = floorPrepProducts.find(p => p.id == document.getElementById('fp_bonding_product').value);
+
+  const compoundKg = (compound && area && thickness) ? area * thickness * compound.coverage_rate : 0;
+  const bags = (compound && compoundKg > 0) ? Math.ceil(compoundKg / compound.pack_size) : 0;
+  const bondingL = (bonding && area) ? area / bonding.coverage_rate : 0;
+  // Every pack size Bolton has on file for this exact bonding agent NAME
+  // (e.g. both "BONDiTe (5L)" and "BONDiTe (25L)" rows) is shown as its
+  // own alternative — matches the reference calculator's dual-option
+  // format (Section 3: "shown for each available container size as an
+  // alternative").
+  // Largest pack first, matching the brief's own reference example
+  // wording ("1×25L drum OR 1×5L bottle") — purely cosmetic ordering,
+  // both options are always shown regardless.
+  const bondingSiblings = bonding
+    ? floorPrepProducts.filter(p => p.product_name.replace(/\s*\([^)]*\)\s*$/, '') === bonding.product_name.replace(/\s*\([^)]*\)\s*$/, '') && p.coverage_basis === 'm2_per_L').sort((a, b) => b.pack_size - a.pack_size)
+    : [];
+  const containerOptions = (bondingL > 0 ? bondingSiblings : []).map(p => `${Math.ceil(bondingL / p.pack_size)} × ${p.pack_size}${p.pack_unit}`);
+
+  document.getElementById('fp_out_compound_kg').textContent = compound ? `${compoundKg.toFixed(2)} kg` : '—';
+  document.getElementById('fp_out_bags').textContent = compound ? `${bags} bag${bags !== 1 ? 's' : ''} of ${compound.product_name}` : '—';
+  document.getElementById('fp_out_bonding_l').textContent = bonding ? `${bondingL.toFixed(2)} L` : '—';
+  document.getElementById('fp_out_containers').textContent = containerOptions.length ? containerOptions.join(' OR ') : '—';
+
+  const descEl = document.getElementById('fp_calc_description');
+  if (descEl) {
+    descEl.textContent = (area && thickness && compound)
+      ? `Extra room: ${area}m² × ${thickness}mm ${compound.product_name} — ${compoundKg.toFixed(2)}kg (${bags} bag${bags !== 1 ? 's' : ''})${bonding && bondingL > 0 ? `, ${bondingL.toFixed(2)}L ${bonding.product_name.replace(/\s*\([^)]*\)\s*$/, '')} (${containerOptions.join(' OR ')})` : ''}`
+      : '';
+  }
+}
+
+async function addFloorPrepLine() {
+  if (!currentQuoteId) { alert('Start a quote first.'); return; }
+  const mode = document.querySelector('input[name="fp_mode"]:checked').value;
+  let description;
+  if (mode === 'calculated') {
+    description = document.getElementById('fp_calc_description').textContent;
+    if (!description) { alert('Fill in area, thickness, and pick a compound product first.'); return; }
+  } else {
+    description = document.getElementById('fp_manual_desc').value.trim();
+    if (!description) { alert('Enter a description first.'); return; }
+  }
+  const amount = parseFloat(document.getElementById('fp_amount').value) || 0;
+  const cost = parseFloat(document.getElementById('fp_cost').value) || 0;
+  if (!confirmPostAcceptChange('adding this line')) return;
+  const params = new URLSearchParams({ description, amount_ex_vat: amount, cost_ex_vat: cost, role: currentRole() });
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/misc?${params}`, { method: 'POST' });
+  const line = await res.json();
+  if (line.warning) alert(line.warning);
+  // Reset for the next room, per the brief's own "a quote can contain
+  // multiple extra rooms" requirement — deliberately does NOT reset the
+  // compound/bonding product choice (often the same product across
+  // several rooms on one job), only the per-room quantities and amounts.
+  document.getElementById('fp_area').value = '';
+  document.getElementById('fp_thickness').value = '';
+  document.getElementById('fp_manual_desc').value = '';
+  document.getElementById('fp_amount').value = 0;
+  document.getElementById('fp_cost').value = 0;
+  fpCalc();
+  loadQuote();
 }
 
 // Two-step selection (confirmed Aug 2026): pick a Range first, then a
@@ -484,6 +601,7 @@ async function createQuote() {
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('orderDetailsCard').style.display = 'block';
+  document.getElementById('floorPrepCard').style.display = 'block';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -558,6 +676,12 @@ function clearStaleQuoteResidue() {
   if (orderDetailsStatusEl) orderDetailsStatusEl.textContent = '';
   const followUpListEl = document.getElementById('followUpList');
   if (followUpListEl) followUpListEl.innerHTML = '';
+  // Extra Rooms / Floor Prep (confirmed Aug 2026) — per-room scratch
+  // state, same reasoning as the stairwell landing rows above.
+  ['fp_area', 'fp_thickness', 'fp_manual_desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['fp_amount', 'fp_cost'].forEach(id => { const el = document.getElementById(id); if (el) el.value = 0; });
+  const fpDescEl = document.getElementById('fp_calc_description');
+  if (fpDescEl) fpDescEl.textContent = '';
   // Real bug found while building Sprint B's line editing: without this,
   // editingLineId could survive into a DIFFERENT quote (started right
   // after cancelling out of an edit mid-flow) — the next "Add" click in
@@ -573,6 +697,7 @@ function resetQuoteBuilderUI() {
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
   document.getElementById('orderDetailsCard').style.display = 'none';
+  document.getElementById('floorPrepCard').style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';

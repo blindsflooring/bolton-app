@@ -150,6 +150,50 @@ class TrimProduct(SQLModel, table=True):
     source: str = "manual"
 
 
+class FloorPrepProduct(SQLModel, table=True):
+    """Floor-prep/screed materials — levelling & patching compounds,
+    bonding agents, moisture barriers, adhesives (confirmed Aug 2026,
+    Screed Calculator: Extra Rooms brief). Lives in the Supplier Console
+    like every other product category, per the brief's explicit Section
+    5 instruction — coverage-rate reference data must be Console-
+    editable, not hardcoded inline in the calculator, so a rate change
+    is handled the same audited way as any other supplier pricing update.
+
+    coverage_basis distinguishes the THREE genuinely different formula
+    shapes the real products use (confirmed from Azura's own Floor
+    Preparation & Adhesives price list, brief Section 2) — a single
+    "coverage_rate" number means something different depending on this:
+    - "kg_per_m2_per_mm": levelling/patching compounds (LEVELiTe F10/F30,
+      PATCHiTe) — kg needed = area x thickness x coverage_rate. The
+      brief's Section 3 calculated-mode formula is written specifically
+      for this shape.
+    - "m2_per_L": bonding agents/liquid adhesives (BONDiTe, GRIPiTe V50)
+      — L needed = area / coverage_rate, thickness-independent.
+    - "m2_per_pack" / "m2_per_kg": simpler single-ratio products (iTe
+      SLURRY's whole-pack coverage, VAPORiTe, GRIPiTe H80) — kept as
+      Console reference data per Section 5 even though the brief's own
+      calculated-mode formula (Section 3) only exercises the first two
+      shapes above; not wired into a calculator formula of its own yet.
+
+    cost_ex_vat_per_pack: genuinely NOT supplied by the brief's own
+    Section 2 reference table (pack size + coverage rate only, no
+    pricing) — added anyway, defaulting None/blank, since real cost-
+    tracking (the banked item this brief explicitly supersedes) needs a
+    real price to ever produce a Rand figure. Burgert sets this the same
+    way any other product's price gets set — via the Console."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    supplier: str
+    product_name: str
+    pack_size: float           # e.g. 20 (kg) or 25 (L) — magnitude only, see pack_unit
+    pack_unit: str = "kg"      # "kg" | "L"
+    coverage_rate: float
+    coverage_basis: str = "kg_per_m2_per_mm"   # "kg_per_m2_per_mm" | "m2_per_L" | "m2_per_pack" | "m2_per_kg"
+    cost_ex_vat_per_pack: Optional[float] = None
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    source: str = "manual"
+
+
 class FlooringProduct(SQLModel, table=True):
     """Flooring price book entry. Job-type multiplier applied at quote time,
     so one product entry covers all three job types.

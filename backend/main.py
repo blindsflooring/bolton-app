@@ -22,7 +22,7 @@ from models import (
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
-    SupplierDefault,
+    SupplierDefault, FloorPrepProduct,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -475,6 +475,42 @@ def on_startup():
             print(f"Migration: courier/delivery fee bulk update — set R15.00/m² for {len(aspen_unmigrated)} Aspen FlooringProduct row(s)")
         session.commit()
 
+        # Floor-prep reference data seed (confirmed Aug 2026, Screed
+        # Calculator: Extra Rooms brief, Section 2 — "from Azura's own
+        # Floor Preparation & Adhesives price list"). One-time, idempotent
+        # (only runs if the table is completely empty) — cost_ex_vat_per_pack
+        # is deliberately left None for every row: the brief's own
+        # reference table gives pack size + coverage rate only, no
+        # pricing, so there's nothing real to seed there; Burgert sets it
+        # via the Supplier Console the same way any other product's price
+        # gets set. Two rows for any product the brief states with two
+        # pack sizes (BONDiTe, iTe SLURRY, GRIPiTe V50) — coverage
+        # differs meaningfully per pack for iTe SLURRY (85m²/15kg vs
+        # 175m²/30kg, not a clean per-kg multiple), so each needs its own
+        # row rather than one row with a shared rate.
+        if not session.exec(select(FloorPrepProduct)).first():
+            floor_prep_seed = [
+                ("LEVELiTe F10", 20, "kg", 1.4, "kg_per_m2_per_mm"),
+                ("LEVELiTe F30", 20, "kg", 1.4, "kg_per_m2_per_mm"),
+                ("BONDiTe (5L)", 5, "L", 4, "m2_per_L"),
+                ("BONDiTe (25L)", 25, "L", 4, "m2_per_L"),
+                ("iTe SLURRY (15kg)", 15, "kg", 85, "m2_per_pack"),
+                ("iTe SLURRY (30kg)", 30, "kg", 175, "m2_per_pack"),
+                ("PATCHiTe", 25, "kg", 2, "kg_per_m2_per_mm"),
+                ("VAPORiTe", 4.5, "kg", 4, "m2_per_kg"),
+                ("GRIPiTe V50 (5L)", 5, "L", 4, "m2_per_L"),
+                ("GRIPiTe V50 (20L)", 20, "L", 4, "m2_per_L"),
+                ("GRIPiTe H80", 15, "kg", 1, "m2_per_kg"),
+            ]
+            for name, pack_size, pack_unit, coverage_rate, coverage_basis in floor_prep_seed:
+                session.add(FloorPrepProduct(
+                    tenant_id=DEFAULT_TENANT_ID, supplier="Azura", product_name=name,
+                    pack_size=pack_size, pack_unit=pack_unit, coverage_rate=coverage_rate,
+                    coverage_basis=coverage_basis, source="seed",
+                ))
+            print(f"Migration: seeded {len(floor_prep_seed)} FloorPrepProduct row(s) for Azura")
+        session.commit()
+
 
 def get_session():
     with Session(engine) as session:
@@ -842,6 +878,17 @@ def list_trims(tenant_id: str = Depends(get_current_tenant)):
         return session.exec(select(TrimProduct).where(TrimProduct.tenant_id == tenant_id)).all()
 
 
+@app.get("/price-book/floor-prep", response_model=List[FloorPrepProduct])
+def list_floor_prep(tenant_id: str = Depends(get_current_tenant)):
+    """Confirmed Aug 2026, Screed Calculator: Extra Rooms brief — same
+    plain listing pattern as flooring/blinds/trims above. Mutations for
+    this category go through the Supplier Console's existing generic
+    commit endpoint (ENTITY_TYPE_MODELS below), same as every other
+    product type — no separate POST/PUT/DELETE needed here."""
+    with Session(engine) as session:
+        return session.exec(select(FloorPrepProduct).where(FloorPrepProduct.tenant_id == tenant_id)).all()
+
+
 @app.post("/price-book/trims", response_model=TrimProduct)
 def create_trim(product: TrimProduct, tenant_id: str = Depends(get_current_tenant)):
     product.tenant_id = tenant_id
@@ -1097,6 +1144,7 @@ ENTITY_TYPE_MODELS = {
     "BlindsProduct": BlindsProduct,
     "TrimProduct": TrimProduct,
     "SupplierDefault": SupplierDefault,
+    "FloorPrepProduct": FloorPrepProduct,
 }
 
 # Confirmed Aug 2026, Console delete feature: which QuoteLineItem.category
@@ -1131,6 +1179,8 @@ FIELD_LABELS = {
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
     "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
     "default_delivery_fee_per_m2": "Delivery fee default (R/m², for new products)",
+    "pack_size": "Pack size", "pack_unit": "Pack unit", "coverage_rate": "Coverage rate",
+    "coverage_basis": "Coverage basis", "cost_ex_vat_per_pack": "Cost per pack (ex VAT)",
     "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",

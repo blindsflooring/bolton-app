@@ -375,6 +375,45 @@
       </div>
     </div>
 
+    <!-- Extra Rooms / Floor Prep (confirmed Aug 2026, Screed Calculator:
+    Extra Rooms brief) — separate from the main Vinyl/Screed floor job
+    above; any number of these can be added to one quote, each its own
+    quote line, alongside the main job. Visibility toggled the same way
+    as addLineCard/linesCard/orderDetailsCard (createQuote()/
+    openQuoteFromIndex()/resetQuoteBuilderUI(), quote-builder.js). -->
+    <div class="card" id="floorPrepCard" style="display:none;">
+      <h2>Extra Rooms / Floor Prep</h2>
+      <p class="muted" style="margin-top:-8px;">Add extra screed/levelling for a second room, patching, or any floor-prep material — each one becomes its own quote line, in addition to the main floor job above.</p>
+      <div class="field">
+        <label style="font-weight:600; display:inline;"><input type="radio" name="fp_mode" value="calculated" checked onchange="fpOnModeChange()" style="width:auto;"> Calculated</label>
+        <label style="font-weight:600; display:inline; margin-left:20px;"><input type="radio" name="fp_mode" value="manual" onchange="fpOnModeChange()" style="width:auto;"> Manual / estimate</label>
+      </div>
+
+      <div id="fpCalculatedFields" style="margin-top:10px;">
+        <div class="grid">
+          <div class="field"><label>Area (m²)</label><input type="number" id="fp_area" step="0.01" oninput="fpCalc()"></div>
+          <div class="field"><label>Thickness (mm)</label><input type="number" id="fp_thickness" step="0.1" oninput="fpCalc()"></div>
+          <div class="field"><label>Compound product</label><select id="fp_compound_product" onchange="fpCalc()"></select></div>
+          <div class="field"><label>Bonding agent</label><select id="fp_bonding_product" onchange="fpCalc()"></select></div>
+        </div>
+        <div class="fj-line step"><span>Compound needed</span><span id="fp_out_compound_kg"></span></div>
+        <div class="fj-line result"><span>Bags needed</span><span id="fp_out_bags"></span></div>
+        <div class="fj-line step"><span>Bonding agent needed</span><span id="fp_out_bonding_l"></span></div>
+        <div class="fj-line result"><span>Containers needed</span><span id="fp_out_containers"></span></div>
+        <p class="muted" id="fp_calc_description" style="font-size:12px; margin-top:8px;"></p>
+      </div>
+
+      <div id="fpManualFields" style="display:none; margin-top:10px;">
+        <div class="field"><label>Description</label><input type="text" id="fp_manual_desc" placeholder="e.g. Extra patching, guest bathroom"></div>
+      </div>
+
+      <div class="grid" style="margin-top:12px;">
+        <div class="field"><label>Amount charged (R, ex VAT)</label><input type="number" id="fp_amount" step="0.01" value="0"></div>
+        <div class="field"><label>Real cost (R, ex VAT, optional)</label><input type="number" id="fp_cost" step="0.01" value="0"></div>
+      </div>
+      <button class="primary" onclick="addFloorPrepLine()" style="margin-top:10px;">+ Add to Quote</button>
+    </div>
+
     <!-- ===== BLINDS / TRIM / STAIRWELL: existing simpler forms ===== -->
     <div class="card" id="genericLineCard" style="display:none;">
       <h2>Add Line Item</h2>
@@ -1029,6 +1068,20 @@ const BLINDS_CONSOLE_FIELDS = [
   ['trade_discount_pct', 'Trade discount %', 'pct'],
   ['settlement_discount_pct', 'Settlement discount %', 'pct'],
 ];
+// Floor-prep materials (confirmed Aug 2026, Screed Calculator: Extra
+// Rooms brief, Section 5 — "should live in the Supplier Console... not
+// hardcoded inline in the calculator"). coverage_basis stays a plain
+// text field here (not a dropdown) — only 4 real values exist and
+// they're rarely if ever changed once a product's seeded correctly, a
+// dropdown would be more code for no real safety benefit at this scale.
+const FLOOR_PREP_CONSOLE_FIELDS = [
+  ['product_name', 'Product', 'text'],
+  ['pack_size', 'Pack size', 'number', '0.01'],
+  ['pack_unit', 'Pack unit', 'text'],
+  ['coverage_rate', 'Coverage rate', 'number', '0.001'],
+  ['coverage_basis', 'Coverage basis', 'text'],
+  ['cost_ex_vat_per_pack', 'Cost per pack (ex VAT)', 'number', '0.01'],
+];
 
 // Supplier display-name overrides (confirmed Aug 2026): "Local Supplier"
 // is an outdated/unclear label — every product actually under it is
@@ -1044,7 +1097,7 @@ const BLINDS_CONSOLE_FIELDS = [
 const SUPPLIER_DISPLAY_NAMES = { 'Local Supplier': 'Skirtings' };
 function supplierDisplayName(raw) { return SUPPLIER_DISPLAY_NAMES[raw] || raw; }
 
-let supplierConsoleData = { flooring: [], blinds: [], trims: [] };
+let supplierConsoleData = { flooring: [], blinds: [], trims: [], floorPrep: [] };
 // Supplier-level defaults (confirmed Aug 2026): keyed by supplier name,
 // {id, default_trade_discount_pct, pricing_zone} — id is null/undefined
 // for a supplier that's never had any default set, which the staging/
@@ -1061,13 +1114,14 @@ let stagedSupplierDefaults = {};   // supplier -> { fieldName: stagedValue }
 async function renderSupplierConsole(el) {
   await renderWithRetry(el, 'Supplier Console', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Supplier Console</h2><p class="muted">Loading...</p></div>`;
-  const [flr, bld, trm, defaults] = await Promise.all([
+  const [flr, bld, trm, fp, defaults] = await Promise.all([
     fetch(`${API}/price-book/flooring`).then(r => r.json()),
     fetch(`${API}/price-book/blinds`).then(r => r.json()),
     fetch(`${API}/price-book/trims`).then(r => r.json()),
+    fetch(`${API}/price-book/floor-prep`).then(r => r.json()),
     fetch(`${API}/admin/supplier-defaults`).then(r => r.json()),
   ]);
-  supplierConsoleData = { flooring: flr, blinds: bld, trims: trm };
+  supplierConsoleData = { flooring: flr, blinds: bld, trims: trm, floorPrep: fp };
   supplierDefaults = {};
   defaults.forEach(d => { supplierDefaults[d.supplier] = d; });
   stagedChanges = {};
@@ -2108,6 +2162,7 @@ function renderSupplierConsoleTable() {
     ...supplierConsoleData.flooring.map(p => ({ ...p, _entityType: 'FlooringProduct' })),
     ...supplierConsoleData.blinds.map(p => ({ ...p, _entityType: 'BlindsProduct' })),
     ...supplierConsoleData.trims.map(p => ({ ...p, _entityType: 'TrimProduct' })),
+    ...supplierConsoleData.floorPrep.map(p => ({ ...p, _entityType: 'FloorPrepProduct' })),
   ];
   const allSuppliers = [...new Set([...allProducts.map(p => p.supplier), ...stagedNewEntities.map(e => e.supplier)])].sort();
 
@@ -2116,6 +2171,7 @@ function renderSupplierConsoleTable() {
       ['FlooringProduct', FLOORING_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'FlooringProduct')],
       ['BlindsProduct', BLINDS_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'BlindsProduct')],
       ['TrimProduct', TRIM_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'TrimProduct')],
+      ['FloorPrepProduct', FLOOR_PREP_CONSOLE_FIELDS, allProducts.filter(p => p.supplier === supplier && p._entityType === 'FloorPrepProduct')],
     ];
     const newForSupplier = stagedNewEntities.filter(e => e.supplier === supplier);
 
@@ -2813,6 +2869,7 @@ async function openQuoteFromIndex(quoteId) {
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('orderDetailsCard').style.display = 'block';
+  document.getElementById('floorPrepCard').style.display = 'block';
 
   // Pre-fill the New Quote form with the real quote's details and lock
   // "Start Quote" so amending an existing quote can never accidentally
