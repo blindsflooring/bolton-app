@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
+from sqlalchemy import inspect, text
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
