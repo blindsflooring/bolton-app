@@ -61,6 +61,12 @@ function nextActionButton(q) {
 let orderIndexSelectedIds = new Set();
 let orderIndexQuotesCache = [];   // last-fetched (search-filtered, not status-tab-filtered) rows — source for the summary counts, the Needs Attention list, and the bulk-delete confirmation's client names/descriptions, all without a second round trip
 let orderIndexActiveTab = 'all';   // 'all' | 'quoted' | 'accepted' | 'scheduled' | 'completed' — filtered client-side against orderIndexQuotesCache so the summary counts (computed from the same cache) never disagree with what a tab click shows
+// Group Multi-Quote Clients (confirmed Aug 2026, Order Index addendum
+// #2) — which client groups are manually expanded, by client_id.
+// Deliberately NOT reset on every re-render (only on a fresh fetch, in
+// renderOrderIndex()) — toggling a tab or checking a box shouldn't
+// collapse a group you just opened to look at.
+let orderIndexExpandedClientIds = new Set();
 
 const WORKFLOW_TABS = ['all', 'quoted', 'accepted', 'scheduled', 'completed'];
 
@@ -80,11 +86,31 @@ async function renderOrderIndex(el, searchTerm) {
   const res = await fetch(`${API}/quotes${params}`);
   orderIndexQuotesCache = await res.json();
   orderIndexSelectedIds = new Set();
+  orderIndexExpandedClientIds = new Set();
   renderOrderIndexTable(searchTerm);
+  // Focus/cursor restore only belongs on a genuine fetch (fresh load or
+  // a search keystroke) — moved out of renderOrderIndexTable() itself
+  // (confirmed Aug 2026, Group Multi-Quote Clients addendum) since that
+  // function now also re-renders on a tab click or a group
+  // expand/collapse, neither of which should steal focus back into the
+  // search box every time.
+  const input = document.getElementById('orderSearchInput');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   });
 }
 
 function renderOrderIndexTable(searchTerm) {
+  // Real gap found and fixed while building Group Multi-Quote Clients
+  // (confirmed Aug 2026): setOrderIndexTab()/toggleClientGroup() call
+  // this with no searchTerm arg, since they're not themselves a new
+  // search — without this fallback, switching tabs (or expanding a
+  // group) would visibly blank the search box even though the
+  // underlying orderIndexQuotesCache still reflects whatever was
+  // searched for. Read it back from the input itself when not given.
+  if (searchTerm === undefined) {
+    const existingInput = document.getElementById('orderSearchInput');
+    searchTerm = existingInput ? existingInput.value : '';
+  }
   const el = document.getElementById('landing');
   const quotes = orderIndexQuotesCache;
   const money = R; // alias — consolidated to the one definition in shared.js
@@ -109,10 +135,11 @@ function renderOrderIndexTable(searchTerm) {
   // urgent first, each row clickable straight to the job. Built from
   // the SAME cache as the table below, not a separate fetch, so it can
   // never show something the table itself disagrees with.
-  const PRIORITY_ORDER = {critical: 0, warning: 1, notice: 2};
+  // PRIORITY_ORDER/PRIORITY_FLAG defined once at module scope below
+  // (shared with the group-header "most urgent" logic in
+  // buildOrderIndexRowsHtml() — same ranking used in both places).
   const attentionItems = quotes.filter(q => q.attention_priority)
     .sort((a, b) => PRIORITY_ORDER[a.attention_priority] - PRIORITY_ORDER[b.attention_priority]);
-  const PRIORITY_FLAG = {critical: '🔴', warning: '🟠', notice: '🟡'};
   const attentionHtml = attentionItems.length ? attentionItems.map(q => `
     <div class="attention-item priority-${q.attention_priority}" onclick="openOrderDetailScreen(${q.id})">
       <span class="attn-flag">${PRIORITY_FLAG[q.attention_priority]} ${q.attention_label}</span>
@@ -120,23 +147,7 @@ function renderOrderIndexTable(searchTerm) {
       ${nextActionButton(q)}
     </div>`).join('') : '<p class="muted" style="margin:0;">Nothing needs attention right now.</p>';
 
-  const rows = shown.length ? shown.map(q => `
-    <tr style="cursor:pointer;" onclick="openOrderDetailScreen(${q.id})">
-      ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
-      <td class="job-number">${q.job_number || `#${q.id}`}</td>
-      <td>${q.client_id
-          ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
-          : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`}
-        ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
-      <td>${money(q.total_incl_vat)}</td>
-      <td>${workflowStatusBadge(q)}</td>
-      <td>${dateOrDash(q.installation_date)}</td>
-      <td>${nextActionButton(q) || '<span class="muted">—</span>'}</td>
-      <td style="white-space:nowrap;">
-        <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}')">Duplicate</button>
-        ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
-      </td>
-    </tr>`).join('') : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match.</td></tr>`;
+  const rows = shown.length ? buildOrderIndexRowsHtml(shown, isOwner, money, !!searchTerm) : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match.</td></tr>`;
 
   const tab = (key, label, count) => `<button onclick="setOrderIndexTab('${key}')" style="${orderIndexActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
 
@@ -187,8 +198,97 @@ function renderOrderIndexTable(searchTerm) {
       <br><button class="primary" onclick="addClientAndStartQuote()">Add Client &amp; Start Quote</button>
     </div>
   `;
-  const input = document.getElementById('orderSearchInput');
-  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+
+// Group Multi-Quote Clients (confirmed Aug 2026, second Order Index
+// addendum) — "any client with more than one open quote/job... grouped
+// under a single collapsed row." Grouped strictly by client_id, never
+// by client_name string matching — two walk-in/one-off quotes (no
+// client_id) that happen to share a typed name are NOT the same client
+// record and must never be grouped together. A client with only one
+// job in the CURRENTLY SHOWN set (i.e. within the active tab/search)
+// renders as a normal single row, same as today (brief §5) — grouping
+// is evaluated against what's actually visible, not the client's
+// all-time job count, so switching tabs can correctly ungroup someone
+// down to a single row.
+const PRIORITY_ORDER = {critical: 0, warning: 1, notice: 2};
+const PRIORITY_FLAG = {critical: '🔴', warning: '🟠', notice: '🟡'};
+
+function toggleClientGroup(clientId) {
+  if (orderIndexExpandedClientIds.has(clientId)) orderIndexExpandedClientIds.delete(clientId);
+  else orderIndexExpandedClientIds.add(clientId);
+  renderOrderIndexTable();
+}
+
+function orderIndexRowHtml(q, isOwner, money, isChild) {
+  return `
+    <tr style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
+      ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
+      <td class="job-number"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}</td>
+      <td>${isChild ? '' : (q.client_id
+          ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
+          : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`)}
+        ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
+      <td>${money(q.total_incl_vat)}</td>
+      <td>${workflowStatusBadge(q)}</td>
+      <td>${dateOrDash(q.installation_date)}</td>
+      <td>${nextActionButton(q) || '<span class="muted">—</span>'}</td>
+      <td style="white-space:nowrap;">
+        <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}')">Duplicate</button>
+        ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
+      </td>
+    </tr>`;
+}
+
+function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
+  // Group by client_id, preserving each group's first-appearance
+  // position in `shown` so the table's overall order doesn't jump
+  // around as groups collapse/expand.
+  const byClient = {};
+  shown.forEach(q => { if (q.client_id) (byClient[q.client_id] = byClient[q.client_id] || []).push(q); });
+  const groupClientIds = new Set(Object.keys(byClient).filter(cid => byClient[cid].length > 1).map(Number));
+
+  const seenGroup = new Set();
+  return shown.map(q => {
+    if (!q.client_id || !groupClientIds.has(q.client_id)) {
+      return orderIndexRowHtml(q, isOwner, money, false);
+    }
+    if (seenGroup.has(q.client_id)) return '';   // absorbed into the group row already emitted below
+    seenGroup.add(q.client_id);
+    const groupQuotes = byClient[q.client_id];
+    // Search auto-expands every group in the (already search-filtered)
+    // result set (confirmed Aug 2026, brief §4) — "should auto-expand
+    // the relevant group so the matching job is visible, not hidden
+    // inside a still-collapsed row." Otherwise, respect whatever the
+    // user has manually toggled.
+    const expanded = isSearching || orderIndexExpandedClientIds.has(q.client_id);
+    const withAttention = groupQuotes.filter(g => g.attention_priority)
+      .sort((a, b) => PRIORITY_ORDER[a.attention_priority] - PRIORITY_ORDER[b.attention_priority]);
+    // Critical requirement (confirmed Aug 2026, brief §2): collapsing
+    // must never hide urgency — the group header itself always shows
+    // the single most urgent Next Action across every job in it, same
+    // priority flag as the Needs Attention list. Falls back to the
+    // first job's own Next Action (no flag) if nothing in the group is
+    // actually flagged urgent.
+    const urgent = withAttention[0];
+    const headerAction = urgent
+      ? `${PRIORITY_FLAG[urgent.attention_priority]} ${urgent.attention_label}`
+      : (groupQuotes[0].next_action || '');
+    // Column math must match the real header row exactly (Job |
+    // Customer | Value | Status | Install Date | Next Action | Actions
+    // = 7 cells, +1 checkbox for Owner) — a mismatch here silently
+    // misaligns every column below whenever a group is present.
+    const headerRow = `
+      <tr style="cursor:pointer; font-weight:600;" onclick="toggleClientGroup(${q.client_id})">
+        ${isOwner ? '<td></td>' : ''}
+        <td colspan="2">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
+        <td colspan="3"></td>
+        <td>${headerAction ? `<span class="muted" style="font-weight:400;">${headerAction}</span>` : ''}</td>
+        <td onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
+      </tr>`;
+    const childRows = expanded ? groupQuotes.map(g => orderIndexRowHtml(g, isOwner, money, true)).join('') : '';
+    return headerRow + childRows;
+  }).join('');
 }
 
 function toggleOrderSelected(quoteId, checked) {

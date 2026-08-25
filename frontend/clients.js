@@ -95,8 +95,17 @@ async function addClient() {
 }
 
 let currentClientDetailId = null;
-function openClientDetail(clientId) {
+// openEdit (confirmed Aug 2026, Order Index Group Multi-Quote Clients
+// addendum — "Edit client" link on a collapsed group header) — jumps
+// straight to the Edit Details form instead of the read-only card,
+// satisfying the brief's own "one click out" requirement. Consumed
+// once, in renderClientDetail() below, right after the real client
+// record is fetched (showEditClientForm() needs that record already
+// cached — can't open the edit form before it exists).
+let pendingClientDetailOpenEdit = false;
+function openClientDetail(clientId, openEdit) {
   currentClientDetailId = clientId;
+  pendingClientDetailOpenEdit = !!openEdit;
   landingView = 'client-detail';
   renderLanding();
 }
@@ -154,6 +163,10 @@ async function renderClientDetail(el) {
   // Stashed for showEditClientForm() below — avoids a second fetch just
   // to populate the edit form with what's already on screen.
   window._currentClientRecord = c;
+  if (pendingClientDetailOpenEdit) {
+    pendingClientDetailOpenEdit = false;
+    showEditClientForm(c.id);
+  }
   });
 }
 
