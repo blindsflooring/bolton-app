@@ -601,6 +601,90 @@ def on_startup():
             if migrated_count:
                 print(f"Migration: backfilled job workflow for {migrated_count} existing quote(s) — job numbers assigned, workflow_status/accepted_at/declined_at/installation_confirmed_date/completion_date derived from legacy status + existing dates (accepted_at and completion_date are approximations, see this block's own comment)")
 
+        # One-time data remediation (confirmed Aug 2026, "Clear the
+        # Unlinked Quotes List: Actions Requested" brief) — three
+        # specific quotes, three DIFFERENT actions, per Burgert's own
+        # explicit per-quote sign-off ("they are NOT all the same
+        # situation, do not treat them identically"). Deliberately
+        # hardcoded to these three quote ids — this is a one-time
+        # remediation for a specific, confirmed incident, not a general
+        # "clean up unlinked quotes" sweep (that's exactly what the
+        # brief warned against — silently merging/deleting is never
+        # done automatically anywhere else in this codebase either).
+        # Runs via the same idempotent on_startup() mechanism as every
+        # other migration here: each action re-checks its own
+        # precondition (quote still exists, name still matches what was
+        # confirmed, still needs the action) before doing anything, so
+        # this is safe to leave in place permanently and re-run on
+        # every future deploy without re-doing or mis-doing anything —
+        # once each quote is gone/linked, its own block becomes a no-op
+        # forever after.
+        q49 = session.get(Quote, 49)
+        if q49 and q49.tenant_id == DEFAULT_TENANT_ID and q49.client_name.strip().lower() == "burgert test":
+            reasons = _quote_delete_dependencies(session, q49, DEFAULT_TENANT_ID)
+            if not reasons:
+                session.add(AuditLog(
+                    tenant_id=DEFAULT_TENANT_ID, username="system (Clear Unlinked Quotes brief, confirmed by Burgert)",
+                    entity_type="Quote", entity_id=49, field="__deleted__",
+                    old_value="Quote #49 — Burgert Test (confirmed test data)", new_value="(deleted)",
+                ))
+                _delete_quote_cascade(session, q49, DEFAULT_TENANT_ID)
+                session.commit()
+                print("Migration: deleted Quote #49 (Burgert Test) — confirmed test data, per Clear Unlinked Quotes brief")
+            else:
+                print(f"Migration: Quote #49 still blocked from deletion ({reasons}) — left alone, needs manual review")
+
+        q40 = session.get(Quote, 40)
+        if q40 and q40.tenant_id == DEFAULT_TENANT_ID and q40.client_name.strip().lower() == "john doe":
+            # Confirmed test values, not real payment records — cleared
+            # first so the delete-dependency check (which correctly
+            # treats a real recorded deposit/payment as a hard block,
+            # see _quote_delete_dependencies) no longer has anything to
+            # object to.
+            q40.deposit_paid_date = None
+            q40.final_payment_date = None
+            session.add(q40)
+            session.commit()
+            session.refresh(q40)
+            reasons = _quote_delete_dependencies(session, q40, DEFAULT_TENANT_ID)
+            if not reasons:
+                session.add(AuditLog(
+                    tenant_id=DEFAULT_TENANT_ID, username="system (Clear Unlinked Quotes brief, confirmed by Burgert)",
+                    entity_type="Quote", entity_id=40, field="__deleted__",
+                    old_value="Quote #40 — John Doe (confirmed test data; test deposit/final-payment dates cleared first)", new_value="(deleted)",
+                ))
+                _delete_quote_cascade(session, q40, DEFAULT_TENANT_ID)
+                session.commit()
+                print("Migration: cleared test payment fields and deleted Quote #40 (John Doe), per Clear Unlinked Quotes brief")
+            else:
+                print(f"Migration: Quote #40 still blocked from deletion after clearing payment fields ({reasons}) — left alone, needs manual review")
+
+        q48 = session.get(Quote, 48)
+        if q48 and q48.tenant_id == DEFAULT_TENANT_ID and not q48.client_id:
+            # REAL client, pricing already verified against Burgert's
+            # own Excel calculator — confirmed directly: never delete
+            # this one, only link it. Checked for an existing client
+            # record first (case-insensitive exact match); only creates
+            # a new one if genuinely none exists, and only ever with
+            # the name — no phone/email/address fabricated, left blank
+            # for Burgert to fill in himself, per the brief's own
+            # explicit instruction not to guess contact details.
+            existing = session.exec(
+                select(Client).where(Client.tenant_id == DEFAULT_TENANT_ID)
+            ).all()
+            match = next((c for c in existing if c.name.strip().lower() == "robert aspeling"), None)
+            if not match:
+                match = Client(tenant_id=DEFAULT_TENANT_ID, name="Robert Aspeling")
+                session.add(match)
+                session.commit()
+                session.refresh(match)
+                print(f"Migration: created new Client record for Robert Aspeling (id={match.id}) — name only, no contact details fabricated")
+            q48.client_id = match.id
+            q48.client_name = match.name
+            session.add(q48)
+            session.commit()
+            print(f"Migration: linked Quote #48 to Robert Aspeling (client_id={match.id}), per Clear Unlinked Quotes brief")
+
 
 def get_session():
     with Session(engine) as session:
