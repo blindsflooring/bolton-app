@@ -2900,6 +2900,42 @@ def get_client_quotes(client_id: int, tenant_id: str = Depends(get_current_tenan
         return {"client": client, "quotes": result}
 
 
+@app.get("/admin/duplicate-clients")
+def find_duplicate_clients(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Order Index -> Client Link Gap brief (confirmed Aug 2026) —
+    "check for and report any other duplicate client records that may
+    already exist." Exact match only, after trimming whitespace and
+    normalizing case — deliberately NOT a fuzzy/typo-tolerant matcher,
+    which is a much bigger, riskier feature that could just as easily
+    flag two genuinely different people (a father and son with the same
+    name, e.g.) as "duplicates." This catches the specific, confirmed
+    real pattern instead: the same person typed in more than once,
+    verbatim or with only casing/whitespace differences, across separate
+    walk-in quote entries — the exact mechanism behind this brief's own
+    Gap 2 finding (see update_quote_details()'s client_id param).
+    quote_count per client included so Burgert can tell at a glance
+    which of a duplicate pair is the "real" one worth keeping active."""
+    with Session(engine) as session:
+        clients = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+        groups: dict = {}
+        for c in clients:
+            key = c.name.strip().lower()
+            groups.setdefault(key, []).append(c)
+        result = []
+        for key, members in groups.items():
+            if len(members) < 2:
+                continue
+            member_details = []
+            for c in members:
+                quote_count = len(session.exec(select(Quote).where(Quote.client_id == c.id, Quote.tenant_id == tenant_id)).all())
+                member_details.append({
+                    "id": c.id, "name": c.name, "phone": c.phone, "email": c.email,
+                    "created_at": c.created_at.isoformat(), "quote_count": quote_count,
+                })
+            result.append({"name": key, "clients": member_details})
+        return result
+
+
 # ---------- Business Settings ----------
 
 def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> BusinessSettings:
@@ -3077,7 +3113,7 @@ def update_quote_transport_levy(quote_id: int, transport_levy: float, tenant_id:
 
 
 @app.put("/quotes/{quote_id}")
-def update_quote_details(quote_id: int, client_name: str = None, sales_owner: str = None,
+def update_quote_details(quote_id: int, client_name: str = None, client_id: int = None, sales_owner: str = None,
                           branch: str = None, status: str = None, description: str = None,
                           site_address: str = None, installation_date: str = None,
                           invoice_sent_date: str = None, deposit_paid_date: str = None,
@@ -3090,6 +3126,21 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
     Order Index. Used by the "Save Quote" button. Line items are already
     saved individually as they're added — this covers quote-level fields
     only.
+
+    client_id (confirmed Aug 2026, Order Index -> Client Link Gap brief)
+    — real gap closed: there was previously NO way to link an existing
+    quote to a real Client record after creation. A quote typed as a
+    plain name in Quote Builder without clicking the matching autocomplete
+    suggestion (the confirmed root cause of that brief's Gap 2 — see
+    createQuote()'s own comment, quote-builder.js) becomes a permanently
+    disconnected walk-in with client_id=None, even if a real client of
+    that same name already exists — it would show correctly on the
+    Order Index (which lists every quote regardless of client_id) but
+    never appear in that real client's own Order History (which filters
+    strictly by client_id). Passing client_id here re-links it, and — same
+    as create_quote()'s own client_id branch — refreshes client_name/
+    site_address from that real record, so the two can't quietly
+    disagree afterward.
 
     workflow_status here is the MANUAL OVERRIDE / correction path
     (confirmed Aug 2026, Order Index / Job Workflow Redesign — Q5): the
@@ -3107,7 +3158,13 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
     time rather than being rediscovered as a bug later."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
-        if client_name is not None:
+        if client_id is not None:
+            client = get_or_404(session, Client, client_id, tenant_id, "Client")
+            quote.client_id = client.id
+            quote.client_name = client.name
+            if client.address:
+                quote.site_address = client.address
+        elif client_name is not None:
             quote.client_name = client_name
         if sales_owner is not None:
             quote.sales_owner = sales_owner

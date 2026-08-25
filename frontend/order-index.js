@@ -247,6 +247,17 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
       <td>${dateOrDash(q.installation_date)}</td>
       <td>${nextActionButton(q) || '<span class="muted">—</span>'}</td>
       <td style="white-space:nowrap;">
+        <!-- Client Link Gap fix (confirmed Aug 2026, Order Index ->
+        Client Link Gap brief, Gap 1) — the Client Grouping addendum's
+        "Edit client" link only ever existed on a GROUPED row's header;
+        a client with just one quote had no equivalent, consistent way
+        to reach their own page from here (brief's own words: "a gap in
+        that spec, not something missed during implementation"). Same
+        link, same target (openClientDetail(id, true) — straight to the
+        edit form), on every standalone row now too. Child rows inside
+        an expanded group still don't repeat it — their own group
+        header, immediately above, already has it for that same client. -->
+        ${(!isChild && q.client_id) ? `<a href="#" onclick="event.stopPropagation(); openClientDetail(${q.client_id}, true); return false;" style="font-size:12px; margin-right:8px;" title="Edit this client's details">Edit client</a>` : ''}
         <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}')">Duplicate</button>
         ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
       </td>
@@ -518,6 +529,29 @@ async function renderOrderDetail(el) {
         <div class="card">
           <h2>Job Details</h2>
           <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
+
+          <!-- Client link (confirmed Aug 2026, Order Index -> Client
+          Link Gap brief, Gap 2 fix) — real gap closed: there was
+          previously no way to link an existing quote to a real Client
+          record after the fact. A quote typed as a plain name in Quote
+          Builder without clicking the matching autocomplete suggestion
+          becomes a permanently disconnected walk-in (client_id=None) —
+          it shows correctly on the Order Index (which lists every
+          quote regardless), but never appears in that real client's
+          own Order History (which filters strictly by client_id).
+          This is exactly that self-service fix, right where the
+          problem is actually noticed. -->
+          <div class="field" style="grid-column: span 2; position:relative; margin-bottom:14px;">
+            <label>Client</label>
+            ${q.client_id
+              ? `<p style="margin:0;"><a href="#" onclick="openClientDetail(${q.client_id}); return false;" style="color:var(--teal); font-weight:600;">${q.client_name}</a> <a href="#" onclick="document.getElementById('jd_relink_box').style.display='block'; this.style.display='none'; return false;" style="font-size:12px; margin-left:8px;">Change</a></p>`
+              : `<p style="margin:0; color:var(--coral);">Not linked to a client record — a walk-in quote. Search below to link it to a real client so it shows up in their Order History.</p>`}
+            <div id="jd_relink_box" style="${q.client_id ? 'display:none;' : ''} margin-top:8px;">
+              <input type="text" id="jd_client_search" placeholder="Search existing clients by name..." oninput="onJobDetailClientSearch(${q.id}, this.value)" autocomplete="off">
+              <div id="jdClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+            </div>
+          </div>
+
           <div class="grid">
             <div class="field" style="grid-column: span 2;"><label>Site address</label><input id="od_site_address" value="${q.site_address || ''}" placeholder="Install/delivery site, if different from the client's own address"></div>
             <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
@@ -610,6 +644,32 @@ async function overrideWorkflowStatus(quoteId) {
   const newStatus = document.getElementById('wf_override_status').value;
   if (!confirm(`Manually set status to "${newStatus}"? This is the exception path — prefer Accept/Schedule/Complete above when they apply.`)) return;
   await fetch(`${API}/quotes/${quoteId}?workflow_status=${newStatus}`, {method: 'PUT'});
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+// Link/relink to a real client (confirmed Aug 2026, Order Index ->
+// Client Link Gap brief, Gap 2 fix) — same search-while-typing pattern
+// as Quote Builder's own client field (onQClientInput/selectQClient,
+// index.html), scoped to this one quote instead of a new-quote form.
+let jdClientSearchTimeout = null;
+function onJobDetailClientSearch(quoteId, value) {
+  clearTimeout(jdClientSearchTimeout);
+  const box = document.getElementById('jdClientSuggestions');
+  if (!value || value.length < 2) { box.style.display = 'none'; return; }
+  jdClientSearchTimeout = setTimeout(async () => {
+    const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
+    const matches = await res.json();
+    if (!matches.length) { box.style.display = 'none'; return; }
+    box.innerHTML = matches.map(c => `
+      <div style="padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--border);" onclick="linkQuoteToClient(${quoteId}, ${c.id}, '${c.name.replace(/'/g,"\\'")}')">
+        <b>${c.name}</b>${c.phone ? ' — '+c.phone : ''}
+      </div>`).join('');
+    box.style.display = 'block';
+  }, 250);
+}
+async function linkQuoteToClient(quoteId, clientId, clientName) {
+  if (!confirm(`Link this quote to ${clientName}? It will then show correctly in their own Order History.`)) return;
+  await fetch(`${API}/quotes/${quoteId}?client_id=${clientId}`, {method: 'PUT'});
   renderOrderDetail(document.getElementById('landing'));
 }
 

@@ -627,6 +627,34 @@ function toggleScreedSubfields() {
 }
 
 async function createQuote() {
+  const typedClientName = document.getElementById('q_client').value;
+  // Confirmed root cause of the Order Index -> Client Link Gap brief's
+  // Gap 2 (confirmed Aug 2026): typing a client's name here WITHOUT
+  // clicking the matching autocomplete suggestion (onQClientInput
+  // resets pendingClientId to null on every keystroke, index.html) — a
+  // real, easy-to-miss slip, e.g. fast typing before the debounced
+  // suggestion box has appeared — creates a permanently disconnected
+  // walk-in quote (client_id=None). It still shows correctly on the
+  // Order Index (which lists every quote regardless of client_id), but
+  // never appears in that client's own Order History, which filters
+  // strictly by client_id. This is the same bug's PREVENTION: if the
+  // typed text exactly matches (case/whitespace-insensitive) a real
+  // existing client that the user just didn't happen to click, ask
+  // before silently creating a second, disconnected record. A quote
+  // that's meant to be a genuine new walk-in (no matching client)
+  // never triggers this — one extra request, only when there's
+  // something to actually warn about.
+  if (!pendingClientId && typedClientName.trim()) {
+    try {
+      const searchRes = await fetch(`${API}/clients?search=${encodeURIComponent(typedClientName.trim())}`);
+      const matches = await searchRes.json();
+      const exactMatch = matches.find(c => c.name.trim().toLowerCase() === typedClientName.trim().toLowerCase());
+      if (exactMatch) {
+        const linkInstead = confirm(`A client named "${exactMatch.name}" already exists. Link this quote to them instead of creating a separate, unlinked quote?\n\nOK = link to ${exactMatch.name}\nCancel = continue as a new, unlinked walk-in`);
+        if (linkInstead) { pendingClientId = exactMatch.id; }
+      }
+    } catch (e) { /* best-effort check — a failed lookup shouldn't block starting the quote at all */ }
+  }
   const params = new URLSearchParams({
     client_name: document.getElementById('q_client').value,
     sales_owner: document.getElementById('q_owner').value,

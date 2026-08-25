@@ -20,8 +20,35 @@ async function renderClients(el, searchTerm) {
     <tr style="cursor:pointer;" onclick="openClientDetail(${c.id})">
       <td>${c.name}</td><td>${c.phone || '—'}</td><td>${c.email || '—'}</td><td>${c.preferred_branch}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="muted">No clients match.</td></tr>';
+  // Possible Duplicate Clients (confirmed Aug 2026, Order Index ->
+  // Client Link Gap brief — "check for and report any other duplicate
+  // client records"). Owner-only endpoint (require_owner server-side),
+  // so only fetched when actually an owner — a Sales/Admin login would
+  // just get a 403 here for no benefit. Exact-name match only (see the
+  // endpoint's own comment for why not fuzzy) — only rendered at all
+  // when there's genuinely something to show, so this never clutters
+  // the screen for the common case of zero duplicates.
+  let duplicatesHtml = '';
+  if (currentRole() === 'owner') {
+    try {
+      const dupRes = await fetch(`${API}/admin/duplicate-clients`);
+      const dupGroups = dupRes.ok ? await dupRes.json() : [];
+      if (dupGroups.length) {
+        duplicatesHtml = `
+          <div class="card" style="border-color:var(--coral);">
+            <h2 style="color:var(--coral);">⚠ Possible Duplicate Clients</h2>
+            <p class="muted" style="margin-top:-8px;">Same name (ignoring case/spacing) on more than one client record — check these aren't the same person entered twice before quotes end up split across both.</p>
+            ${dupGroups.map(g => `
+              <div style="padding:8px 0; border-bottom:1px solid var(--border);">
+                ${g.clients.map(c => `<span style="cursor:pointer; color:var(--teal); text-decoration:underline; margin-right:14px;" onclick="openClientDetail(${c.id})">${c.name} <span class="muted">(#${c.id}, ${c.quote_count} quote${c.quote_count!==1?'s':''})</span></span>`).join('')}
+              </div>`).join('')}
+          </div>`;
+      }
+    } catch (e) { /* best-effort — never block the whole Clients screen over this */ }
+  }
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    ${duplicatesHtml}
     <div class="card">
       <h2>Clients</h2>
       <div class="field"><label>Search</label><input type="text" id="clientSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderClients(document.getElementById('landing'), this.value)"></div>
