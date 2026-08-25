@@ -657,6 +657,16 @@ async function createQuote() {
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('orderDetailsCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
+  // Real gap found while building Duplicate Quote (confirmed Aug 2026):
+  // quotePhotosCard was only ever shown inside loadQuote() (which this
+  // function doesn't call — only addLine() does, after the first line
+  // is added), so a brand-new quote with zero lines couldn't accept a
+  // site photo yet, even though "site context before committing time or
+  // stock" is exactly the moment that'd be most useful. Shown directly
+  // here too now, same as the other cards on this line.
+  document.getElementById('quotePhotosCard').style.display = 'block';
+  const dupBtn = document.getElementById('duplicateQuoteBtn');
+  if (dupBtn) dupBtn.style.display = '';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -731,6 +741,8 @@ function clearStaleQuoteResidue() {
   if (statusSelect) statusSelect.value = 'draft';
   const saveStatusEl = document.getElementById('saveStatus');
   if (saveStatusEl) saveStatusEl.textContent = '';
+  const descriptionEl = document.getElementById('q_description');
+  if (descriptionEl) descriptionEl.value = '';
   clearLandingRows();   // stairwell landing rows are per-quote scratch state too
   // Order Details / Follow-Ups (confirmed Aug 2026, Sprint D) — same
   // stale-residue risk as everything else on this screen: without this,
@@ -784,6 +796,8 @@ function resetQuoteBuilderUI() {
   document.getElementById('orderDetailsCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
   document.getElementById('quotePhotosCard').style.display = 'none';
+  const dupBtnHide = document.getElementById('duplicateQuoteBtn');
+  if (dupBtnHide) dupBtnHide.style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';
@@ -801,9 +815,14 @@ async function saveQuote() {
     sales_owner: document.getElementById('q_owner').value,
     branch: document.getElementById('q_branch').value,
     status: document.getElementById('q_status').value,
+    // Quote Description field (confirmed Aug 2026, Duplicate Quote +
+    // Quote Description brief) — free text so quotes are identifiable
+    // at a glance in the Order Index, especially once duplicated into
+    // variants.
+    description: document.getElementById('q_description').value,
   });
   await fetch(`${API}/quotes/${currentQuoteId}?${params}`, {method:'PUT'});
-  document.getElementById('saveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')} — line items save automatically as you add them; this saves the client/owner/branch/status.`;
+  document.getElementById('saveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')} — line items save automatically as you add them; this saves the client/owner/branch/status/description.`;
   loadQuote();
 }
 
@@ -1104,6 +1123,8 @@ async function loadQuote() {
   document.getElementById('quotePhotosCard').style.display = 'block';
   loadQuotePhotos();
   if (data.quote && data.quote.status) { currentQuoteStatus = data.quote.status; }
+  const descEl = document.getElementById('q_description');
+  if (descEl && data.quote) descEl.value = data.quote.description || '';
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
   const statusEl = document.getElementById('q_status');

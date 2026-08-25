@@ -238,6 +238,10 @@ def _ensure_new_columns():
         # FALSE default: no existing product is retroactively exposed to
         # the public portal just because this column now exists.
         ("flooringproduct", "available_to_builder_portal", "BOOLEAN", "FALSE"),
+        # Quote Description field (confirmed Aug 2026, Duplicate Quote +
+        # Quote Description brief) — blank for every existing quote;
+        # nothing retroactively guessed or backfilled.
+        ("quote", "description", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2846,7 +2850,7 @@ def update_quote_transport_levy(quote_id: int, transport_levy: float, tenant_id:
 
 @app.put("/quotes/{quote_id}")
 def update_quote_details(quote_id: int, client_name: str = None, sales_owner: str = None,
-                          branch: str = None, status: str = None,
+                          branch: str = None, status: str = None, description: str = None,
                           site_address: str = None, installation_date: str = None,
                           invoice_sent_date: str = None, deposit_paid_date: str = None,
                           deposit_payment_method: str = None, final_payment_date: str = None,
@@ -2870,6 +2874,8 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
             quote.branch = branch
         if status is not None:
             quote.status = status
+        if description is not None:
+            quote.description = description
         if site_address is not None:
             quote.site_address = site_address
         if installation_date is not None:
@@ -2909,11 +2915,42 @@ def list_follow_ups(quote_id: int, tenant_id: str = Depends(get_current_tenant))
         ).all()
 
 
-@app.delete("/quotes/{quote_id}")
-def delete_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+def _quote_delete_dependencies(session: Session, quote: "Quote", tenant_id: str) -> List[str]:
+    """Order Index Bulk Delete brief (confirmed Aug 2026) — "check
+    whether an order is referenced elsewhere in the system (linked
+    invoice, payment/deposit record, client job history)... same
+    principle already established for Supplier Console product
+    deletion" (see the deletions-validated-first pass in
+    commit_supplier_console_changes). This app has no separate
+    Invoice/Payment table — those are fields on Quote itself — so a
+    real recorded deposit/final payment counts as "real dependency"
+    directly. Returns a list of human-readable reasons this quote
+    should NOT be deleted; empty means safe. Checked read-only, before
+    anything is touched, same "abort the whole batch rather than
+    partially delete" guarantee that Supplier Console pass already
+    gives."""
+    reasons = []
+    if session.exec(select(HoursWorked).where(HoursWorked.quote_id == quote.id, HoursWorked.tenant_id == tenant_id)).first():
+        reasons.append("has hours logged against it")
+    linked_estimate = session.exec(
+        select(BuilderEstimate).where(BuilderEstimate.linked_quote_id == quote.id, BuilderEstimate.tenant_id == tenant_id)
+    ).first()
+    if linked_estimate:
+        reasons.append(f"is linked to a builder estimate (#{linked_estimate.id})")
+    if quote.deposit_paid_date or quote.final_payment_date:
+        reasons.append("has a recorded deposit or final payment")
+    return reasons
+
+
+def _delete_quote_cascade(session: Session, quote: "Quote", tenant_id: str):
     """Deletes a quote and everything hanging off it. SQLite doesn't
     enforce the cascade from supabase_schema.sql, so it's all removed
-    explicitly here.
+    explicitly here. Shared by the single-quote and bulk-delete
+    endpoints so this cascade exists in exactly one place, not two that
+    could quietly drift apart (same reasoning as
+    _builder_commission_for_quote). Caller is responsible for the
+    dependency check (_quote_delete_dependencies), the AuditLog entry,
+    and session.commit().
 
     BUG FOUND AND FIXED Aug 2026 (while testing the v49 follow-up log
     merge): PaymentFollowUp and ColourChangeLog rows were never included
@@ -2921,27 +2958,192 @@ def delete_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     reuses a deleted row's rowid for the next insert, a brand new
     unrelated quote could resurface a prior quote's "deleted" follow-up
     history under its own id. Caught by a real test cycle, not
-    inspection."""
+    inspection.
+
+    BUG FOUND AND FIXED Aug 2026 (while building Order Index Bulk
+    Delete): QuotePhoto rows were never included either — predates that
+    feature — which would have quietly orphaned both the DB rows and
+    the actual files sitting in Supabase Storage forever. Best-effort
+    on the storage side (photo_storage.delete_photo() doesn't raise);
+    the DB row is removed either way."""
+    lines = session.exec(
+        select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)
+    ).all()
+    for line in lines:
+        colour_logs = session.exec(
+            select(ColourChangeLog).where(ColourChangeLog.quote_line_item_id == line.id, ColourChangeLog.tenant_id == tenant_id)
+        ).all()
+        for log in colour_logs:
+            session.delete(log)
+        session.delete(line)
+    follow_ups = session.exec(
+        select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote.id, PaymentFollowUp.tenant_id == tenant_id)
+    ).all()
+    for f in follow_ups:
+        session.delete(f)
+    photos = session.exec(
+        select(QuotePhoto).where(QuotePhoto.quote_id == quote.id, QuotePhoto.tenant_id == tenant_id)
+    ).all()
+    for p in photos:
+        photo_storage.delete_photo(p.storage_path)
+        session.delete(p)
+    session.delete(quote)
+
+
+@app.delete("/quotes/{quote_id}")
+def delete_quote(quote_id: int, role: str = Depends(require_owner),
+                  tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Owner-only (confirmed Aug 2026, Order Index Bulk Delete brief) —
+    the brief's own hard requirement applies here too, not just the new
+    bulk action below: this single-quote delete is the exact same
+    destructive action, just one at a time, so leaving it open to Sales/
+    Admin would trivially defeat the whole point. Blocked outright (not
+    just warned) if the quote has a real dependency elsewhere — see
+    _quote_delete_dependencies — and every deletion now writes to the
+    AuditLog, neither of which this endpoint did before this brief."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        reasons = _quote_delete_dependencies(session, quote, tenant_id)
+        if reasons:
+            raise HTTPException(400, f"Can't delete Quote #{quote.id} ({quote.client_name}) — it {' and '.join(reasons)}. Resolve this first if you really need to delete it.")
+        label = f"Quote #{quote.id} — {quote.client_name}" + (f" ({quote.description})" if quote.description else "")
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="__deleted__", old_value=label, new_value="(deleted)",
+        ))
+        _delete_quote_cascade(session, quote, tenant_id)
+        session.commit()
+        return {"deleted": quote_id}
+
+
+class BulkDeleteQuotesRequest(BaseModel):
+    quote_ids: List[int]
+
+
+@app.post("/quotes/bulk-delete")
+def bulk_delete_quotes(body: BulkDeleteQuotesRequest, role: str = Depends(require_owner),
+                        tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Order Index Bulk Delete, Owner-only (confirmed Aug 2026).
+    require_owner reads through get_current_role, so an Owner previewing
+    as Sales/Admin is correctly blocked here too, same enforcement path
+    as everywhere else in Owner Preview Mode — satisfies the brief's
+    "same server-side role-stripping pattern already established
+    elsewhere" instruction directly.
+
+    Every selected quote is dependency-checked FIRST, as a pure read —
+    if ANY of them is blocked, the whole batch is rejected and nothing
+    is deleted, same "abort the whole batch, nothing partially saved"
+    guarantee the Supplier Console's own delete validation already
+    gives. The frontend confirmation dialog is what shows client names/
+    order refs before this is ever called (brief Section 3) — this
+    endpoint's own error message repeats that detail too, in case it's
+    ever called directly."""
+    if not body.quote_ids:
+        raise HTTPException(400, "No orders selected.")
+    with Session(engine) as session:
+        quotes = [get_or_404(session, Quote, qid, tenant_id, "Quote") for qid in body.quote_ids]
+        blocked = []
+        for q in quotes:
+            reasons = _quote_delete_dependencies(session, q, tenant_id)
+            if reasons:
+                blocked.append(f"Quote #{q.id} ({q.client_name}) — {' and '.join(reasons)}")
+        if blocked:
+            raise HTTPException(400, "Can't delete — " + "; ".join(blocked) + ". Resolve these first, or deselect them and try again.")
+
+        deleted_labels = []
+        for q in quotes:
+            label = f"Quote #{q.id} — {q.client_name}" + (f" ({q.description})" if q.description else "")
+            deleted_labels.append(label)
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=q.id,
+                field="__deleted__", old_value=label, new_value="(deleted)",
+            ))
+            _delete_quote_cascade(session, q, tenant_id)
+        session.commit()
+        return {"deleted_count": len(quotes), "deleted": deleted_labels}
+
+
+class DuplicateQuoteRequest(BaseModel):
+    client_id: Optional[int] = None
+    client_name: Optional[str] = None
+
+
+@app.post("/quotes/{quote_id}/duplicate")
+def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str = Depends(get_current_tenant)):
+    """Duplicate Quote (confirmed Aug 2026) — a TRUE independent copy:
+    every field on every new row is copied by VALUE into brand new
+    database rows (fresh ids), never a shared/linked record, so editing
+    one can never touch the other, per the brief's own explicit
+    requirement.
+
+    What's copied: every line item exactly as calculated (flooring,
+    trim, stairwell, blinds, misc/floor-prep — copied field-for-field
+    rather than recalculated, so the duplicate's numbers are guaranteed
+    identical to the source's, not just close — same "don't build a
+    second copy of pricing logic that could drift" discipline this
+    whole app follows), plus quote-level pricing/structure (discount_pct,
+    transport_levy, deposit_pct, sales_owner, branch,
+    blinds_measurements_visible).
+
+    What's deliberately NOT copied, and why:
+      - status: always resets to "draft" (brief's own explicit rule),
+        even if the source was accepted/invoiced/paid.
+      - Order Details tracking fields (site_address, installation_date,
+        invoice_sent_date, deposit_paid_date/method, final_payment_date/
+        method) and xero_quote_id: these describe a SPECIFIC execution
+        of a SPECIFIC job — carrying final_payment_date forward, for
+        instance, would make a brand new draft look already fully paid.
+        Not called out either way in the brief; left blank as the
+        clearly safer default rather than assumed.
+      - Site photos: confirmed directly with Burgert — always excluded
+        on duplicate, no carry-over option, for this pilot.
+      - created_at / id: fresh, real ("Fresh quote reference/ID, fresh
+        date" per the brief).
+
+    Client: defaults to the source quote's own client, but the caller
+    can override with a different client_id (a real Client record) or a
+    plain client_name (a walk-in/one-off, same rule create_quote() uses)
+    — confirmed directly: "allow Burgert to pick a different client
+    instead... reusing a quote's structure as a starting template for a
+    similar job for a DIFFERENT client"."""
+    with Session(engine) as session:
+        source = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        new_client_id = source.client_id
+        new_client_name = source.client_name
+        if body.client_id is not None:
+            client = get_or_404(session, Client, body.client_id, tenant_id, "Client")
+            new_client_id = client.id
+            new_client_name = client.name
+        elif body.client_name:
+            new_client_id = None   # a typed name with no matching client_id is a walk-in/one-off, same rule create_quote() uses
+            new_client_name = body.client_name
+
+        new_quote = Quote(
+            tenant_id=tenant_id,
+            client_name=new_client_name,
+            client_id=new_client_id,
+            sales_owner=source.sales_owner,
+            branch=source.branch,
+            blinds_measurements_visible=source.blinds_measurements_visible,
+            status="draft",
+            discount_pct=source.discount_pct,
+            transport_levy=source.transport_levy,
+            deposit_pct=source.deposit_pct,
+            description=f"Copy of {source.description}" if source.description else f"Copy of Quote #{source.id}",
+        )
+        session.add(new_quote)
+        session.commit()
+        session.refresh(new_quote)
+
         lines = session.exec(
             select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
         for line in lines:
-            colour_logs = session.exec(
-                select(ColourChangeLog).where(ColourChangeLog.quote_line_item_id == line.id, ColourChangeLog.tenant_id == tenant_id)
-            ).all()
-            for log in colour_logs:
-                session.delete(log)
-            session.delete(line)
-        follow_ups = session.exec(
-            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id, PaymentFollowUp.tenant_id == tenant_id)
-        ).all()
-        for f in follow_ups:
-            session.delete(f)
-        session.delete(quote)
+            data = line.dict(exclude={"id", "quote_id", "tenant_id"})
+            session.add(QuoteLineItem(tenant_id=tenant_id, quote_id=new_quote.id, **data))
         session.commit()
-        return {"deleted": quote_id}
+        session.refresh(new_quote)
+        return {"quote": new_quote, "lines_copied": len(lines)}
 
 
 @app.post("/quotes/{quote_id}/lines/flooring")
@@ -3367,7 +3569,11 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
         quotes = session.exec(stmt).all()
         if search:
             search_lower = search.lower()
-            quotes = [q for q in quotes if search_lower in q.client_name.lower() or search_lower in str(q.id)]
+            # Description included (confirmed Aug 2026, Duplicate Quote +
+            # Quote Description brief — "searchable/filterable in that
+            # list") alongside the pre-existing client name / quote # match.
+            quotes = [q for q in quotes if search_lower in q.client_name.lower() or search_lower in str(q.id)
+                      or search_lower in (q.description or "").lower()]
 
         result = []
         for q in quotes:

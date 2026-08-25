@@ -737,6 +737,14 @@ class Quote(SQLModel, table=True):
     deposit_payment_method: str = ""    # EFT / Cash / Card / Yoco / etc — free text, not an enum, since new methods shouldn't need a code change
     final_payment_date: Optional[date] = None
     final_payment_method: str = ""
+    # Quote Description field (confirmed Aug 2026, Duplicate Quote +
+    # Quote Description brief) — free text, e.g. "Full house — vinyl +
+    # screed", "Kitchen only — Aspen options". Purpose is purely to tell
+    # quotes apart at a glance in the Order Index, especially once a
+    # client has several or a quote's been duplicated into variants —
+    # not shown on the client-facing printed quote, this is an internal
+    # label only.
+    description: str = ""
 
 
 class PaymentFollowUp(SQLModel, table=True):

@@ -466,19 +466,35 @@
       <h2>Quote Lines</h2>
       <table id="linesTable"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
       <div class="total-row" id="quoteTotal"></div>
-      <div class="field" style="margin-top:16px;"><label>Quote status</label>
-        <select id="q_status">
-          <option value="draft">Draft</option>
-          <option value="sent">Sent to client</option>
-          <option value="accepted">Accepted (won)</option>
-          <option value="declined">Declined (lost)</option>
-          <option value="invoiced">Invoiced</option>
-          <option value="paid">Paid</option>
-        </select>
+      <div class="grid" style="margin-top:16px;">
+        <div class="field"><label>Quote status</label>
+          <select id="q_status">
+            <option value="draft">Draft</option>
+            <option value="sent">Sent to client</option>
+            <option value="accepted">Accepted (won)</option>
+            <option value="declined">Declined (lost)</option>
+            <option value="invoiced">Invoiced</option>
+            <option value="paid">Paid</option>
+          </select>
+        </div>
+        <!-- Quote Description field (confirmed Aug 2026, Duplicate Quote
+        + Quote Description brief) — internal label only, shown in the
+        Order Index list alongside client name/date, searchable there.
+        Not shown on the client-facing printed quote. -->
+        <div class="field" style="grid-column: span 2;"><label>Description <span class="muted" style="font-weight:400;">(internal — helps tell quotes apart once there are several)</span></label>
+          <input id="q_description" placeholder="e.g. Full house — vinyl + screed">
+        </div>
       </div>
       <div style="display:flex; gap:10px; margin-top:16px;">
         <button class="primary" onclick="saveQuote()" style="flex:1;">Save Quote</button>
         <button onclick="printQuote()" style="flex:1; background:none; border:2px solid var(--navy); color:var(--navy); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Print / PDF</button>
+        <!-- Duplicate Quote (confirmed Aug 2026) — available both here
+        (from within an open quote) and per-row on the Order Index, per
+        the brief's own explicit requirement; both call the same
+        duplicateQuoteFromIndex() (order-index.js). Hidden until a quote
+        is actually open, same display:none-until-shown pattern as
+        printInvoiceBtn just below. -->
+        <button id="duplicateQuoteBtn" onclick="duplicateQuoteFromIndex(currentQuoteId, document.getElementById('q_client').value)" style="display:none; flex:1; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Duplicate Quote</button>
         <!-- Confirmed Aug 2026, Client-Side Commercial Workflow brief,
         Sprint D — "Create invoice/order from accepted quote": the Print
         Invoice picker screen already existed and works for any quote,
@@ -3117,6 +3133,7 @@ async function openQuoteFromIndex(quoteId) {
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('orderDetailsCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
+  document.getElementById('duplicateQuoteBtn').style.display = '';
 
   // Pre-fill the New Quote form with the real quote's details and lock
   // "Start Quote" so amending an existing quote can never accidentally
