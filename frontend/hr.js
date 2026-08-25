@@ -469,10 +469,37 @@ async function loadDocuments() {
       <td style="text-transform:capitalize;">${d.document_type.replace('_',' ')}</td>
       <td>${d.filename}${d.owner_only ? ' <span class="status-badge pending-status">Owner only</span>' : ''}</td>
       <td>${new Date(d.uploaded_at).toLocaleDateString('en-ZA')}</td>
-      <td><a href="${API}/documents/${d.id}/download?role=${currentRole()}" target="_blank" style="color:var(--teal); font-weight:600; font-size:13px;">Download</a></td>
+      <td><a href="#" onclick="downloadDocumentFile(${d.id}, '${d.filename.replace(/'/g,"\\'")}'); return false;" style="color:var(--teal); font-weight:600; font-size:13px;">Download</a></td>
       <td><button class="delete-btn" onclick="deleteDocument(${d.id})">Delete</button></td>
     </tr>`).join('');
   el.innerHTML = `<table><thead><tr><th>Type</th><th>Filename</th><th>Uploaded</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// Real bug found while building Quote Photo Attachments (confirmed Aug
+// 2026): this download link used to be a plain <a href="...?role=...">
+// — but get_current_role() was hardened months ago to read the role
+// ONLY from the validated Bearer session, never a client-supplied
+// query param (anyone could otherwise just claim to be Owner by
+// editing the URL). A plain link navigation doesn't go through the
+// app's fetch() wrapper, so it never sent the Authorization header
+// either way — meaning every click here has been 401ing since that
+// hardening went in, silently (a new tab opening to an error page
+// looks enough like "downloading" not to be noticed at a glance). Same
+// fetch-then-blob pattern Quote Photo Attachments' thumbnails use, for
+// the same reason: this is the only way to get an authenticated
+// request's response savable as a file.
+async function downloadDocumentFile(docId, filename) {
+  const res = await fetch(`${API}/documents/${docId}/download`);
+  if (!res.ok) { alert('Could not download this file.'); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function uploadDocument() {

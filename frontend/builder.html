@@ -73,6 +73,7 @@ const slug = params.get('slug') || '';
 let builderName = '';
 let products = [];
 let view = 'estimate';   // 'estimate' | 'statement'
+const MAX_PHOTOS = 5;   // Quote Photo Attachments pilot (confirmed Aug 2026) — mirrors MAX_PHOTOS_PER_SUBMISSION in main.py; server-side is the real enforcement, this is just so a builder sees the limit before hitting it
 
 async function init() {
   if (!slug) {
@@ -126,6 +127,8 @@ function renderEstimateForm(resultHtml) {
       <input id="area_m2" type="number" step="0.01" min="0" placeholder="e.g. 25">
       <label>Product</label>
       <select id="product_id">${products.map(p => `<option value="${p.id}">${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('')}</select>
+      <label>Site photos (optional, up to ${MAX_PHOTOS})</label>
+      <input type="file" id="site_photos" accept="image/*" multiple>
       <button id="submitBtn" onclick="submitEstimate()">Get Estimate</button>
       <div id="formError" class="error"></div>
       ${resultHtml || ''}
@@ -139,8 +142,10 @@ async function submitEstimate() {
   const clientName = document.getElementById('client_name').value.trim();
   const areaM2 = parseFloat(document.getElementById('area_m2').value);
   const productId = document.getElementById('product_id').value;
+  const photoFiles = Array.from(document.getElementById('site_photos').files || []);
   if (!clientName) { errEl.textContent = 'Enter the client\'s name.'; return; }
   if (!areaM2 || areaM2 <= 0) { errEl.textContent = 'Enter a real area in m².'; return; }
+  if (photoFiles.length > MAX_PHOTOS) { errEl.textContent = `Attach at most ${MAX_PHOTOS} photos.`; return; }
   btn.disabled = true;
   btn.textContent = 'Calculating...';
   try {
@@ -161,6 +166,29 @@ async function submitEstimate() {
       return;
     }
     const data = await res.json();
+
+    // Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) — a
+    // separate call from the estimate submission itself, made only if
+    // photos were actually attached, so the existing JSON estimate
+    // contract didn't need to change to a multipart one. Best-effort:
+    // a photo-upload failure doesn't undo the estimate that's already
+    // been logged, it's just reported alongside the result.
+    let photoNote = '';
+    if (photoFiles.length) {
+      const photoBody = new FormData();
+      photoFiles.forEach(f => photoBody.append('files', f));
+      try {
+        const photoRes = await fetch(`${API}/builder/${encodeURIComponent(slug)}/estimate/${data.estimate_id}/photos`, {
+          method: 'POST', body: photoBody,
+        });
+        photoNote = photoRes.ok
+          ? `<p class="muted" style="margin-top:6px;">${photoFiles.length} photo${photoFiles.length !== 1 ? 's' : ''} attached ✓</p>`
+          : `<p class="error" style="margin-top:6px;">Estimate saved, but the photos didn't upload — you can still show them on-site when Blinds &amp; Flooring Studio follows up.</p>`;
+      } catch (e) {
+        photoNote = `<p class="error" style="margin-top:6px;">Estimate saved, but the photos didn't upload — you can still show them on-site when Blinds &amp; Flooring Studio follows up.</p>`;
+      }
+    }
+
     // Ex VAT AND incl VAT both shown, prominently, alongside the deposit
     // payable (confirmed directly) — never a cost/margin/rate figure,
     // this response only ever contains the fields main.py's
@@ -173,6 +201,7 @@ async function submitEstimate() {
         <div class="price-row grand"><span>Total, incl VAT</span><span>R${data.total_incl_vat.toFixed(2)}</span></div>
         <div class="deposit price-row"><span>Deposit payable (${(data.deposit_pct*100).toFixed(0)}%)</span><span>R${data.deposit_amount.toFixed(2)}</span></div>
       </div>
+      ${photoNote}
       <p class="muted" style="margin-top:10px;">This estimate has been logged — Blinds &amp; Flooring Studio will follow up to confirm the job.</p>`;
     renderEstimateForm(resultHtml);
   } catch (e) {

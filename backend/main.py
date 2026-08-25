@@ -14,7 +14,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -23,12 +23,13 @@ from models import (
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
-    SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate,
+    SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
+import photo_storage
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
 # environment (set in Render's dashboard, never committed to the repo)
@@ -1302,6 +1303,20 @@ def link_builder_estimate_to_quote(estimate_id: int, quote_id: int,
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")   # confirms it's real and belongs to this tenant
         est.linked_quote_id = quote_id
         session.add(est)
+        # Quote Photo Attachments (confirmed Aug 2026) — any photos the
+        # builder attached at submission time were stored against
+        # builder_estimate_id only (there was no real Quote yet). Now
+        # that one exists, backfill quote_id onto those same rows so
+        # they show up in the normal quote-level gallery from here on —
+        # "these travel with the estimate and land on the resulting
+        # quote", per that brief's own Section 2, without duplicating
+        # the file in storage.
+        photos = session.exec(
+            select(QuotePhoto).where(QuotePhoto.builder_estimate_id == estimate_id, QuotePhoto.quote_id == None)
+        ).all()
+        for p in photos:
+            p.quote_id = quote_id
+            session.add(p)
         session.commit()
         session.refresh(est)
         return est
@@ -1432,6 +1447,151 @@ def builder_statement(slug: str):
                 "status": status if est.linked_quote_id else "estimate only — not yet a job", "commission": commission,
             })
         return {"builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2)}
+
+
+# ---------- Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) ----------
+# Quote-level, not client-level — every read below filters by quote_id,
+# so a client's other quotes never show these (brief Section 1). Two
+# entry points for a photo to land here: staff uploading directly onto
+# an open quote (authenticated, below), or a builder attaching photos
+# while submitting a portal estimate (public, no login — see the
+# /builder/{slug}/estimate/{estimate_id}/photos endpoint further down,
+# kept in the Builder Portal's public section above rather than here,
+# since it shares that section's "no auth dependency, hand-picked
+# response" rules, not this section's staff-auth ones).
+MAX_PHOTO_SIZE_BYTES = 10 * 1024 * 1024   # 10MB per photo — brief's own suggested default, not confirmed otherwise
+MAX_PHOTOS_PER_SUBMISSION = 5             # brief's own suggested default, not confirmed otherwise
+ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif"}
+
+
+def _validate_photo_upload(content_type: str, size_bytes: int):
+    """Shared by both the staff upload endpoint and the public
+    builder-submission one — the public endpoint is unauthenticated, so
+    this is the actual abuse guardrail the brief requires, not just a
+    UX nicety. Raises a clean 400 with a specific message either way
+    (brief's own required verification: "oversized files and non-image
+    files are rejected cleanly... not a silent failure")."""
+    if content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+        raise HTTPException(400, f"'{content_type or 'unknown'}' isn't a supported photo type — use JPG, PNG, or HEIC/HEIF.")
+    if size_bytes > MAX_PHOTO_SIZE_BYTES:
+        raise HTTPException(400, f"That photo is too large ({size_bytes // (1024*1024)}MB) — the limit is {MAX_PHOTO_SIZE_BYTES // (1024*1024)}MB per photo.")
+    if size_bytes == 0:
+        raise HTTPException(400, "That file appears to be empty.")
+
+
+@app.post("/quotes/{quote_id}/photos")
+async def upload_quote_photo(quote_id: int, file: UploadFile = File(...),
+                              role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        data = await file.read()
+        content_type = file.content_type or ""
+        _validate_photo_upload(content_type, len(data))
+        safe_name = os.path.basename(file.filename or "photo.jpg")
+        path = f"{tenant_id}/quote_{quote_id}/{uuid.uuid4().hex}_{safe_name}"
+        try:
+            photo_storage.upload_photo(path, data, content_type)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+        photo = QuotePhoto(
+            tenant_id=tenant_id, quote_id=quote_id, storage_path=path,
+            original_filename=safe_name, content_type=content_type,
+            size_bytes=len(data), uploaded_by="staff",
+        )
+        session.add(photo)
+        session.commit()
+        session.refresh(photo)
+        return photo
+
+
+@app.get("/quotes/{quote_id}/photos")
+def list_quote_photos(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        return session.exec(
+            select(QuotePhoto).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
+            .order_by(QuotePhoto.created_at)
+        ).all()
+
+
+@app.get("/quotes/{quote_id}/photos/{photo_id}/file")
+def get_quote_photo_file(quote_id: int, photo_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    """Proxies the actual bytes back through this authenticated
+    endpoint rather than ever handing out a direct Supabase Storage URL
+    — same reasoning as the bucket being private in the first place
+    (see photo_storage.py). Used for both the thumbnail gallery and the
+    full-size view; this app has no image-resizing step (deliberately
+    out of scope per the brief — "no editing, no versioning"), so both
+    just request the same original bytes."""
+    with Session(engine) as session:
+        photo = get_or_404(session, QuotePhoto, photo_id, tenant_id, "Photo")
+        if photo.quote_id != quote_id:
+            raise HTTPException(404, "Photo not found on this quote")
+        try:
+            data = photo_storage.download_photo(photo.storage_path)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+        return Response(content=data, media_type=photo.content_type)
+
+
+@app.delete("/quotes/{quote_id}/photos/{photo_id}")
+def delete_quote_photo(quote_id: int, photo_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    """Any logged-in staff member can delete (Burgert, Ryno, or Madri
+    per the brief — not Owner-only). Builders have no delete endpoint
+    at all — their submission is otherwise read-only, per the Builder
+    Portal brief's own rule, carried over here directly."""
+    with Session(engine) as session:
+        photo = get_or_404(session, QuotePhoto, photo_id, tenant_id, "Photo")
+        if photo.quote_id != quote_id:
+            raise HTTPException(404, "Photo not found on this quote")
+        photo_storage.delete_photo(photo.storage_path)
+        session.delete(photo)
+        session.commit()
+        return {"deleted": photo_id}
+
+
+@app.post("/builder/{slug}/estimate/{estimate_id}/photos")
+async def upload_builder_estimate_photos(slug: str, estimate_id: int, files: List[UploadFile] = File(...)):
+    """Public, unauthenticated — same trust boundary as the rest of the
+    Builder Portal's public endpoints (see that section's own header
+    comment above). A separate call from POST .../estimate itself
+    (rather than accepting files on that same request) so the existing,
+    already-live JSON estimate contract doesn't have to change to a
+    multipart one — builder.html calls this right after it gets an
+    estimate_id back, only if the builder actually attached photos."""
+    if len(files) > MAX_PHOTOS_PER_SUBMISSION:
+        raise HTTPException(400, f"Attach at most {MAX_PHOTOS_PER_SUBMISSION} photos.")
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        estimate = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.id == estimate_id, BuilderEstimate.builder_id == builder.id)
+        ).first()
+        if not estimate:
+            raise HTTPException(404, "Estimate not found.")
+        already = len(session.exec(select(QuotePhoto).where(QuotePhoto.builder_estimate_id == estimate_id)).all())
+        if already + len(files) > MAX_PHOTOS_PER_SUBMISSION:
+            raise HTTPException(400, f"At most {MAX_PHOTOS_PER_SUBMISSION} photos per submission.")
+        saved = 0
+        for f in files:
+            data = await f.read()
+            content_type = f.content_type or ""
+            _validate_photo_upload(content_type, len(data))
+            safe_name = os.path.basename(f.filename or "photo.jpg")
+            path = f"{builder.tenant_id}/builder_estimate_{estimate_id}/{uuid.uuid4().hex}_{safe_name}"
+            try:
+                photo_storage.upload_photo(path, data, content_type)
+            except RuntimeError as e:
+                raise HTTPException(502, str(e))
+            photo = QuotePhoto(
+                tenant_id=builder.tenant_id, builder_estimate_id=estimate_id, storage_path=path,
+                original_filename=safe_name, content_type=content_type, size_bytes=len(data), uploaded_by="builder",
+            )
+            session.add(photo)
+            saved += 1
+        session.commit()
+        return {"photos_attached": saved}
 
 
 # ---------- Supplier & Price Book Management Console (confirmed Aug 2026) ----------

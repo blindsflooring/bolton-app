@@ -520,6 +520,36 @@ class BuilderEstimate(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class QuotePhoto(SQLModel, table=True):
+    """Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026).
+    Quote-level, not client-level, by design — every read filters by
+    quote_id, so a client's other quotes never show these.
+
+    builder_estimate_id (not quote_id) is set for photos a builder
+    attached while submitting an estimate — there's no real Quote yet
+    at that point. The moment staff links that estimate to a real quote
+    (link_builder_estimate_to_quote, main.py), quote_id gets backfilled
+    onto those same rows so "these travel with the estimate and land on
+    the resulting quote" holds without ever duplicating the file itself.
+
+    Only storage_path is kept here — the actual bytes live in Supabase
+    Storage (see photo_storage.py), chosen over this app's other
+    existing file mechanism (backend/uploads/, used by HR Documents)
+    specifically because these need to reliably survive routine
+    deploys over the life of a quote, confirmed directly rather than
+    assumed."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    quote_id: Optional[int] = Field(default=None, foreign_key="quote.id", index=True)
+    builder_estimate_id: Optional[int] = Field(default=None, foreign_key="builderestimate.id", index=True)
+    storage_path: str
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_by: str = "staff"   # "staff" | "builder"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class HoursWorked(SQLModel, table=True):
     """Confirmed Aug 2026 — HR Phase A. Traceable hours record with a
     clean monthly summary for the accountant, per the brief."""

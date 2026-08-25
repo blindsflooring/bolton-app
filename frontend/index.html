@@ -532,8 +532,38 @@
       </div>
       <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
     </div>
+
+    <!-- Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) —
+    quote-level, not client-level: this card only ever shows photos for
+    THIS quote (quote-builder.js filters by currentQuoteId on every
+    load). Photos from a builder's portal estimate land here
+    automatically once staff picks that estimate up via "Start Quote"
+    (see startQuoteFromBuilderEstimate() / link-quote backend call) —
+    nothing to do here for that case, they just show up. Thumbnails are
+    loaded as blob object URLs, not plain <img src="API/...">, because
+    these endpoints require the Bearer auth header the global fetch()
+    wrapper attaches — a plain <img> tag can't send that header, same
+    reason a plain <a href> link never could either (see
+    renderQuotePhotoGallery() for the actual fetch-then-blob code). -->
+    <div class="card" id="quotePhotosCard" style="display:none;">
+      <h2>Site Photos</h2>
+      <p class="muted" style="margin-top:-8px;">Site context before committing time or stock — no annotation or editing, just a simple gallery.</p>
+      <div id="quotePhotoGallery" class="quote-photo-gallery"></div>
+      <input type="file" id="quotePhotoInput" accept="image/*" multiple style="margin-top:10px;">
+      <button onclick="uploadQuotePhotos()" style="margin-top:6px;">Upload</button>
+      <p class="muted" id="quotePhotoUploadStatus" style="margin-top:6px;"></p>
+    </div>
   </section>
 </main>
+
+<!-- Simple full-size photo lightbox for Quote Builder's Site Photos
+card (builder.html has no view side of its own — per that brief,
+builders can attach photos but never view or delete them). Plain
+overlay, no library — matches this app's "keep it simple, no image
+editing" scope. -->
+<div id="photoLightbox" class="photo-lightbox" style="display:none;" onclick="closePhotoLightbox()">
+  <img id="photoLightboxImg" src="">
+</div>
 <div id="printArea"></div>
 
 <script src="shared.js"></script>

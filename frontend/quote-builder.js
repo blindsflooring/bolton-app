@@ -758,6 +758,21 @@ function clearStaleQuoteResidue() {
   // that new quote would then wrongly delete a line ID belonging to the
   // PREVIOUS quote.
   cancelLineEdit();
+  // Quote Photo Attachments (confirmed Aug 2026) — same stale-residue
+  // risk as everything else here: without this, the PREVIOUS quote's
+  // thumbnails would still be sitting in the gallery when this card is
+  // shown again, before loadQuotePhotos() gets a chance to repopulate
+  // it. Revoking the object URLs too, not just clearing the array —
+  // otherwise every quote opened in one session leaks its blob memory.
+  quotePhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  quotePhotoObjectUrls = [];
+  currentQuotePhotos = [];
+  const galleryEl = document.getElementById('quotePhotoGallery');
+  if (galleryEl) galleryEl.innerHTML = '';
+  const photoInputEl = document.getElementById('quotePhotoInput');
+  if (photoInputEl) photoInputEl.value = '';
+  const photoStatusEl = document.getElementById('quotePhotoUploadStatus');
+  if (photoStatusEl) photoStatusEl.textContent = '';
 }
 
 function resetQuoteBuilderUI() {
@@ -768,6 +783,7 @@ function resetQuoteBuilderUI() {
   document.getElementById('linesCard').style.display = 'none';
   document.getElementById('orderDetailsCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
+  document.getElementById('quotePhotosCard').style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';
@@ -1072,6 +1088,12 @@ let currentQuoteLinesCache = [];
 // — used by confirmPostAcceptChange() below to decide whether adding/
 // deleting a line needs an explicit heads-up first.
 let currentQuoteStatus = 'draft';
+// Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) —
+// object URLs created per thumbnail (see loadQuotePhotos()) so they
+// can be revoked on the next load instead of quietly leaking memory
+// every time a different quote is opened in the same session.
+let currentQuotePhotos = [];
+let quotePhotoObjectUrls = [];
 
 async function loadQuote() {
   if (!currentQuoteId) return;
@@ -1079,6 +1101,8 @@ async function loadQuote() {
   const data = await res.json();
   currentQuoteLinesCache = data.lines;
   renderFloorPrepRoomCards();
+  document.getElementById('quotePhotosCard').style.display = 'block';
+  loadQuotePhotos();
   if (data.quote && data.quote.status) { currentQuoteStatus = data.quote.status; }
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
@@ -1201,4 +1225,111 @@ async function loadQuote() {
   }
   document.getElementById('quoteTotal').innerHTML = totalText;
   applyRoleVisibility();
+}
+
+// ===== Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) =====
+// Site context Burgert can review before committing time/stock —
+// upload, thumbnail gallery, click to view full size, staff can
+// delete. No annotation/editing/versioning, deliberately, per the
+// brief. Quote-level only: every call below is scoped to
+// currentQuoteId, and the backend itself also filters by quote_id, so
+// a client's other quotes never show these.
+
+async function loadQuotePhotos() {
+  if (!currentQuoteId) return;
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/photos`);
+  currentQuotePhotos = res.ok ? await res.json() : [];
+  renderQuotePhotoGallery();
+}
+
+function renderQuotePhotoGallery() {
+  const el = document.getElementById('quotePhotoGallery');
+  if (!el) return;
+  // Revoke last round's object URLs before building new ones — see
+  // clearStaleQuoteResidue()'s comment for why this matters.
+  quotePhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  quotePhotoObjectUrls = [];
+  if (!currentQuotePhotos.length) {
+    el.innerHTML = '<p class="muted" style="margin:0;">No photos on this quote yet.</p>';
+    return;
+  }
+  el.innerHTML = currentQuotePhotos.map(p => `
+    <div class="quote-photo-thumb" id="photoThumb${p.id}">
+      <div class="photo-loading">Loading…</div>
+      <button class="photo-delete-btn" title="Delete photo" onclick="event.stopPropagation(); deleteQuotePhoto(${p.id})">✕</button>
+      ${p.uploaded_by === 'builder' ? '<span class="photo-badge">Builder</span>' : ''}
+    </div>`).join('');
+  // Thumbnails load as blob object URLs, not a plain <img src="...">,
+  // because this endpoint requires the Bearer auth header the global
+  // fetch() wrapper attaches — a plain <img> tag has no way to send
+  // that header (same reason a plain <a href> download link never
+  // could either — see the HR Documents download-link fix alongside
+  // this brief for the other place that same gap was found live).
+  currentQuotePhotos.forEach(async (p) => {
+    try {
+      const res = await fetch(`${API}/quotes/${currentQuoteId}/photos/${p.id}/file`);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      quotePhotoObjectUrls.push(url);
+      const thumbEl = document.getElementById(`photoThumb${p.id}`);
+      if (thumbEl) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.onclick = () => openPhotoLightbox(url);
+        thumbEl.prepend(img);
+        const loadingEl = thumbEl.querySelector('.photo-loading');
+        if (loadingEl) loadingEl.remove();
+      }
+    } catch (e) {
+      const thumbEl = document.getElementById(`photoThumb${p.id}`);
+      if (thumbEl) { const l = thumbEl.querySelector('.photo-loading'); if (l) l.textContent = 'Failed'; }
+    }
+  });
+}
+
+function openPhotoLightbox(url) {
+  document.getElementById('photoLightboxImg').src = url;
+  document.getElementById('photoLightbox').style.display = 'flex';
+}
+
+function closePhotoLightbox() {
+  document.getElementById('photoLightbox').style.display = 'none';
+}
+
+async function uploadQuotePhotos() {
+  if (!currentQuoteId) return;
+  const input = document.getElementById('quotePhotoInput');
+  const statusEl = document.getElementById('quotePhotoUploadStatus');
+  const files = Array.from(input.files || []);
+  if (!files.length) { statusEl.textContent = 'Choose one or more photos first.'; return; }
+  statusEl.textContent = `Uploading ${files.length} photo${files.length !== 1 ? 's' : ''}…`;
+  let uploaded = 0, failed = 0;
+  for (const file of files) {
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const res = await fetch(`${API}/quotes/${currentQuoteId}/photos`, { method: 'POST', body });
+      if (res.ok) { uploaded++; }
+      else {
+        failed++;
+        const err = await res.json().catch(() => ({}));
+        statusEl.textContent = err.detail || `Couldn't upload ${file.name}.`;
+      }
+    } catch (e) {
+      failed++;
+    }
+  }
+  input.value = '';
+  statusEl.textContent = failed
+    ? `${uploaded} uploaded, ${failed} failed — see above.`
+    : `${uploaded} photo${uploaded !== 1 ? 's' : ''} uploaded ✓`;
+  await loadQuotePhotos();
+}
+
+async function deleteQuotePhoto(photoId) {
+  if (!confirm('Delete this photo? This cannot be undone.')) return;
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/photos/${photoId}`, { method: 'DELETE' });
+  if (!res.ok) { alert('Could not delete photo.'); return; }
+  await loadQuotePhotos();
 }
