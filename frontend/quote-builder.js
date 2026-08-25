@@ -718,7 +718,7 @@ async function createQuote() {
 // (adds clearing q_client itself + the Start Quote button state), for
 // entry points where no quote is being submitted in the same breath.
 function clearStaleQuoteResidue() {
-  currentQuoteStatus = 'draft';   // a brand-new quote is always draft — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
+  currentQuoteStatus = 'quoted';   // a brand-new quote's workflow_status is always 'quoted' — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) printInvoiceBtn.style.display = 'none';
   const tbody = document.querySelector('#linesTable tbody');
@@ -733,8 +733,8 @@ function clearStaleQuoteResidue() {
   if (levyFieldEl) levyFieldEl.style.display = 'none';
   const courierToggleEl = document.getElementById('fj_courier_toggle');
   if (courierToggleEl) courierToggleEl.checked = false;
-  const statusSelect = document.getElementById('q_status');
-  if (statusSelect) statusSelect.value = 'draft';
+  const statusDisplayEl = document.getElementById('q_status_display');
+  if (statusDisplayEl) statusDisplayEl.innerHTML = '<span class="muted">—</span>';
   const saveStatusEl = document.getElementById('saveStatus');
   if (saveStatusEl) saveStatusEl.textContent = '';
   const descriptionEl = document.getElementById('q_description');
@@ -799,11 +799,14 @@ function startFreshQuote() {
 
 async function saveQuote() {
   if (!currentQuoteId) return;
+  // Workflow status deliberately NOT sent from here (confirmed Aug
+  // 2026, Order Index / Job Workflow Redesign brief) — it only ever
+  // changes via a specific action (Accept/Decline/Schedule/Complete) on
+  // the Job Detail screen, never a raw field saved from Quote Builder.
   const params = new URLSearchParams({
     client_name: document.getElementById('q_client').value,
     sales_owner: document.getElementById('q_owner').value,
     branch: document.getElementById('q_branch').value,
-    status: document.getElementById('q_status').value,
     // Quote Description field (confirmed Aug 2026, Duplicate Quote +
     // Quote Description brief) — free text so quotes are identifiable
     // at a glance in the Order Index, especially once duplicated into
@@ -811,7 +814,7 @@ async function saveQuote() {
     description: document.getElementById('q_description').value,
   });
   await fetch(`${API}/quotes/${currentQuoteId}?${params}`, {method:'PUT'});
-  document.getElementById('saveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')} — line items save automatically as you add them; this saves the client/owner/branch/status/description.`;
+  document.getElementById('saveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')} — line items save automatically as you add them; this saves the client/owner/branch/description.`;
   loadQuote();
 }
 
@@ -926,7 +929,13 @@ async function addLine() {
 // indication anything unusual was happening. Genuinely draft/sent
 // quotes are completely unaffected — no new dialog, same one-click
 // editing Sprint B already built.
-const POST_ACCEPT_LOCKED_STATUSES = ['accepted', 'invoiced', 'paid'];
+// Confirmed Aug 2026, Order Index / Job Workflow Redesign brief — moved
+// from the legacy 6-value status set to the new 4-value workflow_status
+// (accepted/scheduled/completed = "post-accept", same meaning as
+// before, plus Scheduled now correctly included — a small pre-existing
+// gap: a scheduled job wasn't covered by the old ['accepted','invoiced',
+// 'paid'] set at all).
+const POST_ACCEPT_LOCKED_STATUSES = ['accepted', 'scheduled', 'completed'];
 function confirmPostAcceptChange(actionLabel) {
   if (!POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus)) return true;
   return confirm(`This quote is already marked "${currentQuoteStatus}" — ${actionLabel} now could affect billing already communicated to the client.\n\nThis is allowed (e.g. extra screed, trims, or site extras found after acceptance) — just make sure the client knows about the change. Continue?`);
@@ -1111,13 +1120,20 @@ async function loadQuote() {
   renderFloorPrepRoomCards();
   document.getElementById('quotePhotosCard').style.display = 'block';
   loadQuotePhotos();
-  if (data.quote && data.quote.status) { currentQuoteStatus = data.quote.status; }
+  if (data.quote && data.quote.workflow_status) { currentQuoteStatus = data.quote.workflow_status; }
   const descEl = document.getElementById('q_description');
   if (descEl && data.quote) descEl.value = data.quote.description || '';
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
-  const statusEl = document.getElementById('q_status');
-  if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
+  // Read-only status badge (confirmed Aug 2026, Order Index / Job
+  // Workflow Redesign brief) — replaces the old q_status <select>;
+  // workflow_status only changes via an action on the Job Detail screen
+  // (order-index.js), so this screen just reflects it, with a link
+  // straight there for anyone who wants to change it.
+  const statusDisplayEl = document.getElementById('q_status_display');
+  if (statusDisplayEl && data.quote) {
+    statusDisplayEl.innerHTML = `${workflowStatusBadge(data.quote)} <a href="#" onclick="goToTab('landing'); openOrderDetailScreen(${currentQuoteId}); return false;" style="font-size:12px; margin-left:6px;">Manage in Job Detail →</a>`;
+  }
   // Order Details field population REMOVED from here (confirmed Aug
   // 2026, Quote Builder Layout Corrections brief) — that card no longer
   // lives on this screen at all; see renderOrderDetail() (order-index.js)

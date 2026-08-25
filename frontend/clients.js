@@ -116,9 +116,15 @@ async function renderClientDetail(el) {
   // separately above this table (a client can have multiple properties/
   // jobs). Value is total_incl_vat (confirmed directly — "to match what
   // a client would see"), computed server-side by _quote_totals() (main.py).
+  // Status badge now workflow_status (confirmed Aug 2026, Order Index /
+  // Job Workflow Redesign brief — "keep both views consistent" with the
+  // new Order Index table) via the same workflowStatusBadge() helper
+  // (order-index.js) that table uses. Row click now opens Job Detail
+  // too, same reasoning — this list and the Order Index should behave
+  // the same way for the same underlying job.
   const rows = data.quotes.length ? data.quotes.map(q => `
-    <tr style="cursor:pointer;" onclick="openQuoteFromIndex(${q.id})">
-      <td>#${q.id}</td><td><span class="badge flooring">${q.status}</span></td><td>${q.branch}</td>
+    <tr style="cursor:pointer;" onclick="goToTab('landing'); openOrderDetailScreen(${q.id})">
+      <td class="job-number">${q.job_number || '#'+q.id}</td><td>${workflowStatusBadge(q)}</td><td>${q.branch}</td>
       <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
       <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(q.site_address||'').replace(/"/g,'&quot;')}">${q.site_address || '—'}</td>
       <td>${R(q.total_incl_vat)}</td>
@@ -141,7 +147,7 @@ async function renderClientDetail(el) {
     </div>
     <div class="card">
       <h2>Order History</h2>
-      <table><thead><tr><th>#</th><th>Status</th><th>Branch</th><th>Date</th><th>Address</th><th>Value</th></tr></thead>
+      <table><thead><tr><th>Job</th><th>Status</th><th>Branch</th><th>Date</th><th>Address</th><th>Value</th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
   `;

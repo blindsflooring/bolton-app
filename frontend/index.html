@@ -469,15 +469,16 @@
       <table id="linesTable"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
       <div class="total-row" id="quoteTotal"></div>
       <div class="grid" style="margin-top:16px;">
-        <div class="field"><label>Quote status</label>
-          <select id="q_status">
-            <option value="draft">Draft</option>
-            <option value="sent">Sent to client</option>
-            <option value="accepted">Accepted (won)</option>
-            <option value="declined">Declined (lost)</option>
-            <option value="invoiced">Invoiced</option>
-            <option value="paid">Paid</option>
-          </select>
+        <!-- Workflow status REMOVED as a manual dropdown here (confirmed
+        Aug 2026, Order Index / Job Workflow Redesign brief) — "not
+        relevant during quoting," same principle Order Details was
+        already relocated under. Status now only ever changes via a
+        specific event (Accept/Decline/Schedule/Complete) on the Job
+        Detail screen (order-index.js), never a raw field picked here.
+        Read-only badge + link, so it's still visible without pretending
+        it's editable from this screen. -->
+        <div class="field"><label>Status</label>
+          <div id="q_status_display" style="padding-top:4px;"><span class="muted">—</span></div>
         </div>
         <!-- Quote Description field (confirmed Aug 2026, Duplicate Quote
         + Quote Description brief) — internal label only, shown in the
@@ -867,12 +868,15 @@ async function renderPrintInvoicePicker(el, searchTerm) {
   const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
   const res = await fetch(`${API}/quotes${params}`);
   const quotes = await res.json();
+  // Status badge now workflow_status (confirmed Aug 2026, Order Index /
+  // Job Workflow Redesign brief), via the same workflowStatusBadge()
+  // helper (order-index.js) every other status display now uses.
   const rows = quotes.length ? quotes.map(q => `
     <tr>
-      <td>#${q.id}</td>
+      <td class="job-number">${q.job_number || '#'+q.id}</td>
       <td>${q.client_name}</td>
       <td>${q.branch}</td>
-      <td><span class="badge flooring">${q.status}</span></td>
+      <td>${workflowStatusBadge(q)}</td>
       <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
       <td><button class="primary" onclick="printInvoiceForQuote(${q.id})">Print Invoice</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="muted">No quotes match.</td></tr>';
@@ -882,7 +886,7 @@ async function renderPrintInvoicePicker(el, searchTerm) {
       <h2>Print Invoice</h2>
       <p class="muted">Pick any quote to generate its Tax Invoice — pulled from the same real line-item data as the quote, not re-typed.</p>
       <div class="field"><label>Search (client name or quote #)</label><input type="text" id="invoiceSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderPrintInvoicePicker(document.getElementById('landing'), this.value)"></div>
-      <table><thead><tr><th>#</th><th>Client</th><th>Branch</th><th>Status</th><th>Date</th><th></th></tr></thead>
+      <table><thead><tr><th>Job</th><th>Client</th><th>Branch</th><th>Status</th><th>Date</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
   `;

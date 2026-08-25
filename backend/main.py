@@ -5,7 +5,7 @@ those are Phase 2+ per the build brief.
 
 Run: uvicorn main:app --reload --port 8000
 """
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Any
 import os
 import re
@@ -242,6 +242,23 @@ def _ensure_new_columns():
         # Quote Description brief) — blank for every existing quote;
         # nothing retroactively guessed or backfilled.
         ("quote", "description", "VARCHAR", "''"),
+        # Job Workflow (confirmed Aug 2026, Order Index / Job Workflow
+        # Redesign brief + Next Action Addendum) — every existing row
+        # gets workflow_status='quoted' from this ALTER TABLE default,
+        # then the real backfill (_backfill_job_workflow(), called once
+        # below in on_startup(), after this function) derives the
+        # correct value for each row from the legacy `status` field and
+        # the order-tracking dates that already exist. NULL for every
+        # date/optional field — nothing guessed at this stage.
+        ("quote", "workflow_status", "VARCHAR", "'quoted'"),
+        ("quote", "job_number", "VARCHAR", "NULL"),
+        ("quote", "accepted_at", "TIMESTAMP", "NULL"),
+        ("quote", "declined_at", "TIMESTAMP", "NULL"),
+        ("quote", "installation_confirmed_date", "DATE", "NULL"),
+        ("quote", "completion_date", "DATE", "NULL"),
+        ("quote", "installer_team", "VARCHAR", "''"),
+        ("quote", "materials_ordered", "BOOLEAN", "FALSE"),
+        ("quote", "ready_for_installation", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -255,6 +272,24 @@ def _ensure_new_columns():
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default_literal}"))
             table_columns[table].add(column)
             print(f"Migration: added {column} to {table}, defaulted to {default_literal}")
+
+
+def _next_job_number(session: Session, tenant_id: str) -> str:
+    """Job Workflow (confirmed Aug 2026) — sequential J-0001 format
+    (confirmed directly), tenant-wide, never reused. Shared by the
+    startup backfill and accept_quote() so there's exactly one place
+    that decides the next number — re-scans existing job numbers each
+    call rather than keeping a separate counter row, which is simplest
+    and correct at this business's real scale (dozens of jobs, not
+    thousands) and can never drift from what's actually in the table."""
+    existing = session.exec(select(Quote.job_number).where(Quote.job_number.is_not(None), Quote.tenant_id == tenant_id)).all()
+    next_seq = 1
+    for jn in existing:
+        try:
+            next_seq = max(next_seq, int(jn.split("-")[-1]) + 1)
+        except (ValueError, AttributeError):
+            pass
+    return f"J-{next_seq:04d}"
 
 
 @app.on_event("startup")
@@ -525,6 +560,46 @@ def on_startup():
                 ))
             print(f"Migration: seeded {len(floor_prep_seed)} FloorPrepProduct row(s) for Azura")
         session.commit()
+
+        # Job Workflow backfill (confirmed Aug 2026, Order Index / Job
+        # Workflow Redesign brief) — one-time-per-row derivation of
+        # workflow_status/job_number/accepted_at/declined_at/
+        # installation_confirmed_date/completion_date from the legacy
+        # `status` field and the order-tracking dates that already
+        # existed before this brief. Runs on every startup, only ever
+        # ACTS once per row — any Quote that already has job_number,
+        # accepted_at, or declined_at set (from an earlier run of this
+        # backfill, or genuinely handled since via the new action
+        # endpoints below) is skipped. accepted_at and completion_date
+        # backfilled here are explicit APPROXIMATIONS (created_at /
+        # final_payment_date respectively) since no exact historical
+        # timestamp exists for either — logged as such, never silently
+        # guessed at as if it were real.
+        unmigrated = session.exec(
+            select(Quote).where(Quote.job_number.is_(None), Quote.accepted_at.is_(None), Quote.declined_at.is_(None))
+        ).all()
+        if unmigrated:
+            migrated_count = 0
+            for q in sorted(unmigrated, key=lambda x: x.created_at):
+                legacy = (q.status or "draft").lower()
+                if legacy == "declined":
+                    q.declined_at = q.created_at   # approximation — no exact decline timestamp exists historically; workflow_status stays 'quoted', a declined quote never became a job
+                elif legacy in ("accepted", "invoiced", "paid"):
+                    q.accepted_at = q.created_at   # approximation
+                    q.job_number = _next_job_number(session, q.tenant_id)
+                    q.workflow_status = "accepted"
+                    if q.installation_date:
+                        q.workflow_status = "scheduled"
+                        q.installation_confirmed_date = q.installation_date   # best available proxy — no separate "confirmed" concept existed before this brief
+                    if q.final_payment_date:
+                        q.workflow_status = "completed"
+                        q.completion_date = q.final_payment_date   # best available proxy — no completion_date concept existed before this brief
+                # legacy in ('draft', 'sent') -> workflow_status already defaults to 'quoted' from the column's own DEFAULT, nothing else to set
+                session.add(q)
+                migrated_count += 1
+            session.commit()
+            if migrated_count:
+                print(f"Migration: backfilled job workflow for {migrated_count} existing quote(s) — job numbers assigned, workflow_status/accepted_at/declined_at/installation_confirmed_date/completion_date derived from legacy status + existing dates (accepted_at and completion_date are approximations, see this block's own comment)")
 
 
 def get_session():
@@ -992,14 +1067,19 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
         for l in lines:
             value_by_quote[l.quote_id] = value_by_quote.get(l.quote_id, 0.0) + l.line_total
 
-        WON_STATUSES = {"accepted", "invoiced", "paid"}
-        LOST_STATUSES = {"declined"}
-        OPEN_STATUSES = {"draft", "sent"}
-
+        # Real gap found and fixed (confirmed Aug 2026, Order Index / Job
+        # Workflow Redesign brief): this used to test the legacy
+        # Quote.status string — but the new workflow action endpoints
+        # never touch that field, only workflow_status/accepted_at/
+        # declined_at. accepted_at/declined_at being set are the real,
+        # permanent markers of "won"/"lost" (confirmed directly — the
+        # whole reason accepted_at exists at all, per the architecture
+        # proposal's §3), so this now tests those instead of a status
+        # string nothing new sets.
         def summarize(quote_list):
-            won = [q for q in quote_list if q.status in WON_STATUSES]
-            lost = [q for q in quote_list if q.status in LOST_STATUSES]
-            open_ = [q for q in quote_list if q.status in OPEN_STATUSES]
+            won = [q for q in quote_list if q.accepted_at is not None]
+            lost = [q for q in quote_list if q.declined_at is not None]
+            open_ = [q for q in quote_list if q.accepted_at is None and q.declined_at is None]
             decided = won + lost
             won_value = sum(value_by_quote.get(q.id, 0.0) for q in won)
             open_value = sum(value_by_quote.get(q.id, 0.0) for q in open_)
@@ -2241,8 +2321,10 @@ def delete_commission_rate(rate_id: int, role: str = Depends(require_owner), ten
 def commission_statement(sales_owner_key: str, year: int, month: int, tenant_id: str = Depends(get_current_tenant)):
     """
     Confirmed Aug 2026: commission is calculated ONLY on fully paid
-    invoices (status == "paid"), for the given calendar month, per the
-    brief's core rule #1. Two calculation paths depending on the
+    invoices (final_payment_date set — see the real-gap comment on
+    paid_quotes below for why this no longer reads the legacy status
+    field), for the given calendar month, per the brief's core rule #1.
+    Two calculation paths depending on the
     employee's commission_role_type:
 
     - pure_sales: % of total GP generated that month, tiered (rate found
@@ -2261,10 +2343,21 @@ def commission_statement(sales_owner_key: str, year: int, month: int, tenant_id:
         if not employee.commission_eligible:
             return {"employee": employee.full_name, "commission_eligible": False, "commission_due": 0.0}
 
+        # Real gap found and fixed (confirmed Aug 2026, Order Index / Job
+        # Workflow Redesign brief): this used to filter on the legacy
+        # Quote.status == "paid" — but the new workflow action endpoints
+        # (accept/schedule/complete) never set that field at all, only
+        # workflow_status. Left as-is, commission for every job processed
+        # through the new workflow would have silently stopped
+        # calculating the moment that brief shipped. final_payment_date
+        # being set is the real, structural "this job is paid" signal —
+        # already existed, already what Order Index's own payment
+        # tracking uses — so this now checks that directly instead of a
+        # status string nothing sets anymore.
         paid_quotes = session.exec(
             select(Quote).where(
                 Quote.sales_owner == sales_owner_key,
-                Quote.status == "paid",
+                Quote.final_payment_date.is_not(None),
                 Quote.tenant_id == tenant_id,
             )
         ).all()
@@ -2660,6 +2753,72 @@ def delete_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
         return {"deleted": client_id}
 
 
+def _job_workflow_info(quote: "Quote", today: date) -> dict:
+    """Next Action / Needs Attention engine (confirmed Aug 2026, Order
+    Index / Job Workflow Redesign brief + Next Action Addendum).
+    Computed at read time from workflow_status plus the operational/
+    accounting fields — never separately stored, same "derive, don't
+    duplicate state that could drift" discipline as computeOrderStatus()
+    (retired for this purpose — see order-index.js), _quote_totals(),
+    _builder_commission_for_quote(), and ended_reason elsewhere in this
+    codebase.
+
+    action_target is a route hint ("job_detail" | "print_invoice") the
+    frontend uses to decide where the Next Action button navigates —
+    this function only decides WHAT the action is and WHERE it roughly
+    belongs, never how the button is wired up.
+
+    7-day staleness threshold for "Follow up" is a fresh constant here,
+    deliberately NOT businessSettings.order_overdue_days — that setting
+    means something different (days since INVOICE sent), and reusing it
+    would conflate two unrelated concepts."""
+    QUOTE_STALE_DAYS = 7
+    ws = quote.workflow_status
+    invoiced = bool(quote.invoice_sent_date)
+    paid = bool(quote.final_payment_date)
+    next_action = action_button = action_target = None
+    attention_priority = attention_label = None
+
+    if ws == "quoted":
+        next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
+        if (today - quote.created_at.date()).days >= QUOTE_STALE_DAYS:
+            attention_priority, attention_label = "notice", "Follow up"
+    elif ws == "accepted":
+        next_action, action_button, action_target = "Book installation", "BOOK INSTALLATION", "job_detail"
+        attention_priority, attention_label = "critical", "Book installation"
+    elif ws == "scheduled":
+        # Three real states here, not two (confirmed directly): ordered
+        # and physically received/on-hand are genuinely different events
+        # — materials_ordered just means the order was placed;
+        # ready_for_installation means the flooring/blinds have actually
+        # been delivered and are on hand, confirmed manually via "Mark
+        # Materials Received" (Bolton doesn't track physical stock-on-
+        # hand automatically, so this can't be inferred).
+        if quote.installation_date and quote.installation_date == today + timedelta(days=1):
+            next_action, action_button, action_target = "Prepare job", "PREPARE JOB", "job_detail"
+            attention_priority, attention_label = "warning", "Upcoming"
+        elif not quote.materials_ordered:
+            next_action, action_button, action_target = "Prepare / order materials", "PREPARE JOB", "job_detail"
+            attention_priority, attention_label = "warning", "Materials required"
+        elif not quote.ready_for_installation:
+            next_action, action_button, action_target = "Confirm materials received", "PREPARE JOB", "job_detail"
+            attention_priority, attention_label = "warning", "Materials required"
+        else:
+            next_action, action_button, action_target = "Complete installation", "OPEN JOB", "job_detail"
+    elif ws == "completed":
+        if not invoiced:
+            next_action, action_button, action_target = "Invoice customer", "CREATE INVOICE", "print_invoice"
+            attention_priority, attention_label = "warning", "Invoice"
+        elif not paid:
+            next_action, action_button, action_target = "Receive payment", "LOG PAYMENT", "job_detail"
+        # invoiced and paid -> job fully closed out, nothing left to prompt
+
+    return {
+        "next_action": next_action, "action_button": action_button, "action_target": action_target,
+        "attention_priority": attention_priority, "attention_label": attention_label,
+    }
+
+
 def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dict:
     """Discount -> VAT -> deposit/balance math, shared (confirmed Aug
     2026, Client Order History Columns brief). Previously hand-
@@ -2896,12 +3055,25 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
                           site_address: str = None, installation_date: str = None,
                           invoice_sent_date: str = None, deposit_paid_date: str = None,
                           deposit_payment_method: str = None, final_payment_date: str = None,
-                          final_payment_method: str = None, tenant_id: str = Depends(get_current_tenant)):
+                          final_payment_method: str = None, installer_team: str = None,
+                          workflow_status: str = None, tenant_id: str = Depends(get_current_tenant)):
     """Update a quote's own details — client name, sales owner, branch,
-    status, plus order-tracking fields (site address, installation date,
-    invoice/payment dates and methods) confirmed Aug 2026 for the Order
-    Index. Used by the "Save Quote" button. Line items are already saved
-    individually as they're added — this covers quote-level fields only.
+    legacy status, plus order-tracking fields (site address, installation
+    date, invoice/payment dates and methods) confirmed Aug 2026 for the
+    Order Index. Used by the "Save Quote" button. Line items are already
+    saved individually as they're added — this covers quote-level fields
+    only.
+
+    workflow_status here is the MANUAL OVERRIDE / correction path
+    (confirmed Aug 2026, Order Index / Job Workflow Redesign — Q5): the
+    automatic transitions (accept_quote/decline_quote/schedule_quote/
+    complete_quote below) are the PRIMARY way this field changes — this
+    is only for the exception case where one of those fired on wrong
+    information and needs a direct fix, so it's deliberately not wired
+    to a prominent button anywhere in the UI. Does NOT touch job_number
+    or accepted_at — those stay whatever they already were, since a
+    correction to what STAGE a job is in shouldn't erase the permanent
+    record of WHEN it was first accepted.
 
     Date params are accepted as strings and explicitly coerced — same
     fix as v38's coerce_date_fields(), applied here from the start this
@@ -2916,10 +3088,16 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
             quote.branch = branch
         if status is not None:
             quote.status = status
+        if workflow_status is not None:
+            if workflow_status not in ("quoted", "accepted", "scheduled", "completed"):
+                raise HTTPException(400, "workflow_status must be one of: quoted, accepted, scheduled, completed")
+            quote.workflow_status = workflow_status
         if description is not None:
             quote.description = description
         if site_address is not None:
             quote.site_address = site_address
+        if installer_team is not None:
+            quote.installer_team = installer_team
         if installation_date is not None:
             quote.installation_date = date.fromisoformat(installation_date) if installation_date else None
         if invoice_sent_date is not None:
@@ -2932,6 +3110,119 @@ def update_quote_details(quote_id: int, client_name: str = None, sales_owner: st
             quote.final_payment_date = date.fromisoformat(final_payment_date) if final_payment_date else None
         if final_payment_method is not None:
             quote.final_payment_method = final_payment_method
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+# ----- Job Workflow automatic transitions (confirmed Aug 2026, Order
+# Index / Job Workflow Redesign brief + Next Action Addendum) — each
+# endpoint below is a specific, named EVENT, not a raw status field
+# anyone can set to anything. This is the primary way workflow_status
+# changes; update_quote_details()'s workflow_status param just above is
+# the secondary, manual-correction escape hatch (Q5). -----
+
+@app.post("/quotes/{quote_id}/accept")
+def accept_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """QUOTED -> ACCEPTED. Assigns job_number and sets accepted_at —
+    together, the real "this is now a job" marker (confirmed Aug 2026,
+    §3 of the architecture proposal — "reflected in the data
+    architecture, not just the UI"), permanent even if workflow_status
+    is later hand-corrected via the manual override above."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.workflow_status != "quoted":
+            raise HTTPException(400, f"This quote is already {quote.workflow_status} — nothing to accept.")
+        quote.workflow_status = "accepted"
+        quote.accepted_at = datetime.utcnow()
+        if not quote.job_number:
+            quote.job_number = _next_job_number(session, tenant_id)
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.post("/quotes/{quote_id}/decline")
+def decline_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Deliberately NOT one of the 4 workflow values (confirmed Aug
+    2026, Q2) — a declined quote never became a job, so it doesn't
+    belong inside a job-workflow enum. Its own timestamp instead, same
+    reasoning that already kept invoicing/payment out of the status
+    field too. Also what makes conversion-rate reporting possible."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.workflow_status != "quoted":
+            raise HTTPException(400, "Only a quote that hasn't been accepted yet can be declined.")
+        quote.declined_at = datetime.utcnow()
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.put("/quotes/{quote_id}/schedule")
+def schedule_quote(quote_id: int, installation_date: str, tenant_id: str = Depends(get_current_tenant)):
+    """ACCEPTED -> SCHEDULED. installation_confirmed_date is set to the
+    SAME value as installation_date here deliberately — confirming a
+    date is exactly what "booking" an installation means (confirmed Aug
+    2026); the two fields only diverge if installation_date was set
+    earlier as a tentative/target date without ever being confirmed."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.workflow_status not in ("accepted", "scheduled"):
+            raise HTTPException(400, "Only an accepted job can be scheduled.")
+        quote.installation_date = date.fromisoformat(installation_date)
+        quote.installation_confirmed_date = quote.installation_date
+        quote.workflow_status = "scheduled"
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.put("/quotes/{quote_id}/materials")
+def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_for_installation: bool = None,
+                            installer_team: str = None, tenant_id: str = Depends(get_current_tenant)):
+    """Operational fields, never statuses (confirmed Aug 2026) —
+    materials_ordered and ready_for_installation are deliberately two
+    INDEPENDENT booleans (Q6): ordering materials and them actually
+    being physically delivered/on hand are genuinely different real-
+    world events days apart, and one auto-following the other would
+    produce false "ready" signals. ready_for_installation is always a
+    manual confirmation ("Mark Materials Received" in the UI) — never
+    inferred, since Bolton has no physical stock-on-hand tracking to
+    infer it from. Available whenever a job is Accepted or further
+    along — not gated to Scheduled only, since materials are often
+    ordered before an installation date is even confirmed. Each field
+    is set independently by the caller (one param per click in the UI),
+    but all three can be sent together too."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if materials_ordered is not None:
+            quote.materials_ordered = materials_ordered
+        if ready_for_installation is not None:
+            quote.ready_for_installation = ready_for_installation
+        if installer_team is not None:
+            quote.installer_team = installer_team
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.post("/quotes/{quote_id}/complete")
+def complete_quote(quote_id: int, completion_date: str = None, tenant_id: str = Depends(get_current_tenant)):
+    """SCHEDULED -> COMPLETED. completion_date defaults to today if not
+    given — the common case is marking a job complete on the day it
+    actually finished."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.workflow_status != "scheduled":
+            raise HTTPException(400, "Only a scheduled job can be marked complete.")
+        quote.completion_date = date.fromisoformat(completion_date) if completion_date else date.today()
+        quote.workflow_status = "completed"
         session.add(quote)
         session.commit()
         session.refresh(quote)
@@ -3168,6 +3459,7 @@ def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str =
             branch=source.branch,
             blinds_measurements_visible=source.blinds_measurements_visible,
             status="draft",
+            workflow_status="quoted",   # explicit, not just relying on the model default — a duplicate is always a fresh quote, never inherits the source's job_number/accepted_at either (both correctly left unset here)
             discount_pct=source.discount_pct,
             transport_levy=source.transport_levy,
             deposit_pct=source.deposit_pct,
@@ -3504,6 +3796,12 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             "lines": lines_out,
             "subtotal_ex_vat": round(subtotal_ex_vat, 2),
             **totals,
+            # Next Action / Needs Attention (confirmed Aug 2026, Order
+            # Index / Job Workflow Redesign brief + Next Action
+            # Addendum) — same engine list_quotes() uses, so the Job
+            # Detail screen's own action button always agrees with
+            # whatever the Order Index row showed to get here.
+            "workflow": _job_workflow_info(quote, date.today()),
         }
 
         # "At a glance" job margin check (owner/admin only — never shown to
@@ -3584,8 +3882,8 @@ def get_colour_history(quote_id: int, line_id: int, tenant_id: str = Depends(get
 
 @app.get("/quotes")
 def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
-                 status: Optional[str] = None, search: Optional[str] = None,
-                 tenant_id: str = Depends(get_current_tenant)):
+                 status: Optional[str] = None, workflow_status: Optional[str] = None,
+                 search: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — Order Index needs totals (deposit amount,
     balance amount) visible without clicking into each quote, so this
     now computes them per quote, same VAT_PCT/discount logic as the
@@ -3594,7 +3892,15 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
     this project happened). VAT_PCT now comes from Business Settings —
     real bug found and fixed while merging v54: this was hardcoded
     identically here AND in get_quote above, so a VAT change (or a typo
-    landing in only one spot) could have made the two quietly disagree."""
+    landing in only one spot) could have made the two quietly disagree.
+
+    workflow_status filter added alongside the legacy status filter
+    (confirmed Aug 2026, Order Index / Job Workflow Redesign brief) —
+    status kept working, not removed, for anything that still passes it;
+    every new call site uses workflow_status instead. Search now also
+    matches job_number and site_address (brief §5 — "search by
+    Customer, Job number, and Site"), alongside the pre-existing client
+    name / quote # / description match."""
     with Session(engine) as session:
         VAT_PCT = get_settings(session, tenant_id).vat_pct
         stmt = select(Quote).where(Quote.tenant_id == tenant_id)
@@ -3604,15 +3910,16 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             stmt = stmt.where(Quote.branch == branch)
         if status:
             stmt = stmt.where(Quote.status == status)
+        if workflow_status:
+            stmt = stmt.where(Quote.workflow_status == workflow_status)
         quotes = session.exec(stmt).all()
         if search:
             search_lower = search.lower()
-            # Description included (confirmed Aug 2026, Duplicate Quote +
-            # Quote Description brief — "searchable/filterable in that
-            # list") alongside the pre-existing client name / quote # match.
             quotes = [q for q in quotes if search_lower in q.client_name.lower() or search_lower in str(q.id)
-                      or search_lower in (q.description or "").lower()]
+                      or search_lower in (q.description or "").lower() or search_lower in (q.job_number or "").lower()
+                      or search_lower in (q.site_address or "").lower()]
 
+        today = date.today()
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -3630,5 +3937,12 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             d["total_incl_vat"] = totals["total_incl_vat"]
             d["deposit_amount"] = totals["deposit_amount"]
             d["balance_amount"] = totals["balance_amount"]
+            # Next Action / Needs Attention (confirmed Aug 2026, Order
+            # Index / Job Workflow Redesign brief + Next Action
+            # Addendum) — computed per row so the Order Index table's
+            # Next Action column and the Needs Attention list can both
+            # be built client-side from this one response, no second
+            # request.
+            d.update(_job_workflow_info(q, today))
             result.append(d)
         return result

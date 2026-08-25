@@ -746,6 +746,61 @@ class Quote(SQLModel, table=True):
     # label only.
     description: str = ""
 
+    # ---------- Job Workflow (confirmed Aug 2026, Order Index / Job
+    # Workflow Redesign brief + Next Action Addendum) ----------
+    # The old `status` field above is kept AS-IS, untouched, for
+    # historical data — it is NOT deleted or renamed (real, working data
+    # in Postgres; this session never drops what already works). It is
+    # simply no longer read for workflow purposes anywhere new — every
+    # new code path uses workflow_status instead. See main.py's
+    # migration/backfill in on_startup() for how existing rows get a
+    # workflow_status derived from this legacy field.
+    #
+    # Exactly 4 values, per the brief's own hard requirement — never add
+    # a 5th. Everything else (invoicing, payment, materials, installer)
+    # is a separate field below, not a status:
+    workflow_status: str = "quoted"   # quoted | accepted | scheduled | completed
+    # Quote -> Job distinction, reflected in the data, not just a status
+    # string (confirmed directly): job_number is None for every quote
+    # that has never been accepted; assigned exactly once, at
+    # acceptance, and never reassigned or reused. This — not
+    # workflow_status alone — is the real, structural answer to "is this
+    # still just a quote, or has it become a job."
+    job_number: Optional[str] = Field(default=None, index=True)
+    accepted_at: Optional[datetime] = None   # set once, exactly when QUOTED -> ACCEPTED happens (auto, via POST /quotes/{id}/accept) — permanent, even if workflow_status is later hand-corrected
+    # Declining is deliberately NOT one of the 4 workflow values (a
+    # declined quote never became a job at all, so it doesn't belong
+    # inside a job-workflow enum) — its own field instead, same
+    # reasoning that kept invoicing/payment out too. Also what makes
+    # conversion-rate reporting possible (confirmed: this exact need is
+    # why a "declined" status existed on the old field in the first
+    # place).
+    declined_at: Optional[datetime] = None
+    # Promotes ACCEPTED -> SCHEDULED (confirmed Aug 2026) — deliberately
+    # a SEPARATE field from installation_date below: a date being
+    # present isn't the same as it being confirmed/booked. installation_date
+    # can still be set earlier as a tentative/target date without
+    # promoting the job to Scheduled.
+    installation_confirmed_date: Optional[date] = None
+    completion_date: Optional[date] = None   # promotes SCHEDULED -> COMPLETED
+    # Operational fields (confirmed Aug 2026) — never statuses, per the
+    # brief's own explicit instruction ("do not create statuses like
+    # 'Materials Ordered'... keep these as separate fields instead").
+    # materials_ordered and ready_for_installation are deliberately two
+    # INDEPENDENT manual booleans, not one auto-following the other —
+    # ordering materials and them actually being on-site/ready are
+    # genuinely different real-world events days apart; collapsing them
+    # would produce false "ready" signals. ready_for_installation means,
+    # precisely (confirmed directly): the flooring/blinds have been
+    # delivered and stock is physically on hand — ready to install from
+    # that moment. Always a MANUAL confirmation ("Mark Materials
+    # Received" button, order-index.js), never inferred — Bolton doesn't
+    # track physical stock-on-hand per job, so there's no signal to
+    # automate this from even if it wanted to.
+    installer_team: str = ""             # free text, same not-an-enum reasoning as sales_owner
+    materials_ordered: bool = False
+    ready_for_installation: bool = False
+
 
 class PaymentFollowUp(SQLModel, table=True):
     """Confirmed Aug 2026 — a quote can need MULTIPLE follow-ups over
