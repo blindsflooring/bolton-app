@@ -107,11 +107,22 @@ async function renderClientDetail(el) {
   const res = await fetch(`${API}/clients/${currentClientDetailId}/quotes`);
   const data = await res.json();
   const c = data.client;
+  // Address + Value columns (confirmed Aug 2026, Client Order History
+  // Columns brief) — real gap: two draft quotes for the same client,
+  // same branch, same day were previously indistinguishable in this
+  // list without opening each one. Address is the per-JOB site address
+  // (Quote.site_address, set on the Order Details screen — order-index.js),
+  // deliberately NOT the client's own general contact address shown
+  // separately above this table (a client can have multiple properties/
+  // jobs). Value is total_incl_vat (confirmed directly — "to match what
+  // a client would see"), computed server-side by _quote_totals() (main.py).
   const rows = data.quotes.length ? data.quotes.map(q => `
     <tr style="cursor:pointer;" onclick="openQuoteFromIndex(${q.id})">
       <td>#${q.id}</td><td><span class="badge flooring">${q.status}</span></td><td>${q.branch}</td>
       <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
-    </tr>`).join('') : '<tr><td colspan="4" class="muted">No quotes yet for this client.</td></tr>';
+      <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(q.site_address||'').replace(/"/g,'&quot;')}">${q.site_address || '—'}</td>
+      <td>${R(q.total_incl_vat)}</td>
+    </tr>`).join('') : '<tr><td colspan="6" class="muted">No quotes yet for this client.</td></tr>';
   el.innerHTML = `
     <span class="back-link" onclick="landingView='clients'; renderLanding();">← Back to Clients</span>
     <div class="card" id="clientDetailCard">
@@ -130,7 +141,7 @@ async function renderClientDetail(el) {
     </div>
     <div class="card">
       <h2>Order History</h2>
-      <table><thead><tr><th>#</th><th>Status</th><th>Branch</th><th>Date</th></tr></thead>
+      <table><thead><tr><th>#</th><th>Status</th><th>Branch</th><th>Date</th><th>Address</th><th>Value</th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
   `;

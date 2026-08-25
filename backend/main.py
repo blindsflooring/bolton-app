@@ -2660,16 +2660,58 @@ def delete_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
         return {"deleted": client_id}
 
 
+def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dict:
+    """Discount -> VAT -> deposit/balance math, shared (confirmed Aug
+    2026, Client Order History Columns brief). Previously hand-
+    duplicated in get_quote() and list_quotes() — their own comments
+    already flagged that exact duplication as a known bug risk ("a
+    second, slightly different copy of this math is exactly how earlier
+    bugs in this project happened"). Extracted here rather than adding
+    a THIRD copy for get_client_quotes()'s new Value column below.
+    Takes subtotal_ex_vat as a plain float rather than fetching lines
+    itself — each caller already computes it its own way (post-strip
+    dicts in get_quote(), raw QuoteLineItem rows elsewhere), so this
+    only dedupes the part that was actually identical."""
+    discount_amount = subtotal_ex_vat * quote.discount_pct
+    total_ex_vat = subtotal_ex_vat - discount_amount
+    total_incl_vat = total_ex_vat * (1 + vat_pct)
+    deposit_amount = total_incl_vat * quote.deposit_pct
+    balance_amount = total_incl_vat - deposit_amount
+    return {
+        "discount_amount": round(discount_amount, 2), "total_ex_vat": round(total_ex_vat, 2),
+        "total_incl_vat": round(total_incl_vat, 2), "deposit_amount": round(deposit_amount, 2),
+        "balance_amount": round(balance_amount, 2),
+    }
+
+
 @app.get("/clients/{client_id}/quotes")
 def get_client_quotes(client_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Order history for a client — every quote ever linked to this
-    record, most recent first."""
+    record, most recent first.
+
+    site_address and total_incl_vat (confirmed Aug 2026, Client Order
+    History Columns brief) — added so two quotes for the same client
+    (e.g. two drafts, same branch, same day) are actually distinguishable
+    in the list without opening each one. site_address is already a
+    plain Quote field (per-job site, not the client's own contact
+    address shown separately above this table); total_incl_vat is
+    computed the same way the Order Index's own totals are (confirmed
+    directly: incl VAT, "to match what a client would see")."""
     with Session(engine) as session:
         client = get_or_404(session, Client, client_id, tenant_id, "Client")
+        VAT_PCT = get_settings(session, tenant_id).vat_pct
         quotes = session.exec(
             select(Quote).where(Quote.client_id == client_id, Quote.tenant_id == tenant_id).order_by(Quote.created_at.desc())
         ).all()
-        return {"client": client, "quotes": quotes}
+        result = []
+        for q in quotes:
+            lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
+            subtotal_ex_vat = sum(l.line_total for l in lines) + q.transport_levy
+            totals = _quote_totals(subtotal_ex_vat, q, VAT_PCT)
+            d = q.dict()
+            d["total_incl_vat"] = totals["total_incl_vat"]
+            result.append(d)
+        return {"client": client, "quotes": result}
 
 
 # ---------- Business Settings ----------
@@ -3450,23 +3492,18 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # merging: this was hardcoded identically here AND in list_quotes
         # below, so a VAT change (or a typo landing in only one spot)
         # could have made this endpoint and the Order Index quietly
-        # disagree on totals. Both now read from the same settings row.
+        # disagree on totals. Both now read from the same settings row,
+        # and now share the actual discount/VAT/deposit math too, via
+        # _quote_totals() (confirmed Aug 2026, Client Order History
+        # Columns brief — see that function's own comment).
         VAT_PCT = get_settings(session, tenant_id).vat_pct
-        discount_amount = subtotal_ex_vat * quote.discount_pct
-        total_ex_vat = subtotal_ex_vat - discount_amount
-        total_incl_vat = total_ex_vat * (1 + VAT_PCT)
-        deposit_amount = total_incl_vat * quote.deposit_pct
-        balance_amount = total_incl_vat - deposit_amount
+        totals = _quote_totals(subtotal_ex_vat, quote, VAT_PCT)
 
         response = {
             "quote": quote.dict(),
             "lines": lines_out,
             "subtotal_ex_vat": round(subtotal_ex_vat, 2),
-            "discount_amount": round(discount_amount, 2),
-            "total_ex_vat": round(total_ex_vat, 2),
-            "total_incl_vat": round(total_incl_vat, 2),
-            "deposit_amount": round(deposit_amount, 2),
-            "balance_amount": round(balance_amount, 2),
+            **totals,
         }
 
         # "At a glance" job margin check (owner/admin only — never shown to
@@ -3476,6 +3513,7 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # Margin uses the POST-discount total, since that's the real revenue.
         if role != UserRole.sales:
             total_cost = sum(line_real_cost(l) for l in lines)
+            total_ex_vat = totals["total_ex_vat"]
             overall_margin = (total_ex_vat - total_cost) / total_ex_vat if total_ex_vat else 0.0
             response["overall_cost_ex_vat"] = round(total_cost, 2)
             response["overall_margin_pct"] = round(overall_margin, 4)
@@ -3582,16 +3620,15 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # reasoning as get_quote() above; keeps the Order Index's own
             # totals consistent with the quote detail screen's, same "one
             # settings source, never two places that could quietly disagree"
-            # discipline VAT_PCT already follows in this function.
+            # discipline VAT_PCT already follows in this function. Now
+            # shares the actual math with get_quote() too, via
+            # _quote_totals() (confirmed Aug 2026, Client Order History
+            # Columns brief).
             subtotal_ex_vat = sum(l.line_total for l in lines) + q.transport_levy
-            discount_amount = subtotal_ex_vat * q.discount_pct
-            total_ex_vat = subtotal_ex_vat - discount_amount
-            total_incl_vat = total_ex_vat * (1 + VAT_PCT)
-            deposit_amount = total_incl_vat * q.deposit_pct
-            balance_amount = total_incl_vat - deposit_amount
+            totals = _quote_totals(subtotal_ex_vat, q, VAT_PCT)
             d = q.dict()
-            d["total_incl_vat"] = round(total_incl_vat, 2)
-            d["deposit_amount"] = round(deposit_amount, 2)
-            d["balance_amount"] = round(balance_amount, 2)
+            d["total_incl_vat"] = totals["total_incl_vat"]
+            d["deposit_amount"] = totals["deposit_amount"]
+            d["balance_amount"] = totals["balance_amount"]
             result.append(d)
         return result
