@@ -21,7 +21,7 @@
     <div class="field"><label>Username</label><input id="login_username" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin();"></div>
     <div class="field"><label>Password</label><input id="login_password" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin();"></div>
     <div id="login_error" style="color:var(--coral); font-size:13px; min-height:18px; margin-top:4px;"></div>
-    <button class="primary" style="width:100%; margin-top:8px;" onclick="doLogin()">Log in</button>
+    <button id="loginBtn" class="primary" style="width:100%; margin-top:8px;" onclick="doLogin()">Log in</button>
   </div>
 </div>
 
@@ -564,12 +564,35 @@ function goToTab(tabName) { showSection(tabName); }
 
 // ===== AUTH (confirmed Aug 2026 — replaces the old self-reported
 // "Viewing as" dropdown entirely) =====
+// Double-submit guard (confirmed Aug 2026, Login Activity Log: Fix
+// Confirmed Root Causes brief, Fix A) — root cause of the duplicate-
+// session-row bug traced and confirmed: doLogin() had NO protection
+// against firing twice, and is wired to three independent triggers
+// (Enter on username, Enter on password, the button's own click).
+// loginInFlight is checked FIRST, before anything else runs — guards
+// the function body itself, not just the button element, so it blocks
+// all three trigger paths uniformly even if one of the Enter-key
+// handlers somehow fired while the button's disabled attribute hadn't
+// visually updated yet. Re-enabled on any failure path (wrong
+// password, network error) so a genuine retry after a real failure is
+// never blocked — only a second call while the FIRST is still pending.
+let loginInFlight = false;
 async function doLogin() {
+  if (loginInFlight) return;
   const username = document.getElementById('login_username').value.trim();
   const password = document.getElementById('login_password').value;
   const errEl = document.getElementById('login_error');
+  const btnEl = document.getElementById('loginBtn');
   errEl.textContent = '';
   if (!username || !password) { errEl.textContent = 'Enter a username and password.'; return; }
+  loginInFlight = true;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Logging in...'; }
+  // Real bug caught before shipping (not a live incident): an early
+  // `return` on the wrong-password path used to skip the re-enable
+  // logic entirely, leaving the button stuck disabled forever after
+  // one bad password attempt. finally{} guarantees re-enable runs on
+  // every path except the one where we deliberately navigate away.
+  let loggedIn = false;
   try {
     const res = await fetch(`${API}/auth/login`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -589,9 +612,19 @@ async function doLogin() {
     setSessionToken(data.token);
     currentUser = {username: data.username, display_name: data.display_name, role: data.role};
     document.getElementById('login_password').value = '';
+    loggedIn = true;
     showApp();
   } catch (e) {
     errEl.textContent = 'Could not reach the server — try again.';
+  } finally {
+    // Success navigates away from the login screen entirely — no need
+    // to re-enable a button on a screen that's no longer shown, and
+    // doLogin() is never called again without a fresh page load (which
+    // re-initializes loginInFlight to false anyway).
+    if (!loggedIn) {
+      loginInFlight = false;
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Log in'; }
+    }
   }
 }
 
@@ -965,7 +998,7 @@ function renderSessionLogTable() {
     <tr>
       <td>${r.display_name} <span class="muted">(${r.username})</span></td>
       <td>${fmt(r.login_time)}</td>
-      <td>${r.still_active ? '<b style="color:var(--teal);">Still active</b>' : fmt(r.logout_time)}</td>
+      <td>${r.still_active ? '<b style="color:var(--teal);">Still active</b>' : `${fmt(r.logout_time)}<br><span class="muted" style="font-size:11px;">${r.ended_reason === 'expired' ? '⏱ Expired (24h) — no explicit logout' : 'Logged out'}</span>`}</td>
       <td>${fmtDuration(r.duration_minutes)}</td>
     </tr>`).join('');
 

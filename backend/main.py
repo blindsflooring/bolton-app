@@ -1108,7 +1108,21 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
     time in that case) — computed here at read time, no background job
     needed. duration_minutes covers both: elapsed time up to the real
     or approximate end, or up to now for a genuinely still-active
-    session."""
+    session.
+
+    ended_reason (confirmed Aug 2026, Login Activity Log: Fix Confirmed
+    Root Causes brief, Fix B) — "logout" | "expired" | None (still
+    active). Deliberately computed here at read time from the EXISTING
+    ended_at/expires_at fields, the same way still_active/logout_time
+    already are, rather than a new stored column on UserSession: the
+    distinction is already fully and unambiguously derivable from data
+    that exists today, so a redundant stored field would just be a
+    second source of truth that could drift out of sync with it for no
+    real benefit. Applies automatically to every row, historical
+    included, WITHOUT relabeling any stored data — this only changes
+    what the read endpoint reports, never what's written (satisfies the
+    brief's own "do not retroactively relabel... historical rows" by
+    construction, since nothing is being rewritten)."""
     with Session(engine) as session:
         stmt = select(UserSession, User).join(User, UserSession.user_id == User.id).where(User.tenant_id == tenant_id)
         rows = session.exec(stmt).all()
@@ -1123,12 +1137,15 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
             if sess.ended_at is not None:
                 logout_time = sess.ended_at
                 still_active = False
+                ended_reason = "logout"
             elif sess.expires_at < now:
                 logout_time = sess.expires_at   # natural 24h expiry, no explicit logout — approximate end time
                 still_active = False
+                ended_reason = "expired"
             else:
                 logout_time = None
                 still_active = True
+                ended_reason = None
             duration_minutes = round(((logout_time or now) - sess.created_at).total_seconds() / 60, 1)
             result.append({
                 "username": user.username,
@@ -1136,6 +1153,7 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
                 "login_time": sess.created_at.isoformat(),
                 "logout_time": logout_time.isoformat() if logout_time else None,
                 "still_active": still_active,
+                "ended_reason": ended_reason,
                 "duration_minutes": duration_minutes,
             })
         result.sort(key=lambda r: r["login_time"], reverse=True)
