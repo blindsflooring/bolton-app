@@ -49,7 +49,7 @@
     color: #6b7280; border-bottom: 3px solid transparent; white-space: nowrap;
   }
   nav button.active { color: var(--teal); border-bottom-color: var(--teal); }
-  main { padding: 16px; max-width: 900px; margin: 0 auto; }
+  main { padding: 16px; padding-bottom: 76px; max-width: 900px; margin: 0 auto; }   /* bottom padding confirmed Aug 2026 — clears the fixed #mobileBackBtn so it never covers the last bit of page content */
   .card {
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px; margin-bottom: 16px;
@@ -131,6 +131,18 @@
     border-radius: 10px; background: var(--cream); color: #8a6d00; align-self: flex-start;
   }
   .back-link { color: var(--teal); font-weight: 600; font-size: 13px; cursor: pointer; margin-bottom: 14px; display: inline-block; }
+  /* Consistent Mobile Back Navigation (confirmed Aug 2026) — the brief's
+     own explicit concern is "two different back mechanisms on the same
+     page": on mobile, the new persistent #mobileBackBtn (fixed, thumb-
+     reachable, bottom of screen) is the ONE on-screen mechanism: these
+     older per-page top-left links are hidden below the breakpoint where
+     they were actually a problem (small screens, one-thumb use). Left
+     in place on desktop, where a top-left link is a normal, unambiguous
+     pattern and there's no thumb-reach concern to begin with — showing
+     both there isn't "two conflicting mechanisms", just two links to
+     the same place, no different from a nav menu and a related-content
+     link both being clickable. */
+  @media (max-width: 768px) { .back-link { display: none; } }
   .hr-subnav { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
   .hr-subnav button {
     background: white; border: 2px solid var(--border); color: var(--navy); font-family: 'Poppins', sans-serif;

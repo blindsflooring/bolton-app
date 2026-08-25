@@ -574,7 +574,13 @@ function showSection(tabName) {
   document.getElementById('quoteBuilder').style.display = tabName === 'quoteBuilder' ? 'block' : 'none';
   if (tabName === 'landing') {
     landingView = 'tiles'; // confirmed Aug 2026: Home must always mean the tile screen, not "whatever sub-view you left off in"
-    renderLanding();
+    renderLanding();   // renderLanding() itself pushes the nav history entry — nothing extra needed here for this case
+  } else {
+    // Consistent Mobile Back Navigation (confirmed Aug 2026) —
+    // quoteBuilder/priceBook are the two tabs renderLanding() never
+    // touches, so they need their own explicit history push; the
+    // 'landing' branch above gets this for free via renderLanding().
+    pushNavState();
   }
 }
 
@@ -698,6 +704,15 @@ function showApp() {
   loadBlinds();
   loadTrims();
   loadBusinessSettings();
+  // Consistent Mobile Back Navigation (confirmed Aug 2026) — this is
+  // the very first screen shown after login, so it establishes the
+  // history baseline (replaceState) rather than pushing a new entry —
+  // otherwise the phone's real back gesture, right after logging in,
+  // would step back to an odd pre-app state instead of just leaving
+  // the app the way a first screen normally would. See shared.js's
+  // pushNavState()/nextNavIsBaseline for how this flag is consumed.
+  nextNavIsBaseline = true;
+  document.getElementById('mobileBackBtn').style.display = '';
   renderLanding();
 }
 
@@ -707,6 +722,7 @@ function showLogin() {
   document.querySelector('nav').style.display = 'none';
   document.querySelector('main').style.display = 'none';
   document.getElementById('previewBanner').style.display = 'none';
+  document.getElementById('mobileBackBtn').style.display = 'none';
   document.getElementById('login_username').value = '';
   document.getElementById('login_error').textContent = '';
 }
@@ -738,6 +754,20 @@ function showLogin() {
 // ===== LANDING PAGE =====
 function renderLanding() {
   const el = document.getElementById('landing');
+  // Consistent Mobile Back Navigation (confirmed Aug 2026) — this one
+  // hook point covers nearly every in-app navigation, since every
+  // "go to a different screen" entry point already works by setting
+  // landingView (+ currentOrderDetailQuoteId/currentClientDetailId
+  // where relevant) and calling renderLanding() — that's the pattern
+  // this whole app already used, before this brief, for tile clicks,
+  // "Back to X" links, openOrderDetailScreen(), openClientDetail(), etc.
+  // Piggybacking here means none of those dozens of call sites needed
+  // individual changes. Internal re-renders of an ALREADY-open screen
+  // (e.g. Order Index's own tab clicks, Job Detail's workflow actions)
+  // deliberately call their own render function directly instead of
+  // renderLanding(), so they correctly do NOT create a new history
+  // entry for what's still logically the same screen.
+  pushNavState();
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
@@ -890,9 +920,14 @@ async function renderPrintInvoicePicker(el, searchTerm) {
       <tbody>${rows}</tbody></table>
     </div>
   `;
+  // Autofocus fix (confirmed Aug 2026, Remove Unwanted Auto-Focus
+  // brief) — same real bug and same fix as Order Index/Clients: only
+  // restore focus when this render was triggered by the user actually
+  // typing (searchTerm passed as a real string), never on the initial
+  // one-argument dispatch call — that unconditional call used to pop
+  // the on-screen keyboard on mobile before anyone had tapped anything.
   const input = document.getElementById('invoiceSearchInput');
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+  if (input && searchTerm !== undefined) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   });
 }
 
@@ -3172,5 +3207,16 @@ window.addEventListener('scroll', () => {
 function scrollToTop() { window.scrollTo({top: 0, behavior: 'smooth'}); }
 </script>
 <button id="backToTopBtn" onclick="scrollToTop()" title="Back to top" style="display:none; position:fixed; bottom:24px; left:24px; width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:20px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; z-index:100;">↑</button>
+
+<!-- Consistent Mobile Back Navigation (confirmed Aug 2026) — one
+persistent, fixed-position Back button on every screen, thumb-reachable
+near the bottom (opposite corner from #backToTopBtn so the two never
+overlap). Calls history.back() — the exact same mechanism the phone's
+own real back gesture now correctly participates in too (see shared.js's
+pushNavState()/popstate handling), never a second, different "go to X"
+shortcut. Hidden on the login screen (toggled alongside header/nav/main
+in showApp()/showLogin(), index.html) — there's nowhere meaningful to
+go back to before logging in. -->
+<button id="mobileBackBtn" onclick="history.back();" title="Back" style="display:none; position:fixed; bottom:24px; right:24px; padding:12px 18px; border-radius:24px; background:var(--navy); color:white; border:none; font-family:'Poppins',sans-serif; font-size:14px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.25); z-index:100;">← Back</button>
 </body>
 </html>

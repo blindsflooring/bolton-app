@@ -551,3 +551,98 @@ function visibleLandingTiles() {
     return true;
   });
 }
+
+// ===== Consistent Mobile Back Navigation (confirmed Aug 2026) =====
+// Bolton is a browser web app running in the phone's browser, not a
+// native installed app — it cannot reposition or take over the phone's
+// actual OS-level back button/gesture, that's controlled by Android/
+// the browser (confirmed directly, brief's own §0). What CAN be built,
+// and is: making that real gesture navigate through Bolton's own screen
+// history sensibly, via the browser's actual History API (pushState/
+// popstate) — plus a second, consistent, thumb-reachable on-screen Back
+// button (index.html's #mobileBackBtn) that does the exact same thing,
+// via the exact same history.back() call, never a different mechanism.
+//
+// No real URL routing — every screen already lived at one single URL,
+// with state in plain JS globals (landingView, currentOrderDetailQuoteId,
+// currentClientDetailId, hrView), long before this brief. pushState is
+// used purely to create real history ENTRIES carrying a snapshot of
+// that existing state, without ever changing the address bar — a
+// well-established pattern for a single-URL SPA with no server-side
+// routes to match anyway.
+let restoringNavState = false;   // guards popstate's own render calls from re-pushing a new history entry, which would turn "back" into a no-op
+let nextNavIsBaseline = false;   // set once, by showApp() right after login — that first render establishes the history baseline (replaceState) instead of pushing a new entry on top of nothing
+
+function navSnapshot() {
+  const quoteBuilderEl = document.getElementById('quoteBuilder');
+  if (quoteBuilderEl && quoteBuilderEl.style.display !== 'none') return { tab: 'quoteBuilder' };
+  const priceBookEl = document.getElementById('priceBook');
+  if (priceBookEl && priceBookEl.style.display !== 'none') return { tab: 'priceBook' };
+  return {
+    tab: 'landing',
+    landingView: typeof landingView !== 'undefined' ? landingView : 'tiles',
+    orderDetailQuoteId: typeof currentOrderDetailQuoteId !== 'undefined' ? currentOrderDetailQuoteId : null,
+    clientDetailId: typeof currentClientDetailId !== 'undefined' ? currentClientDetailId : null,
+    hrView: typeof hrView !== 'undefined' ? hrView : null,
+  };
+}
+
+function pushNavState() {
+  if (restoringNavState) return;   // this render was triggered BY a popstate restoration — don't push another entry on top of the one the browser just navigated to
+  if (!currentUser) return;        // never push history entries for the login screen itself
+  if (nextNavIsBaseline) {
+    nextNavIsBaseline = false;
+    history.replaceState({ nav: navSnapshot() }, '', location.href);
+  } else {
+    history.pushState({ nav: navSnapshot() }, '', location.href);
+  }
+}
+
+// Same section-visibility toggle as showSection() (index.html),
+// WITHOUT its forced landingView='tiles' reset — that reset is correct
+// for a deliberate "Home" tap, wrong for restoring an arbitrary prior
+// screen from history (which is what applyNavState() below uses this
+// for).
+function showRawSection(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const navBtn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
+  if (navBtn) navBtn.classList.add('active');
+  document.getElementById('landing').style.display = tabName === 'landing' ? 'block' : 'none';
+  document.getElementById('quoteBuilder').style.display = tabName === 'quoteBuilder' ? 'block' : 'none';
+  const priceBookEl = document.getElementById('priceBook');
+  if (priceBookEl) priceBookEl.style.display = tabName === 'priceBook' ? 'block' : 'none';
+}
+
+function applyNavState(navState) {
+  restoringNavState = true;
+  if (!navState) {
+    landingView = 'tiles';
+    showRawSection('landing');
+    renderLanding();
+  } else if (navState.tab === 'quoteBuilder') {
+    showRawSection('quoteBuilder');
+  } else if (navState.tab === 'priceBook') {
+    showRawSection('priceBook');
+  } else {
+    landingView = navState.landingView || 'tiles';
+    if (navState.orderDetailQuoteId) currentOrderDetailQuoteId = navState.orderDetailQuoteId;
+    if (navState.clientDetailId) currentClientDetailId = navState.clientDetailId;
+    if (navState.hrView) hrView = navState.hrView;
+    showRawSection('landing');
+    renderLanding();
+  }
+  restoringNavState = false;
+}
+
+// Confirmed Aug 2026, brief §1 — "ensure the browser's native back
+// gesture/button navigates through Bolton's own screen history
+// sensibly... rather than behaving unpredictably or exiting the app
+// unexpectedly." This is that: every popstate event (fired by the
+// phone's real back gesture, the browser's own back button, AND the
+// new #mobileBackBtn below, which all go through the identical
+// history.back() call) re-renders whatever screen that history entry
+// actually describes.
+window.addEventListener('popstate', (e) => {
+  if (!currentUser) return;   // ignore stray popstate events firing before login (e.g. from a page refresh mid-navigation)
+  applyNavState(e.state && e.state.nav);
+});

@@ -94,8 +94,21 @@ async function renderOrderIndex(el, searchTerm) {
   // function now also re-renders on a tab click or a group
   // expand/collapse, neither of which should steal focus back into the
   // search box every time.
+  //
+  // Real bug found and fixed (confirmed Aug 2026, Remove Unwanted
+  // Auto-Focus brief) — the "fresh load" half of the comment above was
+  // itself the bug: this fired unconditionally, including on the very
+  // FIRST render (arriving here from the tiles menu), popping the
+  // on-screen keyboard on mobile before anyone had tapped anything.
+  // Only restore focus when this render was actually triggered by the
+  // user typing (searchTerm passed as a real string via the oninput
+  // handler) — never on the initial one-argument dispatch call
+  // (renderLanding() -> renderOrderIndex(el)). Still needed for typing
+  // itself: this function replaces the whole innerHTML, including the
+  // input element, on every keystroke, so without this restore, typing
+  // a second character would drop focus entirely.
   const input = document.getElementById('orderSearchInput');
-  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  if (input && searchTerm !== undefined) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   });
 }
 

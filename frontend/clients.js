@@ -44,8 +44,21 @@ async function renderClients(el, searchTerm) {
       <p class="muted" id="addClientStatus" style="margin-top:8px;"></p>
     </div>
   `;
+  // Autofocus fix (confirmed Aug 2026, Remove Unwanted Auto-Focus
+  // brief) — real bug: this used to fire unconditionally, including on
+  // the very FIRST render (arriving at this screen from the tiles menu
+  // or a "Back to Clients" link), which popped the on-screen keyboard
+  // on mobile before the user had tapped anything. Only restore focus
+  // when this render was actually TRIGGERED by the user typing in the
+  // search box (searchTerm passed as a real string via the oninput
+  // handler below) — without that restore, typing a second character
+  // would otherwise drop focus entirely (this function replaces the
+  // whole innerHTML, including the input element itself, on every
+  // keystroke), closing the keyboard mid-type — a worse bug than the
+  // one being fixed. searchTerm is only ever undefined on the initial,
+  // one-argument dispatch call (renderLanding() -> renderClients(el)).
   const input = document.getElementById('clientSearchInput');
-  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  if (input && searchTerm !== undefined) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   });
 }
 
