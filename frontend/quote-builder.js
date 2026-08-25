@@ -677,6 +677,7 @@ async function createQuote() {
   // resetQuoteBuilderUI() first. Cheap and always correct to clear here
   // too, regardless of how this was reached.
   clearStaleQuoteResidue();
+  currentQuoteClientId = quote.client_id || null;   // set AFTER clearStaleQuoteResidue(), which resets it to null — this is the new quote's own real client, straight from the just-created record
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
@@ -747,6 +748,7 @@ async function createQuote() {
 // entry points where no quote is being submitted in the same breath.
 function clearStaleQuoteResidue() {
   currentQuoteStatus = 'quoted';   // a brand-new quote's workflow_status is always 'quoted' — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
+  currentQuoteClientId = null;   // must not leak the PREVIOUS quote's real client into a new one — createQuote() sets this fresh via loadQuote() once the new quote is actually saved
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) printInvoiceBtn.style.display = 'none';
   const tbody = document.querySelector('#linesTable tbody');
@@ -841,9 +843,25 @@ async function saveQuote() {
     // variants.
     description: document.getElementById('q_description').value,
   });
-  await fetch(`${API}/quotes/${currentQuoteId}?${params}`, {method:'PUT'});
-  document.getElementById('saveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')} — line items save automatically as you add them; this saves the client/owner/branch/description.`;
-  loadQuote();
+  const res = await fetch(`${API}/quotes/${currentQuoteId}?${params}`, {method:'PUT'});
+  if (!res.ok) {
+    document.getElementById('saveStatus').textContent = '❌ Could not save — check your connection and try again.';
+    return;
+  }
+  // Confirmed Aug 2026, Save Redirect + Client Link Missing brief —
+  // "taken back to the Order Index automatically... so he can
+  // immediately see the saved quote sitting in the list — confirmation
+  // that it actually landed, rather than trusting an on-screen 'Saved✓'
+  // message alone." Navigates straight there instead of showing the
+  // status text (which would never be seen anyway, since the screen
+  // changes immediately) — the saved quote's own presence in that list
+  // IS the confirmation now. showRawSection(), not goToTab()/
+  // showSection() — that pair forces landingView back to 'tiles' first
+  // (correct for the Home button, wrong here), which would flash the
+  // tile menu for a frame before Order Index actually renders.
+  showRawSection('landing');
+  landingView = 'orders';
+  renderLanding();
 }
 
 async function printQuote() {
@@ -1133,6 +1151,14 @@ let currentQuoteLinesCache = [];
 // — used by confirmPostAcceptChange() below to decide whether adding/
 // deleting a line needs an explicit heads-up first.
 let currentQuoteStatus = 'draft';
+// Real client_id of the currently-open quote (confirmed Aug 2026, Save
+// Redirect + Client Link Missing brief) — separate from pendingClientId
+// (which is only ever for a NEW, not-yet-created quote): this is what
+// the Quote Builder's own "Duplicate Quote" button passes to
+// duplicateQuoteFromIndex() so "duplicate for the same client" is
+// always a real, validated client_id, never re-derived from whatever
+// text happens to be sitting in the q_client field.
+let currentQuoteClientId = null;
 // Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) —
 // object URLs created per thumbnail (see loadQuotePhotos()) so they
 // can be revoked on the next load instead of quietly leaking memory
@@ -1149,6 +1175,7 @@ async function loadQuote() {
   document.getElementById('quotePhotosCard').style.display = 'block';
   loadQuotePhotos();
   if (data.quote && data.quote.workflow_status) { currentQuoteStatus = data.quote.workflow_status; }
+  currentQuoteClientId = data.quote ? (data.quote.client_id || null) : null;
   const descEl = document.getElementById('q_description');
   if (descEl && data.quote) descEl.value = data.quote.description || '';
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');

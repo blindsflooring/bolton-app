@@ -3481,8 +3481,18 @@ def bulk_delete_quotes(body: BulkDeleteQuotesRequest, role: str = Depends(requir
 
 
 class DuplicateQuoteRequest(BaseModel):
+    # client_name (free text) deliberately REMOVED (confirmed Aug 2026,
+    # Save Redirect + Client Link Missing brief) — this was the actual,
+    # confirmed root cause of duplicated quotes losing their real client
+    # link: the frontend's old prompt() pre-filled the source's
+    # client_name as editable TEXT, and any edit at all — including a
+    # well-intentioned note typed into what looked like a free-text box
+    # — got sent back as a "different client" by name, with no real
+    # client_id behind it, silently orphaning the duplicate. The ONLY
+    # way to change the client on a duplicate now is a validated
+    # client_id — never free text — so this whole failure mode can't
+    # recur, from this endpoint or any future caller of it.
     client_id: Optional[int] = None
-    client_name: Optional[str] = None
 
 
 @app.post("/quotes/{quote_id}/duplicate")
@@ -3517,12 +3527,13 @@ def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str =
       - created_at / id: fresh, real ("Fresh quote reference/ID, fresh
         date" per the brief).
 
-    Client: defaults to the source quote's own client, but the caller
-    can override with a different client_id (a real Client record) or a
-    plain client_name (a walk-in/one-off, same rule create_quote() uses)
-    — confirmed directly: "allow Burgert to pick a different client
-    instead... reusing a quote's structure as a starting template for a
-    similar job for a DIFFERENT client"."""
+    Client: defaults to the source quote's own client (by real
+    client_id, not a name comparison), but the caller can override with
+    a different client_id — a real, validated Client record, never free
+    text (confirmed Aug 2026 — see DuplicateQuoteRequest's own comment
+    for the bug this closes) — confirmed directly: "allow Burgert to
+    pick a different client instead... reusing a quote's structure as a
+    starting template for a similar job for a DIFFERENT client"."""
     with Session(engine) as session:
         source = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         new_client_id = source.client_id
@@ -3531,9 +3542,6 @@ def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str =
             client = get_or_404(session, Client, body.client_id, tenant_id, "Client")
             new_client_id = client.id
             new_client_name = client.name
-        elif body.client_name:
-            new_client_id = None   # a typed name with no matching client_id is a walk-in/one-off, same rule create_quote() uses
-            new_client_name = body.client_name
 
         new_quote = Quote(
             tenant_id=tenant_id,

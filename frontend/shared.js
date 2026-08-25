@@ -679,3 +679,65 @@ document.addEventListener('keydown', (e) => {
   if (!KEYBOARD_DISMISS_INPUT_TYPES.includes(e.target.type)) return;
   e.target.blur();
 });
+
+// ===== Client Picker (confirmed Aug 2026, Save Redirect + Client Link
+// Missing brief) — the reusable fix for the confirmed root cause of
+// duplicated (and possibly other) quotes losing their real client
+// link: a free-text prompt() asking for a "client name" that silently
+// created a disconnected quote the moment anyone typed anything other
+// than an exact re-match of the original text (even a well-intentioned
+// note). This replaces that with a real search-and-SELECT picker —
+// the only way out is clicking an actual Client record, so the result
+// is always a validated client_id, never a name string that might or
+// might not match one. Promise-based so a caller just does
+// `const picked = await openClientPicker(...); if (!picked) return;`
+// — same shape as a native prompt()/confirm(), but returns {id, name}
+// or null instead of a string. One shared component (not rebuilt per
+// caller) — currently used by Duplicate Quote (order-index.js); the
+// Job Detail "link this quote to a client" box (also order-index.js)
+// predates this and already has its own inline version of the same
+// idea, left as-is rather than churned for its own sake. =====
+let clientPickerResolve = null;
+let clientPickerSearchTimeout = null;
+
+function openClientPicker(label) {
+  return new Promise((resolve) => {
+    clientPickerResolve = resolve;
+    let panel = document.getElementById('clientPickerPanel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'clientPickerPanel';
+      document.body.appendChild(panel);
+    }
+    panel.innerHTML = `
+      <div class="client-picker-overlay" onclick="closeClientPicker(null)">
+        <div class="client-picker-box" onclick="event.stopPropagation();">
+          <h3 style="margin-top:0;">${label}</h3>
+          <input type="text" id="clientPickerSearch" placeholder="Search clients by name..." oninput="clientPickerSearchInput(this.value)" autocomplete="off">
+          <div id="clientPickerResults" class="client-picker-results"></div>
+          <button onclick="closeClientPicker(null)" style="margin-top:10px;">Cancel</button>
+        </div>
+      </div>`;
+    document.getElementById('clientPickerSearch').focus();
+  });
+}
+
+async function clientPickerSearchInput(value) {
+  clearTimeout(clientPickerSearchTimeout);
+  const box = document.getElementById('clientPickerResults');
+  if (!box) return;
+  if (!value || value.length < 2) { box.innerHTML = ''; return; }
+  clientPickerSearchTimeout = setTimeout(async () => {
+    const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
+    const matches = await res.json();
+    box.innerHTML = matches.length
+      ? matches.map(c => `<div class="client-picker-result" onclick="closeClientPicker({id:${c.id}, name:'${c.name.replace(/'/g,"\\'")}'})"><b>${c.name}</b>${c.phone ? ' — '+c.phone : ''}</div>`).join('')
+      : '<p class="muted" style="padding:8px;">No matches.</p>';
+  }, 250);
+}
+
+function closeClientPicker(result) {
+  const panel = document.getElementById('clientPickerPanel');
+  if (panel) panel.innerHTML = '';
+  if (clientPickerResolve) { clientPickerResolve(result); clientPickerResolve = null; }
+}

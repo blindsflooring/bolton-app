@@ -263,3 +263,16 @@
   .job-detail-layout { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
   @media (max-width: 900px) { .job-detail-layout { grid-template-columns: 1fr; } }
   .job-detail-preview { position: sticky; top: 16px; }
+
+  /* Client Picker (confirmed Aug 2026, Save Redirect + Client Link
+     Missing brief) — a real search-and-select overlay, replacing the
+     free-text prompt() that was the confirmed root cause of duplicated
+     quotes silently losing their client link. */
+  .client-picker-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .client-picker-box { background: white; border-radius: 10px; padding: 20px; width: 100%; max-width: 380px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+  .client-picker-results { max-height: 240px; overflow-y: auto; margin-top: 8px; }
+  .client-picker-result { padding: 9px 10px; cursor: pointer; border-bottom: 1px solid var(--border); border-radius: 4px; }
+  .client-picker-result:hover { background: var(--bg, #f5f6f8); }

@@ -164,6 +164,28 @@ function renderOrderIndexTable(searchTerm) {
 
   const tab = (key, label, count) => `<button onclick="setOrderIndexTab('${key}')" style="${orderIndexActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
 
+  // Unlinked Quotes notice (confirmed Aug 2026, Save Redirect + Client
+  // Link Missing brief §3 — "if quotes with no real client link already
+  // exist, report how many and propose how to reconcile them... rather
+  // than silently merging or deleting anything"). No DB access from
+  // here to fix these directly or decide which client each one
+  // actually belongs to — this surfaces exactly which rows are
+  // affected, from data already fetched, and points at the Job Detail
+  // "Client" section (order-index.js's own renderOrderDetail()) built
+  // for precisely this — Burgert confirms and links each one himself,
+  // nothing is guessed or auto-merged. Only shown at all when there's
+  // genuinely something to report, and only to Owner (same data every
+  // row already carries, just isn't worth a second fetch for).
+  const unlinked = isOwner ? quotes.filter(q => !q.client_id) : [];
+  const unlinkedHtml = unlinked.length ? `
+    <div class="card" style="border-color:var(--coral);">
+      <h2 style="color:var(--coral);">⚠ ${unlinked.length} Quote${unlinked.length!==1?'s':''} With No Linked Client</h2>
+      <p class="muted" style="margin-top:-8px;">These show up here because the Order Index lists every quote regardless — but they won't appear in any client's own Order History until linked. Click one to open its Job Detail page and link it under "Client".</p>
+      <div class="attention-list">
+        ${unlinked.map(q => `<div class="attention-item priority-notice" onclick="openOrderDetailScreen(${q.id})"><span class="attn-flag">${q.job_number || '#'+q.id}</span><span class="attn-detail">${q.client_name}${q.description ? ' · '+q.description : ''}</span></div>`).join('')}
+      </div>
+    </div>` : '';
+
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome">
@@ -175,6 +197,8 @@ function renderOrderIndexTable(searchTerm) {
       <h2>Needs Attention</h2>
       <div class="attention-list">${attentionHtml}</div>
     </div>
+
+    ${unlinkedHtml}
 
     <div class="card">
       <div class="summary-counts">
@@ -258,7 +282,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
         an expanded group still don't repeat it — their own group
         header, immediately above, already has it for that same client. -->
         ${(!isChild && q.client_id) ? `<a href="#" onclick="event.stopPropagation(); openClientDetail(${q.client_id}, true); return false;" style="font-size:12px; margin-right:8px;" title="Edit this client's details">Edit client</a>` : ''}
-        <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}')">Duplicate</button>
+        <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}', ${q.client_id || 'null'})">Duplicate</button>
         ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
       </td>
     </tr>`;
@@ -383,14 +407,32 @@ async function bulkDeleteSelectedOrders() {
 // same "walk-in/one-off, no CRM record required" rule create_quote()
 // already uses — not a full client-search picker, which felt like more
 // UI than this pilot's stated scope called for.
-async function duplicateQuoteFromIndex(quoteId, clientName) {
-  const newClientName = prompt(
-    `Duplicate quote #${quoteId}\n\nClient for the new quote — leave as-is to duplicate for the same client, or edit for a different one:`,
-    clientName || ''
-  );
-  if (newClientName === null) return;   // cancelled
-  const trimmed = newClientName.trim();
-  const body = (trimmed && trimmed !== (clientName || '').trim()) ? {client_name: trimmed} : {};
+// Confirmed root cause (Aug 2026, Save Redirect + Client Link Missing
+// brief) of duplicated quotes losing their real client link: this used
+// to prompt() for "client name" as free text, pre-filled with the
+// source's name — ANY edit at all (including a well-intentioned note
+// typed into what looked like a free-text box, e.g. describing what's
+// different about this copy) sent that text back as a "different
+// client," with no real client_id behind it, silently creating an
+// orphaned duplicate. Redesigned so the client can ONLY ever be "the
+// same as the source" (explicit client_id, or none if the source
+// itself was a walk-in — never re-derived from a name comparison) or
+// "a different, actually-selected real client" via openClientPicker()
+// (shared.js) — never free text, so this exact failure mode can't
+// recur. If you want to add a note about what's different in this
+// copy, use the Description field on the duplicate itself (already
+// pre-filled as "Copy of ..." and editable) — that's what it's for.
+async function duplicateQuoteFromIndex(quoteId, clientName, clientId) {
+  const sameClient = confirm(`Duplicate quote #${quoteId}${clientName ? ' for ' + clientName : ''}?\n\nOK = same client\nCancel = link the duplicate to a different client instead`);
+  let body = {};
+  if (sameClient) {
+    if (clientId) body = {client_id: clientId};
+    // else: the source itself has no real client record (a walk-in) — body stays empty, the backend correctly keeps the source's own client_id (still null) and client_name text as-is
+  } else {
+    const picked = await openClientPicker('Link the duplicate to which client?');
+    if (!picked) return;   // fully cancelled — no duplicate made at all, same as cancelling the confirm() above
+    body = {client_id: picked.id};
+  }
   const res = await fetch(`${API}/quotes/${quoteId}/duplicate`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });

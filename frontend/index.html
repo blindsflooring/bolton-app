@@ -497,7 +497,7 @@
         duplicateQuoteFromIndex() (order-index.js). Hidden until a quote
         is actually open, same display:none-until-shown pattern as
         printInvoiceBtn just below. -->
-        <button id="duplicateQuoteBtn" onclick="duplicateQuoteFromIndex(currentQuoteId, document.getElementById('q_client').value)" style="display:none; flex:1; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Duplicate Quote</button>
+        <button id="duplicateQuoteBtn" onclick="duplicateQuoteFromIndex(currentQuoteId, document.getElementById('q_client').value, currentQuoteClientId)" style="display:none; flex:1; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Duplicate Quote</button>
         <!-- Confirmed Aug 2026, Client-Side Commercial Workflow brief,
         Sprint D — "Create invoice/order from accepted quote": the Print
         Invoice picker screen already existed and works for any quote,
