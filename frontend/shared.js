@@ -646,3 +646,36 @@ window.addEventListener('popstate', (e) => {
   if (!currentUser) return;   // ignore stray popstate events firing before login (e.g. from a page refresh mid-navigation)
   applyNavState(e.state && e.state.nav);
 });
+
+// ===== Keyboard Dismiss on Enter (confirmed Aug 2026) =====
+// One global, delegated listener rather than an onkeydown handler on
+// every individual field — this app has well over a hundred <input>
+// elements across every screen, built up over an entire session's
+// worth of briefs, and a per-field approach would both miss existing
+// ones and need remembering on every future field too. Delegating on
+// `document` catches Enter on any <input> anywhere, including ones
+// added by screens built after this brief.
+//
+// Scoped to <input> ONLY, via an explicit ALLOWLIST of genuinely
+// single-line text-like types — never <textarea> (this app has 5:
+// client notes x2, business bank details, two AI-import instructions
+// boxes — every one of them needs Enter to insert a line break, not
+// submit/dismiss, so excluding the whole tag structurally is the
+// brief's own required "confirm single-line vs multi-line" check,
+// built into the scoping itself rather than a per-field guess), and
+// never checkbox/radio/date/file/color, where Enter already means
+// something else (toggle a checkbox, open a native date picker) that
+// blurring could interfere with unpredictably.
+//
+// blur() only — never preventDefault() or stopping the event — so any
+// field's OWN existing onkeydown="if(event.key==='Enter') doSomething()"
+// handler (login username/password, quote client-search) still fires
+// exactly as before; this only adds "and now also close the keyboard
+// afterward," never replaces what Enter already did.
+const KEYBOARD_DISMISS_INPUT_TYPES = ['text', 'search', 'email', 'tel', 'password', 'number', 'url', '', undefined];
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  if (e.target.tagName !== 'INPUT') return;
+  if (!KEYBOARD_DISMISS_INPUT_TYPES.includes(e.target.type)) return;
+  e.target.blur();
+});
