@@ -470,6 +470,15 @@ async function renderOrderDetail(el) {
   const data = await res.json();
   const q = data.quote;
 
+  // Document Preview, placement 1b (confirmed Aug 2026, Client Page &
+  // Quote Detail: Document Preview + Inline Edit brief) — right-hand
+  // panel alongside Workflow + Job Details, roughly spanning their
+  // combined height. Same documentPreviewTileHtml() component as
+  // placement 1a (client Order History) — one template, two placements,
+  // per the brief's own explicit instruction. Edit button inside it
+  // calls editDocumentPreview(), which is the exact same
+  // openQuoteFromIndex() the "Open in Quote Builder (line items)"
+  // button below already uses — not a duplicate entry point.
   el.innerHTML = `
     <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
     <div class="landing-welcome">
@@ -477,46 +486,58 @@ async function renderOrderDetail(el) {
       <p>${q.client_name} &nbsp; ${workflowStatusBadge(q)}</p>
     </div>
 
-    <div class="card">
-      <h2>Workflow</h2>
-      ${renderWorkflowActionsHtml(q)}
-      <details style="margin-top:16px;">
-        <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>
-        <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
-          <select id="wf_override_status">
-            ${['quoted','accepted','scheduled','completed'].map(s => `<option value="${s}" ${q.workflow_status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
-          </select>
-          <button onclick="overrideWorkflowStatus(${q.id})">Override</button>
+    <div class="job-detail-layout">
+      <div class="job-detail-main">
+        <div class="card">
+          <h2>Workflow</h2>
+          ${renderWorkflowActionsHtml(q)}
+          <details style="margin-top:16px;">
+            <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>
+            <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+              <select id="wf_override_status">
+                ${['quoted','accepted','scheduled','completed'].map(s => `<option value="${s}" ${q.workflow_status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+              </select>
+              <button onclick="overrideWorkflowStatus(${q.id})">Override</button>
+            </div>
+          </details>
         </div>
-      </details>
-    </div>
 
-    <div class="card">
-      <h2>Job Details</h2>
-      <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
-      <div class="grid">
-        <div class="field" style="grid-column: span 2;"><label>Site address</label><input id="od_site_address" value="${q.site_address || ''}" placeholder="Install/delivery site, if different from the client's own address"></div>
-        <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
-        <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
-        <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
-        <div class="field"><label>Deposit payment method</label><input id="od_deposit_payment_method" value="${q.deposit_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
-        <div class="field"><label>Final payment date</label><input id="od_final_payment_date" type="date" value="${q.final_payment_date || ''}"></div>
-        <div class="field"><label>Final payment method</label><input id="od_final_payment_method" value="${q.final_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
-      </div>
-      <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
-      <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
-      <p class="muted" id="orderDetailsSaveStatus" style="margin-top:8px;"></p>
+        <div class="card">
+          <h2>Job Details</h2>
+          <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
+          <div class="grid">
+            <div class="field" style="grid-column: span 2;"><label>Site address</label><input id="od_site_address" value="${q.site_address || ''}" placeholder="Install/delivery site, if different from the client's own address"></div>
+            <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
+            <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
+            <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
+            <div class="field"><label>Deposit payment method</label><input id="od_deposit_payment_method" value="${q.deposit_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
+            <div class="field"><label>Final payment date</label><input id="od_final_payment_date" type="date" value="${q.final_payment_date || ''}"></div>
+            <div class="field"><label>Final payment method</label><input id="od_final_payment_method" value="${q.final_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
+          </div>
+          <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
+          <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
+          <p class="muted" id="orderDetailsSaveStatus" style="margin-top:8px;"></p>
 
-      <h2 style="margin-top:20px;">Follow-Ups</h2>
-      <div id="followUpList" style="margin-bottom:10px;"></div>
-      <div class="grid">
-        <div class="field"><label>Date</label><input id="fu_date" type="date"></div>
-        <div class="field" style="grid-column: span 2;"><label>Notes</label><input id="fu_notes" placeholder="e.g. Called about outstanding balance"></div>
+          <h2 style="margin-top:20px;">Follow-Ups</h2>
+          <div id="followUpList" style="margin-bottom:10px;"></div>
+          <div class="grid">
+            <div class="field"><label>Date</label><input id="fu_date" type="date"></div>
+            <div class="field" style="grid-column: span 2;"><label>Notes</label><input id="fu_notes" placeholder="e.g. Called about outstanding balance"></div>
+          </div>
+          <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
+        </div>
       </div>
-      <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
+
+      <div class="job-detail-preview">
+        <div class="card">
+          <h2>Document Preview</h2>
+          ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
+        </div>
+      </div>
     </div>
   `;
   loadFollowUps();
+  loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
   });
 }
 

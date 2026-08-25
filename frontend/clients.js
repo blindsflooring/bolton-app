@@ -131,13 +131,24 @@ async function renderClientDetail(el) {
   // (order-index.js) that table uses. Row click now opens Job Detail
   // too, same reasoning — this list and the Order Index should behave
   // the same way for the same underlying job.
+  //
+  // Document Preview (confirmed Aug 2026, Client Page & Quote Detail:
+  // Document Preview + Inline Edit brief, placement 1a) — restructured
+  // from a plain <table> to a card per job, since a mini document
+  // preview genuinely doesn't fit inside a <td>. Info line kept
+  // exactly as before, just no longer table markup.
   const rows = data.quotes.length ? data.quotes.map(q => `
-    <tr style="cursor:pointer;" onclick="goToTab('landing'); openOrderDetailScreen(${q.id})">
-      <td class="job-number">${q.job_number || '#'+q.id}</td><td>${workflowStatusBadge(q)}</td><td>${q.branch}</td>
-      <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
-      <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(q.site_address||'').replace(/"/g,'&quot;')}">${q.site_address || '—'}</td>
-      <td>${R(q.total_incl_vat)}</td>
-    </tr>`).join('') : '<tr><td colspan="6" class="muted">No quotes yet for this client.</td></tr>';
+    <div class="card" style="margin-top:10px; padding:14px;">
+      <div style="display:flex; flex-wrap:wrap; gap:4px 16px; align-items:center; cursor:pointer;" onclick="goToTab('landing'); openOrderDetailScreen(${q.id})">
+        <span class="job-number">${q.job_number || '#'+q.id}</span>
+        ${workflowStatusBadge(q)}
+        <span class="muted">${q.branch}</span>
+        <span class="muted">${new Date(q.created_at).toLocaleDateString('en-ZA')}</span>
+        <span class="muted" style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(q.site_address||'').replace(/"/g,'&quot;')}">${q.site_address || '—'}</span>
+        <b style="margin-left:auto;">${R(q.total_incl_vat)}</b>
+      </div>
+      ${documentPreviewTileHtml('dp_client_' + q.id, q.id)}
+    </div>`).join('') : '<p class="muted">No quotes yet for this client.</p>';
   el.innerHTML = `
     <span class="back-link" onclick="landingView='clients'; renderLanding();">← Back to Clients</span>
     <div class="card" id="clientDetailCard">
@@ -156,10 +167,14 @@ async function renderClientDetail(el) {
     </div>
     <div class="card">
       <h2>Order History</h2>
-      <table><thead><tr><th>Job</th><th>Status</th><th>Branch</th><th>Date</th><th>Address</th><th>Value</th></tr></thead>
-      <tbody>${rows}</tbody></table>
+      ${rows}
     </div>
   `;
+  // Document Preview content loads after the tiles actually exist in
+  // the DOM (confirmed Aug 2026) — documentPreviewTileHtml() above only
+  // renders the placeholder synchronously; this fires the real fetch
+  // per job, in parallel, right after el.innerHTML is set.
+  data.quotes.forEach(q => loadDocumentPreview('dp_client_' + q.id, q.id));
   // Stashed for showEditClientForm() below — avoids a second fetch just
   // to populate the edit form with what's already on screen.
   window._currentClientRecord = c;

@@ -221,3 +221,33 @@
   .attention-item.priority-notice { border-left-color: #c7b642; }
   .attention-item .attn-flag { font-weight: 700; font-size: 13px; }
   .attention-item .attn-detail { font-size: 12.5px; color: var(--ink-soft, #6b7280); flex: 1; text-align: left; margin-left: 10px; }
+
+  /* Document Preview + Inline Edit (confirmed Aug 2026) — a genuine
+     mini visual replica of the real print-doc template, shrunk with a
+     CSS transform rather than a second, separately-rendered thumbnail
+     (so it can never drift from what actually gets sent). Collapsed:
+     fixed-height cropped frame showing the top of the real document at
+     ~32% scale. Expanded: transform removed, full-size, natural height. */
+  .doc-preview-tile { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: white; margin-top: 10px; }
+  .doc-preview-frame { height: 210px; overflow: hidden; cursor: pointer; background: #fafafa; position: relative; }
+  .doc-preview-tile.expanded .doc-preview-frame { height: auto; overflow: visible; cursor: default; }
+  .doc-preview-scale-wrap { transform: scale(0.32); transform-origin: top left; width: 312.5%; pointer-events: none; }
+  .doc-preview-tile.expanded .doc-preview-scale-wrap { transform: none; width: 100%; pointer-events: auto; }
+  .doc-preview-frame::after {
+    content: "Click to expand"; position: absolute; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(transparent, rgba(255,255,255,0.95));
+    text-align: center; font-size: 11px; color: #6b7280; padding: 20px 0 6px; font-weight: 600;
+  }
+  .doc-preview-tile.expanded .doc-preview-frame::after { content: none; }
+  .doc-preview-actions { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg, #f5f6f8); }
+  .doc-preview-hint { font-size: 12px; color: var(--teal); cursor: pointer; font-weight: 600; }
+
+  /* Job Detail page layout, placement 1b (confirmed Aug 2026, Client
+     Page & Quote Detail: Document Preview + Inline Edit brief) — right-
+     hand preview panel alongside Workflow + Job Details, roughly
+     spanning their combined height (per the brief's own reference
+     screenshot). Single column on narrow screens — a scaled-down
+     side-by-side preview isn't useful once there's no room for it. */
+  .job-detail-layout { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .job-detail-layout { grid-template-columns: 1fr; } }
+  .job-detail-preview { position: sticky; top: 16px; }

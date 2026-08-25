@@ -1706,6 +1706,29 @@ ENTITY_TYPE_LINE_CATEGORIES = {
 
 # Human-readable labels for the commit confirmation message and the
 # audit log UI — e.g. "Price per m²" instead of "base_cost_ex_vat".
+def _log_quote_line_audit(session: Session, quote: "Quote", username: str, action: str, line_label: str):
+    """AuditLog entry for a line added/removed on a quote already past
+    Draft (confirmed Aug 2026, Client Page & Quote Detail: Document
+    Preview + Inline Edit brief §3 — "log... whenever a line is added or
+    removed on a document already past Draft status... what changed, by
+    whom, when"). Gated on the same condition
+    POST_ACCEPT_LOCKED_STATUSES (quote-builder.js) already uses for its
+    own "this could affect billing already communicated" warning —
+    accepted/scheduled/completed. A brand-new quote still being built up
+    for the first time ('quoted') is NOT logged here — every line on it
+    is normal, expected quoting, not a post-acceptance change worth a
+    permanent audit trail entry. action: "added" | "removed"."""
+    if quote.workflow_status not in ("accepted", "scheduled", "completed"):
+        return
+    field = "__line_added__" if action == "added" else "__line_removed__"
+    old_value = "(none)" if action == "added" else line_label
+    new_value = line_label if action == "added" else "(removed)"
+    session.add(AuditLog(
+        tenant_id=quote.tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+        field=field, old_value=old_value, new_value=new_value,
+    ))
+
+
 FIELD_LABELS = {
     "product_name": "Range", "colour": "Colour", "supplier": "Supplier",
     "base_cost_ex_vat": "Price per m² (ex VAT, calculated)", "m2_per_pack": "m² per box",
@@ -1729,6 +1752,10 @@ FIELD_LABELS = {
     "markup_multiplier": "Markup",
     "default_trade_discount_pct": "Trade discount % (default for new products)",
     "pricing_zone": "Pricing zone",
+    # Post-Draft line change logging (confirmed Aug 2026, Client Page &
+    # Quote Detail: Document Preview + Inline Edit brief, §3).
+    "__line_added__": "Line added (post-acceptance)",
+    "__line_removed__": "Line removed (post-acceptance)",
 }
 
 
@@ -3489,7 +3516,8 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        own_staff: bool = True, markup_override: float = None,
                        include_tile_removal_fee: bool = False,
                        apply_delivery_fee: bool = True,
-                       role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+                       role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                       username: str = Depends(get_current_username)):
     """
     Material lines: glue_cost_per_unit / glue_coverage_m2 (e.g. Techem Tek
     70/70 = 1193.50 / 70), labour_rate_per_m2 — your fixed per-m² labour cost.
@@ -3541,6 +3569,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
             total_job_cost=calc["total_job_cost"],
         )
         session.add(line)
+        _log_quote_line_audit(session, quote, username, "added", f"Flooring — {product.product_name}{', ' + product.colour if product.colour else ''}, {quantity_m2}m²")
         session.commit()
         session.refresh(line)
 
@@ -3560,9 +3589,10 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
 
 @app.post("/quotes/{quote_id}/lines/blinds")
 def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: float,
-                     discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+                     discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                     username: str = Depends(get_current_username)):
     with Session(engine) as session:
-        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
 
         calc = calculate_blinds_line(product, width_mm, drop_mm, discount_pct)
@@ -3574,6 +3604,7 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
         )
         session.add(line)
+        _log_quote_line_audit(session, quote, username, "added", f"Blinds — {product.product_name}, {width_mm}×{drop_mm}mm")
         session.commit()
         session.refresh(line)
 
@@ -3582,9 +3613,10 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
 
 @app.post("/quotes/{quote_id}/lines/trims")
 def add_trim_line(quote_id: int, product_id: int, length_m: float,
-                   discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+                   discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                   username: str = Depends(get_current_username)):
     with Session(engine) as session:
-        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
         settings = get_settings(session, tenant_id)
 
@@ -3597,6 +3629,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
         )
         session.add(line)
+        _log_quote_line_audit(session, quote, username, "added", f"Trim — {product.product_name}, {length_m}lm")
         session.commit()
         session.refresh(line)
 
@@ -3611,7 +3644,8 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
                         num_stairs: int, stairwell_type: StairwellType,
                         stair_area_m2: float = 0.45, own_staff: bool = True,
                         landing_area_m2: float = 0.0,
-                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                        username: str = Depends(get_current_username)):
     """
     stair_area_m2 defaults to 0.45 (confirmed: 900mm wide tread x (300mm
     going + 200mm riser) = 0.9 x 0.5). Override if your stairs differ.
@@ -3634,7 +3668,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
     line's fields instead of becoming its own QuoteLineItem row.
     """
     with Session(engine) as session:
-        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
         nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
         if not vinyl_product.tiles_per_pack:
@@ -3698,6 +3732,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
             landing_sell_total=landing_calc["line_total"] if landing_calc else None,
         )
         session.add(line)
+        _log_quote_line_audit(session, quote, username, "added", f"Stairwell — {vinyl_product.product_name} + {nosing_product.product_name}, {num_stairs} stairs")
         session.commit()
         session.refresh(line)
 
@@ -3710,7 +3745,8 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
 @app.post("/quotes/{quote_id}/lines/misc")
 def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
                    source_feature: str = None,
-                   role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+                   role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                   username: str = Depends(get_current_username)):
     """Confirmed Aug 2026 — freeform line for anything that doesn't fit
     an existing category: extra Saturday/Sunday labour, a one-off
     special request, anything not covered by a real product record.
@@ -3725,7 +3761,7 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
     addFloorPrepLine() is the caller, so the frontend can pick those
     lines back out for their own collapsible-card rendering."""
     with Session(engine) as session:
-        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
         line = QuoteLineItem(
             quote_id=quote_id, category="misc", product_id=0, tenant_id=tenant_id,
@@ -3734,6 +3770,11 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
             line_total=amount_ex_vat, margin_pct=margin_pct,
         )
         session.add(line)
+        # "Additional: Extra screed — Lounge — R2,400" (confirmed Aug
+        # 2026, brief's own example) — this is exactly the misc-line
+        # path Extra Rooms/Floor Prep and any other freeform post-
+        # acceptance addition already goes through.
+        _log_quote_line_audit(session, quote, username, "added", f"{description} — R{amount_ex_vat:.2f}")
         session.commit()
         session.refresh(line)
         return strip_sensitive_fields(line.dict(), role)
@@ -3820,11 +3861,15 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
 
 
 @app.delete("/quotes/{quote_id}/lines/{line_id}")
-def delete_quote_line(quote_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant)):
+def delete_quote_line(quote_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant),
+                       username: str = Depends(get_current_username)):
     with Session(engine) as session:
         line = session.get(QuoteLineItem, line_id)
         if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        detail = f"{line.quantity_m2}m²" if line.quantity_m2 else f"{line.length_m}lm" if line.length_m else f"{line.width_mm}×{line.drop_mm}mm" if line.width_mm else f"{line.num_stairs} stairs" if line.num_stairs else ""
+        _log_quote_line_audit(session, quote, username, "removed", f"{line.category.capitalize()} — {line.product_name}{', ' + detail if detail else ''}")
         session.delete(line)
         session.commit()
         return {"deleted": line_id}

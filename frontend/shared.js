@@ -279,7 +279,23 @@ function sortByPriority(products) {
 // deposit/balance split as the quote, since there's no separate
 // invoicing system yet (Xero is Phase 2 — see README). Belongs here, not
 // in quote-builder.js, precisely because both callers need it.
+// Split into buildPrintDocHtml() (returns the html + send-link info, no
+// side effects) and renderPrintDoc() (the thin wrapper that actually
+// prints) — confirmed Aug 2026, Client Page & Quote Detail: Document
+// Preview + Inline Edit brief. That brief needs the EXACT same document
+// template rendered as an on-screen preview tile (client Order History
+// and the Quote/Job Detail page), explicitly "do not build a second,
+// separate preview component" — this split is what makes that possible
+// without duplicating the HTML-building logic: the preview component
+// (order-index.js) calls buildPrintDocHtml() directly, never touches
+// #printArea or window.print() at all.
 async function renderPrintDoc(quoteId, docType) {
+  const { html, docLabel, mailtoLink, waLink, clientEmail } = await buildPrintDocHtml(quoteId, docType);
+  showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail);
+  triggerPrint(html);
+}
+
+async function buildPrintDocHtml(quoteId, docType) {
   const res = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`); // print view only ever shows sell prices, never cost/margin, so this is safe regardless of role
   const data = await res.json();
   const logoSrc = document.querySelector('header .logo-row img').src;
@@ -355,14 +371,15 @@ async function renderPrintDoc(quoteId, docType) {
   // placed inside it is genuinely invisible/unclickable in the normal
   // page, only "visible" in the print output itself, which is exactly
   // backwards from what a clickable Email/WhatsApp action needs. Shown
-  // in a real, always-on-screen panel instead (showSendActionsPanel()
-  // below), separate from triggerPrint()'s own printArea/window.print()
-  // — deliberately NOT touching triggerPrint() itself, since hr.js also
-  // calls it for unrelated printable documents that have nothing to do
-  // with this brief.
-  showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail);
-
-  triggerPrint(`
+  // in a real, always-on-screen panel instead by renderPrintDoc() above
+  // (showSendActionsPanel()), separate from triggerPrint()'s own
+  // printArea/window.print() — deliberately NOT touching triggerPrint()
+  // itself, since hr.js also calls it for unrelated printable documents
+  // that have nothing to do with this brief. This function itself has
+  // no side effects at all now (confirmed Aug 2026) — the document
+  // preview tile (order-index.js) calls it directly and just wants the
+  // html back, never a send panel or a print dialog.
+  const html = `
     <div class="print-doc">
       <div class="doc-header">
         <div>
@@ -404,7 +421,71 @@ async function renderPrintDoc(quoteId, docType) {
       </div>
       ${biz.bank_details ? `<div style="margin-top:20px; padding-top:14px; border-top:1px solid var(--border); font-size:11px; color:#6b7280;"><b>Banking details for deposit payment:</b><br>${biz.bank_details.replace(/\n/g,'<br>')}</div>` : ''}
     </div>
-  `);
+  `;
+  return { html, docLabel, mailtoLink, waLink, clientEmail };
+}
+
+// ===== Document Preview + Inline Edit (confirmed Aug 2026) =====
+// ONE reusable component, two placements — client page's Order History
+// list, and the individual Quote/Job Detail page (order-index.js's
+// renderOrderDetail) — sharing this exact code, per the brief's own
+// "do not build a second, separate preview component... one template,
+// two placements." Lives in shared.js (not clients.js or order-index.js)
+// specifically because both need it, same reasoning renderPrintDoc
+// itself already lives here for.
+//
+// The "mini visual replica" is the REAL print-doc HTML from
+// buildPrintDocHtml() above, shrunk with a CSS transform (styles.css)
+// — never a second, separately-rendered thumbnail that could drift
+// from what's actually sent. documentPreviewTileHtml() is synchronous
+// (embeds straight into a template-literal .map() the same way every
+// other row in this app renders) — the real content loads separately,
+// via loadDocumentPreview(), which callers fire right after the tile's
+// placeholder actually exists in the DOM. Split this way, not
+// lazy-loaded on first click, because the brief's own point is that the
+// mini version already shows real content at a glance — both
+// placements only ever render a handful of tiles at once (one client's
+// own job history, or a single quote's own preview), so eagerly
+// fetching all of them is cheap in practice.
+function documentPreviewTileHtml(previewId, quoteId) {
+  return `
+    <div class="doc-preview-tile" id="${previewId}">
+      <div class="doc-preview-frame" onclick="toggleDocumentPreview('${previewId}')">
+        <div class="doc-preview-scale-wrap"><p class="muted" style="padding:16px;">Loading preview…</p></div>
+      </div>
+      <div class="doc-preview-actions">
+        <span class="doc-preview-hint" onclick="toggleDocumentPreview('${previewId}')">Expand / collapse</span>
+        <button onclick="event.stopPropagation(); editDocumentPreview(${quoteId})">Edit</button>
+      </div>
+    </div>`;
+}
+
+function toggleDocumentPreview(previewId) {
+  const el = document.getElementById(previewId);
+  if (el) el.classList.toggle('expanded');
+}
+
+async function loadDocumentPreview(previewId, quoteId) {
+  const el = document.getElementById(previewId);
+  if (!el) return;
+  try {
+    const { html } = await buildPrintDocHtml(quoteId, 'quote');
+    const wrap = el.querySelector('.doc-preview-scale-wrap');
+    if (wrap) wrap.innerHTML = html;
+  } catch (e) {
+    const wrap = el.querySelector('.doc-preview-scale-wrap');
+    if (wrap) wrap.innerHTML = '<p class="muted" style="padding:16px;">Could not load preview.</p>';
+  }
+}
+
+// Edit button (confirmed Aug 2026, brief §2) — opens the real Quote
+// Builder for this record via Sprint B's existing line-editing
+// capability. Deliberately the SAME function every other "edit this
+// quote's lines" entry point already calls — on the Quote Detail page
+// this is the identical action as that screen's own "Open in Quote
+// Builder (line items)" button, never a second/duplicate entry point.
+function editDocumentPreview(quoteId) {
+  openQuoteFromIndex(quoteId);   // switches to the Quote Builder tab itself, no separate goToTab needed here
 }
 
 // Moved here at v56 (not in the shared.js pass at v53) — genuinely used
