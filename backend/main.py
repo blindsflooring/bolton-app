@@ -292,10 +292,78 @@ def _next_job_number(session: Session, tenant_id: str) -> str:
     return f"J-{next_seq:04d}"
 
 
+def _enable_row_level_security():
+    """URGENT SECURITY FIX (confirmed Aug 2026 — "Supabase Security
+    Advisor Flags Publicly Accessible Table" brief, treated as highest
+    priority ahead of everything else in progress). Row-Level Security
+    was not enabled on ANY table in this database. Supabase auto-
+    generates a public REST API (PostgREST) for every table in a
+    project, completely independent of anything this FastAPI backend
+    itself enforces — without RLS, that auto-generated API lets anyone
+    with the project URL read, edit, and delete every row of every
+    table with ZERO authentication. This is exactly what the alert
+    means by "table publicly accessible" and "sensitive data publicly
+    accessible" — app_user (password_hash for every staff login) and
+    usersession (live session tokens — arguably the more urgent of the
+    two: a valid token read straight from this table lets someone
+    impersonate a logged-in user without even needing a password) are
+    the two most sensitive tables affected.
+
+    This backend's own connection to Postgres (DATABASE_URL) uses a
+    privileged role that bypasses RLS entirely — Postgres's own RLS
+    semantics exempt the table owner and any BYPASSRLS role, always,
+    unconditionally, regardless of policies — which is the default and
+    near-universal setup for Supabase's direct-Postgres connection
+    string (as opposed to the PostgREST/anon-key path browsers use).
+    So enabling RLS here, even with zero explicit policies, closes the
+    public exposure completely without this app losing access to
+    anything it already reads/writes.
+
+    STATED PLAINLY, not silently assumed: there is no Supabase
+    dashboard or database-role access available to independently
+    CONFIRM this connection truly has BYPASSRLS before this deploys —
+    that requires the dashboard, which only Burgert can check (brief's
+    own Section 1). If that assumption is wrong, the app would start
+    failing to read/write visibly, immediately after this goes live.
+    Each table is handled independently, wrapped so one failure can't
+    block the rest or crash startup — same reasoning as the Clear
+    Unlinked Quotes remediation just above. Idempotent: re-enabling RLS
+    on a table that already has it is a harmless no-op in Postgres, so
+    this is safe to leave running on every future startup permanently."""
+    tables = [
+        "app_user", "usersession", "trimproduct", "floorprepproduct",
+        "flooringproduct", "supplierdefault", "blindsproduct", "employee",
+        "commissionrate", "commissionpayment", "builder", "builderestimate",
+        "quotephoto", "hoursworked", "document", "leavebalance", "leaverequest",
+        "client", "businesssettings", "quote", "paymentfollowup",
+        "quotelineitem", "colourchangelog", "auditlog",
+    ]
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    enabled, failed, skipped = [], [], []
+    for table in tables:
+        if table not in existing_tables:
+            skipped.append(table)
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY;'))
+            enabled.append(table)
+        except Exception as e:
+            failed.append(table)
+            print(f"Security: FAILED to enable RLS on \"{table}\" — {e} — needs manual review in the Supabase dashboard")
+    print(f"Security: RLS enabled on {len(enabled)}/{len(tables)} table(s): {', '.join(enabled)}")
+    if skipped:
+        print(f"Security: {len(skipped)} table(s) skipped (don't exist yet — will be covered once created): {', '.join(skipped)}")
+    if failed:
+        print(f"Security: {len(failed)} table(s) FAILED — needs manual review: {', '.join(failed)}")
+
+
 @app.on_event("startup")
 def on_startup():
     _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
+    _enable_row_level_security()
     with Session(engine) as session:
         if not session.exec(select(CommissionRate)).first():
             # Confirmed Aug 2026: seeding the brief's own recommended GP
