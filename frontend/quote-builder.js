@@ -17,15 +17,12 @@
 //   index.html — Print-Invoice-tile-specific, not a Quote Builder
 //   concern, same pattern as other landing-tile functions that stayed
 //   put in earlier extraction rounds.
-// - saveOrderDetails()/logFollowUp()/loadFollowUps() stay in index.html
-//   — they serve the Order Details card, which still lives on the Quote
-//   Builder page today but is flagged as a separate, still-open
-//   relocation task (Quote Builder → Order Index). Moving them here now
-//   would tie them to this file right before that relocation might move
-//   them again; loadQuote() below still calls the external
-//   loadFollowUps() directly, same kind of cross-file call as every
-//   other extraction round (e.g. order-index.js calling into
-//   index.html's startQuoteForClient()).
+// - saveOrderDetails()/logFollowUp()/loadFollowUps() never came here —
+//   the previously-flagged relocation (Quote Builder → Order Index) is
+//   now done (Quote Builder Layout Corrections brief, confirmed Aug
+//   2026): the Order Details card and its functions moved straight to
+//   order-index.js, keyed off currentOrderDetailQuoteId. This file no
+//   longer references any of it.
 // - sortByPriority() moved to shared.js, not here — a real cross-file
 //   coupling found during the pre-extraction audit: price-book.js
 //   (already extracted) was calling it while it was still only defined
@@ -655,7 +652,6 @@ async function createQuote() {
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
-  document.getElementById('orderDetailsCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   // Real gap found while building Duplicate Quote (confirmed Aug 2026):
   // quotePhotosCard was only ever shown inside loadQuote() (which this
@@ -744,18 +740,12 @@ function clearStaleQuoteResidue() {
   const descriptionEl = document.getElementById('q_description');
   if (descriptionEl) descriptionEl.value = '';
   clearLandingRows();   // stairwell landing rows are per-quote scratch state too
-  // Order Details / Follow-Ups (confirmed Aug 2026, Sprint D) — same
-  // stale-residue risk as everything else on this screen: without this,
-  // a previous quote's site address/payment dates/follow-up notes could
-  // still be sitting in these fields when the card is shown again for a
-  // different quote, before loadQuote() gets a chance to repopulate them.
-  ['od_site_address', 'od_installation_date', 'od_invoice_sent_date', 'od_deposit_paid_date',
-   'od_deposit_payment_method', 'od_final_payment_date', 'od_final_payment_method', 'fu_date', 'fu_notes']
-    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  const orderDetailsStatusEl = document.getElementById('orderDetailsSaveStatus');
-  if (orderDetailsStatusEl) orderDetailsStatusEl.textContent = '';
-  const followUpListEl = document.getElementById('followUpList');
-  if (followUpListEl) followUpListEl.innerHTML = '';
+  // Order Details / Follow-Ups field-clearing REMOVED from here
+  // (confirmed Aug 2026, Quote Builder Layout Corrections brief) —
+  // that whole card moved off Quote Builder onto the Order Index's own
+  // Order Details screen (order-index.js), which manages its own
+  // residue independently since it's no longer part of this screen's
+  // state at all.
   // Extra Rooms / Floor Prep (confirmed Aug 2026) — per-room scratch
   // state, same reasoning as the stairwell landing rows above.
   ['fp_room_name', 'fp_area', 'fp_thickness', 'fp_manual_desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
@@ -793,7 +783,6 @@ function resetQuoteBuilderUI() {
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
-  document.getElementById('orderDetailsCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
   document.getElementById('quotePhotosCard').style.display = 'none';
   const dupBtnHide = document.getElementById('duplicateQuoteBtn');
@@ -1129,21 +1118,11 @@ async function loadQuote() {
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
   const statusEl = document.getElementById('q_status');
   if (statusEl && data.quote && data.quote.status) { statusEl.value = data.quote.status; }
-  // Order Details (confirmed Aug 2026, Sprint D) — reflect whatever's
-  // actually stored, same "real data on load, not last-typed-in-value"
-  // discipline as Transport Levy just below. Date fields come back from
-  // the API as ISO date strings or null — <input type="date"> wants
-  // exactly that format or an empty string, never null itself.
-  if (data.quote) {
-    const odFields = {
-      od_site_address: data.quote.site_address, od_installation_date: data.quote.installation_date,
-      od_invoice_sent_date: data.quote.invoice_sent_date, od_deposit_paid_date: data.quote.deposit_paid_date,
-      od_deposit_payment_method: data.quote.deposit_payment_method, od_final_payment_date: data.quote.final_payment_date,
-      od_final_payment_method: data.quote.final_payment_method,
-    };
-    Object.entries(odFields).forEach(([id, value]) => { const el = document.getElementById(id); if (el) el.value = value || ''; });
-  }
-  loadFollowUps();
+  // Order Details field population REMOVED from here (confirmed Aug
+  // 2026, Quote Builder Layout Corrections brief) — that card no longer
+  // lives on this screen at all; see renderOrderDetail() (order-index.js)
+  // for the equivalent "reflect whatever's actually stored" population,
+  // now scoped to the Order Index's own Order Details screen instead.
   // Transport Levy (confirmed Aug 2026, relocated into the floor job
   // calculator — Transport/Courier Toggle Relocation brief) — reflect
   // whatever's actually stored, not just whatever's sitting in the

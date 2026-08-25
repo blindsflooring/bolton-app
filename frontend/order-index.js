@@ -8,15 +8,16 @@
 // Quote Builder or Clients, staying where they are, same pattern as
 // every prior extraction round.
 //
-// Deliberately NOT moved here yet: saveOrderDetails(), logFollowUp(),
-// loadFollowUps() — these currently serve the Order Details card that
-// still lives on the Quote Builder page, not Order Index. Moving them
-// here now, before that card relocates, would put them in the wrong
-// file relative to the UI they actually serve. That relocation (Quote
-// Builder → Order Index) is a separate, still-open task — flagged
-// directly as a real UX concern (order/payment info doesn't make sense
-// to ask for at quoting time, when none of it exists yet), not acted
-// on yet.
+// Order Details screen (confirmed Aug 2026, Quote Builder Layout
+// Corrections brief) — the previously-flagged relocation is done:
+// saveOrderDetails()/logFollowUp()/loadFollowUps() moved here from
+// index.html, along with the card itself (now renderOrderDetail()
+// below), because order/payment info doesn't make sense to ask for at
+// quoting time, when none of it exists yet — it belongs once a quote's
+// been accepted and converted. Reached via an "Order Details" link per
+// row on this screen, not a tile — its own landingView sub-view
+// ('orderDetail'), same dedicated-sub-page pattern clients.js already
+// uses for openClientDetail()/renderClientDetail().
 
 function computeOrderStatus(q) {
   // Confirmed Aug 2026: colour-coded at-a-glance status. Overdue
@@ -78,6 +79,7 @@ async function renderOrderIndex(el, searchTerm) {
       <td style="cursor:pointer;" onclick="openQuoteFromIndex(${q.id})">${money(q.balance_amount)}<br><span class="muted" style="font-size:11px;">${dateOrDash(q.final_payment_date)}${q.final_payment_method ? ' · '+q.final_payment_method : ''}</span></td>
       <td style="cursor:pointer;" onclick="openQuoteFromIndex(${q.id})">${dateOrDash(q.invoice_sent_date)}</td>
       <td style="white-space:nowrap;">
+        <button onclick="event.stopPropagation(); openOrderDetailScreen(${q.id})">Order Details</button>
         <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}')">Duplicate</button>
         ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
       </td>
@@ -217,4 +219,99 @@ async function addClientAndStartQuote() {
   const res = await fetch(`${API}/clients`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const client = await res.json();
   startQuoteForClient(client.id, client.name, client.preferred_branch);
+}
+
+// ===== Order Details screen (confirmed Aug 2026, Quote Builder Layout
+// Corrections brief) — relocated off Quote Builder entirely: "not
+// relevant during quoting... where it belongs once a quote has been
+// accepted and converted." The underlying feature/data is unchanged
+// (same PUT /quotes/{id}, POST+GET /quotes/{id}/follow-ups endpoints)
+// — only the screen it lives on moved, from Quote Builder to its own
+// sub-page reached from the Order Index. =====
+
+let currentOrderDetailQuoteId = null;
+
+function openOrderDetailScreen(quoteId) {
+  currentOrderDetailQuoteId = quoteId;
+  landingView = 'orderDetail';
+  renderLanding();
+}
+
+async function renderOrderDetail(el) {
+  await renderWithRetry(el, 'Order Details', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?role=${currentRole()}`);
+  const data = await res.json();
+  const q = data.quote;
+  const status = computeOrderStatus(q);
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
+    <div class="landing-welcome">
+      <h1>Order Details — Quote #${q.id}</h1>
+      <p>${q.client_name}${q.description ? ' — ' + q.description : ''} &nbsp; <span class="status-badge" style="background:${status.bg}; color:${status.color};">${status.label}</span></p>
+    </div>
+    <div class="card">
+      <h2>Order Details</h2>
+      <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
+      <div class="grid">
+        <div class="field" style="grid-column: span 2;"><label>Site address</label><input id="od_site_address" value="${q.site_address || ''}" placeholder="Install/delivery site, if different from the client's own address"></div>
+        <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
+        <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
+        <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
+        <div class="field"><label>Deposit payment method</label><input id="od_deposit_payment_method" value="${q.deposit_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
+        <div class="field"><label>Final payment date</label><input id="od_final_payment_date" type="date" value="${q.final_payment_date || ''}"></div>
+        <div class="field"><label>Final payment method</label><input id="od_final_payment_method" value="${q.final_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
+      </div>
+      <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Order Details</button>
+      <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
+      <p class="muted" id="orderDetailsSaveStatus" style="margin-top:8px;"></p>
+
+      <h2 style="margin-top:20px;">Follow-Ups</h2>
+      <div id="followUpList" style="margin-bottom:10px;"></div>
+      <div class="grid">
+        <div class="field"><label>Date</label><input id="fu_date" type="date"></div>
+        <div class="field" style="grid-column: span 2;"><label>Notes</label><input id="fu_notes" placeholder="e.g. Called about outstanding balance"></div>
+      </div>
+      <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
+    </div>
+  `;
+  loadFollowUps();
+  });
+}
+
+async function saveOrderDetails() {
+  if (!currentOrderDetailQuoteId) return;
+  const params = new URLSearchParams({
+    site_address: document.getElementById('od_site_address').value,
+    installation_date: document.getElementById('od_installation_date').value,
+    invoice_sent_date: document.getElementById('od_invoice_sent_date').value,
+    deposit_paid_date: document.getElementById('od_deposit_paid_date').value,
+    deposit_payment_method: document.getElementById('od_deposit_payment_method').value,
+    final_payment_date: document.getElementById('od_final_payment_date').value,
+    final_payment_method: document.getElementById('od_final_payment_method').value,
+  });
+  await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?${params}`, {method:'PUT'});
+  document.getElementById('orderDetailsSaveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')}`;
+}
+
+async function logFollowUp() {
+  if (!currentOrderDetailQuoteId) return;
+  const followUpDate = document.getElementById('fu_date').value;
+  if (!followUpDate) { alert('Pick a date first.'); return; }
+  const notes = document.getElementById('fu_notes').value;
+  const params = new URLSearchParams({follow_up_date: followUpDate, notes});
+  await fetch(`${API}/quotes/${currentOrderDetailQuoteId}/follow-ups?${params}`, {method:'POST'});
+  document.getElementById('fu_date').value = '';
+  document.getElementById('fu_notes').value = '';
+  loadFollowUps();
+}
+
+async function loadFollowUps() {
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}/follow-ups`);
+  const followUps = await res.json();
+  const el = document.getElementById('followUpList');
+  el.innerHTML = followUps.length
+    ? followUps.map(f => `<div class="muted" style="font-size:12px; padding:3px 0;">${new Date(f.follow_up_date).toLocaleDateString('en-ZA')} — ${f.notes || '(no notes)'}</div>`).join('')
+    : '<p class="muted" style="font-size:12px;">No follow-ups logged yet.</p>';
 }
