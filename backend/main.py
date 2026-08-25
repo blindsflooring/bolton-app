@@ -329,22 +329,28 @@ def _enable_row_level_security():
     block the rest or crash startup — same reasoning as the Clear
     Unlinked Quotes remediation just above. Idempotent: re-enabling RLS
     on a table that already has it is a harmless no-op in Postgres, so
-    this is safe to leave running on every future startup permanently."""
-    tables = [
-        "app_user", "usersession", "trimproduct", "floorprepproduct",
-        "flooringproduct", "supplierdefault", "blindsproduct", "employee",
-        "commissionrate", "commissionpayment", "builder", "builderestimate",
-        "quotephoto", "hoursworked", "document", "leavebalance", "leaverequest",
-        "client", "businesssettings", "quote", "paymentfollowup",
-        "quotelineitem", "colourchangelog", "auditlog",
-    ]
+    this is safe to leave running on every future startup permanently.
+
+    IMPORTANT — table list is discovered live, not hardcoded: an
+    earlier version of this function hardcoded the 24 tables backing
+    this app's own SQLModel classes (confirmed exhaustively against
+    models.py). Burgert then confirmed directly from the Supabase
+    Security Advisor that 25 tables are flagged, not 24 — meaning one
+    real table exists in the live "public" schema that this app's own
+    code never created (e.g. a leftover from early Postgres setup —
+    see supabase_schema.sql's header). Rather than guess its name
+    blindly with no dashboard access to confirm it, this now asks the
+    live database itself for every table that actually exists and
+    enables RLS on all of them, so it is correct regardless of what
+    that 25th table turns out to be, and self-covers any future table
+    too. inspect(engine).get_table_names() only returns tables in the
+    connection's own default schema ("public" for this project) — it
+    does not touch Supabase's own auth/storage-schema tables, which
+    Supabase already manages RLS for itself."""
     inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-    enabled, failed, skipped = [], [], []
-    for table in tables:
-        if table not in existing_tables:
-            skipped.append(table)
-            continue
+    existing_tables = sorted(inspector.get_table_names())
+    enabled, failed = [], []
+    for table in existing_tables:
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY;'))
@@ -352,9 +358,7 @@ def _enable_row_level_security():
         except Exception as e:
             failed.append(table)
             print(f"Security: FAILED to enable RLS on \"{table}\" — {e} — needs manual review in the Supabase dashboard")
-    print(f"Security: RLS enabled on {len(enabled)}/{len(tables)} table(s): {', '.join(enabled)}")
-    if skipped:
-        print(f"Security: {len(skipped)} table(s) skipped (don't exist yet — will be covered once created): {', '.join(skipped)}")
+    print(f"Security: RLS enabled on {len(enabled)}/{len(existing_tables)} live table(s): {', '.join(enabled)}")
     if failed:
         print(f"Security: {len(failed)} table(s) FAILED — needs manual review: {', '.join(failed)}")
 
