@@ -248,6 +248,13 @@ class FlooringProduct(SQLModel, table=True):
     # not an automatic removal. See import_master_spreadsheet() (main.py)
     # for where this gets staged during a re-import.
     discontinued: bool = False
+    # Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) — "a
+    # simple 'available to builder portal' flag on a product, capped at
+    # 2 active at a time" per the brief's own hard constraint. The cap
+    # is enforced server-side in the Supplier Console commit endpoint
+    # (main.py) — NOT here, since a plain model field can't validate
+    # against every OTHER row's value at assignment time.
+    available_to_builder_portal: bool = False
     # Courier/Delivery Cost Toggle (confirmed Aug 2026, Courier Toggle
     # brief) — reuses THIS existing field, deliberately no separate
     # courier_enabled/courier_rate_per_m2 pair: courier IS this cost,
@@ -452,6 +459,64 @@ class CommissionPayment(SQLModel, table=True):
     paid_amount: float
     paid_date: Optional[date] = None
     notes: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Builder(SQLModel, table=True):
+    """Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) — a
+    local builder/handyman, NOT an Employee (no login, no staff record,
+    no relation to CommissionRate's own "builder_rep" role type, which
+    is an unrelated internal-staff commission model that happens to
+    share a similar name — do not confuse the two).
+
+    slug is the entire access control mechanism for this pilot, per the
+    brief's explicit "no login/account system" requirement — whoever
+    has the link (bolton.app/q/{slug}) can submit estimates as this
+    builder. active=False immediately blocks the public endpoints below
+    from resolving this slug at all (404, same as a slug that never
+    existed) — this IS "revoking a link" per the brief's own
+    verification requirement, no token/session to separately expire."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    name: str
+    slug: str = Field(unique=True, index=True)
+    active: bool = True
+    phone: str = ""
+    email: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BuilderEstimate(SQLModel, table=True):
+    """One self-serve estimate a builder submitted through their portal
+    link (confirmed Aug 2026, Builder Referral Portal Phase 1). Deliberately
+    stores its own price snapshot (quoted_price_ex_vat/incl_vat/deposit_amount)
+    rather than only a product_id + area — prices can change in the price
+    book later, and this must always show what the builder was ACTUALLY
+    quoted at the time, same "denormalized snapshot" principle
+    QuoteLineItem.product_name already follows.
+
+    linked_quote_id: None until Burgert/Madri picks this up into a real
+    Bolton quote (Section 3 — "this becomes the starting point of a real
+    quote, not a separate parallel system"). Commission is deliberately
+    NOT a stored field here — computed at read time from the LINKED
+    QUOTE's own final_payment_date (commission earned on payment
+    received, confirmed directly) x 6%, same "derive from the existing
+    source of truth, don't duplicate state that could drift" principle
+    already used for ended_reason (Login Activity brief) — see
+    /builder/{slug}/statement and /admin/builder-estimates in main.py."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    builder_id: int = Field(foreign_key="builder.id")
+    client_name: str
+    client_contact: str = ""
+    site_address: str = ""
+    area_m2: float
+    product_id: int = Field(foreign_key="flooringproduct.id")
+    product_name: str          # denormalized snapshot — same reasoning as QuoteLineItem
+    quoted_price_ex_vat: float
+    quoted_price_incl_vat: float
+    deposit_amount: float
+    linked_quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

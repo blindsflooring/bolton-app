@@ -732,6 +732,7 @@ function renderLanding() {
   if (landingView === 'sessionLog') return renderSessionLog(el);
   if (landingView === 'supplierConsole') return renderSupplierConsole(el);
   if (landingView === 'changeLog') return renderChangeLog(el);
+  if (landingView === 'builderPortal') return renderBuilderPortalAdmin(el);
 }
 
 function renderLandingTiles(el) {
@@ -767,6 +768,7 @@ function onTileClick(tileId) {
   else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
   else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
   else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
+  else if (tileId === 'builderPortal') { landingView = 'builderPortal'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
 }
 
@@ -948,6 +950,12 @@ async function renderBusinessOverview(el) {
 let sessionLogRows = [];        // last-fetched (date-filtered) rows, cached so the user-filter dropdown doesn't need a round-trip
 let sessionLogRange = 'all';    // 'all' | 'week' | 'month' — which quick filter is active, purely for highlighting the active button
 
+// Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) — Owner-only
+// admin state, same caching-for-the-current-screen pattern as sessionLogRows.
+let builderPortalBuilders = [];
+let builderPortalEstimates = [];
+let builderPortalSubview = 'builders';   // 'builders' | 'estimates'
+
 function sessionLogDateRange(range) {
   const now = new Date();
   if (range === 'week') {
@@ -1061,6 +1069,7 @@ const FLOORING_CONSOLE_FIELDS = [
   ['product_name', 'Range', 'text'],
   ['colour', 'Colour', 'text'],
   ['discontinued', 'Status', 'bool_discontinued'],
+  ['available_to_builder_portal', 'Builder Portal', 'bool_builder_portal'],
   ['sku', 'Product code', 'text'],
   ['price_per_box_ex_vat', 'Price per box ex VAT', 'number', '0.01'],
   ['m2_per_pack', 'm² per box', 'number', '0.001'],
@@ -1234,6 +1243,17 @@ function supplierConsoleRow(entityType, fields, product) {
       // every other non-generic type here.
       const discAttrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="bool" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
       return `<td><select style="${stagedHighlight} ${val ? 'background:var(--coral); color:white; font-weight:700;' : ''}" ${discAttrs}><option value="false" ${!val ? 'selected' : ''}>Active</option><option value="true" ${val ? 'selected' : ''}>Discontinued</option></select></td>`;
+    }
+    if (type === 'bool_builder_portal') {
+      // Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) —
+      // same data-input-type="bool" override trick as bool_discontinued
+      // above. The hard cap of 2 is enforced server-side (commit
+      // endpoint, main.py) — this cell just stages the toggle like any
+      // other field; a commit that would exceed 2 gets rejected there
+      // with a clear error, same "server is the real guard, UI is just
+      // convenience" pattern as every other validation on this screen.
+      const bpAttrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="bool" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
+      return `<td><select style="${stagedHighlight} ${val ? 'background:var(--teal); color:white; font-weight:700;' : ''}" ${bpAttrs}><option value="false" ${!val ? 'selected' : ''}>Off</option><option value="true" ${val ? 'selected' : ''}>On</option></select></td>`;
     }
     if (type === 'pct') {
       return `<td><input type="number" step="0.1" style="width:80px; ${stagedHighlight}" value="${val !== null && val !== undefined ? (val * 100).toFixed(1) : ''}" ${attrs}></td>`;
@@ -2038,6 +2058,12 @@ function newEntityRow(entity, fields) {
       // status label, same reasoning as newEntityRow having no equivalent
       // for other backend-only-derived fields.
       inputHtml = `<span class="muted">Active</span>`;
+    } else if (type === 'bool_builder_portal') {
+      // Same reasoning as bool_discontinued above — a freshly-imported
+      // product is never pre-flagged for the Builder Portal (Burgert
+      // turns it on deliberately afterward, same cap-of-2 enforcement
+      // either way).
+      inputHtml = `<span class="muted">Off</span>`;
     } else if (type === 'calc') {
       // Read-only preview (confirmed Aug 2026, Field Sequence Redesign)
       // of what the backend will actually calculate on Commit — box
@@ -2727,6 +2753,155 @@ function renderChangeLogTable(rows) {
       </table>
     </div>
   `;
+}
+
+// ===== Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) =====
+// Owner-only (OWNER_ONLY_TILES in shared.js is the first layer; every
+// /admin/builders* and /admin/builder-estimates* call is also
+// require_owner-gated server-side, same belt-and-braces pattern as
+// Session Log / Change Log / Supplier Console). This screen is the ONLY
+// place a builder's link is created or revoked — there is no public
+// self-service signup, deliberately, per the brief's Section 4 scope.
+async function renderBuilderPortalAdmin(el) {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Builder Portal</h2><p class="muted">Loading...</p></div>`;
+  await loadBuilderPortalAdmin();
+}
+
+async function loadBuilderPortalAdmin() {
+  await renderWithRetry(document.getElementById('landing'), 'Builder Portal', async () => {
+    const [buildersRes, estimatesRes] = await Promise.all([
+      fetch(`${API}/admin/builders`),
+      fetch(`${API}/admin/builder-estimates`),
+    ]);
+    builderPortalBuilders = buildersRes.ok ? await buildersRes.json() : [];
+    builderPortalEstimates = estimatesRes.ok ? await estimatesRes.json() : [];
+    renderBuilderPortalTable();
+  });
+}
+
+function builderPortalLink(slug) {
+  // Built from window.location.origin rather than a hardcoded frontend
+  // URL — always correct for wherever this page is actually being
+  // served from (production, a preview deploy, etc.), same reasoning as
+  // API being the one hardcoded exception (it's a different service).
+  return `${window.location.origin}/builder.html?slug=${slug}`;
+}
+
+async function copyBuilderLink(slug, btnEl) {
+  const link = builderPortalLink(slug);
+  try {
+    await navigator.clipboard.writeText(link);
+    const original = btnEl.textContent;
+    btnEl.textContent = 'Copied!';
+    setTimeout(() => { btnEl.textContent = original; }, 1500);
+  } catch (e) {
+    prompt('Copy this link:', link);
+  }
+}
+
+async function createBuilder() {
+  const nameEl = document.getElementById('newBuilderName');
+  const phoneEl = document.getElementById('newBuilderPhone');
+  const emailEl = document.getElementById('newBuilderEmail');
+  const name = nameEl.value.trim();
+  if (!name) { alert("Enter the builder's name."); return; }
+  const params = new URLSearchParams({ name, phone: phoneEl.value.trim(), email: emailEl.value.trim() });
+  const res = await fetch(`${API}/admin/builders?${params}`, { method: 'POST' });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not create builder.'); return; }
+  nameEl.value = ''; phoneEl.value = ''; emailEl.value = '';
+  await loadBuilderPortalAdmin();
+}
+
+async function toggleBuilderActive(builderId, makeActive) {
+  if (!makeActive && !confirm('Revoke this link? The builder will immediately lose access — this can be reversed later by re-activating them.')) return;
+  const params = new URLSearchParams({ active: makeActive });
+  const res = await fetch(`${API}/admin/builders/${builderId}?${params}`, { method: 'PUT' });
+  if (!res.ok) { alert('Could not update builder.'); return; }
+  await loadBuilderPortalAdmin();
+}
+
+function renderBuilderPortalTable() {
+  const el = document.getElementById('landing');
+  const tab = (view, label) => `<button onclick="builderPortalSubview='${view}'; renderBuilderPortalTable();" style="${builderPortalSubview===view ? 'background:var(--teal); color:white;' : ''}">${label}</button>`;
+
+  const buildersHtml = `
+    <div class="card">
+      <h3 style="margin-top:0;">Add a builder</h3>
+      <div class="grid">
+        <div class="field"><label>Name</label><input id="newBuilderName" placeholder="e.g. Deon Brits"></div>
+        <div class="field"><label>Phone</label><input id="newBuilderPhone" placeholder="Optional"></div>
+        <div class="field"><label>Email</label><input id="newBuilderEmail" placeholder="Optional"></div>
+      </div>
+      <button class="primary" onclick="createBuilder()">Create link</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Builders (${builderPortalBuilders.length})</h3>
+      <table>
+        <thead><tr><th>Name</th><th>Contact</th><th>Link</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${builderPortalBuilders.length ? builderPortalBuilders.map(b => `
+            <tr>
+              <td>${b.name}</td>
+              <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
+              <td><code style="font-size:11px;">${builderPortalLink(b.slug)}</code><br>
+                <button onclick="copyBuilderLink('${b.slug}', this)">Copy link</button></td>
+              <td>${b.active ? '<b style="color:var(--teal);">Active</b>' : '<span class="muted">Revoked</span>'}</td>
+              <td>${b.active
+                ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
+                : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
+            </tr>`).join('') : '<tr><td colspan="5" class="muted">No builders yet — add one above.</td></tr>'}
+        </tbody>
+      </table>
+    </div>`;
+
+  const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
+  const totalCommission = builderPortalEstimates.reduce((sum, e) => sum + (e.commission_amount || 0), 0);
+  const estimatesHtml = `
+    <div class="card">
+      <p style="margin:0;"><b>Total commission owed to date:</b> R${totalCommission.toFixed(2)}</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Estimates submitted (${builderPortalEstimates.length})</h3>
+      <table>
+        <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Status</th><th>Commission</th><th></th></tr></thead>
+        <tbody>
+          ${builderPortalEstimates.length ? builderPortalEstimates.map(e => `
+            <tr>
+              <td>${fmt(e.created_at)}</td>
+              <td>${e.builder_name}</td>
+              <td>${e.client_name}${e.client_contact ? `<br><span class="muted" style="font-size:11px;">${e.client_contact}</span>` : ''}</td>
+              <td class="muted">${e.site_address || '—'}</td>
+              <td>${e.product_name}</td>
+              <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
+              <td>${e.commission_status}</td>
+              <td>${e.commission_amount ? 'R' + e.commission_amount.toFixed(2) : '—'}</td>
+              <td>${e.linked_quote_id
+                ? `<span class="muted">Quote #${e.linked_quote_id}</span>`
+                : `<button onclick="startQuoteFromBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")}')">Start Quote</button>`}</td>
+            </tr>`).join('') : '<tr><td colspan="9" class="muted">No estimates submitted yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>`;
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Builder Portal</h1><p>Referral links, instant estimates, and commission — Owner only.</p></div>
+    <div style="display:flex; gap:8px; margin-bottom:14px;">${tab('builders', 'Builders')} ${tab('estimates', 'Estimates')}</div>
+    ${builderPortalSubview === 'builders' ? buildersHtml : estimatesHtml}
+  `;
+}
+
+// This is the pilot's "not a separate parallel system" requirement
+// (brief Section 3): picking up a builder's estimate opens a REAL quote
+// in the normal Quote Builder, pre-filled with the client's name, then
+// createQuote() (quote-builder.js) links the two records together once
+// the quote actually exists — see pendingBuilderEstimateId there.
+function startQuoteFromBuilderEstimate(estimateId, clientName) {
+  resetQuoteBuilderUI();
+  pendingBuilderEstimateId = estimateId;
+  pendingClientName = clientName;
+  goToTab('quoteBuilder');
+  document.getElementById('q_client').value = clientName;
 }
 
 function startQuoteForClient(clientId, clientName, preferredBranch) {

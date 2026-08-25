@@ -662,6 +662,19 @@ async function createQuote() {
   startBtn.textContent = 'Already open (see below)';
   pendingClientId = null;
   pendingClientName = null;
+  // Builder Referral Portal pilot (confirmed Aug 2026) — if this quote
+  // was started via "Start Quote" on a builder's estimate, link the two
+  // records together now that the quote actually has an id. Fire-and-
+  // forget deliberately: a failure here shouldn't block quote creation
+  // itself, since the quote is already real either way — worst case the
+  // link can be retried by hand later (the estimate just stays
+  // "unlinked" on the Builder Portal screen, it isn't lost).
+  if (pendingBuilderEstimateId) {
+    const linkId = pendingBuilderEstimateId;
+    pendingBuilderEstimateId = null;
+    fetch(`${API}/admin/builder-estimates/${linkId}/link-quote?quote_id=${quote.id}`, {method: 'PUT'})
+      .catch(() => {});
+  }
   // If arrived here via a landing page drill-down (e.g. clicked series 200
   // directly), pick up where that left off — category and product already chosen.
   if (pendingCategory) {

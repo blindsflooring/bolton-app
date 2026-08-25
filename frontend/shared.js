@@ -140,6 +140,7 @@ let pendingVinylRange = null;    // handoff: Flooring Quotes tile -> Quote Build
 let pendingCategory = null;
 let pendingClientId = null;      // handoff: Client detail "+New Quote" -> Quote Builder
 let pendingClientName = null;
+let pendingBuilderEstimateId = null;   // handoff: Builder Portal "Start Quote" -> Quote Builder (confirmed Aug 2026) — createQuote() links this estimate to the new quote once it exists, then clears it
 let businessSettings = null;   // cached on page load, same pattern as flooringProducts etc — avoids refetching on every quote/print
 
 // Confirmed Aug 2026 — single source of truth for business-wide values
@@ -440,6 +441,7 @@ const LANDING_TILES = [
   { id: 'sessionLog', title: 'Login Activity', desc: 'Who logged in, when, for how long', ready: true },
   { id: 'supplierConsole', title: 'Supplier Console', desc: 'Every supplier\'s real data, one place', ready: true },
   { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
+  { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, estimates, commission', ready: true },
 ];
 
 // Default role/tile split (confirmed Aug 2026, proposed per the go-live
@@ -459,7 +461,7 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
 // as Sales or Admin correctly loses this tile too, same as the backend
 // blocking the endpoint itself for a previewed non-owner role.
-const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog'];
+const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal'];
 function visibleLandingTiles() {
   const role = currentRole();
   return LANDING_TILES.filter(t => {

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<!--
+Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026).
+
+Deliberately a completely SEPARATE, self-contained static page — not
+routed through index.html's SPA, no <script src="shared.js"> or any
+other internal app file. This is the single most important design
+decision in this file: the brief's own highest-risk requirement is
+"never expose cost, margin, box price, markup %, labour rate, supplier
+name, or any pricing breakdown" to whoever holds a builder's link, and
+the surest way to guarantee that is for this page to have literally no
+code path that could ever touch internal app state, auth tokens, or
+other screens — only the two hand-picked public endpoints in main.py
+(GET /builder/{slug}, POST /builder/{slug}/estimate, GET
+/builder/{slug}/statement), which themselves hand-pick their own
+response fields for the same reason (see that section's own header
+comment in main.py).
+
+URL format: builder.html?slug=deon-brits (a query param, not a path
+segment like the brief's own illustrative "bolton.app/q/deon-brits" —
+adapted deliberately: this frontend is a plain static site with no
+server-side rewrite rules configured, and guessing at one for a pilot
+feature risked a broken/misconfigured deploy for zero real benefit —
+the slug itself is exactly as sharable either way, just in the query
+string instead of the path).
+
+No login, no password — access control for this pilot is the link
+itself plus Builder.active (revocation), confirmed directly in the
+brief's own Section 1.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Get a Vinyl Flooring Estimate</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f3ef; margin: 0; padding: 20px; color: #1a2b3c; }
+  .wrap { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: #6b7280; font-size: 13px; }
+  .card { background: white; border-radius: 10px; padding: 20px; margin-top: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; margin-top: 12px; }
+  input, select { width: 100%; padding: 10px; border: 1px solid #d8d4cc; border-radius: 6px; font-size: 14px; font-family: inherit; }
+  button { width: 100%; margin-top: 18px; padding: 12px; background: #1a2b3c; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  button.secondary { background: none; border: 2px solid #1a2b3c; color: #1a2b3c; margin-top: 8px; }
+  .error { color: #c0392b; font-size: 13px; margin-top: 10px; }
+  .result { background: #eef7f4; border: 2px solid #1a8a6e; border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .result .price-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+  .result .price-row.grand { font-weight: 800; font-size: 18px; color: #1a8a6e; border-top: 1px solid #cfe9e1; margin-top: 6px; padding-top: 10px; }
+  .result .deposit { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #cfe9e1; font-weight: 700; }
+  .nav { display: flex; gap: 8px; margin-top: 16px; }
+  .nav a { flex: 1; text-align: center; padding: 8px; border: 2px solid #1a2b3c; border-radius: 6px; color: #1a2b3c; text-decoration: none; font-size: 13px; font-weight: 600; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 4px; border-bottom: 1px solid #eee; }
+  .status-earned { color: #1a8a6e; font-weight: 700; }
+  .status-pending { color: #b8860b; }
+  .status-estimate { color: #6b7280; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="app">
+    <p class="muted">Loading...</p>
+  </div>
+</div>
+
+<script>
+const API = 'https://bolton-backend.onrender.com';
+const params = new URLSearchParams(window.location.search);
+const slug = params.get('slug') || '';
+let builderName = '';
+let products = [];
+let view = 'estimate';   // 'estimate' | 'statement'
+
+async function init() {
+  if (!slug) {
+    document.getElementById('app').innerHTML = '<div class="card"><p class="error">No link provided. Check the URL you were given.</p></div>';
+    return;
+  }
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      document.getElementById('app').innerHTML = `<div class="card"><p class="error">${body.detail || "This link isn't active."}</p></div>`;
+      return;
+    }
+    const data = await res.json();
+    builderName = data.builder_name;
+    products = data.products;
+    renderEstimateForm();
+  } catch (e) {
+    document.getElementById('app').innerHTML = '<div class="card"><p class="error">Could not reach the server — check your connection and reload.</p></div>';
+  }
+}
+
+function renderNav() {
+  return `<div class="nav">
+    <a onclick="view='estimate'; renderEstimateForm();" style="${view==='estimate' ? 'background:#1a2b3c; color:white;' : ''}">New Estimate</a>
+    <a onclick="view='statement'; renderStatement();" style="${view==='statement' ? 'background:#1a2b3c; color:white;' : ''}">My Statement</a>
+  </div>`;
+}
+
+function renderEstimateForm(resultHtml) {
+  if (!products.length) {
+    document.getElementById('app').innerHTML = `
+      <h1>Hi ${builderName}</h1>
+      <p class="muted">Get an instant vinyl flooring estimate for your client.</p>
+      ${renderNav()}
+      <div class="card"><p class="error">No products are currently available through this portal — contact Blinds &amp; Flooring Studio.</p></div>`;
+    return;
+  }
+  document.getElementById('app').innerHTML = `
+    <h1>Hi ${builderName}</h1>
+    <p class="muted">Get an instant vinyl flooring estimate for your client. For anything beyond a straightforward vinyl floor — stairs, trims, screed, multiple rooms — come see us at the showroom.</p>
+    ${renderNav()}
+    <div class="card">
+      <label>Client name</label>
+      <input id="client_name" placeholder="Client's name">
+      <label>Client contact (phone or email)</label>
+      <input id="client_contact" placeholder="Optional">
+      <label>Site address</label>
+      <input id="site_address" placeholder="Optional">
+      <label>Area (m²)</label>
+      <input id="area_m2" type="number" step="0.01" min="0" placeholder="e.g. 25">
+      <label>Product</label>
+      <select id="product_id">${products.map(p => `<option value="${p.id}">${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('')}</select>
+      <button id="submitBtn" onclick="submitEstimate()">Get Estimate</button>
+      <div id="formError" class="error"></div>
+      ${resultHtml || ''}
+    </div>`;
+}
+
+async function submitEstimate() {
+  const btn = document.getElementById('submitBtn');
+  const errEl = document.getElementById('formError');
+  errEl.textContent = '';
+  const clientName = document.getElementById('client_name').value.trim();
+  const areaM2 = parseFloat(document.getElementById('area_m2').value);
+  const productId = document.getElementById('product_id').value;
+  if (!clientName) { errEl.textContent = 'Enter the client\'s name.'; return; }
+  if (!areaM2 || areaM2 <= 0) { errEl.textContent = 'Enter a real area in m².'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Calculating...';
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/estimate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: clientName,
+        client_contact: document.getElementById('client_contact').value.trim(),
+        site_address: document.getElementById('site_address').value.trim(),
+        area_m2: areaM2, product_id: parseInt(productId, 10),
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = body.detail || 'Could not calculate an estimate — try again.';
+      btn.disabled = false;
+      btn.textContent = 'Get Estimate';
+      return;
+    }
+    const data = await res.json();
+    // Ex VAT AND incl VAT both shown, prominently, alongside the deposit
+    // payable (confirmed directly) — never a cost/margin/rate figure,
+    // this response only ever contains the fields main.py's
+    // submit_builder_estimate() hand-picked for it.
+    const resultHtml = `
+      <div class="result">
+        <p style="margin:0 0 8px; font-weight:700;">Estimate for ${clientName}</p>
+        <div class="price-row"><span>${data.area_m2} m² × R${data.price_per_m2_ex_vat.toFixed(2)}/m² (ex VAT)</span><span></span></div>
+        <div class="price-row"><span>Total, ex VAT</span><span>R${data.total_ex_vat.toFixed(2)}</span></div>
+        <div class="price-row grand"><span>Total, incl VAT</span><span>R${data.total_incl_vat.toFixed(2)}</span></div>
+        <div class="deposit price-row"><span>Deposit payable (${(data.deposit_pct*100).toFixed(0)}%)</span><span>R${data.deposit_amount.toFixed(2)}</span></div>
+      </div>
+      <p class="muted" style="margin-top:10px;">This estimate has been logged — Blinds &amp; Flooring Studio will follow up to confirm the job.</p>`;
+    renderEstimateForm(resultHtml);
+  } catch (e) {
+    errEl.textContent = 'Could not reach the server — try again.';
+    btn.disabled = false;
+    btn.textContent = 'Get Estimate';
+  }
+}
+
+async function renderStatement() {
+  document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/statement`);
+    const data = await res.json();
+    const statusClass = (s) => s.includes('earned') ? 'status-earned' : s.includes('awaiting') ? 'status-pending' : 'status-estimate';
+    const rows = data.estimates.length ? data.estimates.map(e => `
+      <tr>
+        <td>${new Date(e.created_at).toLocaleDateString()}</td>
+        <td>${e.client_name}</td>
+        <td>${e.product_name}</td>
+        <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
+        <td class="${statusClass(e.status)}">${e.status}</td>
+        <td>${e.commission ? 'R' + e.commission.toFixed(2) : '—'}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="muted">No estimates submitted yet.</td></tr>';
+    document.getElementById('app').innerHTML = `
+      <h1>Hi ${builderName}</h1>
+      ${renderNav()}
+      <div class="card">
+        <p style="margin:0;"><b>Total commission earned to date:</b> R${data.total_commission_earned.toFixed(2)}</p>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Date</th><th>Client</th><th>Product</th><th>Quoted</th><th>Status</th><th>Commission</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch (e) {
+    document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
+  }
+}
+
+init();
+</script>
+</body>
+</html>

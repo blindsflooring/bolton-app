@@ -8,6 +8,7 @@ Run: uvicorn main:app --reload --port 8000
 from datetime import datetime, date
 from typing import List, Optional, Any
 import os
+import re
 import shutil
 import uuid
 
@@ -22,7 +23,7 @@ from models import (
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
-    SupplierDefault, FloorPrepProduct,
+    SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -232,6 +233,10 @@ def _ensure_new_columns():
         # misc line, not a floor-prep entry, so NULL ("not this feature")
         # is correct for all of them, not just a safe placeholder.
         ("quotelineitem", "source_feature", "VARCHAR", "NULL"),
+        # Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) —
+        # FALSE default: no existing product is retroactively exposed to
+        # the public portal just because this column now exists.
+        ("flooringproduct", "available_to_builder_portal", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1160,6 +1165,275 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
         return result
 
 
+# ---------- Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) ----------
+# The /builder/* endpoints near the bottom of this section are the ONLY
+# endpoints in this entire API that don't sit behind a login — no
+# Depends(get_current_role)/Depends(get_current_tenant) anywhere in
+# them, deliberately isolated here so that's easy to audit at a glance.
+# tenant_id comes from the resolved Builder row, never a client-supplied
+# value or a session (there is no session here).
+#
+# THE SINGLE MOST IMPORTANT REQUIREMENT IN THE BRIEF: never expose cost,
+# margin, box price, markup %, labour rate, supplier name, or any
+# pricing breakdown through these endpoints — only a final sell price.
+# Every response below hand-picks its exact fields into a plain dict;
+# none of them ever use response_model=FlooringProduct or call
+# product.dict() on a real price-book row, specifically so a new
+# sensitive field added to FlooringProduct later can't leak through
+# here just because nobody remembered to update this file too.
+BUILDER_COMMISSION_PCT = 0.06   # confirmed Aug 2026 — flat 6%, on the ex-VAT total, once the linked job is fully paid (see _builder_commission_for_quote below)
+
+
+def _slugify_builder_name(name: str) -> str:
+    """Lowercase, hyphenated, alnum-only — e.g. "Deon Brits" ->
+    "deon-brits", matching the brief's own example URL. Not
+    cryptographically unguessable by design: access control for this
+    pilot is "don't hand the link to someone who shouldn't have it"
+    plus the active flag (revocation), not link secrecy — Section 1's
+    own explicit no-login/no-password design."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug or "builder"
+
+
+def _builder_commission_for_quote(session: Session, quote: Optional["Quote"], tenant_id: str) -> tuple:
+    """Commission is earned ONLY once the linked job is fully paid
+    (confirmed directly: on payment received, not on invoice) — checked
+    via Quote.final_payment_date, the same field the Order Index already
+    uses to mean "paid in full" (computeOrderStatus, order-index.js).
+    Computed against the REAL final ex-VAT total of the linked quote
+    (same subtotal/discount math get_quote() uses), never the original
+    estimate amount, which may differ from what was actually sold —
+    confirmed directly in the brief. Returns (status_label, amount) —
+    a small shared helper so this exact logic isn't duplicated (and
+    left to drift) across the admin list and the builder's own
+    statement below."""
+    if quote is None:
+        return ("no linked job", 0.0)
+    if not quote.final_payment_date:
+        return ("became a job — awaiting final payment", 0.0)
+    lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)).all()
+    subtotal_ex_vat = sum(l.line_total for l in lines) + quote.transport_levy
+    total_ex_vat = subtotal_ex_vat * (1 - quote.discount_pct)
+    return ("job completed — commission earned", round(total_ex_vat * BUILDER_COMMISSION_PCT, 2))
+
+
+# ----- Owner-only management (Burgert/Madri creating and reviewing builders) -----
+
+@app.post("/admin/builders")
+def create_builder(name: str, phone: str = "", email: str = "",
+                    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        base_slug = _slugify_builder_name(name)
+        slug = base_slug
+        n = 2
+        while session.exec(select(Builder).where(Builder.slug == slug)).first():
+            slug = f"{base_slug}-{n}"
+            n += 1
+        builder = Builder(tenant_id=tenant_id, name=name, slug=slug, phone=phone, email=email)
+        session.add(builder)
+        session.commit()
+        session.refresh(builder)
+        return builder
+
+
+@app.get("/admin/builders")
+def list_builders(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        return session.exec(select(Builder).where(Builder.tenant_id == tenant_id)).all()
+
+
+@app.put("/admin/builders/{builder_id}")
+def update_builder(builder_id: int, name: str = None, active: bool = None, phone: str = None, email: str = None,
+                    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """active=False is how a link is revoked (brief's own required
+    verification: "revoking a builder's link immediately blocks further
+    access") — the public endpoints below refuse to resolve an inactive
+    builder's slug at all, 404, same as if it never existed. No
+    separate token/session to expire since there never was one."""
+    with Session(engine) as session:
+        builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
+        if name is not None: builder.name = name
+        if active is not None: builder.active = active
+        if phone is not None: builder.phone = phone
+        if email is not None: builder.email = email
+        session.add(builder)
+        session.commit()
+        session.refresh(builder)
+        return builder
+
+
+@app.get("/admin/builder-estimates")
+def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Every estimate submitted across every builder, for Burgert/Madri
+    to review and pick up into a real quote (Section 3 — "this becomes
+    the starting point of a real quote, not a separate parallel
+    system")."""
+    with Session(engine) as session:
+        rows = session.exec(
+            select(BuilderEstimate, Builder).join(Builder, BuilderEstimate.builder_id == Builder.id)
+            .where(BuilderEstimate.tenant_id == tenant_id).order_by(BuilderEstimate.created_at.desc())
+        ).all()
+        result = []
+        for est, builder in rows:
+            quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+            status, commission = _builder_commission_for_quote(session, quote, tenant_id)
+            result.append({
+                "id": est.id, "builder_name": builder.name, "builder_slug": builder.slug,
+                "client_name": est.client_name, "client_contact": est.client_contact,
+                "site_address": est.site_address, "area_m2": est.area_m2, "product_name": est.product_name,
+                "quoted_price_ex_vat": est.quoted_price_ex_vat, "quoted_price_incl_vat": est.quoted_price_incl_vat,
+                "created_at": est.created_at.isoformat(), "linked_quote_id": est.linked_quote_id,
+                "commission_status": status, "commission_amount": commission,
+            })
+        return result
+
+
+@app.put("/admin/builder-estimates/{estimate_id}/link-quote")
+def link_builder_estimate_to_quote(estimate_id: int, quote_id: int,
+                                    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Marks a builder-submitted estimate as "picked up" into a real
+    Bolton quote — Burgert/Madri still creates that quote through the
+    normal Quote Builder (client name/site address pre-fillable from
+    this estimate's own fields on the frontend side), this endpoint
+    just records the link afterward so commission can be tracked
+    against the real, final job."""
+    with Session(engine) as session:
+        est = get_or_404(session, BuilderEstimate, estimate_id, tenant_id, "Builder estimate")
+        get_or_404(session, Quote, quote_id, tenant_id, "Quote")   # confirms it's real and belongs to this tenant
+        est.linked_quote_id = quote_id
+        session.add(est)
+        session.commit()
+        session.refresh(est)
+        return est
+
+
+# ----- Public, unauthenticated — see this section's own header comment -----
+
+@app.get("/builder/{slug}")
+def builder_portal_info(slug: str):
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        products = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.tenant_id == builder.tenant_id,
+                FlooringProduct.available_to_builder_portal == True,
+            )
+        ).all()
+        return {
+            "builder_name": builder.name,
+            "products": [{"id": p.id, "product_name": p.product_name, "colour": p.colour} for p in products],
+        }
+
+
+class BuilderEstimateRequest(BaseModel):
+    client_name: str
+    client_contact: str = ""
+    site_address: str = ""
+    area_m2: float
+    product_id: int
+
+
+@app.post("/builder/{slug}/estimate")
+def submit_builder_estimate(slug: str, body: BuilderEstimateRequest):
+    """Computes price through the EXACT SAME pricing engine
+    (calculate_flooring_line + resolve_zone_price) every internal
+    flooring quote line uses — deliberately not a second/simplified
+    formula, so the builder-tool price and the internal calculator's
+    price for the same job structurally cannot drift apart. Satisfies
+    the brief's own required verification ("compare the builder-tool
+    price against what the same job would cost through the normal
+    internal calculator — confirm they match") by construction, not
+    just by testing it once. own_staff=True (no subcontracted-labour
+    cost passed through) and no quote-level discount — a self-serve
+    estimate has neither concept."""
+    if body.area_m2 <= 0:
+        raise HTTPException(400, "Enter a real area in m².")
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        product = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.id == body.product_id,
+                FlooringProduct.tenant_id == builder.tenant_id,
+                FlooringProduct.available_to_builder_portal == True,
+            )
+        ).first()
+        if not product:
+            raise HTTPException(400, "That product isn't currently available through this portal.")
+        settings = get_settings(session, builder.tenant_id)
+        resolved = resolve_zone_price(session, builder.tenant_id, product, settings)
+        labour_rate = resolved.labour_rate_per_m2 if resolved.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2
+        glue_rate = resolved.glue_rate_per_m2 or 0.0
+        calc = calculate_flooring_line(
+            resolved, body.area_m2, JobType.smooth, 0.0,
+            glue_cost_per_unit=glue_rate * 70, glue_coverage_m2=70,
+            labour_rate_per_m2=labour_rate, own_staff=True,
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
+        )
+        price_ex_vat = round(calc["line_total"], 2)
+        price_incl_vat = round(price_ex_vat * (1 + settings.vat_pct), 2)
+        deposit = round(price_incl_vat * settings.default_deposit_pct, 2)
+        product_label = f"{product.product_name}{' — ' + product.colour if product.colour else ''}"
+
+        estimate = BuilderEstimate(
+            tenant_id=builder.tenant_id, builder_id=builder.id,
+            client_name=body.client_name, client_contact=body.client_contact, site_address=body.site_address,
+            area_m2=body.area_m2, product_id=product.id, product_name=product_label,
+            quoted_price_ex_vat=price_ex_vat, quoted_price_incl_vat=price_incl_vat, deposit_amount=deposit,
+        )
+        session.add(estimate)
+        session.commit()
+        session.refresh(estimate)
+        # Hand-picked response fields ONLY — see this section's header comment.
+        return {
+            "estimate_id": estimate.id,
+            "product_name": product_label,
+            "area_m2": estimate.area_m2,
+            "price_per_m2_ex_vat": round(price_ex_vat / body.area_m2, 2),
+            "price_per_m2_incl_vat": round(price_incl_vat / body.area_m2, 2),
+            "total_ex_vat": price_ex_vat,
+            "total_incl_vat": price_incl_vat,
+            "deposit_amount": deposit,
+            "deposit_pct": settings.default_deposit_pct,
+        }
+
+
+@app.get("/builder/{slug}/statement")
+def builder_statement(slug: str):
+    """Read-only history for the builder themselves (Section 2 — "they
+    cannot edit or delete a submitted estimate", and no endpoint here
+    lets them). Filtered strictly by this resolved builder's own id, a
+    server-side join — never a client-supplied builder_id — so a
+    builder can never see another builder's data through this endpoint,
+    satisfying the brief's own required verification directly."""
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        estimates = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.builder_id == builder.id).order_by(BuilderEstimate.created_at.desc())
+        ).all()
+        result = []
+        total_earned = 0.0
+        for est in estimates:
+            quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+            status, commission = _builder_commission_for_quote(session, quote, builder.tenant_id)
+            if commission:
+                total_earned += commission
+            result.append({
+                "id": est.id, "client_name": est.client_name, "site_address": est.site_address,
+                "product_name": est.product_name, "area_m2": est.area_m2,
+                "quoted_price_incl_vat": est.quoted_price_incl_vat, "created_at": est.created_at.isoformat(),
+                "status": status if est.linked_quote_id else "estimate only — not yet a job", "commission": commission,
+            })
+        return {"builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2)}
+
+
 # ---------- Supplier & Price Book Management Console (confirmed Aug 2026) ----------
 
 ENTITY_TYPE_MODELS = {
@@ -1201,6 +1475,7 @@ FIELD_LABELS = {
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
     "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
+    "available_to_builder_portal": "Available to Builder Portal (max 2 products)",
     "default_delivery_fee_per_m2": "Delivery fee default (R/m², for new products)",
     "pack_size": "Pack size", "pack_unit": "Pack unit", "coverage_rate": "Coverage rate",
     "coverage_basis": "Coverage basis", "cost_ex_vat_per_pack": "Cost per pack (ex VAT)",
@@ -1600,6 +1875,26 @@ def commit_supplier_console_changes(
             ))
             summary_lines.append(f"{entity_label}: deleted from the price book")
             session.delete(entity)
+
+        # Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) —
+        # "capped at 2 active at a time", a hard constraint the brief
+        # explicitly says not to exceed. Checked here, as the LAST step
+        # before commit, so it catches the cap regardless of how many
+        # products this one batch touched or whether they were staged
+        # edits or new entities — session.exec() below sees this
+        # transaction's own pending changes via SQLAlchemy's autoflush,
+        # so this is accurate even though nothing has been committed
+        # yet. Raising here rolls back the WHOLE commit, same "nothing
+        # partially saved" guarantee every other validation on this
+        # endpoint already has (e.g. the deletion reference-check above).
+        builder_portal_count = len(session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.tenant_id == tenant_id,
+                FlooringProduct.available_to_builder_portal == True,
+            )
+        ).all())
+        if builder_portal_count > 2:
+            raise HTTPException(400, f"Only 2 products can be available to the Builder Portal at a time — this commit would leave {builder_portal_count}. Turn one off first.")
 
         session.commit()
         return {"changed_count": len(summary_lines), "summary": summary_lines}
