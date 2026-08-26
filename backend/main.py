@@ -299,6 +299,11 @@ def _ensure_new_columns():
         ("client", "vat_number", "VARCHAR", "''"),
         ("client", "phone_extra", "TEXT", "''"),
         ("client", "email_extra", "TEXT", "''"),
+        # Order Sheets UX: Duplicate Bug + Delete Option + Prominent
+        # Placement + Real Preview brief (confirmed Aug 2026):
+        ("ordersheet", "status", "VARCHAR", "'draft'"),
+        ("ordersheet", "placed_at", "TIMESTAMP", "NULL"),
+        ("ordersheet", "placed_by", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -590,6 +595,32 @@ def _burgert_login_recovery_remediation():
             print("Burgert login recovery: password force-reset")
     except Exception as e:
         print(f"Burgert login recovery: remediation FAILED ({e}) — needs manual review")
+
+
+def _madri_login_recovery_remediation():
+    """Madri needs a fresh password (confirmed Aug 2026) -- same
+    pattern as _burgert_login_recovery_remediation() directly above:
+    unconditional and idempotent by comparing against the NEW hash, so
+    a second boot is a clean no-op regardless of whatever madri's
+    current hash actually is. Scoped to madri only -- burgert/ryno
+    haven't reported an issue this time."""
+    NEW_HASH = "pbkdf2_sha256$260000$6a5800f5faf2e532eac91f94dc90beb8$757c9a6947d105b2c177e8ea63db9ba676edb7ef6db13cfa7ce921ea05b3551a"
+    try:
+        with Session(engine) as session:
+            user = session.exec(select(User).where(User.username == "madri")).first()
+            if not user:
+                print("Madri login recovery: no 'madri' user row found — nothing to do")
+                return
+            if user.password_hash == NEW_HASH:
+                print("Madri login recovery: already on the new hash issued for this incident — no-op")
+                return
+            user.password_hash = NEW_HASH
+            user.password_changed_at = datetime.utcnow()
+            session.add(user)
+            session.commit()
+            print("Madri login recovery: password force-reset")
+    except Exception as e:
+        print(f"Madri login recovery: remediation FAILED ({e}) — needs manual review")
 
 
 def _fix_orphaned_quotes_remediation():
@@ -1117,6 +1148,7 @@ def on_startup():
     _old_password_still_works_remediation()
     # Same reasoning, same ordering requirement.
     _burgert_login_recovery_remediation()
+    _madri_login_recovery_remediation()
     _fix_orphaned_quotes_remediation()
 
     # Diagnostic (confirmed Aug 2026, Supplier Order Sheets brief §4 —
@@ -1890,10 +1922,23 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
     directly before writing this, not re-implemented or overridden
     here.
 
-    Deliberately NOT idempotent/blocked from running twice — an
-    explicit, manual action; if Burgert clicks it again (e.g. the quote
-    changed since), it generates a fresh set of sheets with fresh order
-    numbers rather than silently refusing."""
+    Duplicate fix (confirmed Aug 2026, Order Sheets UX: Duplicate Bug +
+    Delete Option + Prominent Placement + Real Preview brief §1) —
+    REVERSES the "deliberately not idempotent" decision above, which
+    is exactly what let O-0001/O-0002 (two sheets, same job, same
+    supplier, same category) happen: Burgert pressed Generate once,
+    got no visible confirmation it worked (root cause was really
+    Section 3's missing preview, but the guard here is still required
+    regardless — a double-click or re-visiting this page can trigger
+    the same thing even once that's fixed), pressed it again assuming
+    the first attempt failed, and got a genuine duplicate. Now checks
+    for an existing "draft" (not yet placed/finalized) sheet for this
+    exact job+supplier+sheet_type combination before creating a new
+    one — if found, that existing sheet is returned instead of a fresh
+    duplicate. A sheet already marked "placed" (see the new finalize
+    endpoint below) is NOT treated as blocking a new one — the
+    materials for THAT sheet were genuinely already ordered, so a
+    fresh sheet next time is a real re-order, not an accident."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -1933,8 +1978,17 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             return {"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity_m2 or 0.0, "unit": "m²", "unit_cost": round(l.unit_cost or 0.0, 2)}
 
         created_sheets = []
+        reused_sheets = []
 
         def make_sheet(supplier, sheet_type, line_items_data):
+            existing = session.exec(select(OrderSheet).where(
+                OrderSheet.tenant_id == tenant_id, OrderSheet.quote_id == quote_id,
+                OrderSheet.supplier == supplier, OrderSheet.sheet_type == sheet_type,
+                OrderSheet.status == "draft",
+            )).first()
+            if existing:
+                reused_sheets.append(existing)
+                return
             sheet = OrderSheet(tenant_id=tenant_id, quote_id=quote_id, order_number=_next_order_number(session, tenant_id),
                                 supplier=supplier, sheet_type=sheet_type, created_by=username)
             session.add(sheet)
@@ -1959,10 +2013,20 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         if floor_prep_lines_data:
             make_sheet(AZURA, "floor_prep", floor_prep_lines_data)
 
-        if not created_sheets:
+        if not created_sheets and not reused_sheets:
             raise HTTPException(400, "This quote has no flooring or screed line items to generate an order sheet from.")
 
-        return {"generated": len(created_sheets), "order_sheet_ids": [s.id for s in created_sheets]}
+        # generated/reused split (confirmed Aug 2026, brief §1+§4) — the
+        # frontend uses this to show an unambiguous result either way:
+        # "Generated N new order sheet(s)" vs "Already generated —
+        # showing the existing order sheet(s)" vs a mix of both, rather
+        # than a single generic success message that can't distinguish
+        # "this just worked for the first time" from "this already
+        # existed" — exactly the ambiguity that caused the duplicate.
+        return {
+            "generated": len(created_sheets), "reused": len(reused_sheets),
+            "order_sheet_ids": [s.id for s in created_sheets] + [s.id for s in reused_sheets],
+        }
 
 
 @app.get("/quotes/{quote_id}/order-sheets")
@@ -1989,6 +2053,29 @@ def get_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current_te
         d["job_number"] = quote.job_number if quote else None
         d["client_name"] = quote.client_name if quote else None
         return d
+
+
+@app.post("/order-sheets/{order_sheet_id}/finalize")
+def finalize_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Order Sheets UX brief §4 (confirmed Aug 2026) — "Executable — a
+    clear action to finalize/send/mark the order as placed, once the
+    user is satisfied with it." Also the other half of the §1
+    duplicate fix: once placed, this sheet no longer blocks a fresh
+    one for the same job+supplier+category (generate_order_sheets()
+    only reuses a "draft" sheet) — the materials for this one were
+    genuinely already ordered, so a new sheet next time is a real
+    re-order, not an accidental duplicate."""
+    with Session(engine) as session:
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
+        if sheet.status == "placed":
+            raise HTTPException(400, "This order sheet is already marked as placed.")
+        sheet.status = "placed"
+        sheet.placed_at = datetime.utcnow()
+        sheet.placed_by = username
+        session.add(sheet)
+        session.commit()
+        session.refresh(sheet)
+        return sheet
 
 
 class OrderSheetLineUpdate(BaseModel):
@@ -2143,6 +2230,36 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
     if role != UserRole.owner:
         raise HTTPException(403, "Only the Owner role can do this.")
     return role
+
+
+@app.delete("/order-sheets/{order_sheet_id}")
+def delete_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username), role: str = Depends(require_owner)):
+    """Order Sheets UX brief §2 (confirmed Aug 2026) — real gap: there
+    was no way to delete an order sheet at all, confirmed directly by
+    Burgert being stuck with a real O-0001/O-0002 duplicate on job
+    J-0001 and no way to remove the wrong one himself. Owner-only and
+    audit-logged, same seriousness already established elsewhere in
+    Bolton for destructive actions on real records (Order Index's own
+    bulk quote delete) — the confirmation step itself is a frontend
+    concern (a confirm() dialog before this is ever called), this
+    endpoint's own job is just to log what happened before it's gone.
+    Defined here, after require_owner, rather than back up alongside
+    the other /order-sheets/ endpoints — Depends(require_owner) needs
+    that name to already exist at import time."""
+    with Session(engine) as session:
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
+        quote = session.get(Quote, sheet.quote_id)
+        summary = f"{sheet.order_number} — {sheet.supplier} — {sheet.sheet_type} (job {quote.job_number if quote else sheet.quote_id})"
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="OrderSheet", entity_id=order_sheet_id,
+            field="__deleted__", old_value=summary, new_value="(deleted)",
+        ))
+        lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
+        for line in lines:
+            session.delete(line)
+        session.delete(sheet)
+        session.commit()
+        return {"deleted": order_sheet_id}
 
 
 # ---------- Login & Session Activity Log, Phase 1 (confirmed Aug 2026) ----------

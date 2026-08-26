@@ -1102,6 +1102,20 @@ class OrderSheet(SQLModel, table=True):
     sheet_type: str   # "flooring" | "floor_prep" — floor_prep sheets are the editable ones (brief §5); a flooring-only sheet reflects the quote's own line items directly and isn't meant to be freely edited
     created_at: datetime = Field(default_factory=datetime.utcnow)
     created_by: str
+    # Order Sheets UX: Duplicate Bug + Delete Option + Prominent
+    # Placement + Real Preview brief (confirmed Aug 2026). status is
+    # what generate_order_sheets() now checks BEFORE creating a new
+    # sheet, per the brief's own root-cause fix (§1): a "draft" sheet
+    # already existing for the same job+supplier+category means
+    # pressing Generate again re-opens that one instead of silently
+    # creating a duplicate (which is exactly how O-0001/O-0002 on
+    # J-0001 happened). Once "placed" (the new finalize/execute action,
+    # §4), a genuinely fresh re-order for that same job+supplier is no
+    # longer treated as a duplicate -- the materials were actually
+    # ordered, so a new sheet next time is real, not accidental.
+    status: str = "draft"   # "draft" | "placed"
+    placed_at: Optional[datetime] = None
+    placed_by: Optional[str] = None
 
 
 class OrderSheetLine(SQLModel, table=True):
