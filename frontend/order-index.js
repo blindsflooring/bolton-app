@@ -264,7 +264,7 @@ function toggleClientGroup(clientId) {
 
 function orderIndexRowHtml(q, isOwner, money, isChild) {
   return `
-    <tr style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
+    <tr id="oi-row-${q.id}" style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
       ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
       <td class="job-number"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}</td>
       <td>${isChild ? '' : (q.client_id
@@ -287,10 +287,43 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
         an expanded group still don't repeat it — their own group
         header, immediately above, already has it for that same client. -->
         ${(!isChild && q.client_id) ? `<a href="#" onclick="event.stopPropagation(); openClientDetail(${q.client_id}, true); return false;" style="font-size:12px; margin-right:8px;" title="Edit this client's details">Edit client</a>` : ''}
+        <!-- Quick View (confirmed Aug 2026, third placement of the
+        existing Document Preview) — reuses documentPreviewTileHtml()/
+        loadDocumentPreview()/editDocumentPreview() exactly as already
+        built (shared.js), no new preview component. Works identically
+        for standalone rows and rows nested inside an expanded group —
+        toggleQuickView() only needs this row's own quote id. -->
+        <a href="#" onclick="event.stopPropagation(); toggleQuickView(${q.id}); return false;" style="font-size:12px; margin-right:8px;" title="Preview this quote/invoice without leaving the Order Index">Quick View</a>
         <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}', ${q.client_id || 'null'})">Duplicate</button>
         ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
       </td>
     </tr>`;
+}
+
+// Quick View (confirmed Aug 2026, third placement of the existing
+// Document Preview feature — client page Order History and the Job
+// Detail page are the other two, same shared documentPreviewTileHtml()/
+// loadDocumentPreview() component, never a separate design). Inserts a
+// new row directly below the clicked one holding the preview tile —
+// real DOM insertion, not a template re-render, so opening/closing it
+// never disturbs any other row's own state (another expanded group,
+// another open Quick View, checkbox selections, etc.). Lazy: the
+// preview is only fetched the first time a row's Quick View is opened,
+// not for every visible row up front.
+function toggleQuickView(quoteId) {
+  const existingRow = document.getElementById(`oi-quickview-${quoteId}`);
+  if (existingRow) { existingRow.remove(); return; }
+  const anchorRow = document.getElementById(`oi-row-${quoteId}`);
+  if (!anchorRow) return;
+  const previewId = `dp_oi_quickview_${quoteId}`;
+  const newRow = document.createElement('tr');
+  newRow.id = `oi-quickview-${quoteId}`;
+  // colspan="100%" rather than a hardcoded column count — correctly
+  // spans the real number of columns regardless of Owner's extra
+  // checkbox column, with no need to thread isOwner through here too.
+  newRow.innerHTML = `<td colspan="100%" style="background:var(--bg,#f5f6f8); padding:12px;" onclick="event.stopPropagation();">${documentPreviewTileHtml(previewId, quoteId)}</td>`;
+  anchorRow.after(newRow);
+  loadDocumentPreview(previewId, quoteId);
 }
 
 function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
