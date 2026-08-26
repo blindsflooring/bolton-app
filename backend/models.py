@@ -1175,3 +1175,43 @@ class OrderSheetLine(SQLModel, table=True):
     # (None and 0.0 would both render as blank otherwise).
     pre_discount_unit_cost: Optional[float] = None
     discount_pct: Optional[float] = None
+
+
+class DocumentArchive(SQLModel, table=True):
+    """Dropbox Document Archive & Backup Layer brief (confirmed Aug
+    2026) — one row per ARCHIVED VERSION of a document (quote/invoice/
+    order sheet), never overwritten (brief §4 — "commercial history
+    must be preserved"): a v2 gets its own new row with version=2;
+    the v1 row is untouched forever.
+
+    pdf_bytes is the actual, already-rendered PDF, stored here (not
+    regenerated later) — brief §10's own hard requirement: "an
+    archived PDF must represent the document exactly as it existed at
+    the time it was generated... a later supplier price-list update
+    must never alter an already-generated quote/invoice/order PDF."
+    Regenerating on a later retry would silently violate that the
+    moment pricing changed in between — retry_archive_upload() (main.py)
+    re-uploads THIS stored copy, never a freshly-rendered one. Render's
+    own filesystem is ephemeral across restarts/redeploys, so a DB
+    column is the only place this can live and still be retriable
+    reliably days later.
+
+    status: "pending" (not yet attempted, or DROPBOX_ACCESS_TOKEN not
+    configured — treated as the exact same retriable case as Dropbox
+    being genuinely unreachable, brief §7) | "uploaded" (dropbox_path/
+    dropbox_file_id are then real, confirmed values, never guessed) |
+    "failed" (failure_reason set, retriable via the same action)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    entity_type: str = Field(index=True)   # "Quote" | "Invoice" | "OrderSheet" | "OrderIndexSnapshot"
+    entity_id: int = Field(index=True)     # the quote/order id this version belongs to (0 for a dated Order Index snapshot, not tied to one entity)
+    version: int                           # 1, 2, 3... per entity_type+entity_id, never reused
+    reference: str                         # human label for the Dropbox filename, e.g. "J-0001" or "O-0002"
+    status: str = "pending"
+    dropbox_path: Optional[str] = None
+    dropbox_file_id: Optional[str] = None
+    failure_reason: Optional[str] = None
+    pdf_bytes: bytes
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_at: Optional[datetime] = None
+    created_by: str

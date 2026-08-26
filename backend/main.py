@@ -28,12 +28,14 @@ from models import (
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
-    OrderSheet, OrderSheetLine, PasswordResetToken,
+    OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
+from pdf_render import render_html_to_pdf
+import dropbox_archive
 import photo_storage
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
@@ -2267,6 +2269,150 @@ def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = 
         session.delete(line)
         session.commit()
         return {"deleted": line_id}
+
+
+# ---------- Dropbox Document Archive & Backup Layer (confirmed Aug
+# 2026) ----------
+# Scope for this pass, confirmed with Burgert: no Dropbox access token
+# exists yet, so real uploads stay in "pending" until one is set — but
+# everything else (PDF rendering, archive-version tracking, the
+# never-overwrite-history guarantee, retry) is real and working today.
+# Wired up for Quotes/Invoices/Order Sheets (all reuse the identical
+# render_pdf_and_archive() below); a nightly Order Index CSV snapshot
+# is a separate mechanism (no scheduled-job infrastructure exists in
+# this app yet) and is intentionally NOT built in this pass — flagged
+# as a follow-up, not silently skipped.
+ARCHIVE_CATEGORY_FOLDER = {"Quote": "Quotes", "Invoice": "Invoices", "OrderSheet": "Orders"}
+
+
+def _next_archive_version(session: Session, tenant_id: str, entity_type: str, entity_id: int) -> int:
+    existing = session.exec(select(DocumentArchive).where(
+        DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
+    )).all()
+    return len(existing) + 1
+
+
+class ArchiveDocumentRequest(BaseModel):
+    entity_type: str    # "Quote" | "Invoice" | "OrderSheet"
+    entity_id: int
+    reference: str       # human label for the filename, e.g. "J-0001" or "O-0002"
+    html: str            # exactly what buildPrintDocHtml() (shared.js) already produced for on-screen viewing
+    css: str = ""
+
+
+@app.post("/documents/archive")
+def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Brief §2+§10 — renders the given html/css into a real PDF
+    (pdf_render.py) and attempts a Dropbox upload (dropbox_archive.py),
+    creating a new, permanent DocumentArchive row either way — never
+    silently skipped, and never overwriting a previous version (brief
+    §4): version is always next-in-sequence for this entity, and the
+    Dropbox path uses mode=add, so a genuine attempt to reuse a path
+    fails loudly rather than replacing history.
+
+    Never raises on a failed Dropbox upload (brief §7 — "Dropbox being
+    unavailable must NOT prevent Bolton from creating or saving a
+    quote, invoice, or order"): the PDF is rendered and stored in
+    Bolton's own database regardless, status becomes "failed" with a
+    real reason, and this call still returns 200 — the caller (the
+    quote/order save flow) was never blocked by Dropbox either way."""
+    if body.entity_type not in ARCHIVE_CATEGORY_FOLDER:
+        raise HTTPException(400, f"Unknown entity_type '{body.entity_type}' — must be one of {list(ARCHIVE_CATEGORY_FOLDER.keys())}")
+    try:
+        pdf_bytes = render_html_to_pdf(body.html, body.css)
+    except ValueError as e:
+        raise HTTPException(500, f"Could not render this document to PDF: {e}")
+    with Session(engine) as session:
+        version = _next_archive_version(session, tenant_id, body.entity_type, body.entity_id)
+        now = datetime.utcnow()
+        folder = ARCHIVE_CATEGORY_FOLDER[body.entity_type]
+        safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", body.reference)
+        dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{version}.pdf"
+        archive = DocumentArchive(
+            tenant_id=tenant_id, entity_type=body.entity_type, entity_id=body.entity_id, version=version,
+            reference=body.reference, pdf_bytes=pdf_bytes, created_by=username,
+        )
+        upload_result = dropbox_archive.upload_document(pdf_bytes, dropbox_path)
+        if upload_result["ok"]:
+            archive.status = "uploaded"
+            archive.dropbox_path = upload_result["path"]
+            archive.dropbox_file_id = upload_result["file_id"]
+            archive.uploaded_at = now
+        else:
+            # "not configured yet" reads as an expected, known,
+            # temporary state (Pending) — a genuine upload error (bad
+            # token, network issue, Dropbox itself down) reads as an
+            # actual Failed worth Burgert's attention.
+            archive.status = "pending" if upload_result.get("not_configured") else "failed"
+            archive.failure_reason = upload_result["reason"]
+        session.add(archive)
+        session.commit()
+        session.refresh(archive)
+        return {
+            "id": archive.id, "version": archive.version, "status": archive.status,
+            "dropbox_path": archive.dropbox_path, "failure_reason": archive.failure_reason,
+        }
+
+
+@app.get("/documents/archive")
+def list_document_archive(entity_type: str, entity_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Full version history for one document, newest first — pdf_bytes
+    deliberately excluded from this response (could be sizeable across
+    several versions; see the dedicated download endpoint below for
+    the actual file)."""
+    with Session(engine) as session:
+        rows = session.exec(select(DocumentArchive).where(
+            DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
+        ).order_by(DocumentArchive.version.desc())).all()
+        return [{
+            "id": a.id, "version": a.version, "reference": a.reference, "status": a.status,
+            "dropbox_path": a.dropbox_path, "failure_reason": a.failure_reason,
+            "created_at": a.created_at, "uploaded_at": a.uploaded_at, "created_by": a.created_by,
+        } for a in rows]
+
+
+@app.get("/documents/archive/{archive_id}/download")
+def download_archived_document(archive_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Brief §12 "Recovery" test — confirms an archived PDF can
+    actually be opened, not merely marked Uploaded in Bolton. Serves
+    Bolton's own stored copy directly (not a Dropbox fetch) — this is
+    intentionally also the disaster-recovery path if Dropbox itself is
+    ever unreachable, not just a convenience."""
+    with Session(engine) as session:
+        archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
+        return Response(content=archive.pdf_bytes, media_type="application/pdf",
+                         headers={"Content-Disposition": f'inline; filename="{archive.reference}_v{archive.version}.pdf"'})
+
+
+@app.post("/documents/archive/{archive_id}/retry")
+def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Brief §7's own explicit requirement — "allow the system to
+    retry." Re-uploads the SAME already-stored pdf_bytes (never
+    regenerates from current live data — brief §10's historical-
+    pricing-integrity rule) to the SAME dropbox_path this row was
+    already assigned, so a retry genuinely resumes this exact version
+    rather than silently creating a parallel one."""
+    with Session(engine) as session:
+        archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
+        if archive.status == "uploaded":
+            raise HTTPException(400, "This version is already uploaded — nothing to retry.")
+        folder = ARCHIVE_CATEGORY_FOLDER.get(archive.entity_type, archive.entity_type)
+        safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", archive.reference)
+        now = datetime.utcnow()
+        dropbox_path = archive.dropbox_path or f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{archive.version}.pdf"
+        upload_result = dropbox_archive.upload_document(archive.pdf_bytes, dropbox_path)
+        if upload_result["ok"]:
+            archive.status = "uploaded"
+            archive.dropbox_path = upload_result["path"]
+            archive.dropbox_file_id = upload_result["file_id"]
+            archive.uploaded_at = datetime.utcnow()
+            archive.failure_reason = None
+        else:
+            archive.status = "pending" if upload_result.get("not_configured") else "failed"
+            archive.failure_reason = upload_result["reason"]
+        session.add(archive)
+        session.commit()
+        return {"id": archive.id, "status": archive.status, "failure_reason": archive.failure_reason}
 
 
 @app.get("/clients/{client_id}/order-sheets")

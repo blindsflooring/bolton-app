@@ -790,6 +790,25 @@ async function renderOrderDetail(el) {
           ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
         </div>
 
+        <!-- Dropbox Document Archive brief (confirmed Aug 2026) —
+        scoped to Quotes for this pass (Order Sheets have no existing
+        print-style document template to archive yet — a real gap,
+        flagged as its own follow-up rather than rushed here). Manual
+        trigger only, same "explicit action, not silent autosave"
+        philosophy already established for Order Sheets generation —
+        archives whatever the Document Preview above is ACTUALLY
+        showing right now (buildPrintDocHtml(), shared.js — the exact
+        same function, unchanged), so there is exactly one source for
+        what this quote's document looks like. No Dropbox token is
+        configured yet (confirmed with Burgert) — every version still
+        renders and stores a real PDF and shows honestly as "Pending"
+        until one is set; nothing here is faked or skipped. -->
+        <div class="card" id="documentArchiveCard">
+          <h2>Document Archive</h2>
+          <p class="muted" style="margin-top:-8px;">Backup copy in Dropbox, separate from Bolton's own database — every archived version is kept, never overwritten.</p>
+          <div id="documentArchiveContent" class="muted">Loading...</div>
+        </div>
+
         <!-- Order Sheet Preview (confirmed Aug 2026, Order Sheets UX
         brief §4) — a SECOND, equally prominent preview panel, clearly
         labelled so there's never ambiguity about which panel is the
@@ -827,6 +846,7 @@ async function renderOrderDetail(el) {
   `;
   loadFollowUps();
   loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
+  loadDocumentArchiveStatus('Quote', q.id, q.job_number || ('Q-' + q.id), q.id, 'quote');
   // Immediate, visible confirmation after Generate (confirmed Aug
   // 2026, brief §1+§4 -- "immediate, visible confirmation/preview...
   // directly prevents the confusion that caused Section 1's

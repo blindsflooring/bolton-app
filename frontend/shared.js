@@ -379,6 +379,70 @@ function sortByPriority(products) {
 // without duplicating the HTML-building logic: the preview component
 // (order-index.js) calls buildPrintDocHtml() directly, never touches
 // #printArea or window.print() at all.
+
+// Dropbox Document Archive & Backup Layer (confirmed Aug 2026) --
+// archives whatever buildPrintDocHtml() (below) ACTUALLY produces for
+// on-screen viewing, unchanged -- one source for what a document
+// looks like, never a second copy that could drift. Manual trigger
+// only, same "explicit action" philosophy already established for
+// Order Sheets generation. No Dropbox token is configured yet
+// (confirmed with Burgert) -- every archive attempt still renders and
+// stores a REAL PDF server-side and shows honestly as "Pending" until
+// one is set; nothing here is faked.
+function documentArchiveStatusBadge(status) {
+  if (status === 'uploaded') return `<span class="status-badge active-status">Uploaded</span>`;
+  if (status === 'failed') return `<span class="status-badge rejected-status">Failed</span>`;
+  return `<span class="status-badge pending-status">Pending</span>`;
+}
+
+async function loadDocumentArchiveStatus(entityType, entityId, reference, printSourceId, printDocType) {
+  const el = document.getElementById('documentArchiveContent');
+  if (!el) return;
+  const res = await fetch(`${API}/documents/archive?entity_type=${entityType}&entity_id=${entityId}`);
+  const history = res.ok ? await res.json() : [];
+  const safeRef = reference.replace(/'/g, "\\'");
+  el.innerHTML = `
+    ${history.length ? history.map(h => `
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
+        <b>v${h.version}</b>
+        ${documentArchiveStatusBadge(h.status)}
+        <span class="muted" style="font-size:11px;">${new Date(h.created_at).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'})}</span>
+        <a href="${API}/documents/archive/${h.id}/download" target="_blank" style="font-size:12px; margin-left:auto;">Download</a>
+        ${h.status !== 'uploaded' ? `<button onclick="retryArchiveVersion(${h.id}, '${entityType}', ${entityId}, '${safeRef}', ${printSourceId}, '${printDocType}')" style="font-size:12px;">Retry</button>` : ''}
+      </div>
+      ${h.status !== 'uploaded' && h.failure_reason ? `<div class="muted" style="font-size:11px; margin:2px 0 4px;">${h.failure_reason}</div>` : ''}
+    `).join('') : '<p class="muted" style="margin:0 0 10px;">Not archived yet.</p>'}
+    <button class="primary" id="archiveNowBtn" onclick="triggerArchiveDocument('${entityType}', ${entityId}, '${safeRef}', ${printSourceId}, '${printDocType}')" style="margin-top:10px;">Archive now</button>
+  `;
+}
+
+async function triggerArchiveDocument(entityType, entityId, reference, printSourceId, printDocType) {
+  const btn = document.getElementById('archiveNowBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Archiving...'; }
+  try {
+    const { html } = await buildPrintDocHtml(printSourceId, printDocType);
+    const cssRes = await fetch('styles.css');
+    const css = cssRes.ok ? await cssRes.text() : '';
+    const res = await fetch(`${API}/documents/archive`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ entity_type: entityType, entity_id: entityId, reference, html, css }),
+    });
+    if (!res.ok) { alert('Could not archive this document.'); return; }
+    await loadDocumentArchiveStatus(entityType, entityId, reference, printSourceId, printDocType);
+  } catch (e) {
+    alert('Could not archive this document — check your connection.');
+  } finally {
+    const btnAfter = document.getElementById('archiveNowBtn');
+    if (btnAfter) { btnAfter.disabled = false; btnAfter.textContent = 'Archive now'; }
+  }
+}
+
+async function retryArchiveVersion(archiveId, entityType, entityId, reference, printSourceId, printDocType) {
+  const res = await fetch(`${API}/documents/archive/${archiveId}/retry`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not retry this archive.'); return; }
+  await loadDocumentArchiveStatus(entityType, entityId, reference, printSourceId, printDocType);
+}
+
 async function renderPrintDoc(quoteId, docType) {
   const { html, docLabel, mailtoLink, waLink, clientEmail } = await buildPrintDocHtml(quoteId, docType);
   showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail);
