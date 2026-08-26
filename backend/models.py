@@ -106,6 +106,20 @@ class UserSession(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime   # confirmed Aug 2026: fixed 24h session length from login — not permanent, not aggressive re-login mid-shift
     ended_at: Optional[datetime] = None   # Login & Session Activity Log Phase 1 (confirmed Aug 2026): real logout time. NULL means either still active, OR ended by natural 24h expiry (no explicit logout call) — the session-log endpoint tells the two apart by comparing expires_at to now at read time, no background job needed. A real logout now sets this instead of deleting the row, so the log has real history — see /auth/logout and _resolve_session()'s corresponding check that an ended_at session is no longer valid even if expires_at hasn't passed yet.
+    # Single Active Session per User (confirmed Aug 2026) — a REAL
+    # stored field this time, unlike ended_reason's own read-time-only
+    # computation elsewhere (session_log(), main.py): that approach
+    # deliberately relied on "logout vs expiry" being fully derivable
+    # from ended_at/expires_at timing alone, with no third option. A
+    # session superseded by a new login also just has ended_at set at
+    # an arbitrary moment before natural expiry — genuinely
+    # indistinguishable from a real logout by timing alone, so a real
+    # explicit "logout" | "superseded" | None value is unavoidable
+    # here. None on every row that predates this brief (they really
+    # were plain logouts, or logic that only ever recorded "logout" —
+    # session_log() falls back to "logout" for these, never silently
+    # relabeling historical data).
+    ended_reason: Optional[str] = None
 
 
 class HourType(str, Enum):

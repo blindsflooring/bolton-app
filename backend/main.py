@@ -287,6 +287,8 @@ def _ensure_new_columns():
         ("app_user", "password_changed_at", "TIMESTAMP", "NULL"),
         # Supplier Order Sheets brief (confirmed Aug 2026):
         ("quotelineitem", "boxes_needed", "INTEGER", "NULL"),
+        # Single Active Session per User brief (confirmed Aug 2026):
+        ("usersession", "ended_reason", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1282,6 +1284,28 @@ def login(body: LoginRequest):
         # password" — doesn't leak which usernames exist.
         if not user or not user.active or not verify_password(body.password, user.password_hash):
             raise HTTPException(401, "Incorrect username or password")
+        # Single Active Session per User (confirmed Aug 2026) — root
+        # cause of multiple simultaneous "Still active" sessions for the
+        # same person: staff close the browser/app instead of clicking
+        # Log out, so the old session never gets an ended_at and just
+        # sits active until its own 24h natural expiry, while a fresh
+        # login later that day creates another on top of it. Every OTHER
+        # currently-active session for this user is now ended here,
+        # immediately, the moment a new login succeeds — "currently
+        # active" is the exact same check _resolve_session() itself uses
+        # (ended_at IS NULL and not yet naturally expired), so this can
+        # never touch a session that was already correctly inert.
+        # ended_reason="superseded" (a real stored field, see its own
+        # comment on the model) keeps this distinguishable from a real
+        # logout or a natural expiry in the session log.
+        now = datetime.utcnow()
+        other_active_sessions = session.exec(select(UserSession).where(
+            UserSession.user_id == user.id, UserSession.ended_at.is_(None), UserSession.expires_at >= now,
+        )).all()
+        for old_sess in other_active_sessions:
+            old_sess.ended_at = now
+            old_sess.ended_reason = "superseded"
+            session.add(old_sess)
         token = new_session_token()
         sess = UserSession(token=token, user_id=user.id, expires_at=new_expiry())
         session.add(sess)
@@ -1307,6 +1331,7 @@ def logout(request: Request):
             # for auth purposes, just without losing the record.
             if sess and sess.ended_at is None:
                 sess.ended_at = datetime.utcnow()
+                sess.ended_reason = "logout"
                 session.add(sess)
                 session.commit()
     return {"ok": True}
@@ -2049,7 +2074,14 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
             if sess.ended_at is not None:
                 logout_time = sess.ended_at
                 still_active = False
-                ended_reason = "logout"
+                # Single Active Session per User (confirmed Aug 2026) —
+                # sess.ended_reason is a real stored field now (see the
+                # model's own comment), populated "logout" | "superseded"
+                # going forward. Falls back to "logout" for any row that
+                # predates this brief — it really was a plain logout (or
+                # the only value this ever recorded before), never
+                # silently relabeled.
+                ended_reason = sess.ended_reason or "logout"
             elif sess.expires_at < now:
                 logout_time = sess.expires_at   # natural 24h expiry, no explicit logout — approximate end time
                 still_active = False
