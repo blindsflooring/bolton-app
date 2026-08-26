@@ -983,6 +983,19 @@ async function renderBusinessOverview(el) {
   const pct = (v) => v === null || v === undefined ? '—' : (v*100).toFixed(1) + '%';
   const money = R; // alias — consolidated to the one definition in shared.js
 
+  // Conversion Rate Misleading on Small Sample Size (confirmed Aug
+  // 2026) — a bare "100.0%" off one decided quote reads as "winning
+  // every job," which is misleading; Burgert flagged this directly.
+  // Every conversion percentage on this page now always shows its
+  // underlying sample size right alongside it — decided() is
+  // won+lost, i.e. every quote that's actually been accepted or
+  // declined, excluding still-open ones (same basis the rate itself
+  // already uses). The "de-emphasize below a threshold" idea from the
+  // brief is explicitly NOT built here — the brief itself says to
+  // confirm the threshold with Burgert first, not guess one.
+  const decided = (s) => s.won_quotes + s.lost_quotes;
+  const convText = (rate, n) => rate === null || rate === undefined ? '—' : `${pct(rate)} (${n} decided)`;
+
   const kpiCard = (label, value, sublabel) => `
     <div class="card" style="text-align:center;">
       <div class="muted" style="text-transform:uppercase; font-size:11px; letter-spacing:0.03em;">${label}</div>
@@ -992,12 +1005,12 @@ async function renderBusinessOverview(el) {
 
   const branchRows = Object.keys(data.by_branch).sort().map(b => {
     const s = data.by_branch[b];
-    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${pct(s.conversion_rate_by_count)}</td><td>${pct(s.conversion_rate_by_value)}</td></tr>`;
+    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${convText(s.conversion_rate_by_count, decided(s))}</td><td>${convText(s.conversion_rate_by_value, decided(s))}</td></tr>`;
   }).join('');
 
   const repRows = Object.keys(data.by_rep).sort().map(r => {
     const s = data.by_rep[r];
-    return `<tr><td style="text-transform:capitalize;">${r}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${pct(s.conversion_rate_by_count)}</td><td>${pct(s.conversion_rate_by_value)}</td></tr>`;
+    return `<tr><td style="text-transform:capitalize;">${r}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${convText(s.conversion_rate_by_count, decided(s))}</td><td>${convText(s.conversion_rate_by_value, decided(s))}</td></tr>`;
   }).join('');
 
   el.innerHTML = `
@@ -1008,7 +1021,8 @@ async function renderBusinessOverview(el) {
       ${kpiCard('Total quotes', data.overall.total_quotes)}
       ${kpiCard('Open (awaiting decision)', data.overall.open_quotes, money(data.overall.open_value))}
       ${kpiCard('Won', data.overall.won_quotes, money(data.overall.won_value))}
-      ${kpiCard('Conversion (by count)', pct(data.overall.conversion_rate_by_count), 'by value: ' + pct(data.overall.conversion_rate_by_value))}
+      ${kpiCard('Conversion (by count)', convText(data.overall.conversion_rate_by_count, decided(data.overall)),
+        `by value: ${convText(data.overall.conversion_rate_by_value, decided(data.overall))}<br>${data.overall.won_quotes} of ${data.overall.total_quotes} total quotes won so far`)}
     </div>
 
     <div class="card">

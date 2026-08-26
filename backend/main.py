@@ -1572,11 +1572,33 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all()
         lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.tenant_id == tenant_id)).all()
+        VAT_PCT = get_settings(session, tenant_id).vat_pct
 
-        # value per quote = sum of its line totals (client-facing sell price, ex VAT)
-        value_by_quote = {}
+        # BUG FOUND AND FIXED (confirmed Aug 2026, "Won Value Uses Wrong
+        # Field" brief): value_by_quote used to be the raw sum of each
+        # quote's line_total values — a pre-VAT, pre-discount subtotal
+        # that also never reflects a Manual Override (which lives on
+        # Quote.manual_override_total_incl_vat, a QUOTE-level field —
+        # completely separate from the individual QuoteLineItem rows,
+        # which keep their own original calculated values even when the
+        # quote's total is overridden). Robert Aspeling's job (J-0001)
+        # showed R19,315.87 here — the ex-VAT subtotal from BEFORE his
+        # real, agreed R22,213.08 total was entered via Manual Override
+        # — on the Won card, By Branch, By Sales Owner, and folded into
+        # Conversion (by value) too, since all four read from this same
+        # dict. Now built from each quote's REAL current total_incl_vat,
+        # via the exact same _quote_totals() shared helper get_quote()/
+        # list_quotes()/get_client_quotes() already use — this can never
+        # independently drift from what those screens show again, and
+        # correctly respects Manual Override, discount, transport levy,
+        # and VAT, not a raw line-item subtotal.
+        subtotal_by_quote = {}
         for l in lines:
-            value_by_quote[l.quote_id] = value_by_quote.get(l.quote_id, 0.0) + l.line_total
+            subtotal_by_quote[l.quote_id] = subtotal_by_quote.get(l.quote_id, 0.0) + l.line_total
+        value_by_quote = {}
+        for q in quotes:
+            subtotal_ex_vat = subtotal_by_quote.get(q.id, 0.0) + q.transport_levy
+            value_by_quote[q.id] = _quote_totals(subtotal_ex_vat, q, VAT_PCT)["total_incl_vat"]
 
         # Real gap found and fixed (confirmed Aug 2026, Order Index / Job
         # Workflow Redesign brief): this used to test the legacy
