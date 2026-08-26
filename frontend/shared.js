@@ -623,6 +623,7 @@ const LANDING_TILES = [
   { id: 'sessionLog', title: 'Login Activity', desc: 'Who logged in, when, for how long', ready: true },
   { id: 'supplierConsole', title: 'Supplier Console', desc: 'Every supplier\'s real data, one place', ready: true },
   { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
+  { id: 'accounts', title: 'Accounts', desc: 'Staff logins, password reset links', ready: true },
   { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, estimates, commission', ready: true },
 ];
 
@@ -643,7 +644,7 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
 // as Sales or Admin correctly loses this tile too, same as the backend
 // blocking the endpoint itself for a previewed non-owner role.
-const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal'];
+const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts'];
 function visibleLandingTiles() {
   const role = currentRole();
   return LANDING_TILES.filter(t => {

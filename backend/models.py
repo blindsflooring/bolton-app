@@ -96,6 +96,33 @@ class User(SQLModel, table=True):
     password_changed_at: Optional[datetime] = None
 
 
+class PasswordResetToken(SQLModel, table=True):
+    """Self-Service Password Reset (Owner-Triggered Link) brief
+    (confirmed Aug 2026) — the actual reason this brief exists: every
+    reset before this required generating a plaintext password and
+    relaying it to the staff member, meaning Burgert always knew their
+    password, even briefly. This is the opposite design: Burgert
+    triggers a one-time LINK (never a password), and only the staff
+    member ever sees/sets the real new password, via
+    POST /auth/reset-password below.
+
+    One row per reset attempt, permanent (not deleted once used or
+    expired) — same "a token record is only meaningful if it can't be
+    quietly changed/removed" reasoning as UserSession/AuditLog, and
+    lets "was this link ever used" stay answerable later. token is a
+    high-entropy random string (secrets.token_urlsafe(32), main.py) —
+    unguessable is the entire security property this whole feature
+    rests on, no separate secret/signature needed."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    user_id: int = Field(foreign_key="app_user.id")
+    token: str = Field(unique=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: str   # the Owner username who triggered this reset
+    expires_at: datetime
+    used_at: Optional[datetime] = None
+
+
 class UserSession(SQLModel, table=True):
     """Server-side session record backing the login cookie. Stored in the
     DB (not in-memory) so sessions survive a Render backend restart/redeploy

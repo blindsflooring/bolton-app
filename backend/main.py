@@ -10,6 +10,7 @@ from typing import List, Optional, Any
 import json
 import os
 import re
+import secrets
 import shutil
 import uuid
 
@@ -26,7 +27,7 @@ from models import (
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
-    OrderSheet, OrderSheetLine,
+    OrderSheet, OrderSheetLine, PasswordResetToken,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -94,7 +95,17 @@ def coerce_date_fields(obj, *field_names):
 # CORSMiddleware and the browser can't even read the error response
 # (confirmed by testing: without this ordering, Access-Control-Allow-
 # Origin was missing from blocked responses entirely).
-PUBLIC_PATHS = {"/auth/login", "/auth/logout", "/auth/me", "/", "/docs", "/openapi.json", "/redoc"}
+PUBLIC_PATHS = {
+    "/auth/login", "/auth/logout", "/auth/me", "/", "/docs", "/openapi.json", "/redoc",
+    # Password Reset Link brief (confirmed Aug 2026) — the whole point
+    # is a staff member sets their own new password without ever being
+    # logged in first, so this pair must be reachable with no session.
+    # Neither one trusts anything beyond the token itself (a high-
+    # entropy random string, checked against PasswordResetToken —
+    # see reset_password() below) — there is no broader auth bypass
+    # here, just these two specific, narrowly-scoped actions.
+    "/auth/reset-password", "/auth/reset-password/validate",
+}
 
 
 @app.middleware("http")
@@ -1417,6 +1428,77 @@ def logout(request: Request):
     return {"ok": True}
 
 
+RESET_LINK_MINUTES = 45   # brief's own suggested range was 30-60; a single fixed value partway through it
+
+
+def _validate_reset_token(session: Session, token: str) -> PasswordResetToken:
+    """Shared by the validate-only GET (frontend's upfront "is this
+    link still good" check, before showing the set-password form) and
+    the real POST reset below — one place decides what makes a token
+    valid, so the two can never quietly disagree."""
+    reset = session.exec(select(PasswordResetToken).where(PasswordResetToken.token == token)).first()
+    if not reset:
+        raise HTTPException(404, "This reset link isn't valid — check you copied the whole link.")
+    if reset.used_at is not None:
+        raise HTTPException(400, "This reset link has already been used. Ask the Owner for a new one.")
+    if reset.expires_at < datetime.utcnow():
+        raise HTTPException(400, "This reset link has expired. Ask the Owner for a new one.")
+    return reset
+
+
+@app.get("/auth/reset-password/validate")
+def validate_reset_token(token: str):
+    """Public (brief §1 — reached before any login exists). Read-only
+    upfront check so the frontend can show "this link has expired"
+    immediately on page load, rather than only failing once someone's
+    already typed a new password and pressed submit."""
+    with Session(engine) as session:
+        _validate_reset_token(session, token)
+        return {"valid": True}
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@app.post("/auth/reset-password")
+def reset_password(body: ResetPasswordRequest):
+    """Password Reset Link brief §1+§3 (confirmed Aug 2026) — public
+    (no session required — this IS how someone gets a session again).
+    The new password is set directly from this request body, entered
+    by the staff member themselves on the "Set your new password"
+    screen — never passed through or visible to Burgert at any point,
+    the whole point of this brief over the old generate-and-relay
+    approach. Marks the token used immediately (can't be reused), and
+    — brief's own explicit requirement #4 — force-ends every one of
+    this user's currently active sessions, same pattern login() itself
+    already uses for Single Active Session, so a stale/leaked old
+    session can't coexist with the freshly reset password."""
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters.")
+    with Session(engine) as session:
+        reset = _validate_reset_token(session, body.token)
+        user = session.get(User, reset.user_id)
+        if not user:
+            raise HTTPException(404, "The account for this reset link no longer exists.")
+        user.password_hash = hash_password(body.new_password)
+        user.password_changed_at = datetime.utcnow()
+        session.add(user)
+        reset.used_at = datetime.utcnow()
+        session.add(reset)
+        now = datetime.utcnow()
+        active_sessions = session.exec(select(UserSession).where(
+            UserSession.user_id == user.id, UserSession.ended_at.is_(None), UserSession.expires_at >= now,
+        )).all()
+        for sess in active_sessions:
+            sess.ended_at = now
+            sess.ended_reason = "password_reset"
+            session.add(sess)
+        session.commit()
+        return {"ok": True, "username": user.username}
+
+
 @app.get("/auth/me")
 def get_me(request: Request):
     token = _get_bearer_token(request)
@@ -2230,6 +2312,49 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
     if role != UserRole.owner:
         raise HTTPException(403, "Only the Owner role can do this.")
     return role
+
+
+@app.get("/admin/users")
+def list_users(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Password Reset Link brief (confirmed Aug 2026) — real gap: there
+    was no admin surface for accounts at all before this (every User
+    row is env-var-seeded, main.py's on_startup()). Owner-only, same
+    as everything else touching login credentials. Defined here, after
+    require_owner, rather than back up alongside /auth/ — same reason
+    as delete_order_sheet() below: Depends(require_owner) needs that
+    name to already exist at import time."""
+    with Session(engine) as session:
+        users = session.exec(select(User).where(User.tenant_id == tenant_id).order_by(User.username)).all()
+        return [{"id": u.id, "username": u.username, "display_name": u.display_name, "role": u.role, "active": u.active} for u in users]
+
+
+@app.post("/admin/users/{user_id}/reset-password-link")
+def create_password_reset_link(user_id: int, role: str = Depends(require_owner),
+                                tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Password Reset Link brief §1 (confirmed Aug 2026) — the actual
+    reason this brief exists: every reset before this required Burgert
+    to generate a plaintext password and relay it, meaning he always
+    knew it, even briefly. This generates a one-time LINK instead — a
+    high-entropy random token (unguessable is the entire security
+    property here), expiring in RESET_LINK_MINUTES, usable exactly
+    once (reset_password() above marks it used_at immediately on
+    success and checks that first). Burgert shares the returned link
+    via whatever channel he likes (brief's own words) — this endpoint
+    never sends it anywhere itself, no email/SMS infrastructure
+    required or assumed."""
+    with Session(engine) as session:
+        user = get_or_404(session, User, user_id, tenant_id, "User")
+        token = secrets.token_urlsafe(32)
+        reset = PasswordResetToken(
+            tenant_id=tenant_id, user_id=user.id, token=token, created_by=username,
+            expires_at=datetime.utcnow() + timedelta(minutes=RESET_LINK_MINUTES),
+        )
+        session.add(reset)
+        session.commit()
+        return {
+            "token": token, "expires_in_minutes": RESET_LINK_MINUTES,
+            "reset_link": f"https://bolton-frontend.onrender.com/index.html?reset_token={token}",
+        }
 
 
 @app.delete("/order-sheets/{order_sheet_id}")

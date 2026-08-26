@@ -25,6 +25,36 @@
   </div>
 </div>
 
+<!-- Password Reset Link brief (confirmed Aug 2026) — reached via
+     ?reset_token=... on the URL, before any login exists (that's the
+     whole point). Checked and shown by initResetPasswordScreenIfNeeded()
+     right at the top of the boot sequence, below, BEFORE the normal
+     checkAuthOnLoad()/login flow runs at all -- this screen replaces
+     that flow entirely for this one page load when a token is present,
+     never both at once. -->
+<div id="resetPasswordScreen" style="display:none; min-height:100vh; align-items:center; justify-content:center; background:var(--bg, #f5f6f8);">
+  <div style="background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:36px 40px; width:100%; max-width:360px;">
+    <h2 style="margin-top:0;">Set your new password</h2>
+    <div id="rp_loading" class="muted" style="font-size:13px;">Checking your link...</div>
+    <div id="rp_invalid" style="display:none;">
+      <p style="color:var(--coral); font-size:13.5px;" id="rp_invalid_reason"></p>
+      <p class="muted" style="font-size:12.5px;">Ask the Owner to generate a new reset link for you.</p>
+      <button onclick="window.location.href = window.location.origin + window.location.pathname;" style="margin-top:8px;">Back to login</button>
+    </div>
+    <div id="rp_form" style="display:none;">
+      <p class="muted" style="font-size:13px; margin-top:-8px;">Choose a password only you will know — it's never seen by anyone else, including the Owner.</p>
+      <div class="field"><label>New password</label><input id="rp_new_password" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter') submitPasswordReset();"></div>
+      <div class="field"><label>Confirm new password</label><input id="rp_confirm_password" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter') submitPasswordReset();"></div>
+      <div id="rp_error" style="color:var(--coral); font-size:13px; min-height:18px; margin-top:4px;"></div>
+      <button id="rp_submit_btn" class="primary" style="width:100%; margin-top:8px;" onclick="submitPasswordReset()">Set password</button>
+    </div>
+    <div id="rp_success" style="display:none;">
+      <p style="color:var(--teal); font-weight:700; font-size:14px;">✓ Password set. Any previous sessions on this account have been signed out.</p>
+      <button class="primary" style="width:100%; margin-top:8px;" onclick="window.location.href = window.location.origin + window.location.pathname;">Log in now</button>
+    </div>
+  </div>
+</div>
+
 <!-- Sticky Header brief (confirmed Aug 2026): header + Owner Preview
      banner + nav wrapped as one sticky unit so all three always stay
      visible together while scrolling, on every page in the app (they
@@ -841,6 +871,63 @@ function showLogin() {
   document.getElementById('login_error').textContent = '';
 }
 
+// Password Reset Link brief (confirmed Aug 2026) — checked and, if a
+// token is present, fully takes over this page load: shows the "Set
+// your new password" screen instead of the login screen and skips
+// checkAuthOnLoad() entirely below (whether or not a stale session
+// token also happens to exist in localStorage — a reset link always
+// wins over an old, possibly-expired local session). Returns true if
+// it took over, so checkAuthOnLoad() below knows not to also run.
+async function initResetPasswordScreenIfNeeded() {
+  const token = new URLSearchParams(window.location.search).get('reset_token');
+  if (!token) return false;
+  window._resetToken = token;
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('resetPasswordScreen').style.display = 'flex';
+  try {
+    const res = await fetch(`${API}/auth/reset-password/validate?token=${encodeURIComponent(token)}`);
+    document.getElementById('rp_loading').style.display = 'none';
+    if (res.ok) {
+      document.getElementById('rp_form').style.display = 'block';
+    } else {
+      const body = await res.json().catch(() => ({}));
+      document.getElementById('rp_invalid_reason').textContent = body.detail || 'This reset link is not valid.';
+      document.getElementById('rp_invalid').style.display = 'block';
+    }
+  } catch (e) {
+    document.getElementById('rp_loading').textContent = 'Could not reach the server — try reopening this link.';
+  }
+  return true;
+}
+
+async function submitPasswordReset() {
+  const errEl = document.getElementById('rp_error');
+  const btnEl = document.getElementById('rp_submit_btn');
+  const newPw = document.getElementById('rp_new_password').value;
+  const confirmPw = document.getElementById('rp_confirm_password').value;
+  errEl.textContent = '';
+  if (newPw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  if (newPw !== confirmPw) { errEl.textContent = 'Passwords don\'t match.'; return; }
+  btnEl.disabled = true; btnEl.textContent = 'Setting password...';
+  try {
+    const res = await fetch(`${API}/auth/reset-password`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: window._resetToken, new_password: newPw}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = body.detail || 'Could not set your new password.';
+      btnEl.disabled = false; btnEl.textContent = 'Set password';
+      return;
+    }
+    document.getElementById('rp_form').style.display = 'none';
+    document.getElementById('rp_success').style.display = 'block';
+  } catch (e) {
+    errEl.textContent = 'Could not reach the server — try again.';
+    btnEl.disabled = false; btnEl.textContent = 'Set password';
+  }
+}
+
 // Boot: check for an existing valid session (e.g. page refresh) before
 // deciding whether to show the login screen or the app itself.
 // sessionToken is already read from localStorage at shared.js's top
@@ -848,6 +935,7 @@ function showLogin() {
 // automatically — added Aug 2026, alongside the token-auth switch: skip
 // the round-trip entirely when there's plainly no token to check.
 (async function checkAuthOnLoad() {
+  if (await initResetPasswordScreenIfNeeded()) return;
   if (!sessionToken) { showLogin(); return; }
   try {
     const res = await fetch(`${API}/auth/me`);
@@ -896,6 +984,7 @@ function renderLanding() {
   if (landingView === 'sessionLog') return renderSessionLog(el);
   if (landingView === 'supplierConsole') return renderSupplierConsole(el);
   if (landingView === 'changeLog') return renderChangeLog(el);
+  if (landingView === 'accounts') return renderAccounts(el);
   if (landingView === 'builderPortal') return renderBuilderPortalAdmin(el);
 }
 
@@ -933,6 +1022,7 @@ function onTileClick(tileId) {
   else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
   else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
   else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
+  else if (tileId === 'accounts') { landingView = 'accounts'; renderLanding(); }
   else if (tileId === 'builderPortal') { landingView = 'builderPortal'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
 }
@@ -3033,6 +3123,76 @@ function renderChangeLogTable(rows) {
       </table>
     </div>
   `;
+}
+
+// ===== Accounts / Self-Service Password Reset Link (confirmed Aug
+// 2026) ===== Owner-only (OWNER_ONLY_TILES in shared.js is the first
+// layer; /admin/users* is require_owner-gated server-side too, same
+// belt-and-braces pattern as every other Owner-only screen). Real gap
+// closed: every login account before this was env-var-seeded with no
+// admin surface at all, and every password reset required Burgert to
+// generate a plaintext password and relay it, meaning he always knew
+// it, even briefly. This screen instead generates a one-time LINK —
+// the staff member sets their own new password directly, on the
+// dedicated screen further down this file, never entered by or shown
+// to Burgert at any point.
+async function renderAccounts(el) {
+  await renderWithRetry(el, 'Accounts', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Accounts</h2><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/admin/users`);
+  const users = res.ok ? await res.json() : [];
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Accounts</h1><p>Staff logins. "Reset password" generates a one-time link for that person to set their own new password directly — you'll never see or need to know it.</p></div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${users.map(u => `
+            <tr>
+              <td>${u.username}</td>
+              <td>${u.display_name}</td>
+              <td style="text-transform:capitalize;">${u.role}</td>
+              <td><span class="status-badge ${u.active ? 'active-status' : 'inactive-status'}">${u.active ? 'Active' : 'Inactive'}</span></td>
+              <td><button onclick="generatePasswordResetLink(${u.id}, '${u.display_name.replace(/'/g,"\\'")}')">Reset password</button></td>
+            </tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts found.</td></tr>'}
+        </tbody>
+      </table>
+      <div id="resetLinkResult" style="display:none; margin-top:16px; padding:14px; background:var(--bg); border-radius:8px;"></div>
+    </div>
+  `;
+  });
+}
+
+async function generatePasswordResetLink(userId, displayName) {
+  if (!confirm(`Generate a one-time password reset link for ${displayName}? It expires in 45 minutes and can only be used once.`)) return;
+  const res = await fetch(`${API}/admin/users/${userId}/reset-password-link`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not generate a reset link.'); return; }
+  const data = await res.json();
+  const box = document.getElementById('resetLinkResult');
+  if (!box) return;
+  // Copyable, not sent anywhere automatically (brief §1 — "Burgert
+  // shares that link... via whatever channel") — this app has no
+  // email/SMS sending infrastructure, deliberately out of scope (§2).
+  box.style.display = 'block';
+  box.innerHTML = `
+    <p style="margin:0 0 8px;"><b>Link for ${displayName}</b> — expires in ${data.expires_in_minutes} minutes, works once. Share it with them however you normally would (WhatsApp, in person, etc.):</p>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <input id="resetLinkText" readonly value="${data.reset_link}" style="flex:1; font-family:monospace; font-size:12px;" onclick="this.select();">
+      <button onclick="copyResetLink()">Copy</button>
+    </div>
+    <p class="muted" id="resetLinkCopyStatus" style="margin:6px 0 0; font-size:12px;"></p>
+  `;
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function copyResetLink() {
+  const input = document.getElementById('resetLinkText');
+  const statusEl = document.getElementById('resetLinkCopyStatus');
+  input.select();
+  navigator.clipboard.writeText(input.value)
+    .then(() => { if (statusEl) statusEl.textContent = '✓ Copied.'; })
+    .catch(() => { if (statusEl) statusEl.textContent = 'Could not auto-copy — select the text above and copy it manually.'; });
 }
 
 // ===== Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) =====
