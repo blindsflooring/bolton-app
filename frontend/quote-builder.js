@@ -628,6 +628,19 @@ function toggleScreedSubfields() {
 
 async function createQuote() {
   const typedClientName = document.getElementById('q_client').value;
+  // Clarify Buttons + Price Check + Marketing Source (confirmed Aug
+  // 2026) — Start Quote must ONLY ever link to a real, selected
+  // existing client, never free text (brief's own explicit words,
+  // matching the Client-Link Audit's own safe search-and-select
+  // pattern). The ONE exception: a Builder Estimate's referred contact
+  // (pendingBuilderEstimateId set, index.html) isn't staff free-typing
+  // a name — it's a real contact already captured through the public
+  // Builder Portal, so that flow keeps the exact-match-or-auto-create
+  // fallback below, unchanged from before this brief.
+  if (!pendingClientId && !pendingBuilderEstimateId) {
+    alert('Search for an existing client and select them from the list first.\n\nTo add someone new, use the "New Client" button instead — or "Price Check" if you just need a quick price with no client on file yet.');
+    return;
+  }
   // Confirmed root cause of the Order Index -> Client Link Gap brief's
   // Gap 2 (confirmed Aug 2026): typing a client's name here WITHOUT
   // clicking the matching autocomplete suggestion (onQClientInput
@@ -640,10 +653,12 @@ async function createQuote() {
   // strictly by client_id. This is the same bug's PREVENTION: if the
   // typed text exactly matches (case/whitespace-insensitive) a real
   // existing client that the user just didn't happen to click, ask
-  // before silently creating a second, disconnected record. A quote
-  // that's meant to be a genuine new walk-in (no matching client)
-  // never triggers this — one extra request, only when there's
-  // something to actually warn about.
+  // before silently creating a second, disconnected record. Only
+  // reachable via the Builder Estimate path now (the guard above
+  // requires pendingClientId otherwise) — a quote that's meant to be a
+  // genuine new walk-in from that flow (no matching client) never
+  // triggers this — one extra request, only when there's something to
+  // actually warn about.
   if (!pendingClientId && typedClientName.trim()) {
     try {
       const searchRes = await fetch(`${API}/clients?search=${encodeURIComponent(typedClientName.trim())}`);
@@ -730,6 +745,67 @@ async function createQuote() {
     pendingVinylRange = null;
   }
   pendingCategory = null;
+}
+
+// Price Check (confirmed Aug 2026, New Quote Screen brief §3) — reuses
+// the exact same calculator/line-item flow as a real quote (brief's own
+// "reuse, don't rebuild"), just flagged is_price_check=true so it's
+// excluded from the Order Index/Needs Attention/dashboards until
+// explicitly converted (convertPriceCheckToQuote(), below). Contact
+// details are OPTIONAL here — deliberately NOT behind createQuote()'s
+// own hard "must select a real existing client" gate, since the whole
+// point is a walk-in who may not want to give any details yet. If a
+// real client WAS searched and selected first, or a name typed, that's
+// carried over and linked normally server-side (create_quote(),
+// main.py) — this isn't a separate, parallel client-handling path.
+async function startPriceCheck() {
+  const params = new URLSearchParams({
+    client_name: document.getElementById('q_client').value,
+    sales_owner: document.getElementById('q_owner').value,
+    branch: document.getElementById('q_branch').value,
+    blinds_measurements_visible: document.getElementById('q_measurements').checked,
+    deposit_pct: businessSettings?.default_deposit_pct ?? 0.70,
+    is_price_check: true,
+  });
+  if (pendingClientId) { params.set('client_id', pendingClientId); }
+  const res = await fetch(`${API}/quotes?${params}`, {method:'POST'});
+  const quote = await res.json();
+  currentQuoteId = quote.id;
+  fetch(`${API}/quotes/${quote.id}/snapshot`, {method:'POST'});
+  clearStaleQuoteResidue();
+  currentQuoteClientId = quote.client_id || null;
+  document.getElementById('quoteStatus').innerHTML =
+    `<b style="color:var(--coral);">PRICE CHECK</b> #${quote.id} started${quote.client_id ? ' for ' + quote.client_name : ''} — not a saved job until you convert it below.`;
+  document.getElementById('addLineCard').style.display = 'block';
+  document.getElementById('linesCard').style.display = 'block';
+  document.getElementById('floorPrepCard').style.display = 'block';
+  document.getElementById('quotePhotosCard').style.display = 'block';
+  const startBtn = document.getElementById('startQuoteBtn');
+  startBtn.disabled = true;
+  startBtn.textContent = 'Already open (see below)';
+  pendingClientId = null;
+  pendingClientName = null;
+  if (pendingCategory) { document.getElementById('line_category').value = pendingCategory; }
+  await toggleLineFields();
+  if (pendingVinylRange) { populateVinylRangeDropdown(pendingVinylRange); pendingVinylRange = null; }
+  pendingCategory = null;
+  loadQuote();
+}
+
+async function convertPriceCheckToQuote() {
+  if (!currentQuoteId) return;
+  let clientId = currentQuoteClientId;
+  if (!clientId) {
+    const name = prompt('This Price Check has no client on file yet. Enter the client\'s name to convert it into a real, tracked quote:');
+    if (!name || !name.trim()) return;
+    const res = await fetch(`${API}/quotes/${currentQuoteId}/convert-to-quote?client_name=${encodeURIComponent(name.trim())}`, {method: 'POST'});
+    if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not convert this Price Check.'); return; }
+  } else {
+    const res = await fetch(`${API}/quotes/${currentQuoteId}/convert-to-quote?client_id=${clientId}`, {method: 'POST'});
+    if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not convert this Price Check.'); return; }
+  }
+  alert('Converted — this is now a real, tracked quote and will appear on the Order Index.');
+  loadQuote();
 }
 
 // Zero data leakage between quotes (confirmed Aug 2026, Client-Side
@@ -1277,7 +1353,17 @@ async function loadQuote() {
   // straight there for anyone who wants to change it.
   const statusDisplayEl = document.getElementById('q_status_display');
   if (statusDisplayEl && data.quote) {
-    statusDisplayEl.innerHTML = `${workflowStatusBadge(data.quote)} <a href="#" onclick="goToTab('landing'); openOrderDetailScreen(${currentQuoteId}); return false;" style="font-size:12px; margin-left:6px;">Manage in Job Detail →</a>`;
+    // Price Check (confirmed Aug 2026, New Quote Screen brief §3) — a
+    // persistent, hard-to-miss indicator for as long as this quote
+    // stays flagged, right alongside the normal status badge, with the
+    // one action that matters most (convert it into a real, tracked
+    // quote) always one click away. "Manage in Job Detail" is
+    // deliberately NOT shown for a Price Check — that screen (Accept/
+    // Decline, payment tracking) doesn't apply to something that isn't
+    // a real job yet.
+    statusDisplayEl.innerHTML = data.quote.is_price_check
+      ? `<b style="color:var(--coral); background:#fbe0db; padding:2px 10px; border-radius:10px; font-size:11px;">PRICE CHECK — not a saved job</b> <button onclick="convertPriceCheckToQuote()" style="margin-left:6px;">Convert to real quote</button>`
+      : `${workflowStatusBadge(data.quote)} <a href="#" onclick="goToTab('landing'); openOrderDetailScreen(${currentQuoteId}); return false;" style="font-size:12px; margin-left:6px;">Manage in Job Detail →</a>`;
   }
   // Order Details field population REMOVED from here (confirmed Aug
   // 2026, Quote Builder Layout Corrections brief) — that card no longer

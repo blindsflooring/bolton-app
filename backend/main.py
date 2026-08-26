@@ -289,6 +289,10 @@ def _ensure_new_columns():
         ("quotelineitem", "boxes_needed", "INTEGER", "NULL"),
         # Single Active Session per User brief (confirmed Aug 2026):
         ("usersession", "ended_reason", "VARCHAR", "NULL"),
+        # New Quote Screen: Clarify Buttons + Price Check + Marketing
+        # Source brief (confirmed Aug 2026):
+        ("quote", "is_price_check", "BOOLEAN", "FALSE"),
+        ("client", "marketing_source", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1623,7 +1627,12 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
     "Lost" = declined only.
     """
     with Session(engine) as session:
-        quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all()
+        # Price Check (confirmed Aug 2026, New Quote Screen brief §3) —
+        # "must not affect Order Index counts, Needs Attention, or any
+        # dashboard KPI" — excluded at the source here, same as
+        # list_quotes(), rather than trying to filter it back out of
+        # every downstream figure individually.
+        quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id, Quote.is_price_check == False)).all()  # noqa: E712
         lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.tenant_id == tenant_id)).all()
         VAT_PCT = get_settings(session, tenant_id).vat_pct
 
@@ -4006,7 +4015,8 @@ def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optio
 def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
                   blinds_measurements_visible: bool = True,
                   discount_pct: float = 0.0, deposit_pct: float = 0.70,
-                  client_id: int = None, tenant_id: str = Depends(get_current_tenant)):
+                  client_id: int = None, is_price_check: bool = False,
+                  tenant_id: str = Depends(get_current_tenant)):
     """Every quote created here is now linked to a real Client record
     from the moment it exists — via _resolve_or_create_client() above,
     confirmed Aug 2026 (Client-Link Audit brief). Previously, without a
@@ -4014,20 +4024,68 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
     just the typed name and no CRM link at all — exactly the recurring
     orphaned-quote bug this brief was written to close for good, not
     patch again at one more entry point. site_address is still taken
-    from the resolved Client record when it has one on file."""
+    from the resolved Client record when it has one on file.
+
+    is_price_check (confirmed Aug 2026, New Quote Screen brief §3) — the
+    ONE deliberate, sanctioned exception to the paragraph above: contact
+    details are explicitly OPTIONAL for a Price Check, since it isn't a
+    real tracked job until someone converts it (POST
+    /quotes/{id}/convert-to-quote below). If a name/client_id genuinely
+    was given (the brief's own "optionally capturing the walk-in's name/
+    contact details"), it's still resolved-or-created and linked
+    normally — this bypass only applies when NEITHER was provided."""
     with Session(engine) as session:
-        client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
+        if is_price_check and not client_id and not client_name.strip():
+            final_client_name, final_client_id, site_address = "Walk-in (Price Check)", None, ""
+        else:
+            client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
+            final_client_name, final_client_id, site_address = client.name, client.id, (client.address or "")
         quote = Quote(
-            client_name=client.name,
-            client_id=client.id,
+            client_name=final_client_name,
+            client_id=final_client_id,
+            is_price_check=is_price_check,
             sales_owner=sales_owner,
             branch=branch,
             blinds_measurements_visible=blinds_measurements_visible,
             discount_pct=discount_pct,
             deposit_pct=deposit_pct,
-            site_address=client.address or "",
+            site_address=site_address,
             tenant_id=tenant_id,
         )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.post("/quotes/{quote_id}/convert-to-quote")
+def convert_price_check_to_quote(quote_id: int, client_id: int = None, client_name: str = None,
+                                  tenant_id: str = Depends(get_current_tenant)):
+    """'Save as real quote' / 'Convert to quote' (brief §3) — turns a
+    Price Check into a genuine tracked quote, appearing on the Order
+    Index/Needs Attention/dashboards like any other from this point on.
+    Carries over whatever product/pricing/contact details were already
+    entered — line items are already real QuoteLineItem rows (same
+    calculator, same add-line endpoints, brief's own "reuse, don't
+    rebuild"), untouched by this. If contact details were captured
+    during the Price Check (client_id/client_name passed here, or
+    already set on the quote), those are reused/confirmed; if genuinely
+    none exist yet, one is required now — a converted quote is a real
+    job and falls back under the same 'no orphaned quotes' rule as
+    everything else (Client-Link Audit brief)."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if not quote.is_price_check:
+            raise HTTPException(400, "This quote is not a Price Check.")
+        if client_id or (client_name and client_name.strip()):
+            client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
+            quote.client_id = client.id
+            quote.client_name = client.name
+            if client.address:
+                quote.site_address = client.address
+        elif not quote.client_id:
+            raise HTTPException(400, "A client name is required to convert this Price Check into a real quote.")
+        quote.is_price_check = False
         session.add(quote)
         session.commit()
         session.refresh(quote)
@@ -5216,7 +5274,8 @@ def get_colour_history(quote_id: int, line_id: int, tenant_id: str = Depends(get
 @app.get("/quotes")
 def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
                  status: Optional[str] = None, workflow_status: Optional[str] = None,
-                 search: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+                 search: Optional[str] = None, include_price_checks: bool = False,
+                 tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — Order Index needs totals (deposit amount,
     balance amount) visible without clicking into each quote, so this
     now computes them per quote, same VAT_PCT/discount logic as the
@@ -5237,6 +5296,14 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
     with Session(engine) as session:
         VAT_PCT = get_settings(session, tenant_id).vat_pct
         stmt = select(Quote).where(Quote.tenant_id == tenant_id)
+        # Price Check (confirmed Aug 2026, New Quote Screen brief §3) —
+        # excluded from the Order Index by default: it isn't a real
+        # tracked job until explicitly converted. include_price_checks
+        # exists for future callers that genuinely need to see them
+        # (e.g. a dedicated Price Checks view, not built this round) —
+        # not wired to anything in the frontend yet.
+        if not include_price_checks:
+            stmt = stmt.where(Quote.is_price_check == False)  # noqa: E712 — SQLAlchemy needs == for a WHERE clause, `is False` doesn't build a comparison expression
         if sales_owner:
             stmt = stmt.where(Quote.sales_owner == sales_owner)
         if branch:

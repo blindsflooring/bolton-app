@@ -653,6 +653,16 @@ class Client(SQLModel, table=True):
     preferred_branch: str = "gansbaai"
     notes: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Marketing source (confirmed Aug 2026, New Quote Screen: Clarify
+    # Buttons + Price Check + Marketing Source brief §4) — "how did you
+    # hear about us." Plain free-form string, not an enum on this side —
+    # the frontend's own dropdown offers a simple starting list
+    # (Referral, Walk-in, Google/Online search, Social media, Signage,
+    # Builder referral, Repeat client, Other), deliberately kept simple
+    # per the brief's own words ("can be expanded later... not part of
+    # this brief's scope") — a backend enum would make expanding that
+    # list a migration instead of a one-line frontend edit.
+    marketing_source: str = ""
 
 
 class BusinessSettings(SQLModel, table=True):
@@ -731,6 +741,19 @@ class Quote(SQLModel, table=True):
     tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     client_name: str
     client_id: Optional[int] = Field(default=None, foreign_key="client.id")  # confirmed Aug 2026: links to a real Client record when one exists; nullable so walk-in/one-off quotes without a CRM entry still work
+    # Price Check (confirmed Aug 2026, New Quote Screen: Clarify Buttons
+    # + Price Check + Marketing Source brief §3) — the ONE deliberate,
+    # sanctioned exception to the Client-Link Audit brief's own "every
+    # quote must have a real client_id" rule: a Price Check is
+    # explicitly allowed to exist with no client link at all, since it
+    # isn't a real tracked job until someone chooses to convert it (see
+    # POST /quotes/{id}/convert-to-quote, main.py). While True, this
+    # quote must never appear on the Order Index, Needs Attention, or
+    # any dashboard KPI (list_quotes()/analytics_overview() both filter
+    # it out) — reuses the exact same Quote row/calculator/line-item
+    # flow as a real quote otherwise (brief's own "reuse, don't
+    # rebuild"), just this one flag apart.
+    is_price_check: bool = False
     sales_owner: str          # "ryno" | "madri" | "burgert" — drives commission, decoupled
                                # from who performs admin actions on the quote afterward
     branch: str = "gansbaai"  # "gansbaai" | "hermanus"

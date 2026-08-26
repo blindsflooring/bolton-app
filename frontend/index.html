@@ -171,12 +171,20 @@
   <!-- QUOTE BUILDER -->
   <section id="quoteBuilder" style="display:none;">
     <span class="back-link" onclick="showSection('landing');">← Back to Home</span>
+    <!-- Clarify Buttons + Price Check + Marketing Source (confirmed
+    Aug 2026) — three distinct, previously-ambiguous use cases, now
+    three distinct buttons: Start Quote (existing client ONLY, via
+    search-and-select — see createQuote()'s own hard gate,
+    quote-builder.js), New Client (full invoice-ready details, its own
+    mini-form below), Price Check (no client required at all — a real
+    dummy quote, same calculator, explicitly not a saved job until
+    converted). -->
     <div class="card">
       <h2>New Quote</h2>
       <div class="grid">
         <div class="field" style="position:relative;">
-          <label>Client name</label>
-          <input id="q_client" placeholder="Client name — start typing to search existing clients" autocomplete="off"
+          <label>Client name <span class="adj">(existing client only — search and select)</span></label>
+          <input id="q_client" placeholder="Start typing to search existing clients" autocomplete="off"
             oninput="onQClientInput(this.value)"
             onkeydown="if(event.key==='Enter' && !document.getElementById('startQuoteBtn').disabled) createQuote();">
           <div id="qClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
@@ -193,8 +201,40 @@
         <label style="margin:0;" for="q_measurements">Show blind measurements to client on this quote</label>
       </div>
       <br><button class="primary" id="startQuoteBtn" onclick="createQuote()">Start Quote</button>
-      <button onclick="startFreshQuote()" style="margin-left:10px; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;">New Quote (different client)</button>
+      <button onclick="showNewClientMiniForm()" style="margin-left:10px; background:none; border:2px solid var(--teal); color:var(--teal); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;">New Client</button>
+      <button onclick="startPriceCheck()" style="margin-left:10px; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;" title="Quick price for a walk-in — not saved as a real job unless you convert it">Price Check</button>
       <p class="muted" id="quoteStatus"></p>
+
+      <!-- New Client mini-form (confirmed Aug 2026, brief §2) — full
+      invoice-ready details, not just a name. Hidden by default. -->
+      <div id="newClientMiniForm" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+        <h3 style="margin-top:0;">New Client</h3>
+        <div class="grid">
+          <div class="field"><label>Name</label><input id="nc_name" placeholder="Full name"></div>
+          <div class="field"><label>Phone</label><input id="nc_phone" placeholder="082 555 1234"></div>
+          <div class="field"><label>Email</label><input id="nc_email" placeholder="client@example.com"></div>
+          <div class="field" style="grid-column: span 2;"><label>Site/delivery address</label><input id="nc_address"></div>
+          <div class="field"><label>Preferred branch</label>
+            <select id="nc_branch"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+          </div>
+          <div class="field"><label>How did you hear about us?</label>
+            <select id="nc_marketing_source">
+              <option value="">— Not specified —</option>
+              <option value="Referral">Referral</option>
+              <option value="Walk-in">Walk-in</option>
+              <option value="Google/Online search">Google/Online search</option>
+              <option value="Social media">Social media</option>
+              <option value="Signage">Signage</option>
+              <option value="Builder referral">Builder referral</option>
+              <option value="Repeat client">Repeat client</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="field" style="grid-column: span 2;"><label>Notes</label><textarea id="nc_notes" rows="2" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;" placeholder="Optional"></textarea></div>
+        </div>
+        <button class="primary" onclick="saveNewClientAndStartQuote()">Save &amp; Start Quote</button>
+        <button onclick="document.getElementById('newClientMiniForm').style.display='none';" style="margin-left:8px;">Cancel</button>
+      </div>
     </div>
 
     <div class="card" id="addLineCard" style="display:none;">
@@ -3272,14 +3312,12 @@ function onQClientInput(value) {
     const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
     const matches = await res.json();
     if (!matches.length) {
-      // Client-Link Audit (confirmed Aug 2026) — "clearly offer create
-      // new client" (brief §1), not just silently accept the typed
-      // text. The actual creation itself already happens safely,
-      // automatically, server-side on Start Quote/Save
-      // (_resolve_or_create_client(), main.py) — this is purely the
-      // visible confirmation of what's about to happen, so it's never
-      // a silent, invisible side effect.
-      box.innerHTML = `<div style="padding:8px 10px; color:#9aa0a6; font-size:12.5px;">No matching client — a new client record named "${value.replace(/</g,'&lt;')}" will be created.</div>`;
+      // Clarify Buttons + Price Check + Marketing Source (confirmed Aug
+      // 2026) — Start Quote is now a hard gate, existing clients only
+      // (createQuote()'s own guard below) — this box's job changed from
+      // "confirm what auto-create is about to do" to "tell the user
+      // there's nothing to select here, point them at New Client".
+      box.innerHTML = `<div style="padding:8px 10px; color:#9aa0a6; font-size:12.5px;">No matching client. Use the "New Client" button below to add "${value.replace(/</g,'&lt;')}" as a new client.</div>`;
       box.style.display = 'block';
       return;
     }
@@ -3295,6 +3333,34 @@ function selectQClient(clientId, clientName) {
   pendingClientId = clientId;
   document.getElementById('q_client').value = clientName;
   document.getElementById('qClientSuggestions').style.display = 'none';
+}
+
+// New Client mini-form + Price Check (confirmed Aug 2026, New Quote
+// Screen brief) — both live in shared.js/quote-builder.js normally, but
+// stay here alongside onQClientInput()/selectQClient() above, which
+// this pair directly interacts with (New Quote screen's own state).
+function showNewClientMiniForm() {
+  document.getElementById('newClientMiniForm').style.display = 'block';
+  document.getElementById('nc_name').value = document.getElementById('q_client').value;
+  document.getElementById('nc_branch').value = document.getElementById('q_branch').value;
+}
+
+async function saveNewClientAndStartQuote() {
+  const body = {
+    name: document.getElementById('nc_name').value.trim(),
+    phone: document.getElementById('nc_phone').value,
+    email: document.getElementById('nc_email').value,
+    address: document.getElementById('nc_address').value,
+    preferred_branch: document.getElementById('nc_branch').value,
+    marketing_source: document.getElementById('nc_marketing_source').value,
+    notes: document.getElementById('nc_notes').value,
+  };
+  if (!body.name) { alert('Enter the client\'s name first.'); return; }
+  const res = await fetch(`${API}/clients`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (!res.ok) { alert('Could not save this client.'); return; }
+  const client = await res.json();
+  document.getElementById('newClientMiniForm').style.display = 'none';
+  startQuoteForClient(client.id, client.name, client.preferred_branch);
 }
 
 // saveOrderDetails()/logFollowUp()/loadFollowUps() MOVED to order-index.js
