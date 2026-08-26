@@ -206,7 +206,24 @@
     .print-doc { max-width: 100%; }
   }
   .print-doc { max-width: 760px; margin: 0 auto; padding: 20px; font-family: 'Figtree', sans-serif; }
-  .print-doc .doc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 2px solid var(--navy); }
+  /* Mobile Rendering: Document Preview Overflow brief (confirmed Aug
+     2026) — real phone screenshot + real bounding-rect measurement
+     (393px viewport): flex-wrap defaulted to nowrap here, so the
+     doc-title block (right-hand "QUOTE #0048" / date) never dropped
+     to its own line — it just kept pushing right, 42px past the
+     visible screen edge, with the tail end of the text genuinely
+     invisible without a horizontal scroll nobody would think to do
+     inside a preview tile ("QU"/"#0" cut off is exactly what a user
+     sees at the point that content crosses the viewport edge, not
+     visual corruption). flex-wrap:wrap is the fix — on desktop
+     there's already room for both blocks side by side, so this never
+     visibly triggers there; on a narrow screen the two blocks stack
+     instead of overflowing. Also used, unchanged, by the real
+     archived-PDF rendering (pdf_render.py via buildPrintDocHtml()) —
+     a pure layout property, doesn't touch any document content, so
+     nothing about what gets archived changes, only how the header
+     wraps on a screen too narrow to fit it on one line either way. */
+  .print-doc .doc-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 2px solid var(--navy); }
   .print-doc .doc-title { font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 20px; text-align: right; }
   .print-doc table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
   .print-doc th { text-align: left; font-size: 10px; text-transform: uppercase; color: #6b7280; padding: 8px 6px; border-bottom: 2px solid var(--navy); }
@@ -353,6 +370,22 @@
      this audit, but the underlying layout risk is real regardless of
      what content happens to trigger it, so fixed defensively. */
   .attention-item .attn-detail { font-size: 12.5px; color: var(--ink-soft, #6b7280); flex: 1; min-width: 0; text-align: left; margin-left: 10px; }
+  /* Mobile Rendering: Order Index Card Overlap brief (confirmed Aug
+     2026) — the exact risk the min-width:0 comment above already
+     predicted, now actually reproduced (real phone screenshot,
+     393px viewport): .attn-flag and .next-action-btn (white-space:
+     nowrap) neither shrink, squeezing .attn-detail into an
+     unreadable ~30px-wide wrapped column between them — reads as
+     the button sitting on/behind the text, confirmed via real
+     bounding-rect measurement, not just visual impression. This is a
+     genuinely different fix from min-width:0 (which only helps an
+     item that's ALLOWED to shrink) — three items that each refuse to
+     shrink simply don't fit in one row on a phone; the real fix is
+     letting the card stack instead of staying in one flex row. */
+  @media (max-width: 700px) {
+    .attention-item { flex-direction: column; align-items: flex-start; }
+    .attention-item .attn-detail { margin-left: 0; }
+  }
 
   /* Document Preview + Inline Edit (confirmed Aug 2026) — a genuine
      mini visual replica of the real print-doc template, shrunk with a
