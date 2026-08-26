@@ -983,18 +983,20 @@ async function renderBusinessOverview(el) {
   const pct = (v) => v === null || v === undefined ? '—' : (v*100).toFixed(1) + '%';
   const money = R; // alias — consolidated to the one definition in shared.js
 
-  // Conversion Rate Misleading on Small Sample Size (confirmed Aug
-  // 2026) — a bare "100.0%" off one decided quote reads as "winning
-  // every job," which is misleading; Burgert flagged this directly.
-  // Every conversion percentage on this page now always shows its
-  // underlying sample size right alongside it — decided() is
-  // won+lost, i.e. every quote that's actually been accepted or
-  // declined, excluding still-open ones (same basis the rate itself
-  // already uses). The "de-emphasize below a threshold" idea from the
-  // brief is explicitly NOT built here — the brief itself says to
-  // confirm the threshold with Burgert first, not guess one.
+  // Conversion Rate Misleading on Small Sample Size, then Make Total-
+  // Quotes-Won the Primary Conversion Figure (confirmed Aug 2026, the
+  // second a direct follow-up to the first) — even with a "(N
+  // decided)" caveat attached, a bare decided-only rate still read as
+  // misleadingly high on a small sample (100% off 1-of-1 decided,
+  // while 6 others sat still-open). PRIMARY figure everywhere on this
+  // page is now conversion against EVERY quote (won ÷ total, never
+  // shrinking the denominator to hide how many are still undecided);
+  // the original decided-only rate is kept as a smaller, secondary
+  // line for anyone who wants the "closing rate once a decision is
+  // actually made" view. decided() is won+lost, excluding still-open.
   const decided = (s) => s.won_quotes + s.lost_quotes;
-  const convText = (rate, n) => rate === null || rate === undefined ? '—' : `${pct(rate)} (${n} decided)`;
+  const convOfTotal = (rate, won, total) => rate === null || rate === undefined ? '—' : `${pct(rate)} (${won} of ${total} quotes won)`;
+  const convDecided = (rate, won, n) => rate === null || rate === undefined ? '—' : `${pct(rate)} of decided quotes (${won} of ${n})`;
 
   const kpiCard = (label, value, sublabel) => `
     <div class="card" style="text-align:center;">
@@ -1005,12 +1007,18 @@ async function renderBusinessOverview(el) {
 
   const branchRows = Object.keys(data.by_branch).sort().map(b => {
     const s = data.by_branch[b];
-    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${convText(s.conversion_rate_by_count, decided(s))}</td><td>${convText(s.conversion_rate_by_value, decided(s))}</td></tr>`;
+    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td>
+      <td><b>${convOfTotal(s.conversion_rate_by_count_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_count, s.won_quotes, decided(s))}</span></td>
+      <td><b>${convOfTotal(s.conversion_rate_by_value_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_value, s.won_quotes, decided(s))}</span></td>
+    </tr>`;
   }).join('');
 
   const repRows = Object.keys(data.by_rep).sort().map(r => {
     const s = data.by_rep[r];
-    return `<tr><td style="text-transform:capitalize;">${r}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td><td>${convText(s.conversion_rate_by_count, decided(s))}</td><td>${convText(s.conversion_rate_by_value, decided(s))}</td></tr>`;
+    return `<tr><td style="text-transform:capitalize;">${r}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td>
+      <td><b>${convOfTotal(s.conversion_rate_by_count_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_count, s.won_quotes, decided(s))}</span></td>
+      <td><b>${convOfTotal(s.conversion_rate_by_value_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_value, s.won_quotes, decided(s))}</span></td>
+    </tr>`;
   }).join('');
 
   el.innerHTML = `
@@ -1021,13 +1029,14 @@ async function renderBusinessOverview(el) {
       ${kpiCard('Total quotes', data.overall.total_quotes)}
       ${kpiCard('Open (awaiting decision)', data.overall.open_quotes, money(data.overall.open_value))}
       ${kpiCard('Won', data.overall.won_quotes, money(data.overall.won_value))}
-      ${kpiCard('Conversion (by count)', convText(data.overall.conversion_rate_by_count, decided(data.overall)),
-        `by value: ${convText(data.overall.conversion_rate_by_value, decided(data.overall))}<br>${data.overall.won_quotes} of ${data.overall.total_quotes} total quotes won so far`)}
+      ${kpiCard('Conversion', convOfTotal(data.overall.conversion_rate_by_count_of_total, data.overall.won_quotes, data.overall.total_quotes),
+        `by value: ${convOfTotal(data.overall.conversion_rate_by_value_of_total, data.overall.won_quotes, data.overall.total_quotes)}<br>`
+        + `<span style="font-size:11px;">${convDecided(data.overall.conversion_rate_by_count, data.overall.won_quotes, decided(data.overall))} · by value: ${pct(data.overall.conversion_rate_by_value)}</span>`)}
     </div>
 
     <div class="card">
       <h2>By Branch — Gansbaai vs Hermanus</h2>
-      <p class="muted">Conversion rate excludes still-open quotes — only decided ones (won or declined) count toward the rate.</p>
+      <p class="muted">Conversion shown is against every quote, including still-open ones — the smaller line underneath is the closing rate among decided quotes only (won or declined).</p>
       <table>
         <thead><tr><th>Branch</th><th>Quotes</th><th>Won value</th><th>Conversion (count)</th><th>Conversion (value)</th></tr></thead>
         <tbody>${branchRows || '<tr><td colspan="5" class="muted">No quotes yet.</td></tr>'}</tbody>
@@ -1044,7 +1053,7 @@ async function renderBusinessOverview(el) {
     </div>
 
     <div class="card" style="border: 2px solid var(--cream);">
-      <p class="muted" style="margin:0;">⚠️ Conversion rate needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count either way. Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
+      <p class="muted" style="margin:0;">⚠️ The smaller "of decided quotes" line needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count toward it either way. The larger, primary conversion figure is always meaningful, including while most quotes are still undecided — it's literally "won so far out of every quote raised." Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
     </div>
   `;
   });
