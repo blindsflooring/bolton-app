@@ -2255,9 +2255,21 @@ def delete_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current
                 tenant_id=tenant_id, username=username, entity_type="OrderSheet", entity_id=order_sheet_id,
                 field="__deleted__", old_value=summary, new_value="(deleted)",
             ))
+            session.commit()
+            # Real bug found deploying this against production Postgres
+            # (never surfaced against local SQLite, which doesn't
+            # enforce foreign keys by default): staging both the line
+            # deletes and the parent sheet delete for ONE final commit
+            # hit a genuine ForeignKeyViolation — Postgres executed the
+            # OrderSheet DELETE before the OrderSheetLine DELETEs had
+            # actually landed. Fixed by making the ordering certain
+            # instead of relying on the ORM's own dependency sort:
+            # delete every line and commit THAT on its own, only then
+            # delete the now-childless sheet.
             lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
             for line in lines:
                 session.delete(line)
+            session.commit()
             session.delete(sheet)
             session.commit()
         except Exception as e:
