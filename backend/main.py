@@ -550,6 +550,42 @@ def _old_password_still_works_remediation():
         print(f"Old Password incident: remediation FAILED ({e}) — needs manual review")
 
 
+def _burgert_login_recovery_remediation():
+    """Burgert locked out (confirmed Aug 2026): the temp password issued
+    for burgert's account in the Old Password Still Works incident
+    directly above (df01fd1) didn't work for him at login. That plaintext
+    was never stored anywhere retrievable (deliberate practice, same as
+    every password this app has ever issued) -- by the time this was
+    reported, it no longer existed anywhere to hand back, so this is a
+    fresh reset rather than a re-report of the old value.
+
+    Scoped to burgert only -- ryno/madri haven't reported an issue, and
+    resetting their passwords too would force an unnecessary re-login
+    with no upside. Unconditional and idempotent the same way as the
+    incident above: compares against the NEW hash (not an old one) so a
+    second boot is a clean no-op, and applies regardless of whatever
+    burgert's current hash actually is -- no assumption about why the
+    previous one failed (mistyped, mis-copied, or something else) is
+    needed for this fix to be correct."""
+    NEW_HASH = "pbkdf2_sha256$260000$ba426563e9bb603ec419816bde80fba0$1ae2426ba61040dd7d6a7010387cf043c18a5f8f0ec21552a211e83fc00a3943"
+    try:
+        with Session(engine) as session:
+            user = session.exec(select(User).where(User.username == "burgert")).first()
+            if not user:
+                print("Burgert login recovery: no 'burgert' user row found — nothing to do")
+                return
+            if user.password_hash == NEW_HASH:
+                print("Burgert login recovery: already on the new hash issued for this incident — no-op")
+                return
+            user.password_hash = NEW_HASH
+            user.password_changed_at = datetime.utcnow()
+            session.add(user)
+            session.commit()
+            print("Burgert login recovery: password force-reset")
+    except Exception as e:
+        print(f"Burgert login recovery: remediation FAILED ({e}) — needs manual review")
+
+
 def _fix_orphaned_quotes_remediation():
     """Create New Client From Quote incident (confirmed Aug 2026,
     "Root Cause Confirmed" brief) — real, already-stuck data found:
@@ -1073,6 +1109,8 @@ def on_startup():
     # Same "run after user seeding" reasoning — depends on real user
     # rows already existing.
     _old_password_still_works_remediation()
+    # Same reasoning, same ordering requirement.
+    _burgert_login_recovery_remediation()
     _fix_orphaned_quotes_remediation()
 
     # Diagnostic (confirmed Aug 2026, Supplier Order Sheets brief §4 —
