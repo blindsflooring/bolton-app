@@ -1032,11 +1032,27 @@ async function generateOrderSheetsForQuote(quoteId) {
 // a single "currentOrderSheetId" can't distinguish between.
 function orderSheetLinesEditorHtml(sheet, editable) {
   const total = sheet.lines.reduce((sum, l) => sum + (l.quantity * l.unit_cost), 0);
+  // Order Sheet Corrections brief §3+§4 (confirmed Aug 2026) — "show
+  // three values instead of a single cost figure" for a flooring
+  // line: pre-discount price, the discount rate, and the resulting
+  // (already-shown) cost. discount_pct === 0 (a floor-prep/consumable
+  // line, e.g. Azura's screed compound) reads as an explicit "No
+  // discount" note, in visible contrast to a flooring line's real
+  // rate — deliberately distinguished from discount_pct === null (a
+  // manually-added extra item, or the m²-fallback path with no
+  // product to price a discount against), which shows nothing at all
+  // rather than a misleading "No discount" on something that was
+  // never a book-price line to begin with.
+  const discountNote = (l) => {
+    if (l.discount_pct === null || l.discount_pct === undefined) return '';
+    if (l.discount_pct === 0) return `<br><span class="muted" style="font-size:10.5px;">Book price, R${l.pre_discount_unit_cost.toFixed(2)} — <b style="color:var(--navy);">No discount</b></span>`;
+    return `<br><span class="muted" style="font-size:10.5px;">R${l.pre_discount_unit_cost.toFixed(2)} less ${(l.discount_pct*100).toFixed(0)}% trade discount</span>`;
+  };
   const rows = sheet.lines.length ? sheet.lines.map(l => `
     <tr>
       <td>${l.product_name}${l.colour ? `<br><span class="muted" style="font-size:11px;">${l.colour}</span>` : ''}${l.is_extra ? '<br><span class="muted" style="font-size:10px;">(added manually)</span>' : ''}</td>
       <td>${editable ? `<input type="number" step="0.01" value="${l.quantity}" style="width:70px;" onchange="updateOrderSheetLineQty(${sheet.id}, ${l.id}, this.value)">` : l.quantity} ${l.unit}</td>
-      <td>R${l.unit_cost.toFixed(2)}</td>
+      <td>R${l.unit_cost.toFixed(2)}${discountNote(l)}</td>
       <td>R${(l.quantity * l.unit_cost).toFixed(2)}</td>
       <td>${editable ? `<button class="delete-btn" onclick="deleteOrderSheetLine(${sheet.id}, ${l.id})">Delete</button>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="5" class="muted">No line items on this order sheet.</td></tr>';

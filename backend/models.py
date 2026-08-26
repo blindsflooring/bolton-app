@@ -1160,5 +1160,18 @@ class OrderSheetLine(SQLModel, table=True):
     colour: str = ""
     quantity: float
     unit: str = ""            # "boxes" | "bags" | "drums" | "m²" | "" — whatever's meaningful for that line
-    unit_cost: float = 0.0    # Burgert's real cost per unit, ex VAT — NEVER the client's sell price
+    unit_cost: float = 0.0    # Burgert's real cost per unit, ex VAT, AFTER any discount — NEVER the client's sell price
     is_extra: bool = False
+    # Order Sheet Corrections brief (confirmed Aug 2026, §3+§4) —
+    # "show three values instead of a single cost figure": pre-discount
+    # book/Zone A price, the discount rate applied, and the resulting
+    # unit_cost above. Both None for a manually-added extra line (no
+    # book price/discount concept applies to something Burgert typed in
+    # himself) or for a hand-computed fallback with no product record
+    # to price against. discount_pct explicitly 0.0 (not None) for a
+    # floor-prep/consumable line — Azura's real no-discount rule (§4) —
+    # so the frontend can show "No discount" in visible contrast to a
+    # flooring line's real rate, rather than the two looking the same
+    # (None and 0.0 would both render as blank otherwise).
+    pre_discount_unit_cost: Optional[float] = None
+    discount_pct: Optional[float] = None

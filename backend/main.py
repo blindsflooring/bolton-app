@@ -8,6 +8,7 @@ Run: uvicorn main:app --reload --port 8000
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Any
 import json
+import math
 import os
 import re
 import secrets
@@ -315,6 +316,9 @@ def _ensure_new_columns():
         ("ordersheet", "status", "VARCHAR", "'draft'"),
         ("ordersheet", "placed_at", "TIMESTAMP", "NULL"),
         ("ordersheet", "placed_by", "VARCHAR", "NULL"),
+        # Order Sheet Corrections brief (confirmed Aug 2026):
+        ("ordersheetline", "pre_discount_unit_cost", "FLOAT", "NULL"),
+        ("ordersheetline", "discount_pct", "FLOAT", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2004,6 +2008,25 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
     directly before writing this, not re-implemented or overridden
     here.
 
+    Order Sheet Corrections (confirmed Aug 2026, real feedback on
+    generated Order O-0001) — three fixes to material_line_data() and
+    the floor-prep block below:
+    §1 flooring must order in BOXES (wastage included, rounded up),
+       never m² — the real bug on O-0001 was an older quote line from
+       before boxes_needed was reliably populated, silently falling
+       back to the m² display.
+    §2 glue removed entirely — drawn from existing stock, never
+       ordered per job, on every floor-prep sheet, not just this job.
+    §3+§4 discount breakdown (pre-discount price/box, discount rate,
+       post-discount cost/box) now stored per line — computed straight
+       from the FlooringProduct record (base_cost_ex_vat/
+       trade_discount_pct/m2_per_pack), the exact same basis
+       calculate_flooring_line() itself uses, so this can never
+       disagree with what the quote was actually priced from. A
+       floor-prep line gets an explicit discount_pct of 0.0 (not None)
+       so the frontend can show "No discount" in visible contrast to a
+       flooring line's real rate.
+
     Duplicate fix (confirmed Aug 2026, Order Sheets UX: Duplicate Bug +
     Delete Option + Prominent Placement + Real Preview brief §1) —
     REVERSES the "deliberately not idempotent" decision above, which
@@ -2042,22 +2065,46 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
                 floor_prep_lines_data.append({
                     "product_name": f"Screed levelling compound — {l.product_name}",
                     "colour": "", "quantity": float(l.bags_allowed), "unit": "bags", "unit_cost": round(unit_cost, 2),
+                    "pre_discount_unit_cost": round(unit_cost, 2), "discount_pct": 0.0,
                 })
-        for l in material_lines:
-            if l.glue_units_needed:
-                unit_cost = (l.glue_cost_total / l.glue_units_needed) if l.glue_units_needed else 0.0
-                floor_prep_lines_data.append({
-                    "product_name": f"Glue — for {l.product_name}",
-                    "colour": "", "quantity": float(l.glue_units_needed), "unit": "drums", "unit_cost": round(unit_cost, 2),
-                })
+        # Glue line removed entirely (Order Sheet Corrections brief §2)
+        # — glue is drawn from existing stock, not ordered per job, on
+        # every floor-prep sheet, not just this one. The block that
+        # used to append a "Glue — for {product}" line here is gone,
+        # not conditionally skipped.
 
         def material_line_data(l):
             product = session.get(FlooringProduct, l.product_id)
+            if not product or not product.m2_per_pack:
+                # No real product record / no box size on file to
+                # compute against — genuinely nothing to order by boxes
+                # with, so this falls back to the m² basis rather than
+                # a fabricated box count.
+                return {"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity_m2 or 0.0, "unit": "m²", "unit_cost": round(l.unit_cost or 0.0, 2), "pre_discount_unit_cost": None, "discount_pct": None}
+            # §1 — prefer the box count already stored on the quote
+            # line (calculate_flooring_line(), calculations.py — frozen
+            # at the wastage % actually used when this quote was
+            # priced, confirmed with Burgert as the right basis over a
+            # flat company-wide 8%); only recompute from the product's
+            # CURRENT wastage_pct as a fallback for an older line from
+            # before this was reliably populated, so it still orders in
+            # boxes rather than silently falling back to m² — the exact
+            # bug reported on O-0001.
             if l.boxes_needed:
-                net_cost_per_box = (l.unit_cost or 0.0) * (product.m2_per_pack or 1) if product else 0.0
-                return {"product_name": l.product_name, "colour": l.colour, "quantity": float(l.boxes_needed), "unit": "boxes", "unit_cost": round(net_cost_per_box, 2)}
-            # Defensive fallback (shouldn't normally be reached — material_lines already excludes screed): no box count on file, show the m² basis instead of a wrong/zero quantity.
-            return {"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity_m2 or 0.0, "unit": "m²", "unit_cost": round(l.unit_cost or 0.0, 2)}
+                boxes = l.boxes_needed
+            elif l.quantity_m2:
+                boxes = math.ceil((l.quantity_m2 * (1 + product.wastage_pct)) / product.m2_per_pack)
+            else:
+                boxes = 0
+            # §3+§4 — discount breakdown, same basis
+            # calculate_flooring_line() itself uses for net_cost_per_box.
+            pre_discount_cost_per_box = round(product.base_cost_ex_vat * product.m2_per_pack, 2)
+            discount_pct = product.trade_discount_pct
+            net_cost_per_box = round(pre_discount_cost_per_box * (1 - discount_pct), 2)
+            return {
+                "product_name": l.product_name, "colour": l.colour, "quantity": float(boxes), "unit": "boxes",
+                "unit_cost": net_cost_per_box, "pre_discount_unit_cost": pre_discount_cost_per_box, "discount_pct": discount_pct,
+            }
 
         created_sheets = []
         reused_sheets = []
