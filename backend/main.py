@@ -260,6 +260,17 @@ def _ensure_new_columns():
         ("quote", "installer_team", "VARCHAR", "''"),
         ("quote", "materials_ordered", "BOOLEAN", "FALSE"),
         ("quote", "ready_for_installation", "BOOLEAN", "FALSE"),
+        # Manual Override, Owner-only (confirmed Aug 2026, Manual Override
+        # brief — urgent real use case, see models.py's own comment on
+        # these fields for the full reasoning):
+        ("quote", "manual_override_total_incl_vat", "FLOAT", "NULL"),
+        ("quote", "override_total_reason", "VARCHAR", "NULL"),
+        ("quote", "override_total_by", "VARCHAR", "NULL"),
+        ("quote", "override_total_at", "TIMESTAMP", "NULL"),
+        ("quotelineitem", "pre_override_line_total", "FLOAT", "NULL"),
+        ("quotelineitem", "override_reason", "VARCHAR", "NULL"),
+        ("quotelineitem", "override_by", "VARCHAR", "NULL"),
+        ("quotelineitem", "override_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -3126,10 +3137,27 @@ def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dic
     Takes subtotal_ex_vat as a plain float rather than fetching lines
     itself — each caller already computes it its own way (post-strip
     dicts in get_quote(), raw QuoteLineItem rows elsewhere), so this
-    only dedupes the part that was actually identical."""
-    discount_amount = subtotal_ex_vat * quote.discount_pct
-    total_ex_vat = subtotal_ex_vat - discount_amount
-    total_incl_vat = total_ex_vat * (1 + vat_pct)
+    only dedupes the part that was actually identical.
+
+    Manual Override (confirmed Aug 2026, Manual Override brief) — when
+    quote.manual_override_total_incl_vat is set, it completely replaces
+    the calculated discount->VAT chain; deposit/balance are derived FROM
+    the override so a recorded deposit always matches the real agreed
+    figure, not a formula the Owner explicitly said doesn't apply here.
+    discount_amount is still reported (as the gap between the real
+    calculated subtotal and the override, clamped at 0 rather than ever
+    going negative) purely so the printed doc's own subtotal -> discount
+    -> net -> VAT breakdown still visibly adds up to the final total for
+    the client — same clean, professional invoice either way, no
+    internal override language anywhere in it (brief's own requirement)."""
+    if quote.manual_override_total_incl_vat is not None:
+        total_incl_vat = quote.manual_override_total_incl_vat
+        total_ex_vat = total_incl_vat / (1 + vat_pct)
+        discount_amount = max(0.0, subtotal_ex_vat - total_ex_vat)
+    else:
+        discount_amount = subtotal_ex_vat * quote.discount_pct
+        total_ex_vat = subtotal_ex_vat - discount_amount
+        total_incl_vat = total_ex_vat * (1 + vat_pct)
     deposit_amount = total_incl_vat * quote.deposit_pct
     balance_amount = total_incl_vat - deposit_amount
     return {
@@ -4209,6 +4237,137 @@ def delete_quote_line(quote_id: int, line_id: int, tenant_id: str = Depends(get_
         return {"deleted": line_id}
 
 
+# ---------- Manual Override, Owner-only (confirmed Aug 2026, Manual
+# Override brief — urgent real use case: a job already quoted/accepted/
+# deposit-paid in Burgert's OLD pre-Bolton system needs to be entered
+# here matching those already-agreed figures exactly, not recalculated
+# by Bolton's formula engine). require_owner on all four endpoints —
+# this deliberately correctly respects Owner Preview Mode too (same
+# get_current_role() chain everything else uses): previewing as Sales/
+# Admin genuinely loses override access for that request, matching what
+# the brief asks to be verified ("confirm Sales/Admin logins cannot").
+# A reason is mandatory on every apply (never a silent override) and
+# every action — apply AND revert — writes a permanent AuditLog entry.
+class LineOverrideRequest(BaseModel):
+    new_value: float
+    reason: str
+
+
+class TotalOverrideRequest(BaseModel):
+    new_value: float
+    reason: str
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/override")
+def override_quote_line(quote_id: int, line_id: int, body: LineOverrideRequest,
+                         role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                         username: str = Depends(get_current_username)):
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(400, "A reason is required to manually override a value.")
+    with Session(engine) as session:
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        old_value = line.line_total
+        # Only ever captured on the FIRST override — a second override
+        # applied later must not overwrite the true original with what
+        # was just the previous override's value, or "Revert to
+        # calculated value" would stop being true to its name.
+        if line.pre_override_line_total is None:
+            line.pre_override_line_total = line.line_total
+        line.line_total = body.new_value
+        line.override_reason = body.reason.strip()
+        line.override_by = username
+        line.override_at = datetime.utcnow()
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="QuoteLineItem", entity_id=line_id,
+            field="manual_override", old_value=f"R{old_value:.2f}",
+            new_value=f"R{body.new_value:.2f} — {body.reason.strip()}",
+        ))
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        return line
+
+
+@app.post("/quotes/{quote_id}/lines/{line_id}/revert-override")
+def revert_quote_line_override(quote_id: int, line_id: int,
+                                role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                                username: str = Depends(get_current_username)):
+    with Session(engine) as session:
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.pre_override_line_total is None:
+            raise HTTPException(400, "This line has no override to revert.")
+        old_value = line.line_total
+        restored = line.pre_override_line_total
+        line.line_total = restored
+        line.pre_override_line_total = None
+        line.override_reason = None
+        line.override_by = None
+        line.override_at = None
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="QuoteLineItem", entity_id=line_id,
+            field="manual_override_reverted", old_value=f"R{old_value:.2f}",
+            new_value=f"R{restored:.2f} (reverted to calculated value)",
+        ))
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        return line
+
+
+@app.put("/quotes/{quote_id}/override-total")
+def override_quote_total(quote_id: int, body: TotalOverrideRequest,
+                          role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(400, "A reason is required to manually override the total.")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        old_value = quote.manual_override_total_incl_vat
+        quote.manual_override_total_incl_vat = body.new_value
+        quote.override_total_reason = body.reason.strip()
+        quote.override_total_by = username
+        quote.override_total_at = datetime.utcnow()
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+            field="manual_override_total",
+            old_value=(f"R{old_value:.2f}" if old_value is not None else "(calculated)"),
+            new_value=f"R{body.new_value:.2f} — {body.reason.strip()}",
+        ))
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.post("/quotes/{quote_id}/revert-total-override")
+def revert_quote_total_override(quote_id: int, role: str = Depends(require_owner),
+                                 tenant_id: str = Depends(get_current_tenant),
+                                 username: str = Depends(get_current_username)):
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.manual_override_total_incl_vat is None:
+            raise HTTPException(400, "This quote's total has no override to revert.")
+        old_value = quote.manual_override_total_incl_vat
+        quote.manual_override_total_incl_vat = None
+        quote.override_total_reason = None
+        quote.override_total_by = None
+        quote.override_total_at = None
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+            field="manual_override_total_reverted", old_value=f"R{old_value:.2f}",
+            new_value="(reverted to calculated total)",
+        ))
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
 @app.put("/quotes/{quote_id}/lines/{line_id}/colour")
 def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str = "", changed_by: str = "", tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — a colour quoted might go out of stock and
@@ -4316,6 +4475,13 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             d["total_incl_vat"] = totals["total_incl_vat"]
             d["deposit_amount"] = totals["deposit_amount"]
             d["balance_amount"] = totals["balance_amount"]
+            # Manual Override badge (confirmed Aug 2026, Manual Override
+            # brief) — q.dict() already carries manual_override_total_incl_vat
+            # itself for the quote-level case; has_line_override covers the
+            # per-line case too, cheaply, from the `lines` already fetched
+            # above (no extra query) — Order Index shows a row's "Adjusted"
+            # flag if EITHER is true.
+            d["has_line_override"] = any(l.pre_override_line_total is not None for l in lines)
             # Next Action / Needs Attention (confirmed Aug 2026, Order
             # Index / Job Workflow Redesign brief + Next Action
             # Addendum) — computed per row so the Order Index table's

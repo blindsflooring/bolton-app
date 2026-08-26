@@ -801,6 +801,23 @@ class Quote(SQLModel, table=True):
     materials_ordered: bool = False
     ready_for_installation: bool = False
 
+    # ---------- Manual Override, Owner-only (confirmed Aug 2026, Manual
+    # Override brief — urgent real use case: a job already quoted/
+    # accepted/deposit-paid in Burgert's OLD pre-Bolton system needs to
+    # be entered here matching those already-agreed figures exactly,
+    # not recalculated by Bolton's formula engine). Deliberately
+    # separate from discount_pct above — a discount is a normal,
+    # calculated business rule; this is a manual escape hatch for "the
+    # real agreed number doesn't match what the calculator produces,"
+    # used rarely and only by the Owner. None = never overridden, the
+    # normal case for every quote. See _quote_totals() (main.py) for
+    # where this takes over the calculated total, and the matching
+    # QuoteLineItem fields below for the per-line equivalent.
+    manual_override_total_incl_vat: Optional[float] = None
+    override_total_reason: Optional[str] = None
+    override_total_by: Optional[str] = None
+    override_total_at: Optional[datetime] = None
+
 
 class PaymentFollowUp(SQLModel, table=True):
     """Confirmed Aug 2026 — a quote can need MULTIPLE follow-ups over
@@ -878,6 +895,25 @@ class QuoteLineItem(SQLModel, table=True):
     # not a cost figure, so it's not stripped for Sales.
     landing_area_m2: Optional[float] = None
     landing_sell_total: Optional[float] = None
+
+    # ---------- Manual Override, Owner-only (confirmed Aug 2026, Manual
+    # Override brief) ----------
+    # line_total itself becomes the overridden value once applied (see
+    # override_quote_line() in main.py) — deliberately NOT a separate
+    # "override_value" field read instead of line_total at display/total
+    # time, since subtotal_ex_vat is already summed from line_total in
+    # four places across this file (get_quote, list_quotes,
+    # get_client_quotes, and the older single-quote helper) — mutating
+    # line_total directly means all four keep working unchanged, zero
+    # risk of one of them forgetting to check for an override. The TRUE
+    # calculated value is preserved here instead, only on the FIRST
+    # override (never overwritten by a second override applied later),
+    # so "Revert to calculated value" always restores the real original,
+    # not whatever the previous override happened to be.
+    pre_override_line_total: Optional[float] = None   # None = never overridden
+    override_reason: Optional[str] = None
+    override_by: Optional[str] = None
+    override_at: Optional[datetime] = None
 
 
 class ColourChangeLog(SQLModel, table=True):
