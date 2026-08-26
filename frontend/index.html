@@ -1008,7 +1008,7 @@ async function renderBusinessOverview(el) {
 
   const branchRows = Object.keys(data.by_branch).sort().map(b => {
     const s = data.by_branch[b];
-    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.won_value)}</td>
+    return `<tr><td style="text-transform:capitalize;">${b}</td><td>${s.total_quotes}</td><td>${money(s.total_value)}</td><td>${money(s.won_value)}</td>
       <td><b>${convOfTotal(s.conversion_rate_by_count_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_count, s.won_quotes, decided(s))}</span></td>
       <td><b>${convOfTotal(s.conversion_rate_by_value_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_value, s.won_quotes, decided(s))}</span></td>
     </tr>`;
@@ -1037,10 +1037,10 @@ async function renderBusinessOverview(el) {
 
     <div class="card">
       <h2>By Branch — Gansbaai vs Hermanus</h2>
-      <p class="muted">Conversion shown is against every quote, including still-open ones — the smaller line underneath is the closing rate among decided quotes only (won or declined).</p>
+      <p class="muted">Total Quote Value is the whole pipeline for that branch — open + won + declined. Conversion shown is against every quote, including still-open ones — the smaller line underneath is the closing rate among decided quotes only (won or declined).</p>
       <table>
-        <thead><tr><th>Branch</th><th>Quotes</th><th>Won value</th><th>Conversion (count)</th><th>Conversion (value)</th></tr></thead>
-        <tbody>${branchRows || '<tr><td colspan="5" class="muted">No quotes yet.</td></tr>'}</tbody>
+        <thead><tr><th>Branch</th><th>Quotes</th><th>Total Quote Value</th><th>Won value</th><th>Conversion (count)</th><th>Conversion (value)</th></tr></thead>
+        <tbody>${branchRows || '<tr><td colspan="6" class="muted">No quotes yet.</td></tr>'}</tbody>
       </table>
     </div>
 

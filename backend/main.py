@@ -1643,8 +1643,10 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
             open_ = [q for q in quote_list if q.accepted_at is None and q.declined_at is None]
             decided = won + lost
             won_value = sum(value_by_quote.get(q.id, 0.0) for q in won)
+            lost_value = sum(value_by_quote.get(q.id, 0.0) for q in lost)
             open_value = sum(value_by_quote.get(q.id, 0.0) for q in open_)
-            decided_value = sum(value_by_quote.get(q.id, 0.0) for q in decided)
+            decided_value = won_value + lost_value
+            total_value = won_value + lost_value + open_value
             # Total-Quotes-Won primary metric (confirmed Aug 2026,
             # "Make Total-Quotes-Won the Primary Conversion Figure"
             # brief — follow-up to the Sample Size brief): even with a
@@ -1655,6 +1657,12 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
             # the frontend now shows these as the PRIMARY figure and
             # the existing decided-only rates above as the secondary/
             # smaller one.
+            #
+            # total_value (confirmed Aug 2026, Dashboard: Total Quote
+            # Value per Branch brief) — every quote regardless of state
+            # (open + won + declined), same real total_incl_vat basis
+            # (respecting Manual Override) as every other figure here —
+            # pipeline SIZE, distinct from won_value (pipeline CONVERTED).
             return {
                 "total_quotes": len(quote_list),
                 "open_quotes": len(open_),
@@ -1662,11 +1670,11 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
                 "won_quotes": len(won),
                 "won_value": round(won_value, 2),
                 "lost_quotes": len(lost),
+                "total_value": round(total_value, 2),
                 "conversion_rate_by_count": round(len(won) / len(decided), 4) if decided else None,
                 "conversion_rate_by_value": round(won_value / decided_value, 4) if decided_value else None,
                 "conversion_rate_by_count_of_total": round(len(won) / len(quote_list), 4) if quote_list else None,
-                "conversion_rate_by_value_of_total": round(won_value / (won_value + sum(value_by_quote.get(q.id, 0.0) for q in lost) + open_value), 4)
-                    if (won_value + sum(value_by_quote.get(q.id, 0.0) for q in lost) + open_value) else None,
+                "conversion_rate_by_value_of_total": round(won_value / total_value, 4) if total_value else None,
             }
 
         by_branch = {}
