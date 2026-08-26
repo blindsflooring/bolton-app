@@ -364,6 +364,86 @@ def _enable_row_level_security():
         print(f"Security: {len(failed)} table(s) FAILED — needs manual review: {', '.join(failed)}")
 
 
+def _post_rls_security_precaution():
+    """One-time precaution (confirmed Aug 2026, same URGENT RLS brief,
+    after Burgert confirmed both the Supabase Advisor and Render show
+    the RLS fix clean and live): usersession was publicly readable via
+    PostgREST for the entire time RLS was disabled, and it holds live
+    session tokens — a token read straight from that table lets someone
+    impersonate a logged-in user directly, no password needed, and it
+    wouldn't show up as a failed login anywhere since it never goes
+    through /auth/login. Two independent actions, each self-limiting so
+    this is safe to leave running on every future startup permanently
+    (same reasoning/pattern as the Clear Unlinked Quotes remediation
+    and RLS fix above — isolated per action, one failure can't block
+    the other or crash startup):
+
+    1) End every session that existed at the moment this code was
+       written (2026-08-26T05:48:22 UTC, hardcoded — not "all sessions
+       ever", so this can never re-log-out someone who logs in after
+       this deploy). _resolve_session() already treats ended_at as an
+       immediate hard invalidation (same as a real logout), confirmed
+       by reading that function before writing this — so this forces
+       everyone off immediately regardless of a token's original 24h
+       expires_at.
+    2) Reset the three staff passwords (password_hash was exposed
+       too). Guarded by comparing against the EXACT original seed hash
+       for each user — only fires if nobody has changed their password
+       since seeding, so it can never silently overwrite a real
+       password someone set themselves. New temporary plaintext
+       passwords were generated locally (not by this server) using the
+       app's own hash_password(), reported directly to Burgert in
+       chat, never committed to source control — same handling as the
+       original seed passwords."""
+    SESSION_INVALIDATION_CUTOVER = datetime(2026, 8, 26, 5, 48, 22)
+    try:
+        with Session(engine) as session:
+            sessions_to_end = session.exec(
+                select(UserSession).where(
+                    UserSession.ended_at.is_(None),
+                    UserSession.created_at <= SESSION_INVALIDATION_CUTOVER,
+                )
+            ).all()
+            if sessions_to_end:
+                now = datetime.utcnow()
+                for sess in sessions_to_end:
+                    sess.ended_at = now
+                    session.add(sess)
+                session.commit()
+                print(f"Security: force-ended {len(sessions_to_end)} pre-existing session(s) — usersession was publicly exposed, precaution per Burgert")
+            else:
+                print("Security: no pre-existing sessions to force-end (already done or none existed)")
+    except Exception as e:
+        print(f"Security: session invalidation FAILED ({e}) — needs manual review")
+
+    try:
+        # (username, exact original seed hash, new hash to install if the
+        # exact original seed hash is still what's stored)
+        resets = [
+            ("burgert", "pbkdf2_sha256$260000$295728ae9fea1b39e0acbc754f8b57af$bbf141469314ddc450ffdbdf30c2895c321f7accf2c721c2e3ec8d34e68fdf22",
+             "pbkdf2_sha256$260000$9a90538136cd35dca6cd6d6aa44c7912$80fc691b8b3d9a4d61deb96b0a8f2ce45b8074494068285a33241abda7532a13"),
+            ("ryno", "pbkdf2_sha256$260000$60f81b8c4153c7ec982d6c5415a5f675$b6d263a91c3c1722ff6d6f99705b193c5f43c4ededfa3d307b314fe28fefd915",
+             "pbkdf2_sha256$260000$37b312461548e30b9aca77c3ea5c3e75$cdac0195abd962ebd0493ba0116fd9412497a6c0efec929f7e8fccca5b894011"),
+            ("madri", "pbkdf2_sha256$260000$eb80a40b8263fc5984c0fc64ecd2ddca$e52495c5a0605b9a208db009fe8bbb6a1053d09e1f4744223d4fce3728dfb962",
+             "pbkdf2_sha256$260000$fa93a5a308a782019a50d2b78d658d60$36d94d18e68b78679bf84e333087490244483a54153fb3ad5bc73b504d4d29b3"),
+        ]
+        with Session(engine) as session:
+            reset_count = 0
+            for username, old_hash, new_hash in resets:
+                user = session.exec(select(User).where(User.username == username)).first()
+                if user and user.password_hash == old_hash:
+                    user.password_hash = new_hash
+                    session.add(user)
+                    reset_count += 1
+            if reset_count:
+                session.commit()
+                print(f"Security: reset password for {reset_count} user(s) still on their original seed password — precaution per Burgert, password_hash was exposed")
+            else:
+                print("Security: no users still on their original seed password (already reset, or already changed by the user)")
+    except Exception as e:
+        print(f"Security: password reset FAILED ({e}) — needs manual review")
+
+
 @app.on_event("startup")
 def on_startup():
     _ensure_new_columns()
@@ -781,6 +861,14 @@ def on_startup():
         except Exception as e:
             session.rollback()
             print(f"Migration: Quote #48 remediation failed ({e}) — left alone, needs manual review")
+
+    # Run last, deliberately: relies on the User-seeding block earlier in
+    # this same function having already run (guards on comparing against
+    # each user's real password_hash, which only exists once seeded).
+    # Confirmed via a local test this only matters for a from-scratch DB
+    # — production already has its users, so ordering here never affected
+    # the real deploy — but placed correctly regardless for robustness.
+    _post_rls_security_precaution()
 
 
 def get_session():
