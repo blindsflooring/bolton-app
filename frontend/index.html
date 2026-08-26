@@ -2893,22 +2893,36 @@ function renderBuilderPortalTable() {
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Builders (${builderPortalBuilders.length})</h3>
-      <table>
-        <thead><tr><th>Name</th><th>Contact</th><th>Link</th><th>Status</th><th></th></tr></thead>
-        <tbody>
-          ${builderPortalBuilders.length ? builderPortalBuilders.map(b => `
-            <tr>
-              <td>${b.name}</td>
-              <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
-              <td><code style="font-size:11px;">${builderPortalLink(b.slug)}</code><br>
-                <button onclick="copyBuilderLink('${b.slug}', this)">Copy link</button></td>
-              <td>${b.active ? '<b style="color:var(--teal);">Active</b>' : '<span class="muted">Revoked</span>'}</td>
-              <td>${b.active
-                ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
-                : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
-            </tr>`).join('') : '<tr><td colspan="5" class="muted">No builders yet — add one above.</td></tr>'}
-        </tbody>
-      </table>
+      <!-- Builder Portal Page: Not Filling Mobile Screen Width (confirmed
+      Aug 2026) — root cause confirmed empirically, not guessed: loaded
+      the real page in a headless browser and measured this table's
+      rendered width at 565px inside a 358px card on a 390px mobile
+      viewport. The long, unbroken referral-link <code> string forces
+      the table wider than its container; with no overflow containment,
+      that forces the WHOLE mobile page layout to zoom out to fit the
+      widest element — the classic "page confined to the left, blank
+      space on the right" symptom, not actually a fixed-width container.
+      Same overflow-x:auto wrapper already used for this exact reason on
+      Order Index, Supplier Console, and Change Log's tables — this one
+      was simply missed when the Builder Portal pilot was built. -->
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Name</th><th>Contact</th><th>Link</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${builderPortalBuilders.length ? builderPortalBuilders.map(b => `
+              <tr>
+                <td>${b.name}</td>
+                <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
+                <td><code style="font-size:11px;">${builderPortalLink(b.slug)}</code><br>
+                  <button onclick="copyBuilderLink('${b.slug}', this)">Copy link</button></td>
+                <td>${b.active ? '<b style="color:var(--teal);">Active</b>' : '<span class="muted">Revoked</span>'}</td>
+                <td>${b.active
+                  ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
+                  : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
+              </tr>`).join('') : '<tr><td colspan="5" class="muted">No builders yet — add one above.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
     </div>`;
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
@@ -2919,25 +2933,31 @@ function renderBuilderPortalTable() {
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Estimates submitted (${builderPortalEstimates.length})</h3>
-      <table>
-        <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Status</th><th>Commission</th><th></th></tr></thead>
-        <tbody>
-          ${builderPortalEstimates.length ? builderPortalEstimates.map(e => `
-            <tr>
-              <td>${fmt(e.created_at)}</td>
-              <td>${e.builder_name}</td>
-              <td>${e.client_name}${e.client_contact ? `<br><span class="muted" style="font-size:11px;">${e.client_contact}</span>` : ''}</td>
-              <td class="muted">${e.site_address || '—'}</td>
-              <td>${e.product_name}</td>
-              <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
-              <td>${e.commission_status}</td>
-              <td>${e.commission_amount ? 'R' + e.commission_amount.toFixed(2) : '—'}</td>
-              <td>${e.linked_quote_id
-                ? `<span class="muted">Quote #${e.linked_quote_id}</span>`
-                : `<button onclick="startQuoteFromBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")}')">Start Quote</button>`}</td>
-            </tr>`).join('') : '<tr><td colspan="9" class="muted">No estimates submitted yet.</td></tr>'}
-        </tbody>
-      </table>
+      <!-- Same overflow-x:auto fix as the Builders table above — 9
+      columns is well past what a mobile viewport can show natural-width
+      without forcing the whole page to zoom out. Brief §3 explicitly
+      asks both tabs be checked, not just Builders. -->
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Status</th><th>Commission</th><th></th></tr></thead>
+          <tbody>
+            ${builderPortalEstimates.length ? builderPortalEstimates.map(e => `
+              <tr>
+                <td>${fmt(e.created_at)}</td>
+                <td>${e.builder_name}</td>
+                <td>${e.client_name}${e.client_contact ? `<br><span class="muted" style="font-size:11px;">${e.client_contact}</span>` : ''}</td>
+                <td class="muted">${e.site_address || '—'}</td>
+                <td>${e.product_name}</td>
+                <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
+                <td>${e.commission_status}</td>
+                <td>${e.commission_amount ? 'R' + e.commission_amount.toFixed(2) : '—'}</td>
+                <td>${e.linked_quote_id
+                  ? `<span class="muted">Quote #${e.linked_quote_id}</span>`
+                  : `<button onclick="startQuoteFromBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")}')">Start Quote</button>`}</td>
+              </tr>`).join('') : '<tr><td colspan="9" class="muted">No estimates submitted yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
     </div>`;
 
   el.innerHTML = `
