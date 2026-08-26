@@ -349,9 +349,20 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
     // Customer | Value | Status | Install Date | Next Action | Actions
     // = 7 cells, +1 checkbox for Owner) — a mismatch here silently
     // misaligns every column below whenever a group is present.
+    // Group header checkbox (confirmed Aug 2026, Group Header Alignment
+    // brief follow-up) — the one remaining visual gap once Value/
+    // Status/Install Date were filled in: an empty checkbox column on
+    // the header row while every individual row has one. Selects every
+    // job in the group at once for bulk delete, not just a visual
+    // filler — orderIndexSelectedIds (the actual bulk-delete selection
+    // state) doesn't require a row to be visually expanded/rendered to
+    // hold its id, so this works correctly whether the group is
+    // collapsed or expanded.
+    const groupQuoteIds = groupQuotes.map(g => g.id);
+    const allGroupSelected = groupQuoteIds.every(id => orderIndexSelectedIds.has(id));
     const headerRow = `
       <tr style="cursor:pointer; font-weight:600;" onclick="toggleClientGroup(${q.client_id})">
-        ${isOwner ? '<td></td>' : ''}
+        ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" ${allGroupSelected ? 'checked' : ''} onchange="toggleGroupSelected([${groupQuoteIds.join(',')}], this.checked)"></td>` : ''}
         <td colspan="2">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
         <td>${money(groupTotal)}</td>
         <td>${groupStatusHtml}</td>
@@ -366,6 +377,21 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
 
 function toggleOrderSelected(quoteId, checked) {
   if (checked) orderIndexSelectedIds.add(quoteId); else orderIndexSelectedIds.delete(quoteId);
+  updateBulkDeleteButtonState();
+}
+
+// Group header checkbox (confirmed Aug 2026) — selects/deselects every
+// job in the group at once. Also syncs each visible CHILD row's own
+// checkbox when the group is currently expanded, purely for visual
+// consistency — orderIndexSelectedIds itself is already correct either
+// way, a collapsed row's checkbox never needing to exist in the DOM for
+// its id to count toward the bulk-delete selection.
+function toggleGroupSelected(quoteIds, checked) {
+  quoteIds.forEach(id => {
+    if (checked) orderIndexSelectedIds.add(id); else orderIndexSelectedIds.delete(id);
+    const cb = document.querySelector(`.oi-select[value="${id}"]`);
+    if (cb) cb.checked = checked;
+  });
   updateBulkDeleteButtonState();
 }
 

@@ -826,6 +826,8 @@ function resetQuoteBuilderUI() {
   document.getElementById('quotePhotosCard').style.display = 'none';
   const dupBtnHide = document.getElementById('duplicateQuoteBtn');
   if (dupBtnHide) dupBtnHide.style.display = 'none';
+  const revertBtnHide = document.getElementById('revertQuoteBtn');
+  if (revertBtnHide) revertBtnHide.style.display = 'none';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = false;
   startBtn.textContent = 'Start Quote';

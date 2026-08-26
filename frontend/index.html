@@ -903,6 +903,16 @@ async function renderFlooringDrill(el) {
 }
 
 async function startQuoteWithVinylRange(range) {
+  // Stale Quote Residue regression (confirmed Aug 2026, Client-Link
+  // Audit brief §2) — this entry point (Flooring Quotes drill-down) was
+  // missing the resetQuoteBuilderUI() call its sibling entry points
+  // (startQuoteForClient(), startQuoteFromBuilderEstimate() — both
+  // above) already have, same "may not have been covered by the
+  // original fix" pattern the brief itself flags. Only when NO quote is
+  // currently open — the other branch below deliberately applies to
+  // the ALREADY-open quote instead of starting a new one, so resetting
+  // there would wrongly wipe out real, unsaved work.
+  if (!currentQuoteId) { resetQuoteBuilderUI(); }
   pendingVinylRange = range;
   pendingCategory = 'flooring';
   goToTab('quoteBuilder');
@@ -3228,7 +3238,18 @@ function onQClientInput(value) {
   qClientSearchTimeout = setTimeout(async () => {
     const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
     const matches = await res.json();
-    if (!matches.length) { box.style.display = 'none'; return; }
+    if (!matches.length) {
+      // Client-Link Audit (confirmed Aug 2026) — "clearly offer create
+      // new client" (brief §1), not just silently accept the typed
+      // text. The actual creation itself already happens safely,
+      // automatically, server-side on Start Quote/Save
+      // (_resolve_or_create_client(), main.py) — this is purely the
+      // visible confirmation of what's about to happen, so it's never
+      // a silent, invisible side effect.
+      box.innerHTML = `<div style="padding:8px 10px; color:#9aa0a6; font-size:12.5px;">No matching client — a new client record named "${value.replace(/</g,'&lt;')}" will be created.</div>`;
+      box.style.display = 'block';
+      return;
+    }
     box.innerHTML = matches.map(c => `
       <div style="padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--border);" onclick="selectQClient(${c.id}, '${c.name.replace(/'/g,"\\'")}')">
         <b>${c.name}</b>${c.phone ? ' — '+c.phone : ''}

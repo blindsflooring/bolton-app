@@ -3468,32 +3468,77 @@ def update_business_settings(updates: BusinessSettings, role: str = Depends(get_
 
 # ---------- Quotes ----------
 
+def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optional[int], client_name: Optional[str]) -> Client:
+    """Client-Link Audit (confirmed Aug 2026, "Third Occurrence of
+    Orphaned/Unlinked Quotes" brief). The brief's own framing: two
+    earlier fixes (Duplicate Quote's free-text client_name, and Start
+    Quote's un-clicked autocomplete suggestion) each patched ONE
+    frontend entry point, and a THIRD, different entry point (the
+    Flooring Quotes drill-down) produced the identical symptom —
+    "patching entry points one at a time is not working." A full audit
+    found exactly two backend code paths where a quote's client can
+    ever be set: create_quote() below, and update_quote_details()'s
+    client_name branch — every current and future frontend entry point
+    (main "+ New Quote", Flooring Quotes drill, Builder Portal "Start
+    Quote from Estimate") already funnels through one or the other, so
+    fixing the invariant HERE, once, covers all of them regardless of
+    which frontend flow gets built next — the actual fix for "patching
+    one at a time isn't working."
+
+    - client_id given: validated and returned directly (existing, safe
+      behaviour — an explicit, real link).
+    - No client_id, but a name: an EXACT (case/whitespace-insensitive)
+      match against this tenant's existing clients is auto-linked; no
+      match creates a brand-new Client record with just that name — no
+      phone/email/address ever fabricated, same precedent as the Clear
+      Unlinked Quotes brief's Robert Aspeling remediation. A PARTIAL
+      match is a live frontend suggestion (already built, q_client's
+      own oninput handler, index.html) for the user to actively pick —
+      not something this backend safety net silently guesses at.
+    - Neither given: rejected outright (400) — the brief's own words,
+      "there must be NO remaining path where a quote can be saved with
+      just a text name and no real client link" extends to no name and
+      no link at all."""
+    if client_id:
+        return get_or_404(session, Client, client_id, tenant_id, "Client")
+    name = (client_name or "").strip()
+    if not name:
+        raise HTTPException(400, "A client name is required.")
+    existing = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+    match = next((c for c in existing if c.name.strip().lower() == name.lower()), None)
+    if match:
+        return match
+    new_client = Client(tenant_id=tenant_id, name=name)
+    session.add(new_client)
+    session.commit()
+    session.refresh(new_client)
+    return new_client
+
+
 @app.post("/quotes")
 def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
                   blinds_measurements_visible: bool = True,
                   discount_pct: float = 0.0, deposit_pct: float = 0.70,
                   client_id: int = None, tenant_id: str = Depends(get_current_tenant)):
-    """If client_id is given, client_name AND site_address are taken
-    from that real Client record (overriding whatever was passed) —
-    confirmed Aug 2026, previously only client_name did this, leaving a
-    real gap where a known client's saved address never carried through
-    to their new quote. Without client_id, this is a walk-in/one-off
-    quote using just the typed name, no CRM entry required."""
+    """Every quote created here is now linked to a real Client record
+    from the moment it exists — via _resolve_or_create_client() above,
+    confirmed Aug 2026 (Client-Link Audit brief). Previously, without a
+    client_id, this silently created a "walk-in/one-off" quote using
+    just the typed name and no CRM link at all — exactly the recurring
+    orphaned-quote bug this brief was written to close for good, not
+    patch again at one more entry point. site_address is still taken
+    from the resolved Client record when it has one on file."""
     with Session(engine) as session:
-        site_address = ""
-        if client_id:
-            client = get_or_404(session, Client, client_id, tenant_id, "Client")
-            client_name = client.name
-            site_address = client.address
+        client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
         quote = Quote(
-            client_name=client_name,
-            client_id=client_id,
+            client_name=client.name,
+            client_id=client.id,
             sales_owner=sales_owner,
             branch=branch,
             blinds_measurements_visible=blinds_measurements_visible,
             discount_pct=discount_pct,
             deposit_pct=deposit_pct,
-            site_address=site_address,
+            site_address=client.address or "",
             tenant_id=tenant_id,
         )
         session.add(quote)
@@ -3580,6 +3625,24 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if client_id is not None:
             client = get_or_404(session, Client, client_id, tenant_id, "Client")
+            quote.client_id = client.id
+            quote.client_name = client.name
+            if client.address:
+                quote.site_address = client.address
+        elif client_name is not None and quote.client_id is None:
+            # Client-Link Audit (confirmed Aug 2026) — only resolve-or-
+            # create when this quote genuinely has no client link yet.
+            # saveQuote() (quote-builder.js) resends client_name on
+            # EVERY save regardless of whether the quote is already
+            # linked; blindly re-resolving every time would risk
+            # silently relinking an already-correctly-linked quote to a
+            # DIFFERENT client on a simple display-text edit. Once
+            # client_id is set, only an explicit client_id here (the
+            # real "Change client" relink action, Job Detail) ever
+            # changes it again — this closes the gap for a quote that's
+            # still unlinked and being saved with a typed name, without
+            # ever touching one that's already correctly linked.
+            client = _resolve_or_create_client(session, tenant_id, None, client_name)
             quote.client_id = client.id
             quote.client_name = client.name
             if client.address:
