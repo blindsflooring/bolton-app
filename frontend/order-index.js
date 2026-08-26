@@ -670,6 +670,29 @@ async function renderOrderDetail(el) {
           </details>
         </div>
 
+        <!-- Order Sheets UX brief §3 (confirmed Aug 2026) — "Generate
+        Order Sheet(s) is buried... move it to a prominent position...
+        alongside or directly below the Workflow section." Moved out of
+        the Job Details card (was near the bottom of a long page) to
+        its own card right here, immediately below Workflow -- visible
+        without scrolling on exactly the screen this matters most on
+        (arriving via "Prepare Job" from Needs Attention). §1's real
+        result banner (the earlier duplicate happened because pressing
+        Generate gave no visible confirmation) shows here too. -->
+        <div class="card">
+          <h2>Order Sheets</h2>
+          <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
+          ${orderSheets.length ? orderSheets.map(s => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer;" onclick="openOrderSheetDetail(${s.id})">
+              <b>${s.order_number}</b>
+              <span class="muted">${s.supplier}</span>
+              <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
+              ${s.status === 'placed' ? `<span class="status-badge active-status">Placed</span>` : `<span class="status-badge pending-status">Draft</span>`}
+              <span class="muted" style="margin-left:auto; font-size:12px;">View →</span>
+            </div>`).join('') : '<p class="muted" style="margin-top:-6px;">No order sheets generated yet for this job.</p>'}
+          <button class="primary" onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px;">Generate Order Sheet(s)</button>
+        </div>
+
         <div class="card">
           <h2>Job Details</h2>
           <!-- Save confirmation (confirmed Aug 2026, Deposit Amount +
@@ -751,24 +774,6 @@ async function renderOrderDetail(el) {
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
           <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
 
-          <!-- Supplier Order Sheets (confirmed Aug 2026) — manual
-          trigger only (brief §2), never generated automatically at any
-          status change. Splitting rule (screed/floor-prep always to
-          Azura, combined with flooring if the flooring supplier is
-          ALSO Azura, otherwise two separate sheets) is entirely a
-          backend decision — generate_order_sheets(), main.py — this is
-          purely the trigger + the list of what's already been
-          generated for this job. -->
-          <h2 style="margin-top:20px;">Order Sheets</h2>
-          ${orderSheets.length ? orderSheets.map(s => `
-            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer;" onclick="openOrderSheetDetail(${s.id})">
-              <b>${s.order_number}</b>
-              <span class="muted">${s.supplier}</span>
-              <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
-              <span class="muted" style="margin-left:auto; font-size:12px;">View →</span>
-            </div>`).join('') : '<p class="muted" style="margin-top:-6px;">No order sheets generated yet for this job.</p>'}
-          <button onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px;">Generate Order Sheet(s)</button>
-
           <h2 style="margin-top:20px;">Follow-Ups</h2>
           <div id="followUpList" style="margin-bottom:10px;"></div>
           <div class="grid">
@@ -784,12 +789,70 @@ async function renderOrderDetail(el) {
           <h2>Document Preview</h2>
           ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
         </div>
+
+        <!-- Order Sheet Preview (confirmed Aug 2026, Order Sheets UX
+        brief §4) — a SECOND, equally prominent preview panel, clearly
+        labelled so there's never ambiguity about which panel is the
+        client-facing quote (above) and which is the supplier-facing
+        procurement document (this one). Only shown once at least one
+        order sheet exists for this job -- an empty card here before
+        anything's been generated would just be dead space alongside a
+        real Document Preview. Editable/savable/executable per the
+        brief's own words: orderSheetLinesEditorHtml() (shared with the
+        standalone Order Sheet Detail screen) is the same live-save-on-
+        change table used there, "Mark as Placed" is the executable
+        action, Delete is the owner-only cleanup action (§2) -- this is
+        genuinely the real order sheet, not a read-only summary of it. -->
+        ${orderSheets.length ? `
+        <div class="card" id="orderSheetPreviewCard">
+          <h2>Order Sheet Preview <span class="muted" style="font-weight:400; font-size:12px;">(supplier-facing procurement document — not the client's quote)</span></h2>
+          ${orderSheets.map(s => `
+            <div style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+                <b>${s.order_number}</b>
+                <span class="muted">${s.supplier}</span>
+                <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
+                ${s.status === 'placed' ? `<span class="status-badge active-status">Placed</span>` : `<span class="status-badge pending-status">Draft</span>`}
+                <a href="#" onclick="openOrderSheetDetail(${s.id}); return false;" style="font-size:12px; margin-left:auto;">Full page →</a>
+              </div>
+              ${orderSheetLinesEditorHtml(s, s.sheet_type === 'floor_prep' && s.status !== 'placed')}
+              <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+                ${s.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${s.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:11px; align-self:center;">Placed by ${s.placed_by || ''}${s.placed_at ? ' on ' + new Date(s.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
+                ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${s.id})">Delete</button>` : ''}
+              </div>
+            </div>`).join('')}
+        </div>` : ''}
       </div>
     </div>
   `;
   loadFollowUps();
   loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
+  // Immediate, visible confirmation after Generate (confirmed Aug
+  // 2026, brief §1+§4 -- "immediate, visible confirmation/preview...
+  // directly prevents the confusion that caused Section 1's
+  // duplicate"). generateOrderSheetsForQuote() sets this right before
+  // calling this same render function again.
+  if (window._orderSheetsResultMessage) {
+    showOrderSheetsResultBanner(window._orderSheetsResultMessage);
+    window._orderSheetsResultMessage = null;
+  }
   });
+}
+
+let orderSheetsResultBannerTimeout = null;
+function showOrderSheetsResultBanner(message) {
+  const banner = document.getElementById('orderSheetsResultBanner');
+  if (!banner) return;
+  banner.textContent = message;
+  banner.style.display = 'block';
+  clearTimeout(orderSheetsResultBannerTimeout);
+  orderSheetsResultBannerTimeout = setTimeout(() => { banner.style.display = 'none'; }, 6000);
+  // Scroll the Order Sheet Preview panel into view too -- the banner
+  // sits in the left column's Order Sheets card, but the actual
+  // generated content (what genuinely proves it worked) is in the
+  // right column, which can be below the fold on mobile.
+  const previewCard = document.getElementById('orderSheetPreviewCard');
+  if (previewCard) previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // Job Workflow actions (confirmed Aug 2026) — each a specific named
@@ -942,40 +1005,42 @@ async function generateOrderSheetsForQuote(quoteId) {
   if (!confirm('Generate order sheet(s) for this job now? This is a real procurement action — make sure the line items are final first.')) return;
   const res = await fetch(`${API}/quotes/${quoteId}/generate-order-sheets`, {method: 'POST'});
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not generate order sheet(s).'); return; }
+  const result = await res.json();
+  // Order Sheets UX brief §1 (confirmed Aug 2026) — unambiguous result
+  // message using the backend's own generated/reused split, exactly
+  // the visible confirmation that was missing before (the actual root
+  // cause of the O-0001/O-0002 duplicate: pressing Generate gave no
+  // visible result, so Burgert pressed it again assuming it failed).
+  window._orderSheetsResultMessage = result.generated && result.reused
+    ? `✓ Generated ${result.generated} new order sheet(s), reused ${result.reused} already-existing one(s) below.`
+    : result.generated
+    ? `✓ Generated ${result.generated} order sheet(s) — see below.`
+    : `Already generated for this job — showing the existing order sheet(s) below, not a new duplicate.`;
   renderOrderDetail(document.getElementById('landing'));
 }
 
-async function renderOrderSheetDetail(el) {
-  await renderWithRetry(el, 'Order Sheet', async () => {
-  el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
-  const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}`);
-  const sheet = await res.json();
-  setPageTitle('Order Sheet ' + sheet.order_number);   // Page Title in Sticky Header brief
-  // Editable quantities + extra lines only on the floor_prep-type
-  // sheet (brief §5) — enforced server-side too (update_order_sheet_line()/
-  // add_order_sheet_line(), main.py), this is just hiding the controls
-  // that would 400 anyway on a flooring-type sheet.
-  const editable = sheet.sheet_type === 'floor_prep';
+// Order Sheets UX brief (confirmed Aug 2026) — orderSheetLinesEditorHtml()
+// is the ONE table+total+add-extra-item template, used by BOTH the
+// standalone Order Sheet Detail screen below AND the new inline
+// "Order Sheet Preview" panel on Job Detail (§4) — same reasoning as
+// documentPreviewTileHtml() being one component in two placements
+// (Client Order History + Job Detail): a second, slightly different
+// copy of this markup is exactly the kind of thing that drifts out of
+// sync later. Every action (edit/delete/add-extra) now takes the
+// order sheet's id explicitly rather than reading an implicit global —
+// the inline panel can show up to two sheets on screen at once, which
+// a single "currentOrderSheetId" can't distinguish between.
+function orderSheetLinesEditorHtml(sheet, editable) {
   const total = sheet.lines.reduce((sum, l) => sum + (l.quantity * l.unit_cost), 0);
   const rows = sheet.lines.length ? sheet.lines.map(l => `
     <tr>
       <td>${l.product_name}${l.colour ? `<br><span class="muted" style="font-size:11px;">${l.colour}</span>` : ''}${l.is_extra ? '<br><span class="muted" style="font-size:10px;">(added manually)</span>' : ''}</td>
-      <td>${editable ? `<input type="number" step="0.01" value="${l.quantity}" style="width:80px;" onchange="updateOrderSheetLineQty(${l.id}, this.value)">` : l.quantity} ${l.unit}</td>
+      <td>${editable ? `<input type="number" step="0.01" value="${l.quantity}" style="width:70px;" onchange="updateOrderSheetLineQty(${sheet.id}, ${l.id}, this.value)">` : l.quantity} ${l.unit}</td>
       <td>R${l.unit_cost.toFixed(2)}</td>
       <td>R${(l.quantity * l.unit_cost).toFixed(2)}</td>
-      <td>${editable ? `<button class="delete-btn" onclick="deleteOrderSheetLine(${l.id})">Delete</button>` : ''}</td>
+      <td>${editable ? `<button class="delete-btn" onclick="deleteOrderSheetLine(${sheet.id}, ${l.id})">Delete</button>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="5" class="muted">No line items on this order sheet.</td></tr>';
-  el.innerHTML = `
-    <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
-    <div class="landing-welcome">
-      <h1>Order ${sheet.order_number}</h1>
-      <p>To: ${sheet.supplier} — Job ${sheet.job_number || '#'+sheet.quote_id}${sheet.client_name ? ', ' + sheet.client_name : ''}</p>
-    </div>
-    <div class="card">
-      <p class="muted">${editable
-        ? 'Floor-prep order — quantities can be adjusted, and extra items added below, before this is finalized and sent.'
-        : 'Flooring order — reflects this job\'s own line items directly.'}
-        Cost prices only, ex VAT — never the client\'s sell price.</p>
+  return `
       <table>
         <thead><tr><th>Product</th><th>Quantity</th><th>Cost (ex VAT)</th><th>Line total</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -984,41 +1049,122 @@ async function renderOrderSheetDetail(el) {
       ${editable ? `
       <h3 style="margin-top:20px;">Add extra item</h3>
       <div class="grid">
-        <div class="field"><label>Product/item</label><input id="os_extra_name" placeholder="e.g. Extra trowel"></div>
-        <div class="field"><label>Quantity</label><input id="os_extra_qty" type="number" step="0.01" value="1"></div>
-        <div class="field"><label>Unit</label><input id="os_extra_unit" placeholder="e.g. units"></div>
-        <div class="field"><label>Cost per unit (R, ex VAT)</label><input id="os_extra_cost" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Product/item</label><input id="os_extra_name_${sheet.id}" placeholder="e.g. Extra trowel"></div>
+        <div class="field"><label>Quantity</label><input id="os_extra_qty_${sheet.id}" type="number" step="0.01" value="1"></div>
+        <div class="field"><label>Unit</label><input id="os_extra_unit_${sheet.id}" placeholder="e.g. units"></div>
+        <div class="field"><label>Cost per unit (R, ex VAT)</label><input id="os_extra_cost_${sheet.id}" type="number" step="0.01" value="0"></div>
       </div>
-      <button class="primary" onclick="addOrderSheetExtraLine()">Add item</button>` : ''}
+      <button class="primary" onclick="addOrderSheetExtraLine(${sheet.id})">Add item</button>` : ''}`;
+}
+
+// Refreshes whichever screen is actually showing this order sheet
+// right now (confirmed Aug 2026, brief §4) — the standalone Order
+// Sheet Detail screen, or the inline preview panel on Job Detail.
+// Re-renders the whole relevant screen (not just the one panel) —
+// same "just call the real render function again" pattern already
+// used throughout this app (renderOrderDetail() itself after every
+// workflow action), simpler and less error-prone than hand-patching
+// one row of a table in place.
+function refreshOrderSheetContext(orderSheetId) {
+  if (landingView === 'orderSheetDetail' && currentOrderSheetId === orderSheetId) {
+    renderOrderSheetDetail(document.getElementById('landing'));
+  } else if (landingView === 'orderDetail') {
+    renderOrderDetail(document.getElementById('landing'));
+  }
+}
+
+async function renderOrderSheetDetail(el) {
+  await renderWithRetry(el, 'Order Sheet', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}`);
+  const sheet = await res.json();
+  setPageTitle('Order Sheet ' + sheet.order_number);   // Page Title in Sticky Header brief
+  // Editable quantities + extra lines only on a floor_prep-type sheet
+  // that hasn't been placed yet (brief §5, plus §4's "placed" status —
+  // enforced server-side too (update_order_sheet_line()/
+  // add_order_sheet_line(), main.py currently only checks sheet_type;
+  // this hides the controls that would otherwise imply an edit still
+  // works after the real order has already gone out).
+  const editable = sheet.sheet_type === 'floor_prep' && sheet.status !== 'placed';
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
+    <div class="landing-welcome">
+      <h1>Order ${sheet.order_number} ${sheet.status === 'placed' ? '<span class="status-badge active-status">Placed</span>' : '<span class="status-badge pending-status">Draft</span>'}</h1>
+      <p>To: ${sheet.supplier} — Job ${sheet.job_number || '#'+sheet.quote_id}${sheet.client_name ? ', ' + sheet.client_name : ''}</p>
+    </div>
+    <div class="card">
+      <p class="muted">${sheet.sheet_type === 'floor_prep'
+        ? (sheet.status === 'placed' ? 'Floor-prep order — already marked as placed, read-only.' : 'Floor-prep order — quantities can be adjusted, and extra items added below, before this is finalized and sent.')
+        : 'Flooring order — reflects this job\'s own line items directly.'}
+        Cost prices only, ex VAT — never the client\'s sell price.</p>
+      ${orderSheetLinesEditorHtml(sheet, editable)}
+      <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+        ${sheet.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${sheet.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:12px; align-self:center;">Placed by ${sheet.placed_by || ''}${sheet.placed_at ? ' on ' + new Date(sheet.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
+        ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${sheet.id})">Delete order sheet</button>` : ''}
+      </div>
     </div>
   `;
   });
 }
 
-async function updateOrderSheetLineQty(lineId, value) {
+async function updateOrderSheetLineQty(orderSheetId, lineId, value) {
   const qty = parseFloat(value) || 0;
-  await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines/${lineId}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({quantity: qty})});
-  renderOrderSheetDetail(document.getElementById('landing'));
+  await fetch(`${API}/order-sheets/${orderSheetId}/lines/${lineId}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({quantity: qty})});
+  refreshOrderSheetContext(orderSheetId);
 }
 
-async function deleteOrderSheetLine(lineId) {
+async function deleteOrderSheetLine(orderSheetId, lineId) {
   if (!confirm('Remove this item from the order sheet?')) return;
-  await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines/${lineId}`, {method:'DELETE'});
-  renderOrderSheetDetail(document.getElementById('landing'));
+  await fetch(`${API}/order-sheets/${orderSheetId}/lines/${lineId}`, {method:'DELETE'});
+  refreshOrderSheetContext(orderSheetId);
 }
 
-async function addOrderSheetExtraLine() {
-  const productName = document.getElementById('os_extra_name').value.trim();
+async function addOrderSheetExtraLine(orderSheetId) {
+  const productName = document.getElementById('os_extra_name_' + orderSheetId).value.trim();
   if (!productName) { alert('Enter a product/item description first.'); return; }
   const body = {
     product_name: productName,
-    quantity: parseFloat(document.getElementById('os_extra_qty').value) || 0,
-    unit: document.getElementById('os_extra_unit').value,
-    unit_cost: parseFloat(document.getElementById('os_extra_cost').value) || 0,
+    quantity: parseFloat(document.getElementById('os_extra_qty_' + orderSheetId).value) || 0,
+    unit: document.getElementById('os_extra_unit_' + orderSheetId).value,
+    unit_cost: parseFloat(document.getElementById('os_extra_cost_' + orderSheetId).value) || 0,
   };
-  const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const res = await fetch(`${API}/order-sheets/${orderSheetId}/lines`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if (!res.ok) { alert('Could not add this item.'); return; }
-  renderOrderSheetDetail(document.getElementById('landing'));
+  refreshOrderSheetContext(orderSheetId);
+}
+
+// Order Sheets UX brief §4 (confirmed Aug 2026) — "Executable... mark
+// the order as placed." Once placed, generate_order_sheets() no
+// longer treats this sheet as blocking a fresh one for the same
+// job+supplier+category (see main.py) — a genuine re-order.
+async function finalizeOrderSheet(orderSheetId) {
+  if (!confirm('Mark this order sheet as placed? This means the order has genuinely been sent to the supplier — quantities can no longer be edited after this.')) return;
+  const res = await fetch(`${API}/order-sheets/${orderSheetId}/finalize`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not mark this order sheet as placed.'); return; }
+  refreshOrderSheetContext(orderSheetId);
+}
+
+// Order Sheets UX brief §2 (confirmed Aug 2026) — the real gap this
+// whole brief exists to close: Burgert had no way to remove the
+// O-0001/O-0002 duplicate himself. Same "real procurement action"
+// seriousness as generate itself — explicit confirm, Owner-only
+// (enforced server-side too, delete_order_sheet() main.py), and
+// logged to the AuditLog there.
+async function deleteOrderSheet(orderSheetId) {
+  if (!confirm('Delete this order sheet? This cannot be undone. Only do this for a genuine mistake or duplicate — not a real order that was already sent.')) return;
+  const res = await fetch(`${API}/order-sheets/${orderSheetId}`, {method: 'DELETE'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not delete this order sheet.'); return; }
+  // After a delete, the standalone Order Sheet Detail screen (if that's
+  // where this was called from) has nothing left to show -- back to
+  // Order Index rather than re-rendering a now-404ing screen. The
+  // inline Job Detail panel context re-renders normally (that screen
+  // still exists regardless).
+  if (landingView === 'orderSheetDetail' && currentOrderSheetId === orderSheetId) {
+    landingView = 'orders';
+    renderLanding();
+  } else {
+    renderOrderDetail(document.getElementById('landing'));
+  }
 }
 
 async function saveOrderDetails() {
