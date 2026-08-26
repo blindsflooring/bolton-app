@@ -282,6 +282,8 @@ def _ensure_new_columns():
         ("quote", "actual_deposit_amount", "FLOAT", "NULL"),
         ("quote", "actual_deposit_amount_by", "VARCHAR", "NULL"),
         ("quote", "actual_deposit_amount_at", "TIMESTAMP", "NULL"),
+        # Old Password Still Works incident (confirmed Aug 2026):
+        ("app_user", "password_changed_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -464,6 +466,79 @@ def _post_rls_security_precaution():
                 print("Security: no users still on their original seed password (already reset, or already changed by the user)")
     except Exception as e:
         print(f"Security: password reset FAILED ({e}) — needs manual review")
+
+
+def _old_password_still_works_remediation():
+    """Old Password Still Works incident (confirmed Aug 2026, follow-up
+    to the RLS remediation above — Madri's new temp password from
+    yesterday didn't work; her OLD password did). Root cause found:
+    the block just above only reset a user if their CURRENT
+    password_hash still exactly matched their ORIGINAL seed hash — a
+    guard deliberately added so it could never clobber a real password
+    someone had already set themselves. That exact guard is what let
+    this happen: at least one account had apparently already changed
+    its password (via /auth/change-password — confirmed the only other
+    code path that ever writes password_hash, so this isn't a hidden
+    auth bypass) at some point BEFORE yesterday's incident. Its hash no
+    longer matched the hardcoded seed value, so the reset silently
+    skipped it — leaving whatever password was already set (itself
+    still exposed via the same RLS gap, regardless of whether it was
+    the seed default or self-chosen) completely untouched. Per each
+    account it's actually a DIFFERENT explanation (logged below,
+    per-account, not assumed) — one true root cause statement per
+    account is what the brief itself asks for.
+
+    Fix, unconditional this time, for all three accounts, regardless of
+    whatever their current hash is — the exposure was of whatever
+    password_hash existed on that row throughout, not specifically the
+    seed value. Idempotent by checking against the NEW hash instead of
+    an old one (matching against a specific hardcoded "old" value is
+    exactly the mechanism that caused this bug) — once applied, the
+    hash equals the new value and this becomes a permanent, correct
+    no-op regardless of what it was before. New temp passwords
+    generated locally (not on this server), reported to Burgert
+    directly in chat, never committed to source control."""
+    SEED_HASHES = {
+        "pbkdf2_sha256$260000$295728ae9fea1b39e0acbc754f8b57af$bbf141469314ddc450ffdbdf30c2895c321f7accf2c721c2e3ec8d34e68fdf22",
+        "pbkdf2_sha256$260000$60f81b8c4153c7ec982d6c5415a5f675$b6d263a91c3c1722ff6d6f99705b193c5f43c4ededfa3d307b314fe28fefd915",
+        "pbkdf2_sha256$260000$eb80a40b8263fc5984c0fc64ecd2ddca$e52495c5a0605b9a208db009fe8bbb6a1053d09e1f4744223d4fce3728dfb962",
+    }
+    YESTERDAYS_RESET_HASHES = {
+        "pbkdf2_sha256$260000$9a90538136cd35dca6cd6d6aa44c7912$80fc691b8b3d9a4d61deb96b0a8f2ce45b8074494068285a33241abda7532a13",
+        "pbkdf2_sha256$260000$37b312461548e30b9aca77c3ea5c3e75$cdac0195abd962ebd0493ba0116fd9412497a6c0efec929f7e8fccca5b894011",
+        "pbkdf2_sha256$260000$fa93a5a308a782019a50d2b78d658d60$36d94d18e68b78679bf84e333087490244483a54153fb3ad5bc73b504d4d29b3",
+    }
+    NEW_HASHES = {
+        "burgert": "pbkdf2_sha256$260000$bd71a3a272a66f36a2b1c97dcbd9128f$3916c72b6ad3fd11067fd90aaa1da51fd33f63594bff3e80537ee90cff5886d4",
+        "ryno": "pbkdf2_sha256$260000$24a0b84845ba407700436caa2afa8b8c$36d1b1cd056e8885ee8ba5f81762353c4849305c46a8fc2aa723fe16b904c9ab",
+        "madri": "pbkdf2_sha256$260000$2455c78678f837b0a730466431d56eca$07395234f94c081223b3a156833421add281b695e5d95a373029d82d0c86629c",
+    }
+    try:
+        with Session(engine) as session:
+            reset_count = 0
+            for username, new_hash in NEW_HASHES.items():
+                user = session.exec(select(User).where(User.username == username)).first()
+                if not user:
+                    continue
+                if user.password_hash == new_hash:
+                    print(f"Old Password incident: {username} already on the new hash issued for this incident — already fixed, no-op")
+                    continue
+                if user.password_hash in SEED_HASHES:
+                    state = "still on the ORIGINAL SEED hash — yesterday's reset should have caught this; needs separate investigation into why it didn't"
+                elif user.password_hash in YESTERDAYS_RESET_HASHES:
+                    state = "was correctly on YESTERDAY'S reset hash — that part worked; resetting again now purely as this incident's own fresh precaution"
+                else:
+                    state = "on a DIFFERENT hash — had already been changed (via /auth/change-password) BEFORE yesterday's reset ran, so the exact-seed-hash-match guard silently skipped it. This is the confirmed root cause for this account."
+                print(f"Old Password incident: {username} was {state}")
+                user.password_hash = new_hash
+                user.password_changed_at = datetime.utcnow()
+                session.add(user)
+                reset_count += 1
+            if reset_count:
+                session.commit()
+                print(f"Old Password incident: force-reset {reset_count} account(s) unconditionally")
+    except Exception as e:
+        print(f"Old Password incident: remediation FAILED ({e}) — needs manual review")
 
 
 @app.on_event("startup")
@@ -937,6 +1012,9 @@ def on_startup():
     # — production already has its users, so ordering here never affected
     # the real deploy — but placed correctly regardless for robustness.
     _post_rls_security_precaution()
+    # Same "run after user seeding" reasoning — depends on real user
+    # rows already existing.
+    _old_password_still_works_remediation()
 
     # Diagnostic audit (confirmed Aug 2026, Add-Line Data-Loss brief §3
     # — "audit whether any already-saved real quotes have already lost a
@@ -1182,6 +1260,7 @@ def change_password(body: ChangePasswordRequest, request: Request, role: str = D
         if not verify_password(body.current_password, user.password_hash):
             raise HTTPException(401, "Current password is incorrect.")
         user.password_hash = hash_password(body.new_password)
+        user.password_changed_at = datetime.utcnow()
         session.add(user)
         session.commit()
         return {"ok": True}

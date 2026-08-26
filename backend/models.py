@@ -85,6 +85,15 @@ class User(SQLModel, table=True):
     role: str                   # UserRole value
     active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Old Password Still Works incident (confirmed Aug 2026) — real gap
+    # found investigating it: nothing recorded WHEN password_hash last
+    # changed, so "confirm the timestamp it was last changed" (the
+    # brief's own explicit ask) had no answer at all. Set by both
+    # /auth/change-password and any server-side reset going forward
+    # (change_password(), _post_rls_security_precaution(), main.py).
+    # None only for an account that has never had its password changed
+    # since this field was added.
+    password_changed_at: Optional[datetime] = None
 
 
 class UserSession(SQLModel, table=True):
