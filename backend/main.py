@@ -1066,6 +1066,31 @@ def on_startup():
     _old_password_still_works_remediation()
     _fix_orphaned_quotes_remediation()
 
+    # Diagnostic (confirmed Aug 2026, Supplier Order Sheets brief §4 —
+    # "verify Azura's existing floor-prep/consumable product records
+    # already have their discount % correctly set to 0 — do not rely
+    # solely on order-sheet logic to override this; the underlying data
+    # should be correct too. Report back what's currently stored and
+    # correct if wrong."). Read-only, prints to the Render logs on every
+    # boot. Structurally confirmed by reading models.py directly before
+    # writing this: FloorPrepProduct has NO discount_pct/trade_discount_pct
+    # field at all — cost_ex_vat_per_pack is a flat, already-net figure,
+    # and grepping the whole codebase found no code path that applies any
+    # discount to it anywhere. So there is nothing that could be
+    # incorrectly non-zero here — this prints the real current values so
+    # Burgert can see them directly, not because a fix was needed.
+    try:
+        with Session(engine) as session:
+            fp_products = session.exec(select(FloorPrepProduct)).all()
+            if fp_products:
+                print(f"Supplier Order Sheets brief §4: {len(fp_products)} FloorPrepProduct row(s) — no discount field exists on this table (confirmed via models.py), cost_ex_vat_per_pack is the real, already-net figure for each:")
+                for p in fp_products:
+                    print(f"  - {p.supplier} / {p.product_name} ({p.pack_size}{p.pack_unit}): cost_ex_vat_per_pack={p.cost_ex_vat_per_pack}")
+            else:
+                print("Supplier Order Sheets brief §4: no FloorPrepProduct rows found yet.")
+    except Exception as e:
+        print(f"Supplier Order Sheets brief §4: diagnostic scan failed ({e})")
+
     # Diagnostic audit (confirmed Aug 2026, Add-Line Data-Loss brief §3
     # — "audit whether any already-saved real quotes have already lost a
     # line due to this bug"). Read-only, prints findings to the Render
