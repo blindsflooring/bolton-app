@@ -322,6 +322,29 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
     const headerAction = urgent
       ? `${PRIORITY_FLAG[urgent.attention_priority]} ${urgent.attention_label}`
       : (groupQuotes[0].next_action || '');
+    // Group Header Row Doesn't Match Column Layout (confirmed Aug 2026):
+    // Value/Status/Install Date used to be one blank colspan=3 cell,
+    // making the collapsed header visually read as a different kind of
+    // element from the job rows below it — easy to skip over while
+    // scanning. Now populated with real per-column summaries so the
+    // header reads as one row of the same table, not a separate banner.
+    // Value = total combined value across the group (collapsed);
+    // expanding still shows each job's own individual price on its own
+    // row via orderIndexRowHtml — both confirmed directly with Burgert,
+    // not guessed.
+    const groupTotal = groupQuotes.reduce((sum, g) => sum + (g.total_incl_vat || 0), 0);
+    // Status = the shared badge if every job in the group is on the same
+    // workflow_status, otherwise "Mixed" — brief §2's own wording.
+    const statusSet = new Set(groupQuotes.map(g => g.workflow_status));
+    const groupStatusHtml = statusSet.size === 1
+      ? workflowStatusBadge(groupQuotes[0])
+      : `<span class="status-badge" style="background:#f0f0f0; color:#6b7280;">Mixed</span>`;
+    // Install Date = nearest/soonest date among jobs that have one set;
+    // blank (—, via dateOrDash) if none do, same as an individual row.
+    const installDates = groupQuotes.map(g => g.installation_date).filter(Boolean);
+    const nearestInstallDate = installDates.length
+      ? installDates.reduce((min, d) => new Date(d) < new Date(min) ? d : min)
+      : null;
     // Column math must match the real header row exactly (Job |
     // Customer | Value | Status | Install Date | Next Action | Actions
     // = 7 cells, +1 checkbox for Owner) — a mismatch here silently
@@ -330,7 +353,9 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
       <tr style="cursor:pointer; font-weight:600;" onclick="toggleClientGroup(${q.client_id})">
         ${isOwner ? '<td></td>' : ''}
         <td colspan="2">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
-        <td colspan="3"></td>
+        <td>${money(groupTotal)}</td>
+        <td>${groupStatusHtml}</td>
+        <td>${dateOrDash(nearestInstallDate)}</td>
         <td>${headerAction ? `<span class="muted" style="font-weight:400;">${headerAction}</span>` : ''}</td>
         <td onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
       </tr>`;
