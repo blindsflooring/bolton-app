@@ -1693,12 +1693,29 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
         # correctly respects Manual Override, discount, transport levy,
         # and VAT, not a raw line-item subtotal.
         subtotal_by_quote = {}
+        lines_by_quote = {}
         for l in lines:
             subtotal_by_quote[l.quote_id] = subtotal_by_quote.get(l.quote_id, 0.0) + l.line_total
+            lines_by_quote.setdefault(l.quote_id, []).append(l)
         value_by_quote = {}
+        # profit_by_quote (confirmed Aug 2026, Dashboard: Today/Monthly
+        # Sales & Profit + Weekly Graph brief §4 — "must use... real
+        # margin/GP data... same standard as Won Value"): real cost via
+        # line_real_cost(), the same shared helper the commission engine
+        # uses (never reimplemented inline — its own docstring's explicit
+        # warning), subtracted from total_ex_vat rather than the raw
+        # line-item subtotal — total_ex_vat already correctly backs the
+        # ex-VAT figure out of a Manual Override when one is set (see
+        # _quote_totals() above), so a job with an overridden sell price
+        # still shows its real margin against what was actually charged,
+        # not the original calculated price.
+        profit_by_quote = {}
         for q in quotes:
             subtotal_ex_vat = subtotal_by_quote.get(q.id, 0.0) + q.transport_levy
-            value_by_quote[q.id] = _quote_totals(subtotal_ex_vat, q, VAT_PCT)["total_incl_vat"]
+            totals = _quote_totals(subtotal_ex_vat, q, VAT_PCT)
+            value_by_quote[q.id] = totals["total_incl_vat"]
+            real_cost = sum(line_real_cost(l) for l in lines_by_quote.get(q.id, []))
+            profit_by_quote[q.id] = totals["total_ex_vat"] - real_cost
 
         # Real gap found and fixed (confirmed Aug 2026, Order Index / Job
         # Workflow Redesign brief): this used to test the legacy
@@ -1757,10 +1774,62 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
         for rep in set(q.sales_owner for q in quotes):
             by_rep[rep] = summarize([q for q in quotes if q.sales_owner == rep])
 
+        # ---------- Today/Monthly Sales & Profit + Weekly Graph
+        # (confirmed Aug 2026) ----------
+        # Date basis confirmed: ACCEPTANCE date (accepted_at, when a
+        # quote became Won) — consistent with Won Value elsewhere on
+        # this dashboard, not creation or completion date. A quote only
+        # ever has ONE accepted_at, set once (models.py) and never
+        # reassigned, so this can't double-count.
+        #
+        # Bucketed in SAST (UTC+2, no DST — South Africa has never
+        # observed DST), not raw UTC: every timestamp in this app is
+        # stored as naive UTC (datetime.utcnow() throughout), so a job
+        # accepted at, say, 00:30 SAST (22:30 UTC the PREVIOUS day)
+        # would silently land in "yesterday" on a UTC-boundary "today"
+        # card — exactly the kind of few-hours-off error someone
+        # checking this dashboard first thing in the morning would
+        # actually hit. Fixed offset rather than zoneinfo — simpler,
+        # and correct here specifically because SA has no DST to track.
+        SAST_OFFSET = timedelta(hours=2)
+        today_sast = (datetime.utcnow() + SAST_OFFSET).date()
+        month_start_sast = today_sast.replace(day=1)
+        monday_sast = today_sast - timedelta(days=today_sast.weekday())  # Monday=0
+
+        def accepted_date_sast(q):
+            return (q.accepted_at + SAST_OFFSET).date() if q.accepted_at else None
+
+        won_quotes = [q for q in quotes if q.accepted_at is not None]
+
+        def sales_profit_for(quote_subset):
+            return {
+                "sales": round(sum(value_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
+                "profit": round(sum(profit_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
+            }
+
+        today_quotes = [q for q in won_quotes if accepted_date_sast(q) == today_sast]
+        month_quotes = [q for q in won_quotes if accepted_date_sast(q) is not None and month_start_sast <= accepted_date_sast(q) <= today_sast]
+
+        weekly_graph = []
+        for i in range(7):
+            day = monday_sast + timedelta(days=i)
+            if day > today_sast:
+                break  # brief §3: Monday-to-today, not the rest of the week in advance
+            day_quotes = [q for q in won_quotes if accepted_date_sast(q) == day]
+            day_figures = sales_profit_for(day_quotes)
+            weekly_graph.append({
+                "date": day.isoformat(),
+                "label": day.strftime("%a"),  # Mon/Tue/... — short, locale-independent enough for a day-of-week axis label
+                **day_figures,
+            })
+
         return {
             "overall": summarize(quotes),
             "by_branch": by_branch,
             "by_rep": by_rep,
+            "today": sales_profit_for(today_quotes),
+            "month": sales_profit_for(month_quotes),
+            "weekly_graph": weekly_graph,
         }
 
 
