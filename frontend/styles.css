@@ -209,7 +209,16 @@
   .photo-lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
 
   /* Order Index / Job Workflow (confirmed Aug 2026) */
-  .job-number { font-family: monospace; font-size: 12.5px; color: var(--ink-soft, #6b7280); }
+  /* Name Link Uniformity + Confirm Job-Level Click Target (confirmed
+     Aug 2026) — this already correctly opened Job Detail on click (the
+     whole row's own onclick, which this cell doesn't stop propagation
+     on — confirmed by reading orderIndexRowHtml() directly), a
+     genuinely distinct destination from the customer-name link right
+     next to it. The gap was purely visual: plain grey monospace read as
+     inert text, not "click me," unlike every other link on this row.
+     Teal + bold, matching the same "this is clickable" language the
+     customer-name link and every "Edit client"-style link already use. */
+  .job-number { font-family: monospace; font-size: 12.5px; color: var(--teal); font-weight: 600; }
   .next-action-btn {
     background: none; border: 2px solid var(--teal); color: var(--teal);
     font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;

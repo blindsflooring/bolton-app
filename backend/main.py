@@ -541,6 +541,55 @@ def _old_password_still_works_remediation():
         print(f"Old Password incident: remediation FAILED ({e}) — needs manual review")
 
 
+def _fix_orphaned_quotes_remediation():
+    """Create New Client From Quote incident (confirmed Aug 2026,
+    "Root Cause Confirmed" brief) — real, already-stuck data found:
+    a quote typed with a genuinely new client's name (Frikkie Klynhans,
+    via the Flooring Quotes drill-down, before the Client-Link Audit
+    fix went live) had client_id=None with NO way to fix it through the
+    UI at all — Job Detail's relink search only searches EXISTING
+    clients, and this person was never created as one at all.
+
+    Rather than a one-off fix naming just that one quote, this sweeps
+    EVERY quote in this state: any Quote with client_id IS NULL and a
+    real (non-blank) client_name, resolved-or-created via the exact
+    same _resolve_or_create_client() the Client-Link Audit fix already
+    uses for every quote going forward (main.py, create_quote()/
+    update_quote_details()) — this closes it for every quote already
+    stuck this way, not just the one reported. Deliberately NOT fuzzy-
+    matching against a similarly-but-not-identically-spelled existing
+    client (e.g. a Builder Portal record with a different spelling of
+    the same name) — same "exact match only, never guess" discipline
+    the duplicate-client detector already follows; a near-miss creates
+    a second client record here rather than silently merging two
+    people who might not actually be the same person. Idempotent: a
+    quote already linked (client_id set, whether by this remediation on
+    a previous boot or normally) is never touched again."""
+    try:
+        with Session(engine) as session:
+            stuck = session.exec(
+                select(Quote).where(Quote.client_id.is_(None), Quote.client_name != "")
+            ).all()
+            fixed = 0
+            for q in stuck:
+                try:
+                    client = _resolve_or_create_client(session, q.tenant_id, None, q.client_name)
+                    q.client_id = client.id
+                    q.client_name = client.name
+                    session.add(q)
+                    fixed += 1
+                    print(f"Migration: linked orphaned Quote #{q.id} ('{client.name}') to client_id={client.id}")
+                except Exception as e:
+                    print(f"Migration: could not fix orphaned Quote #{q.id} ({e}) — left alone, needs manual review")
+            if fixed:
+                session.commit()
+                print(f"Migration: fixed {fixed} orphaned quote(s) — Create New Client From Quote incident")
+            else:
+                print("Migration: no orphaned quotes found (already fixed, or none exist)")
+    except Exception as e:
+        print(f"Migration: orphaned-quotes sweep FAILED ({e}) — needs manual review")
+
+
 @app.on_event("startup")
 def on_startup():
     _ensure_new_columns()
@@ -1015,6 +1064,7 @@ def on_startup():
     # Same "run after user seeding" reasoning — depends on real user
     # rows already existing.
     _old_password_still_works_remediation()
+    _fix_orphaned_quotes_remediation()
 
     # Diagnostic audit (confirmed Aug 2026, Add-Line Data-Loss brief §3
     # — "audit whether any already-saved real quotes have already lost a

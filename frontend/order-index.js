@@ -828,17 +828,37 @@ function onJobDetailClientSearch(quoteId, value) {
   jdClientSearchTimeout = setTimeout(async () => {
     const res = await fetch(`${API}/clients?search=${encodeURIComponent(value)}`);
     const matches = await res.json();
-    if (!matches.length) { box.style.display = 'none'; return; }
+    // Create New Client From Quote (confirmed Aug 2026) — real gap
+    // found and confirmed reproducible: this search only ever searched
+    // EXISTING clients, so a genuinely new person typed here (e.g.
+    // Frikkie Klynhans's stuck quote) had no way to be created — the
+    // quote was permanently stuck, unfixable through the UI at all.
+    // Always offered, whether or not there are partial matches (a
+    // partial match isn't necessarily the right person), same "explicit
+    // one-click option, never a silent guess" approach as the Client-
+    // Link Audit's own backend safety net.
+    const createOption = `
+      <div style="padding:8px 10px; cursor:pointer; color:var(--teal); font-weight:600;" onclick="createClientAndLinkQuote(${quoteId}, '${value.replace(/'/g,"\\'")}')">
+        + Create new client: "${value.replace(/</g,'&lt;')}"
+      </div>`;
     box.innerHTML = matches.map(c => `
       <div style="padding:8px 10px; cursor:pointer; border-bottom:1px solid var(--border);" onclick="linkQuoteToClient(${quoteId}, ${c.id}, '${c.name.replace(/'/g,"\\'")}')">
         <b>${c.name}</b>${c.phone ? ' — '+c.phone : ''}
-      </div>`).join('');
+      </div>`).join('') + createOption;
     box.style.display = 'block';
   }, 250);
 }
 async function linkQuoteToClient(quoteId, clientId, clientName) {
   if (!confirm(`Link this quote to ${clientName}? It will then show correctly in their own Order History.`)) return;
   await fetch(`${API}/quotes/${quoteId}?client_id=${clientId}`, {method: 'PUT'});
+  renderOrderDetail(document.getElementById('landing'));
+}
+async function createClientAndLinkQuote(quoteId, name) {
+  if (!confirm(`Create a new client named "${name}" and link this quote to them? Other details (phone, email, address) can be filled in afterward on their client page.`)) return;
+  const res = await fetch(`${API}/clients`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  if (!res.ok) { alert('Could not create the new client.'); return; }
+  const client = await res.json();
+  await fetch(`${API}/quotes/${quoteId}?client_id=${client.id}`, {method: 'PUT'});
   renderOrderDetail(document.getElementById('landing'));
 }
 
