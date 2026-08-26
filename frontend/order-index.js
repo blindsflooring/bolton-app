@@ -266,7 +266,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
           ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
           : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`)}
         ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
-      <td>${money(q.total_incl_vat)}</td>
+      <td>${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}</td>
       <td>${workflowStatusBadge(q)}</td>
       <td>${dateOrDash(q.installation_date)}</td>
       <td>${nextActionButton(q) || '<span class="muted">—</span>'}</td>
@@ -597,6 +597,24 @@ async function renderOrderDetail(el) {
           <h2>Job Details</h2>
           <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
 
+          <!-- Manual Override total display (confirmed Aug 2026, Manual
+          Override brief) — Job Detail doesn't show individual line
+          items (that's Quote Builder's job, via "Open in Quote Builder"
+          below), so this is the TOTAL only, right alongside the
+          deposit/payment fields it actually affects (deposit_amount/
+          balance_amount are derived FROM the override server-side —
+          _quote_totals(), main.py — so what's recorded here always
+          matches the real agreed figure). Badge visible to every
+          internal role; Override/Revert action Owner-only, same split
+          as Quote Builder's own line/total controls. -->
+          <p style="margin:0 0 12px;">
+            <b>Total (incl VAT):</b> R${data.total_incl_vat.toFixed(2)}
+            ${q.manual_override_total_incl_vat != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="${(q.override_total_reason || '').replace(/"/g,'&quot;')} — by ${q.override_total_by || ''}${q.override_total_at ? ' on ' + new Date(q.override_total_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Manually adjusted</span>` : ''}
+            ${currentRole() === 'owner' ? (q.manual_override_total_incl_vat != null
+              ? ` <a href="#" onclick="revertJobDetailTotalOverride(); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Revert to calculated</a>`
+              : ` <a href="#" onclick="overrideJobDetailTotal(${data.total_incl_vat}); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Override total</a>`) : ''}
+          </p>
+
           <!-- Client link (confirmed Aug 2026, Order Index -> Client
           Link Gap brief, Gap 2 fix) — real gap closed: there was
           previously no way to link an existing quote to a real Client
@@ -677,6 +695,35 @@ async function scheduleQuoteAction(quoteId) {
   if (!dateVal) { alert('Pick an installation date first.'); return; }
   const res = await fetch(`${API}/quotes/${quoteId}/schedule?installation_date=${dateVal}`, {method: 'PUT'});
   if (!res.ok) { const e = await res.json().catch(()=>({})); alert(e.detail || 'Could not schedule this job.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+// Manual Override on the quote total, Job Detail's own copy (confirmed
+// Aug 2026, Manual Override brief) — same backend endpoints as Quote
+// Builder's overrideQuoteTotal()/revertQuoteTotalOverride()
+// (quote-builder.js), deliberately NOT shared with those: this screen
+// tracks the open quote as currentOrderDetailQuoteId, not
+// currentQuoteId (Quote Builder's own global) — reusing those functions
+// as-is would silently act on the wrong quote if the two ever disagree.
+async function overrideJobDetailTotal(currentValue) {
+  const newValueStr = prompt(`Enter the manual override total, incl. VAT (currently R${currentValue.toFixed(2)}):`, currentValue.toFixed(2));
+  if (newValueStr === null) return;
+  const newValue = parseFloat(newValueStr);
+  if (isNaN(newValue) || newValue < 0) { alert('Enter a valid, non-negative number.'); return; }
+  const reason = prompt('Reason for this override (required — e.g. "Matching accepted price from legacy system"):');
+  if (!reason || !reason.trim()) { alert('A reason is required to apply a manual override.'); return; }
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}/override-total`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({new_value: newValue, reason: reason.trim()}),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not apply override.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+async function revertJobDetailTotalOverride() {
+  if (!confirm("Revert this quote's total back to the calculated value?")) return;
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}/revert-total-override`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not revert override.'); return; }
   renderOrderDetail(document.getElementById('landing'));
 }
 // Three independent actions (confirmed Aug 2026), not one combined

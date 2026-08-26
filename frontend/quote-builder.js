@@ -1101,6 +1101,60 @@ async function changeLineColour(lineId) {
   loadQuote();
 }
 
+// Manual Override, Owner-only (confirmed Aug 2026, Manual Override
+// brief — urgent real use case: matching a job already quoted/
+// accepted/deposit-paid in Burgert's OLD pre-Bolton system exactly).
+// The backend's own require_owner is the real enforcement (Sales/Admin
+// get a 403 even if they somehow triggered this); these buttons are
+// hidden from them client-side too, per the badge-visible/action-Owner-
+// only split in the line-row and total-display templates above. A
+// reason is required for every apply — mirrors the backend's own 400
+// if it's blank, so a Sales/Admin bypass attempt (or a stray call)
+// fails the same way either side checks it.
+async function overrideLinePrice(lineId, currentValue) {
+  const newValueStr = prompt(`Enter the manual override price for this line (currently R${currentValue.toFixed(2)}):`, currentValue.toFixed(2));
+  if (newValueStr === null) return;
+  const newValue = parseFloat(newValueStr);
+  if (isNaN(newValue) || newValue < 0) { alert('Enter a valid, non-negative number.'); return; }
+  const reason = prompt('Reason for this override (required — e.g. "Matching accepted price from legacy system"):');
+  if (!reason || !reason.trim()) { alert('A reason is required to apply a manual override.'); return; }
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}/override`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({new_value: newValue, reason: reason.trim()}),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not apply override.'); return; }
+  loadQuote();
+}
+
+async function revertLineOverride(lineId) {
+  if (!confirm('Revert this line back to its calculated value?')) return;
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}/revert-override`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not revert override.'); return; }
+  loadQuote();
+}
+
+async function overrideQuoteTotal(currentValue) {
+  const newValueStr = prompt(`Enter the manual override total, incl. VAT (currently R${currentValue.toFixed(2)}):`, currentValue.toFixed(2));
+  if (newValueStr === null) return;
+  const newValue = parseFloat(newValueStr);
+  if (isNaN(newValue) || newValue < 0) { alert('Enter a valid, non-negative number.'); return; }
+  const reason = prompt('Reason for this override (required — e.g. "Matching accepted price from legacy system"):');
+  if (!reason || !reason.trim()) { alert('A reason is required to apply a manual override.'); return; }
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/override-total`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({new_value: newValue, reason: reason.trim()}),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not apply override.'); return; }
+  loadQuote();
+}
+
+async function revertQuoteTotalOverride() {
+  if (!confirm("Revert this quote's total back to the calculated value?")) return;
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/revert-total-override`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not revert override.'); return; }
+  loadQuote();
+}
+
 async function viewColourHistory(lineId) {
   const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}/colour-history`);
   const data = await res.json();
@@ -1263,10 +1317,25 @@ async function loadQuote() {
          <br><a onclick="changeLineColour(${l.id})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Change colour</a>
          ${wasChanged ? ` · <a onclick="viewColourHistory(${l.id})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">History</a>` : ''}`
       : (l.category === 'flooring' ? `<br><span class="muted" style="font-size:11px; color:var(--coral);">No colour set</span><br><a onclick="changeLineColour(${l.id})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Add colour</a>` : '');
+    // Manual Override, Owner-only (confirmed Aug 2026, Manual Override
+    // brief) — badge shown to every internal role (never mistaken for a
+    // normal calculated value, per the brief's own requirement), the
+    // Override/Revert action links themselves Owner-only. Never touches
+    // the client-facing printed doc: buildPrintDocHtml() (shared.js)
+    // only ever reads l.line_total directly, no badge/reason rendered
+    // there at all.
+    const overrideBadge = l.pre_override_line_total != null
+      ? `<br><span class="muted" style="font-size:10.5px; color:var(--coral); font-weight:700;" title="${(l.override_reason || '').replace(/"/g,'&quot;')} — by ${l.override_by || ''}${l.override_at ? ' on ' + new Date(l.override_at).toLocaleDateString('en-ZA') : ''}">✏️ Manually adjusted</span>`
+      : '';
+    const overrideAction = currentRole() === 'owner'
+      ? (l.pre_override_line_total != null
+          ? `<br><a onclick="revertLineOverride(${l.id})" style="font-size:10.5px; color:var(--teal); cursor:pointer; font-weight:600;">Revert to calculated (R${l.pre_override_line_total.toFixed(2)})</a>`
+          : `<br><a onclick="overrideLinePrice(${l.id}, ${l.line_total})" style="font-size:10.5px; color:var(--teal); cursor:pointer; font-weight:600;">Override price</a>`)
+      : '';
     return `<tr>
       <td><span class="badge ${l.category}">${l.category}</span></td>
       <td>${l.product_name}${colourHtml}</td><td>${detail}</td>
-      <td>R${l.line_total.toFixed(2)}</td>
+      <td>R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}</td>
       <td class="cost-col">${cost}</td><td class="cost-col">${margin}</td>
       <td>${l.category === 'stairwell' ? '' : `<button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button>`}<button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
     </tr>`;
@@ -1289,6 +1358,21 @@ async function loadQuote() {
   const transportLevy = data.quote && data.quote.transport_levy;
   const transportLevyLine = transportLevy ? `<br>Transport levy: R${transportLevy.toFixed(2)}` : '';
   let totalText = `Total ex VAT: R${data.total_ex_vat.toFixed(2)}${transportLevyLine}<br><span style="color:var(--teal);">Total incl. VAT (${(vatPct*100).toFixed(0)}%): R${inclVat.toFixed(2)}</span>`;
+  // Manual Override on the quote's overall total, Owner-only (confirmed
+  // Aug 2026, Manual Override brief) — same badge-visible-to-all,
+  // action-Owner-only pattern as the per-line override above. Never
+  // shown to the client: buildPrintDocHtml() only ever reads
+  // data.total_incl_vat directly, already the (possibly overridden)
+  // real figure, no badge/reason baked into that number.
+  const totalOverride = data.quote && data.quote.manual_override_total_incl_vat != null;
+  if (totalOverride) {
+    totalText += `<br><span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="${(data.quote.override_total_reason || '').replace(/"/g,'&quot;')} — by ${data.quote.override_total_by || ''}${data.quote.override_total_at ? ' on ' + new Date(data.quote.override_total_at).toLocaleDateString('en-ZA') : ''}">✏️ Total manually adjusted</span>`;
+  }
+  if (currentRole() === 'owner') {
+    totalText += totalOverride
+      ? `<br><a onclick="revertQuoteTotalOverride()" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Revert total to calculated value</a>`
+      : `<br><a onclick="overrideQuoteTotal(${inclVat})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Override total</a>`;
+  }
   if (data.overall_margin_pct !== undefined && currentRole() !== 'sales') {
     const pct = (data.overall_margin_pct * 100).toFixed(1);
     const flag = data.overall_margin_pct < 0.30 ? ' ⚠️' : ' ✓';
