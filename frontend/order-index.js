@@ -621,9 +621,13 @@ function renderWorkflowActionsHtml(q) {
 async function renderOrderDetail(el) {
   await renderWithRetry(el, 'Job Detail', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
-  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?role=${currentRole()}`);
+  const [res, orderSheetsRes] = await Promise.all([
+    fetch(`${API}/quotes/${currentOrderDetailQuoteId}?role=${currentRole()}`),
+    fetch(`${API}/quotes/${currentOrderDetailQuoteId}/order-sheets`),
+  ]);
   const data = await res.json();
   const q = data.quote;
+  const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
 
   // Document Preview, placement 1b (confirmed Aug 2026, Client Page &
   // Quote Detail: Document Preview + Inline Edit brief) — right-hand
@@ -737,6 +741,24 @@ async function renderOrderDetail(el) {
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
           <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
+
+          <!-- Supplier Order Sheets (confirmed Aug 2026) — manual
+          trigger only (brief §2), never generated automatically at any
+          status change. Splitting rule (screed/floor-prep always to
+          Azura, combined with flooring if the flooring supplier is
+          ALSO Azura, otherwise two separate sheets) is entirely a
+          backend decision — generate_order_sheets(), main.py — this is
+          purely the trigger + the list of what's already been
+          generated for this job. -->
+          <h2 style="margin-top:20px;">Order Sheets</h2>
+          ${orderSheets.length ? orderSheets.map(s => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer;" onclick="openOrderSheetDetail(${s.id})">
+              <b>${s.order_number}</b>
+              <span class="muted">${s.supplier}</span>
+              <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
+              <span class="muted" style="margin-left:auto; font-size:12px;">View →</span>
+            </div>`).join('') : '<p class="muted" style="margin-top:-6px;">No order sheets generated yet for this job.</p>'}
+          <button onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px;">Generate Order Sheet(s)</button>
 
           <h2 style="margin-top:20px;">Follow-Ups</h2>
           <div id="followUpList" style="margin-bottom:10px;"></div>
@@ -893,6 +915,100 @@ async function createClientAndLinkQuote(quoteId, name) {
   const client = await res.json();
   await fetch(`${API}/quotes/${quoteId}?client_id=${client.id}`, {method: 'PUT'});
   renderOrderDetail(document.getElementById('landing'));
+}
+
+// Supplier Order Sheets (confirmed Aug 2026) — manual trigger only
+// (brief §2), so this is a real button click, never automatic. Reused
+// verbatim from Client Detail's Orders tab (clients.js) for the
+// individual sheet view itself — one screen, two entry points.
+let currentOrderSheetId = null;
+
+function openOrderSheetDetail(orderSheetId) {
+  currentOrderSheetId = orderSheetId;
+  landingView = 'orderSheetDetail';
+  renderLanding();
+}
+
+async function generateOrderSheetsForQuote(quoteId) {
+  if (!confirm('Generate order sheet(s) for this job now? This is a real procurement action — make sure the line items are final first.')) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/generate-order-sheets`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not generate order sheet(s).'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+async function renderOrderSheetDetail(el) {
+  await renderWithRetry(el, 'Order Sheet', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}`);
+  const sheet = await res.json();
+  // Editable quantities + extra lines only on the floor_prep-type
+  // sheet (brief §5) — enforced server-side too (update_order_sheet_line()/
+  // add_order_sheet_line(), main.py), this is just hiding the controls
+  // that would 400 anyway on a flooring-type sheet.
+  const editable = sheet.sheet_type === 'floor_prep';
+  const total = sheet.lines.reduce((sum, l) => sum + (l.quantity * l.unit_cost), 0);
+  const rows = sheet.lines.length ? sheet.lines.map(l => `
+    <tr>
+      <td>${l.product_name}${l.colour ? `<br><span class="muted" style="font-size:11px;">${l.colour}</span>` : ''}${l.is_extra ? '<br><span class="muted" style="font-size:10px;">(added manually)</span>' : ''}</td>
+      <td>${editable ? `<input type="number" step="0.01" value="${l.quantity}" style="width:80px;" onchange="updateOrderSheetLineQty(${l.id}, this.value)">` : l.quantity} ${l.unit}</td>
+      <td>R${l.unit_cost.toFixed(2)}</td>
+      <td>R${(l.quantity * l.unit_cost).toFixed(2)}</td>
+      <td>${editable ? `<button class="delete-btn" onclick="deleteOrderSheetLine(${l.id})">Delete</button>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="muted">No line items on this order sheet.</td></tr>';
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
+    <div class="landing-welcome">
+      <h1>Order ${sheet.order_number}</h1>
+      <p>To: ${sheet.supplier} — Job ${sheet.job_number || '#'+sheet.quote_id}${sheet.client_name ? ', ' + sheet.client_name : ''}</p>
+    </div>
+    <div class="card">
+      <p class="muted">${editable
+        ? 'Floor-prep order — quantities can be adjusted, and extra items added below, before this is finalized and sent.'
+        : 'Flooring order — reflects this job\'s own line items directly.'}
+        Cost prices only, ex VAT — never the client\'s sell price.</p>
+      <table>
+        <thead><tr><th>Product</th><th>Quantity</th><th>Cost (ex VAT)</th><th>Line total</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="total-row">Total: R${total.toFixed(2)}</div>
+      ${editable ? `
+      <h3 style="margin-top:20px;">Add extra item</h3>
+      <div class="grid">
+        <div class="field"><label>Product/item</label><input id="os_extra_name" placeholder="e.g. Extra trowel"></div>
+        <div class="field"><label>Quantity</label><input id="os_extra_qty" type="number" step="0.01" value="1"></div>
+        <div class="field"><label>Unit</label><input id="os_extra_unit" placeholder="e.g. units"></div>
+        <div class="field"><label>Cost per unit (R, ex VAT)</label><input id="os_extra_cost" type="number" step="0.01" value="0"></div>
+      </div>
+      <button class="primary" onclick="addOrderSheetExtraLine()">Add item</button>` : ''}
+    </div>
+  `;
+  });
+}
+
+async function updateOrderSheetLineQty(lineId, value) {
+  const qty = parseFloat(value) || 0;
+  await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines/${lineId}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({quantity: qty})});
+  renderOrderSheetDetail(document.getElementById('landing'));
+}
+
+async function deleteOrderSheetLine(lineId) {
+  if (!confirm('Remove this item from the order sheet?')) return;
+  await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines/${lineId}`, {method:'DELETE'});
+  renderOrderSheetDetail(document.getElementById('landing'));
+}
+
+async function addOrderSheetExtraLine() {
+  const productName = document.getElementById('os_extra_name').value.trim();
+  if (!productName) { alert('Enter a product/item description first.'); return; }
+  const body = {
+    product_name: productName,
+    quantity: parseFloat(document.getElementById('os_extra_qty').value) || 0,
+    unit: document.getElementById('os_extra_unit').value,
+    unit_cost: parseFloat(document.getElementById('os_extra_cost').value) || 0,
+  };
+  const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}/lines`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (!res.ok) { alert('Could not add this item.'); return; }
+  renderOrderSheetDetail(document.getElementById('landing'));
 }
 
 async function saveOrderDetails() {

@@ -159,11 +159,24 @@ function openClientDetail(clientId, openEdit) {
   renderLanding();
 }
 
+// Orders tab (confirmed Aug 2026, Supplier Order Sheets brief §6) —
+// alongside the existing Order History, per the brief's own words.
+// Same subview-toggle pattern as the Builder Portal's own
+// builderPortalSubview. A standalone, searchable-across-all-clients
+// Orders index (also raised in brief §6) was deliberately NOT built —
+// flagged back to Burgert as its own follow-up brief rather than
+// assumed in scope, per his confirmed answer.
+let clientDetailSubview = 'history';   // 'history' | 'orders'
+
 async function renderClientDetail(el) {
   await renderWithRetry(el, 'Client Detail', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='clients'; renderLanding();">← Back to Clients</span><div class="card"><p class="muted">Loading...</p></div>`;
-  const res = await fetch(`${API}/clients/${currentClientDetailId}/quotes`);
+  const [res, orderSheetsRes] = await Promise.all([
+    fetch(`${API}/clients/${currentClientDetailId}/quotes`),
+    fetch(`${API}/clients/${currentClientDetailId}/order-sheets`),
+  ]);
   const data = await res.json();
+  const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
   const c = data.client;
   // Address + Value columns (confirmed Aug 2026, Client Order History
   // Columns brief) — real gap: two draft quotes for the same client,
@@ -215,15 +228,19 @@ async function renderClientDetail(el) {
       </div>
     </div>
     <div class="card">
-      <h2>Order History</h2>
-      ${rows}
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <button onclick="clientDetailSubview='history'; renderClientDetail(document.getElementById('landing'));" style="${clientDetailSubview==='history' ? 'background:var(--teal); color:white;' : ''}">Order History</button>
+        <button onclick="clientDetailSubview='orders'; renderClientDetail(document.getElementById('landing'));" style="${clientDetailSubview==='orders' ? 'background:var(--teal); color:white;' : ''}">Orders${orderSheets.length ? ` (${orderSheets.length})` : ''}</button>
+      </div>
+      ${clientDetailSubview === 'history' ? rows : clientOrderSheetsHtml(orderSheets)}
     </div>
   `;
   // Document Preview content loads after the tiles actually exist in
   // the DOM (confirmed Aug 2026) — documentPreviewTileHtml() above only
   // renders the placeholder synchronously; this fires the real fetch
-  // per job, in parallel, right after el.innerHTML is set.
-  data.quotes.forEach(q => loadDocumentPreview('dp_client_' + q.id, q.id));
+  // per job, in parallel, right after el.innerHTML is set. Order
+  // History subview only — no preview tiles on the Orders subview.
+  if (clientDetailSubview === 'history') { data.quotes.forEach(q => loadDocumentPreview('dp_client_' + q.id, q.id)); }
   // Stashed for showEditClientForm() below — avoids a second fetch just
   // to populate the edit form with what's already on screen.
   window._currentClientRecord = c;
@@ -232,6 +249,27 @@ async function renderClientDetail(el) {
     showEditClientForm(c.id);
   }
   });
+}
+
+// Orders tab content (confirmed Aug 2026, Supplier Order Sheets brief
+// §6) — findable by job number, order number, or supplier (brief's own
+// words), all shown right in the list rather than requiring a search.
+// job_number falls back to '#'+quote_id, same convention used
+// everywhere else in this app (Order Index, Order History above) —
+// a quote that's never been Accepted legitimately has no job_number
+// yet, an order sheet can still exist for it.
+function clientOrderSheetsHtml(orderSheets) {
+  if (!orderSheets.length) return '<p class="muted">No order sheets generated yet for this client\'s jobs.</p>';
+  return orderSheets.map(s => `
+    <div class="card" style="margin-top:10px; padding:14px; cursor:pointer;" onclick="openOrderSheetDetail(${s.id})">
+      <div style="display:flex; flex-wrap:wrap; gap:4px 16px; align-items:center;">
+        <span class="job-number">${s.job_number || '#'+s.quote_id}</span>
+        <b>${s.order_number}</b>
+        <span class="muted">${s.supplier}</span>
+        <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
+        <span class="muted" style="margin-left:auto;">${new Date(s.created_at).toLocaleDateString('en-ZA')}</span>
+      </div>
+    </div>`).join('');
 }
 
 // Editing an existing client (confirmed Aug 2026, Client-Side Commercial

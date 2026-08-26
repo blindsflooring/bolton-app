@@ -26,6 +26,7 @@ from models import (
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
+    OrderSheet, OrderSheetLine,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -284,6 +285,8 @@ def _ensure_new_columns():
         ("quote", "actual_deposit_amount_at", "TIMESTAMP", "NULL"),
         # Old Password Still Works incident (confirmed Aug 2026):
         ("app_user", "password_changed_at", "TIMESTAMP", "NULL"),
+        # Supplier Order Sheets brief (confirmed Aug 2026):
+        ("quotelineitem", "boxes_needed", "INTEGER", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1679,6 +1682,245 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
             "by_branch": by_branch,
             "by_rep": by_rep,
         }
+
+
+# ---------- Supplier Order Sheets (confirmed Aug 2026) ----------
+# Internal/supplier-facing procurement documents, separate from the
+# client-facing quote/invoice — what to actually send for a job, at
+# Burgert's real cost, never the client's sell price. Manual trigger
+# only (brief §2) — never generated automatically at any status change.
+
+def _next_order_number(session: Session, tenant_id: str) -> str:
+    """Sequential O-0001 format, tenant-wide, never reused — same
+    pattern/reasoning as _next_job_number() above."""
+    existing = session.exec(select(OrderSheet.order_number).where(OrderSheet.tenant_id == tenant_id)).all()
+    next_seq = 1
+    for on in existing:
+        try:
+            next_seq = max(next_seq, int(on.split("-")[-1]) + 1)
+        except (ValueError, AttributeError):
+            pass
+    return f"O-{next_seq:04d}"
+
+
+@app.post("/quotes/{quote_id}/generate-order-sheets")
+def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Splitting rule (brief §1) — screed/floor-prep materials are
+    ALWAYS ordered from Azura, regardless of which supplier the
+    flooring itself comes from:
+    - Flooring product ALSO from Azura -> ONE combined sheet.
+    - Flooring from a DIFFERENT supplier -> TWO separate sheets (one to
+      that flooring supplier, flooring only; one to Azura, floor-prep
+      only).
+    Trims are explicitly out of scope (brief §1, Burgert orders those
+    separately in bulk direct from Supertrim) — category=="trim" lines
+    are never even looked at here.
+
+    Floor-prep sheet content — confirmed directly with Burgert:
+    generated from each screed line's own already-calculated
+    bags_allowed/compound_cost_total, plus any material line's own
+    glue_units_needed/glue_cost_total — all four are real, structured,
+    already-stored fields (calculate_flooring_line(), calculations.py),
+    unlike the separate "Extra Rooms" misc lines, which are free text
+    and can't be reliably parsed into product/quantity — those are left
+    for Burgert to add by hand via this sheet's own editable-line
+    mechanism (brief §5), never guessed at here.
+
+    Pricing rule (brief §4) — Azura flooring gets the real discounted
+    cost already baked into unit_cost by calculate_flooring_line()
+    (trade_discount_pct applied there); Azura floor-prep/bags NEVER get
+    a discount applied anywhere in that same calculation (bag_cost is a
+    flat, already-net figure) — both already correctly true of the
+    stored values this reads, confirmed by reading calculations.py
+    directly before writing this, not re-implemented or overridden
+    here.
+
+    Deliberately NOT idempotent/blocked from running twice — an
+    explicit, manual action; if Burgert clicks it again (e.g. the quote
+    changed since), it generates a fresh set of sheets with fresh order
+    numbers rather than silently refusing."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)).all()
+
+        material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed"]
+        screed_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type == "screed"]
+
+        material_by_supplier: dict = {}
+        for l in material_lines:
+            product = session.get(FlooringProduct, l.product_id)
+            supplier = product.supplier if product else "Unknown supplier"
+            material_by_supplier.setdefault(supplier, []).append(l)
+
+        AZURA = "Azura"
+        floor_prep_lines_data = []
+        for l in screed_lines:
+            if l.bags_allowed:
+                unit_cost = (l.compound_cost_total / l.bags_allowed) if l.bags_allowed else 0.0
+                floor_prep_lines_data.append({
+                    "product_name": f"Screed levelling compound — {l.product_name}",
+                    "colour": "", "quantity": float(l.bags_allowed), "unit": "bags", "unit_cost": round(unit_cost, 2),
+                })
+        for l in material_lines:
+            if l.glue_units_needed:
+                unit_cost = (l.glue_cost_total / l.glue_units_needed) if l.glue_units_needed else 0.0
+                floor_prep_lines_data.append({
+                    "product_name": f"Glue — for {l.product_name}",
+                    "colour": "", "quantity": float(l.glue_units_needed), "unit": "drums", "unit_cost": round(unit_cost, 2),
+                })
+
+        def material_line_data(l):
+            product = session.get(FlooringProduct, l.product_id)
+            if l.boxes_needed:
+                net_cost_per_box = (l.unit_cost or 0.0) * (product.m2_per_pack or 1) if product else 0.0
+                return {"product_name": l.product_name, "colour": l.colour, "quantity": float(l.boxes_needed), "unit": "boxes", "unit_cost": round(net_cost_per_box, 2)}
+            # Defensive fallback (shouldn't normally be reached — material_lines already excludes screed): no box count on file, show the m² basis instead of a wrong/zero quantity.
+            return {"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity_m2 or 0.0, "unit": "m²", "unit_cost": round(l.unit_cost or 0.0, 2)}
+
+        created_sheets = []
+
+        def make_sheet(supplier, sheet_type, line_items_data):
+            sheet = OrderSheet(tenant_id=tenant_id, quote_id=quote_id, order_number=_next_order_number(session, tenant_id),
+                                supplier=supplier, sheet_type=sheet_type, created_by=username)
+            session.add(sheet)
+            session.commit()
+            session.refresh(sheet)
+            for d in line_items_data:
+                session.add(OrderSheetLine(tenant_id=tenant_id, order_sheet_id=sheet.id, **d))
+            session.commit()
+            created_sheets.append(sheet)
+
+        for supplier, sup_lines in material_by_supplier.items():
+            line_data = [material_line_data(l) for l in sup_lines]
+            if supplier == AZURA:
+                # ONE combined sheet — flooring + floor-prep together
+                # (brief §1). Consumed here so the standalone Azura
+                # floor-prep sheet below doesn't also get created.
+                make_sheet(AZURA, "floor_prep", line_data + floor_prep_lines_data)
+                floor_prep_lines_data = []
+            else:
+                make_sheet(supplier, "flooring", line_data)
+
+        if floor_prep_lines_data:
+            make_sheet(AZURA, "floor_prep", floor_prep_lines_data)
+
+        if not created_sheets:
+            raise HTTPException(400, "This quote has no flooring or screed line items to generate an order sheet from.")
+
+        return {"generated": len(created_sheets), "order_sheet_ids": [s.id for s in created_sheets]}
+
+
+@app.get("/quotes/{quote_id}/order-sheets")
+def get_order_sheets_for_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id).order_by(OrderSheet.created_at)).all()
+        result = []
+        for s in sheets:
+            lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == s.id, OrderSheetLine.tenant_id == tenant_id)).all()
+            d = s.dict()
+            d["lines"] = [l.dict() for l in lines]
+            result.append(d)
+        return result
+
+
+@app.get("/order-sheets/{order_sheet_id}")
+def get_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
+        quote = session.get(Quote, sheet.quote_id)
+        lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
+        d = sheet.dict()
+        d["lines"] = [l.dict() for l in lines]
+        d["job_number"] = quote.job_number if quote else None
+        d["client_name"] = quote.client_name if quote else None
+        return d
+
+
+class OrderSheetLineUpdate(BaseModel):
+    quantity: float
+
+
+@app.put("/order-sheets/{order_sheet_id}/lines/{line_id}")
+def update_order_sheet_line(order_sheet_id: int, line_id: int, body: OrderSheetLineUpdate, tenant_id: str = Depends(get_current_tenant)):
+    """Quantities amendable on a floor_prep-type sheet (brief §5) —
+    enforced here too, not just left to the frontend to hide the
+    control: a flooring-type sheet reflects the quote's own line items
+    directly and isn't meant to be freely edited."""
+    with Session(engine) as session:
+        line = get_or_404(session, OrderSheetLine, line_id, tenant_id, "Order sheet line")
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
+        if line.order_sheet_id != order_sheet_id:
+            raise HTTPException(404, "Order sheet line not found")
+        if sheet.sheet_type != "floor_prep":
+            raise HTTPException(400, "Only floor-prep order sheets can have their quantities amended.")
+        line.quantity = body.quantity
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        return line
+
+
+class OrderSheetLineCreate(BaseModel):
+    product_name: str
+    colour: str = ""
+    quantity: float
+    unit: str = ""
+    unit_cost: float = 0.0
+
+
+@app.post("/order-sheets/{order_sheet_id}/lines")
+def add_order_sheet_line(order_sheet_id: int, body: OrderSheetLineCreate, tenant_id: str = Depends(get_current_tenant)):
+    """Extra free-text misc line on a floor-prep order (brief §5 —
+    "an extra tool, an additional consumable not part of the original
+    calculated list"). Same floor_prep-only restriction as edits above."""
+    with Session(engine) as session:
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
+        if sheet.sheet_type != "floor_prep":
+            raise HTTPException(400, "Extra line items can only be added to floor-prep order sheets.")
+        if not body.product_name.strip():
+            raise HTTPException(400, "Enter a product/item description first.")
+        line = OrderSheetLine(tenant_id=tenant_id, order_sheet_id=order_sheet_id, product_name=body.product_name.strip(),
+                               colour=body.colour, quantity=body.quantity, unit=body.unit, unit_cost=body.unit_cost, is_extra=True)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        return line
+
+
+@app.delete("/order-sheets/{order_sheet_id}/lines/{line_id}")
+def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        line = get_or_404(session, OrderSheetLine, line_id, tenant_id, "Order sheet line")
+        if line.order_sheet_id != order_sheet_id:
+            raise HTTPException(404, "Order sheet line not found")
+        session.delete(line)
+        session.commit()
+        return {"deleted": line_id}
+
+
+@app.get("/clients/{client_id}/order-sheets")
+def get_order_sheets_for_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """New 'Orders' tab on the Client page (brief §6) — every order
+    sheet generated for any of this client's jobs, findable by job
+    number, order number, or supplier. A standalone, searchable-across-
+    all-clients Orders index (also raised in brief §6) was deliberately
+    NOT built this round — flagged back to Burgert as its own follow-up
+    brief rather than assumed in scope, per his own confirmed answer."""
+    with Session(engine) as session:
+        get_or_404(session, Client, client_id, tenant_id, "Client")
+        quotes = session.exec(select(Quote).where(Quote.client_id == client_id, Quote.tenant_id == tenant_id)).all()
+        quote_ids = [q.id for q in quotes]
+        quotes_by_id = {q.id: q for q in quotes}
+        if not quote_ids:
+            return []
+        sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id.in_(quote_ids), OrderSheet.tenant_id == tenant_id).order_by(OrderSheet.created_at.desc())).all()
+        result = []
+        for s in sheets:
+            d = s.dict()
+            q = quotes_by_id.get(s.quote_id)
+            d["job_number"] = q.job_number if q else None
+            result.append(d)
+        return result
 
 
 # ---------- HR: Employees ----------
@@ -4347,6 +4589,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
             labour_charged_total=calc["labour_charged_total"],
             own_staff=calc["own_staff"],
             bags_allowed=calc["bags_allowed"],
+            boxes_needed=calc.get("packs_needed"),
             compound_cost_total=calc["compound_cost_total"],
             tile_removal_fee_total=calc["tile_removal_fee_total"],
             delivery_fee_total=calc["delivery_fee_total"],

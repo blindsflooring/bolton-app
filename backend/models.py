@@ -892,6 +892,18 @@ class QuoteLineItem(SQLModel, table=True):
     # back to a sensible default — see the shared sort logic, main.py).
     flooring_pricing_type: Optional[str] = None   # "material" | "screed" (flooring lines only)
     trim_sub_category: Optional[str] = None        # "skirting" | "stair_nose" | "reducer" | "carpet_strip" | "quarter_round" (trim lines only)
+    # Supplier Order Sheets brief (confirmed Aug 2026) — same denormalized-
+    # snapshot reasoning as the two fields above: boxes_needed is already
+    # calculated at add-time (calculate_flooring_line()'s own boxes_needed/
+    # packs_needed, calculations.py) but was never persisted anywhere
+    # before this — only returned transiently in the add-line response.
+    # Needed here so an order sheet generated weeks after the quote was
+    # made reflects what was ACTUALLY calculated then, not a recalculation
+    # against a price book that may have since changed (m2_per_pack could
+    # be edited). Material flooring lines only — screed's own real
+    # order-sheet quantity is bags_allowed below, which was already a
+    # stored field.
+    boxes_needed: Optional[int] = None
     # source_feature (confirmed Aug 2026, Extra Rooms / Floor Prep
     # Collapsible brief) — a misc line's category alone can't tell "an
     # Extra Room/Floor Prep entry" apart from any other freeform misc
@@ -1008,3 +1020,50 @@ class AuditLog(SQLModel, table=True):
     field: str
     old_value: str
     new_value: str
+
+
+class OrderSheet(SQLModel, table=True):
+    """Supplier Order Sheet (confirmed Aug 2026, Supplier Order Sheets
+    brief) — an internal/supplier-facing procurement document, separate
+    from the client-facing quote/invoice: tells a supplier what to
+    actually send for a job, at Burgert's real cost, never the client's
+    sell price.
+
+    One job (Quote) can produce TWO of these — a job where the flooring
+    supplier isn't Azura splits into one sheet to that supplier
+    (flooring only) and one to Azura (screed/floor-prep only), per the
+    brief's own splitting rule (see generate_order_sheets(), main.py,
+    for the full logic). Both stay traceable back to the same
+    job_number via quote_id; each still gets its own distinct
+    order_number.
+
+    Trims are explicitly OUT of scope (brief §1) — Burgert orders those
+    separately, in bulk, direct from Supertrim — never appear on any
+    OrderSheet generated here."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    quote_id: int = Field(foreign_key="quote.id")
+    order_number: str = Field(index=True)   # "O-0001", sequential, never reused — see _next_order_number(), main.py
+    supplier: str
+    sheet_type: str   # "flooring" | "floor_prep" — floor_prep sheets are the editable ones (brief §5); a flooring-only sheet reflects the quote's own line items directly and isn't meant to be freely edited
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: str
+
+
+class OrderSheetLine(SQLModel, table=True):
+    """One line on an OrderSheet — product, spec/colour, quantity, and
+    Burgert's real cost price (confirmed Aug 2026, brief §3). quantity
+    is editable on a floor_prep-type sheet (brief §5 — "quantities...
+    must be amendable"); is_extra distinguishes a line Burgert typed in
+    himself (an extra tool, an additional consumable not part of the
+    original calculated list) from one generated from the quote's own
+    line items."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    order_sheet_id: int = Field(foreign_key="ordersheet.id")
+    product_name: str
+    colour: str = ""
+    quantity: float
+    unit: str = ""            # "boxes" | "bags" | "drums" | "m²" | "" — whatever's meaningful for that line
+    unit_cost: float = 0.0    # Burgert's real cost per unit, ex VAT — NEVER the client's sell price
+    is_extra: bool = False
