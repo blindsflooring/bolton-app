@@ -213,7 +213,13 @@ function renderOrderIndexTable(searchTerm) {
       <div class="field"><label>Search (customer, job number, or site)</label><input type="text" id="orderSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderOrderIndex(document.getElementById('landing'), this.value)"></div>
       ${isOwner ? `<div style="margin-bottom:10px;"><button id="oiDeleteSelectedBtn" class="delete-btn" disabled onclick="bulkDeleteSelectedOrders()">Delete Selected (0)</button></div>` : ''}
       <div style="overflow-x:auto;">
-      <table><thead><tr>
+      <!-- Mobile Rendering Audit brief (confirmed Aug 2026) -- same
+           .mobile-card-table treatment as Business Overview's By
+           Branch/By Sales Owner tables (found needing it during that
+           brief's own required systematic sweep). overflow-x:auto above
+           is kept as a harmless desktop-only safety net -- inert once
+           the card layout takes over below the breakpoint. -->
+      <table class="mobile-card-table"><thead><tr>
         ${isOwner ? `<th><input type="checkbox" id="oiSelectAll" title="Select all shown" onchange="toggleSelectAllOrders(this.checked)"></th>` : ''}
         <th>Job</th><th>Customer</th><th>Value</th><th>Status</th><th>Install Date</th><th>Next Action</th><th></th>
       </tr></thead>
@@ -265,17 +271,17 @@ function toggleClientGroup(clientId) {
 function orderIndexRowHtml(q, isOwner, money, isChild) {
   return `
     <tr id="oi-row-${q.id}" style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
-      ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
-      <td class="job-number"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}</td>
-      <td>${isChild ? '' : (q.client_id
+      ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
+      <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}</td>
+      <td data-label="Customer">${isChild ? '' : (q.client_id
           ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
           : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`)}
         ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
-      <td>${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}</td>
-      <td>${workflowStatusBadge(q)}</td>
-      <td>${dateOrDash(q.installation_date)}</td>
-      <td>${nextActionButton(q) || '<span class="muted">—</span>'}</td>
-      <td style="white-space:nowrap;">
+      <td data-label="Value">${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}</td>
+      <td data-label="Status">${workflowStatusBadge(q)}</td>
+      <td data-label="Install Date">${dateOrDash(q.installation_date)}</td>
+      <td data-label="Next Action">${nextActionButton(q) || '<span class="muted">—</span>'}</td>
+      <td class="card-actions-cell" data-label="">
         <!-- Client Link Gap fix (confirmed Aug 2026, Order Index ->
         Client Link Gap brief, Gap 1) — the Client Grouping addendum's
         "Edit client" link only ever existed on a GROUPED row's header;
@@ -400,13 +406,13 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
     const allGroupSelected = groupQuoteIds.every(id => orderIndexSelectedIds.has(id));
     const headerRow = `
       <tr style="cursor:pointer; font-weight:600;" onclick="toggleClientGroup(${q.client_id})">
-        ${isOwner ? `<td onclick="event.stopPropagation();"><input type="checkbox" ${allGroupSelected ? 'checked' : ''} onchange="toggleGroupSelected([${groupQuoteIds.join(',')}], this.checked)"></td>` : ''}
-        <td colspan="2">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
-        <td>${money(groupTotal)}</td>
-        <td>${groupStatusHtml}</td>
-        <td>${dateOrDash(nearestInstallDate)}</td>
-        <td>${headerAction ? `<span class="muted" style="font-weight:400;">${headerAction}</span>` : ''}</td>
-        <td onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
+        ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" ${allGroupSelected ? 'checked' : ''} onchange="toggleGroupSelected([${groupQuoteIds.join(',')}], this.checked)"></td>` : ''}
+        <td colspan="2" class="card-title" data-label="Client">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
+        <td data-label="Total Value">${money(groupTotal)}</td>
+        <td data-label="Status">${groupStatusHtml}</td>
+        <td data-label="Next Install">${dateOrDash(nearestInstallDate)}</td>
+        <td data-label="Next Action">${headerAction ? `<span class="muted" style="font-weight:400;">${headerAction}</span>` : ''}</td>
+        <td class="card-actions-cell" data-label="" onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
       </tr>`;
     const childRows = expanded ? groupQuotes.map(g => orderIndexRowHtml(g, isOwner, money, true)).join('') : '';
     return headerRow + childRows;
@@ -628,6 +634,9 @@ async function renderOrderDetail(el) {
   const data = await res.json();
   const q = data.quote;
   const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
+  // Page Title in Sticky Header brief -- mirrors this same screen's own
+  // <h1> formula below exactly, so the two never say something different.
+  setPageTitle(`${q.job_number || 'Quote #' + q.id}${q.description ? ' — ' + q.description : ''}`);
 
   // Document Preview, placement 1b (confirmed Aug 2026, Client Page &
   // Quote Detail: Document Preview + Inline Edit brief) — right-hand
@@ -941,6 +950,7 @@ async function renderOrderSheetDetail(el) {
   el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
   const res = await fetch(`${API}/order-sheets/${currentOrderSheetId}`);
   const sheet = await res.json();
+  setPageTitle('Order Sheet ' + sheet.order_number);   // Page Title in Sticky Header brief
   // Editable quantities + extra lines only on the floor_prep-type
   // sheet (brief §5) — enforced server-side too (update_order_sheet_line()/
   // add_order_sheet_line(), main.py), this is just hiding the controls

@@ -894,6 +894,7 @@ function clearStaleQuoteResidue() {
 
 function resetQuoteBuilderUI() {
   currentQuoteId = null;
+  setPageTitle('New Quote');   // Page Title in Sticky Header brief
   document.getElementById('q_client').value = '';
   // Default Branch per Staff (confirmed Aug 2026) — also closes a real,
   // separate stale-residue gap found while investigating the reported
@@ -1342,6 +1343,14 @@ async function loadQuote() {
   loadQuotePhotos();
   if (data.quote && data.quote.workflow_status) { currentQuoteStatus = data.quote.workflow_status; }
   currentQuoteClientId = data.quote ? (data.quote.client_id || null) : null;
+  // Page Title in Sticky Header brief (confirmed Aug 2026) -- upgrades
+  // the generic "New Quote" title once a real quote/Price Check is
+  // actually loaded.
+  if (data.quote) {
+    setPageTitle(data.quote.is_price_check
+      ? `Price Check #${currentQuoteId}`
+      : `Quote #${currentQuoteId}${data.quote.client_name ? ' — ' + data.quote.client_name : ''}`);
+  }
   const descEl = document.getElementById('q_description');
   if (descEl && data.quote) descEl.value = data.quote.description || '';
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
@@ -1455,11 +1464,11 @@ async function loadQuote() {
           : `<br><a onclick="overrideLinePrice(${l.id}, ${l.line_total})" style="font-size:10.5px; color:var(--teal); cursor:pointer; font-weight:600;">Override price</a>`)
       : '';
     return `<tr>
-      <td><span class="badge ${l.category}">${l.category}</span></td>
-      <td>${l.product_name}${colourHtml}</td><td>${detail}</td>
-      <td>R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}</td>
-      <td class="cost-col">${cost}</td><td class="cost-col">${margin}</td>
-      <td>${l.category === 'stairwell' ? '' : `<button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button>`}<button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
+      <td data-label="Category"><span class="badge ${l.category}">${l.category}</span></td>
+      <td class="card-title" data-label="Product">${l.product_name}${colourHtml}</td><td data-label="Detail">${detail}</td>
+      <td data-label="Price">R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}</td>
+      <td class="cost-col" data-label="Cost">${cost}</td><td class="cost-col" data-label="Margin">${margin}</td>
+      <td class="card-actions-cell" data-label="">${l.category === 'stairwell' ? '' : `<button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button>`}<button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
     </tr>`;
   }).join('');
 

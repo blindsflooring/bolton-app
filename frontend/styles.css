@@ -82,7 +82,24 @@
   .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--navy); font-weight: 700; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
   label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
-  .field { margin-bottom: 4px; }
+  /* min-width:0 (Mobile Rendering Audit brief, confirmed Aug 2026) --
+     the actual root cause behind several of this audit's individual
+     findings (New Client mini-form on Order Index, Add Employee on HR,
+     both flagged separately before tracing them to the same source).
+     .grid uses minmax(160px, 1fr) tracks, but a grid item's min-width
+     defaults to `auto`, which resolves to its CONTENT's own min-content
+     size -- a <select> with a long option ("Builder-Rep"), or an input
+     with a wide default browser rendering, can be wider than its
+     160px track and force the whole track (and everything after it on
+     the page) wider than the screen. This is the single, structural
+     fix -- every .grid + .field form site-wide, not just the two
+     screens this audit happened to check, since the underlying markup
+     pattern is identical everywhere. width:100% on the control itself
+     is the other required half -- without it, a shrunk track just
+     leaves the input/select at its own intrinsic width instead of
+     actually filling the space now available to it. */
+  .field { margin-bottom: 4px; min-width: 0; }
+  .field input, .field select, .field textarea { width: 100%; }
   button.primary {
     background: var(--teal); color: white; border: none; font-weight: 600; cursor: pointer;
     font-family: 'Poppins', sans-serif;
@@ -108,6 +125,67 @@
   .tree-body { padding: 8px 0 8px 16px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+  /* Mobile Rendering Audit brief (confirmed Aug 2026) -- opt-in via
+     .mobile-card-table (not every table site-wide: some, like the
+     Blinds/Trim price books, are already narrow enough to fit, and
+     forcing this layout on them would be a regression, not a fix).
+     Below the breakpoint, a <tr> becomes a card and each <td> becomes
+     a labelled line via its own data-label attribute (set in the JS
+     that builds the row) rather than reading from <th> — a <td> alone
+     doesn't know its column header, and duplicating the header text
+     into two places (an actual <th> AND a JS constant) is exactly the
+     kind of second copy that drifts out of sync later. Desktop is
+     completely untouched -- this whole block only exists inside the
+     media query below. */
+  @media (max-width: 700px) {
+    table.mobile-card-table thead { display: none; }
+    table.mobile-card-table, table.mobile-card-table tbody,
+    table.mobile-card-table tr, table.mobile-card-table td { display: block; width: 100%; }
+    table.mobile-card-table tr {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 4px 14px; margin-bottom: 10px;
+    }
+    table.mobile-card-table td {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+      padding: 8px 0; border-bottom: 1px solid var(--border); text-align: right;
+    }
+    table.mobile-card-table td:last-child { border-bottom: none; }
+    table.mobile-card-table td::before {
+      content: attr(data-label); font-weight: 600; color: var(--navy); text-align: left; flex-shrink: 0;
+      font-family: 'Poppins', sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    /* An explicit empty data-label="" (a checkbox column, an actions
+       column -- a control, not a data value) skips the label line
+       entirely, same as leaving the attribute off would for a <td>
+       that isn't the card's header cell. content:attr() with nothing
+       to substitute already renders as an empty string, but this is
+       explicit rather than relying on that -- some columns (Order
+       Index's checkbox td) still need the flex row itself for
+       alignment, just with no label. */
+    table.mobile-card-table td[data-label=""]::before { content: none; }
+    /* The row's header cell reads as the card's own title, not a
+       labelled value line underneath it -- :first-child covers tables
+       where that's always the first column (By Branch/By Sales Owner);
+       .card-title covers tables where an earlier column (e.g. a
+       checkbox) can conditionally come first instead (Order Index). */
+    table.mobile-card-table td:first-child, table.mobile-card-table td.card-title {
+      font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 15px; color: var(--navy);
+      padding: 12px 0 10px; justify-content: flex-start;
+    }
+    table.mobile-card-table td:first-child::before, table.mobile-card-table td.card-title::before { content: none; }
+    /* Order Index's actions column (Edit client / Quick View /
+       Duplicate / Delete) is several inline controls, not one label +
+       one value -- the generic space-between/nowrap layout above would
+       either squeeze them together or force the card wider than the
+       screen. Let them wrap naturally instead. */
+    table.mobile-card-table td.card-actions-cell {
+      flex-wrap: wrap; justify-content: flex-start; white-space: normal; gap: 10px 14px;
+    }
+  }
+  /* Desktop-only: kept as a class (not the removed inline style) so
+     the mobile override above can cleanly turn it off below the
+     breakpoint instead of fighting an inline style with !important. */
+  .card-actions-cell { white-space: nowrap; }
   th { color: #6b7280; font-weight: 600; font-family: 'Poppins', sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
   .badge.flooring { background: #e0f6f7; color: var(--teal); }
@@ -266,7 +344,15 @@
   .attention-item.priority-warning { border-left-color: #d99a1f; }
   .attention-item.priority-notice { border-left-color: #c7b642; }
   .attention-item .attn-flag { font-weight: 700; font-size: 13px; }
-  .attention-item .attn-detail { font-size: 12.5px; color: var(--ink-soft, #6b7280); flex: 1; text-align: left; margin-left: 10px; }
+  /* min-width:0 (Mobile Rendering Audit brief, confirmed Aug 2026) --
+     a flex item with flex:1 defaults to min-width:auto, which can
+     refuse to shrink below its own content's intrinsic width (e.g. a
+     long client name with no break point) and push the item past the
+     card edge on a narrow screen -- the classic flexbox text-overflow
+     gotcha. Didn't reproduce with the specific test data used during
+     this audit, but the underlying layout risk is real regardless of
+     what content happens to trigger it, so fixed defensively. */
+  .attention-item .attn-detail { font-size: 12.5px; color: var(--ink-soft, #6b7280); flex: 1; min-width: 0; text-align: left; margin-left: 10px; }
 
   /* Document Preview + Inline Edit (confirmed Aug 2026) — a genuine
      mini visual replica of the real print-doc template, shrunk with a

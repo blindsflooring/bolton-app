@@ -104,7 +104,27 @@ window.fetch = function(url, options = {}) {
 // start is an expected, self-resolving occurrence, not a bug — the
 // first failure shouldn't alarm anyone. Only shows a real error state,
 // with a manual retry button, if the second attempt also fails.
+// Page Title in Sticky Header (confirmed Aug 2026, follow-up to the
+// Sticky Header brief) — a single global setter so "where am I" always
+// updates the same way regardless of which screen changed it.
+// renderWithRetry() below calls this with its own `label` for every
+// screen that already goes through it (13 of them, for free); a few
+// screens (Home tiles, Business Settings, Price Book, New Quote) don't
+// use renderWithRetry and call this directly; a handful more
+// (Client Detail, Job Detail, Order Sheet, Quote Builder once a real
+// quote/client is known) call it a second time once their own fetch
+// resolves, upgrading the generic label to something specific — e.g.
+// "Client Detail" -> "Client: Robert Aspeling" -- same pattern as a
+// browser tab title, just also mirrored into the sticky header itself
+// so it's visible without needing to look at the tab.
+function setPageTitle(title) {
+  const el = document.getElementById('pageTitleDisplay');
+  if (el) el.textContent = title || '';
+  document.title = title ? `${title} — Bolt-on` : 'Bolt-on';
+}
+
 async function renderWithRetry(el, label, renderFn) {
+  setPageTitle(label);
   try {
     await renderFn();
   } catch (e) {

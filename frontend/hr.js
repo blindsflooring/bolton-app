@@ -64,18 +64,22 @@ async function renderHREmployees(el, editingId) {
   hrEmployeesCache = await res.json();
   const editing = editingId ? hrEmployeesCache.find(e => e.id === editingId) : null;
 
+  // Mobile Rendering Audit brief (confirmed Aug 2026) -- same
+  // .mobile-card-table treatment, found needing it during that
+  // brief's own required systematic sweep (HR Documents/Employees was
+  // explicitly named in the brief's screen list).
   const rows = hrEmployeesCache.length ? hrEmployeesCache.map(e => `
     <tr>
-      <td>${e.full_name}</td><td>${e.role_title || '—'}</td>
-      <td><span class="status-badge ${e.employment_status === 'active' ? 'active-status' : 'inactive-status'}">${e.employment_status}</span></td>
-      <td>${e.start_date || '—'}</td><td>${e.birthday || '—'}</td>
-      <td><button class="delete-btn" onclick="renderHREmployees(document.getElementById('hrContent'), ${e.id})" style="border-color:var(--teal); color:var(--teal);">Edit</button></td>
+      <td class="card-title" data-label="Name">${e.full_name}</td><td data-label="Role">${e.role_title || '—'}</td>
+      <td data-label="Status"><span class="status-badge ${e.employment_status === 'active' ? 'active-status' : 'inactive-status'}">${e.employment_status}</span></td>
+      <td data-label="Start date">${e.start_date || '—'}</td><td data-label="Birthday">${e.birthday || '—'}</td>
+      <td data-label=""><button class="delete-btn" onclick="renderHREmployees(document.getElementById('hrContent'), ${e.id})" style="border-color:var(--teal); color:var(--teal);">Edit</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="muted">No employees yet.</td></tr>';
 
   el.innerHTML = `
     <div class="card">
       <h2>Employees</h2>
-      <table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Start date</th><th>Birthday</th><th></th></tr></thead>
+      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Start date</th><th>Birthday</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
     <div class="card">

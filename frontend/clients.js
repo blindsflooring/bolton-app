@@ -16,9 +16,14 @@ async function renderClients(el, searchTerm) {
   const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
   const res = await fetch(`${API}/clients${params}`);
   const clients = await res.json();
+  // Mobile Rendering Audit brief (confirmed Aug 2026) -- found needing
+  // .mobile-card-table during that brief's own required systematic
+  // sweep (this table had no mobile handling at all before -- not even
+  // overflow-x:auto -- and email addresses are exactly the kind of
+  // unbreakable string that forces a table wider than the screen).
   const rows = clients.length ? clients.map(c => `
     <tr style="cursor:pointer;" onclick="openClientDetail(${c.id})">
-      <td>${c.name}</td><td>${c.phone || '—'}</td><td>${c.email || '—'}</td><td>${c.preferred_branch}</td>
+      <td class="card-title" data-label="Name">${c.name}</td><td data-label="Phone">${c.phone || '—'}</td><td data-label="Email">${c.email || '—'}</td><td data-label="Branch">${c.preferred_branch}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="muted">No clients match.</td></tr>';
   // Possible Duplicate Clients (confirmed Aug 2026, Order Index ->
   // Client Link Gap brief — "check for and report any other duplicate
@@ -52,7 +57,7 @@ async function renderClients(el, searchTerm) {
     <div class="card">
       <h2>Clients</h2>
       <div class="field"><label>Search</label><input type="text" id="clientSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderClients(document.getElementById('landing'), this.value)"></div>
-      <table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Branch</th></tr></thead>
+      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Branch</th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
     <div class="card">
@@ -178,6 +183,7 @@ async function renderClientDetail(el) {
   const data = await res.json();
   const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
   const c = data.client;
+  setPageTitle('Client: ' + c.name);   // Page Title in Sticky Header brief -- upgrades the generic "Client Detail" label once the real name is known
   // Address + Value columns (confirmed Aug 2026, Client Order History
   // Columns brief) — real gap: two draft quotes for the same client,
   // same branch, same day were previously indistinguishable in this
