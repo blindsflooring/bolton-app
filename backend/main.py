@@ -2250,15 +2250,25 @@ def delete_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current
         sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
         quote = session.get(Quote, sheet.quote_id)
         summary = f"{sheet.order_number} — {sheet.supplier} — {sheet.sheet_type} (job {quote.job_number if quote else sheet.quote_id})"
-        session.add(AuditLog(
-            tenant_id=tenant_id, username=username, entity_type="OrderSheet", entity_id=order_sheet_id,
-            field="__deleted__", old_value=summary, new_value="(deleted)",
-        ))
-        lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
-        for line in lines:
-            session.delete(line)
-        session.delete(sheet)
-        session.commit()
+        try:
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="OrderSheet", entity_id=order_sheet_id,
+                field="__deleted__", old_value=summary, new_value="(deleted)",
+            ))
+            lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
+            for line in lines:
+                session.delete(line)
+            session.delete(sheet)
+            session.commit()
+        except Exception as e:
+            # A destructive endpoint failing silently into a bare 500
+            # is worse than most — surface the real cause rather than
+            # leaving the caller (and whoever reads Render's logs) to
+            # guess. Real gap found deploying this: the first
+            # production attempt returned a plain, contentless 500 with
+            # no way to tell what actually went wrong remotely.
+            session.rollback()
+            raise HTTPException(500, f"Could not delete this order sheet: {e}")
         return {"deleted": order_sheet_id}
 
 
