@@ -884,6 +884,32 @@ function showOrderSheetsResultBanner(message) {
 async function acceptQuoteAction(quoteId) {
   const res = await fetch(`${API}/quotes/${quoteId}/accept`, {method: 'POST'});
   if (!res.ok) { const e = await res.json().catch(()=>({})); alert(e.detail || 'Could not accept this quote.'); return; }
+  // Dropbox Document Archive brief §3 (confirmed Aug 2026) — "once the
+  // customer accepts the quote, preserve the accepted version
+  // distinctly." Archives right here, at the actual acceptance event
+  // — not a separate manual step someone could forget — using
+  // whatever the Document Preview would show for this quote right
+  // now (buildPrintDocHtml(), same as every other archive call),
+  // marked so exactly one version per quote is ever findable as "the
+  // one that was actually agreed to." Best-effort: a failure here
+  // (Dropbox down, or PDF rendering hiccup) must never block the
+  // accept action that already succeeded above — same "Dropbox being
+  // unavailable must not prevent Bolton from saving" principle (§7)
+  // applied to this trigger point too.
+  try {
+    const qRes = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
+    if (qRes.ok) {
+      const qData = await qRes.json();
+      const reference = qData.quote.job_number || ('Q-' + quoteId);
+      const { html } = await buildPrintDocHtml(quoteId, 'quote');
+      const cssRes = await fetch('styles.css');
+      const css = cssRes.ok ? await cssRes.text() : '';
+      await fetch(`${API}/documents/archive`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ entity_type: 'Quote', entity_id: quoteId, reference, html, css, mark_as_accepted: true }),
+      });
+    }
+  } catch (e) { /* best-effort -- the accept itself already succeeded above; this screen re-renders and shows the real archive status regardless */ }
   renderOrderDetail(document.getElementById('landing'));
 }
 async function declineQuoteAction(quoteId) {

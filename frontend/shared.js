@@ -406,6 +406,7 @@ async function loadDocumentArchiveStatus(entityType, entityId, reference, printS
       <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
         <b>v${h.version}</b>
         ${documentArchiveStatusBadge(h.status)}
+        ${h.is_accepted_version ? `<span class="status-badge active-status" title="Preserved distinctly at the moment this quote was accepted">Accepted</span>` : ''}
         <span class="muted" style="font-size:11px;">${new Date(h.created_at).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'})}</span>
         <a href="${API}/documents/archive/${h.id}/download" target="_blank" style="font-size:12px; margin-left:auto;">Download</a>
         ${h.status !== 'uploaded' ? `<button onclick="retryArchiveVersion(${h.id}, '${entityType}', ${entityId}, '${safeRef}', ${printSourceId}, '${printDocType}')" style="font-size:12px;">Retry</button>` : ''}

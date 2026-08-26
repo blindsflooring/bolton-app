@@ -2298,6 +2298,7 @@ class ArchiveDocumentRequest(BaseModel):
     reference: str       # human label for the filename, e.g. "J-0001" or "O-0002"
     html: str            # exactly what buildPrintDocHtml() (shared.js) already produced for on-screen viewing
     css: str = ""
+    mark_as_accepted: bool = False   # brief §3 — "preserve the accepted version distinctly"; frontend sets this on the one archive call it makes right after a quote is actually accepted
 
 
 @app.post("/documents/archive")
@@ -2327,10 +2328,26 @@ def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_
         now = datetime.utcnow()
         folder = ARCHIVE_CATEGORY_FOLDER[body.entity_type]
         safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", body.reference)
-        dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{version}.pdf"
+        # Brief §3 own example: B-1042_Smith_ACCEPTED.pdf — a distinct,
+        # findable-by-name filename for the accepted version, not just
+        # another _v{N} in the ordinary sequence.
+        filename = f"{safe_reference}_ACCEPTED.pdf" if body.mark_as_accepted else f"{safe_reference}_v{version}.pdf"
+        dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{filename}"
+        if body.mark_as_accepted:
+            # At most one row per document ever carries this flag —
+            # unset it on any earlier version before this new one
+            # claims it, so "the accepted version" always means
+            # exactly one, findable row.
+            prior_accepted = session.exec(select(DocumentArchive).where(
+                DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == body.entity_type,
+                DocumentArchive.entity_id == body.entity_id, DocumentArchive.is_accepted_version == True,  # noqa: E712
+            )).all()
+            for row in prior_accepted:
+                row.is_accepted_version = False
+                session.add(row)
         archive = DocumentArchive(
             tenant_id=tenant_id, entity_type=body.entity_type, entity_id=body.entity_id, version=version,
-            reference=body.reference, pdf_bytes=pdf_bytes, created_by=username,
+            reference=body.reference, pdf_bytes=pdf_bytes, created_by=username, is_accepted_version=body.mark_as_accepted,
         )
         upload_result = dropbox_archive.upload_document(pdf_bytes, dropbox_path)
         if upload_result["ok"]:
@@ -2366,7 +2383,7 @@ def list_document_archive(entity_type: str, entity_id: int, tenant_id: str = Dep
         ).order_by(DocumentArchive.version.desc())).all()
         return [{
             "id": a.id, "version": a.version, "reference": a.reference, "status": a.status,
-            "dropbox_path": a.dropbox_path, "failure_reason": a.failure_reason,
+            "dropbox_path": a.dropbox_path, "failure_reason": a.failure_reason, "is_accepted_version": a.is_accepted_version,
             "created_at": a.created_at, "uploaded_at": a.uploaded_at, "created_by": a.created_by,
         } for a in rows]
 

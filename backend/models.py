@@ -1215,3 +1215,11 @@ class DocumentArchive(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     uploaded_at: Optional[datetime] = None
     created_by: str
+    # Dropbox brief §3 — "once the customer accepts the quote,
+    # preserve the accepted version distinctly." At most one row per
+    # entity_type+entity_id ever carries this flag (archive_document()
+    # unsets it on any earlier row for the same document before
+    # setting it on the new one) — always findable as THE version that
+    # was actually agreed to, regardless of how many later versions
+    # (a post-acceptance Manual Override, say) get archived on top.
+    is_accepted_version: bool = False
