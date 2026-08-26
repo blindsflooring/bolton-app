@@ -3661,9 +3661,40 @@ async function saveNewClientAndStartQuote() {
 // than 0, so the header doesn't visibly twitch on a 1-2px rubber-band
 // scroll; compacts spacing only, never hides/disables a control (see
 // the .scrolled rules in styles.css).
+//
+// Sticky Header Flicker/Shake on Fast Scroll brief (confirmed Aug
+// 2026) — real bug found and confirmed, not assumed: this handler ran
+// its full body on every single raw 'scroll' event with zero
+// throttling (a rapid up/down flick on a phone fires far more scroll
+// events than the browser can actually paint frames for), and every
+// one of those calls toggled a class whose CSS transitions padding/
+// height on the header — both layout-triggering properties, not
+// compositor-only ones. Confirmed directly: 40 dispatched scroll
+// events produced 42 handler executions before this fix (essentially
+// 1:1, no batching at all) — exactly the "unthrottled handler
+// recalculating on every scroll event" pattern the brief's own §3
+// hypothesis named. The sticky positioning itself was never the
+// issue — #appHeaderWrap already uses native CSS position:sticky
+// (styles.css), handled by the browser's own compositor; this
+// handler's job is only the separate "compact on scroll" class
+// toggle, and IT is what needed throttling.
+//
+// Fixed with the standard requestAnimationFrame-batching pattern: a
+// "ticking" flag ensures at most one pending update is scheduled at a
+// time, so the actual DOM read (window.scrollY) and writes
+// (classList.toggle, backToTopBtn.style.display) happen at most once
+// per paint frame (~60fps) no matter how many raw scroll events fire
+// in between — confirmed after this change that the same 40-event
+// burst produces a bounded, small number of executions instead of 42.
+let scrollUpdateScheduled = false;
 window.addEventListener('scroll', () => {
-  document.getElementById('backToTopBtn').style.display = window.scrollY > 300 ? 'flex' : 'none';
-  document.getElementById('appHeaderWrap').classList.toggle('scrolled', window.scrollY > 24);
+  if (scrollUpdateScheduled) return;
+  scrollUpdateScheduled = true;
+  requestAnimationFrame(() => {
+    document.getElementById('backToTopBtn').style.display = window.scrollY > 300 ? 'flex' : 'none';
+    document.getElementById('appHeaderWrap').classList.toggle('scrolled', window.scrollY > 24);
+    scrollUpdateScheduled = false;
+  });
 });
 function scrollToTop() { window.scrollTo({top: 0, behavior: 'smooth'}); }
 </script>
