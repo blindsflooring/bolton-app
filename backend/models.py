@@ -818,6 +818,18 @@ class Quote(SQLModel, table=True):
     override_total_by: Optional[str] = None
     override_total_at: Optional[datetime] = None
 
+    # ---------- Revert to Original (confirmed Aug 2026, Add-Line
+    # Data-Loss brief §5 — "one level of undo back to what was last
+    # saved," explicitly not full multi-version history) ----------
+    # A JSON snapshot of every line + the quote's own editable fields,
+    # captured once each time Quote Builder is opened for this quote
+    # (openQuoteFromIndex(), index.html — never on every subsequent
+    # add/edit/delete, or "revert" would just restore whatever was
+    # already there). None until a quote has been opened for editing at
+    # least once since this brief shipped. See snapshot_quote()/
+    # revert_quote() in main.py.
+    snapshot_json: Optional[str] = None
+
 
 class PaymentFollowUp(SQLModel, table=True):
     """Confirmed Aug 2026 — a quote can need MULTIPLE follow-ups over
@@ -839,6 +851,21 @@ class QuoteLineItem(SQLModel, table=True):
     category: str              # "flooring" | "blinds"
     product_id: int
     product_name: str          # denormalized snapshot at time of quoting
+    # Fixed Display Order (confirmed Aug 2026, Add-Line Data-Loss brief
+    # §4) — the required hierarchy (Floor/Vinyl -> Screed -> Trims ->
+    # Skirtings -> everything else) can't be derived from `category`
+    # alone: a flooring line is EITHER a Floor/Vinyl or a Screed line
+    # depending on the underlying FlooringProduct.pricing_type, and a
+    # trim line is EITHER a Trim or a Skirting depending on the
+    # underlying TrimProduct.category — neither distinction previously
+    # existed on the line item itself. Denormalized snapshots, same
+    # reasoning as product_name/colour above: the price book entry could
+    # be edited or deleted later, and a historical quote's own display
+    # order must never silently drift because of that. None on every
+    # line added before this brief (and any set() where the sort falls
+    # back to a sensible default — see the shared sort logic, main.py).
+    flooring_pricing_type: Optional[str] = None   # "material" | "screed" (flooring lines only)
+    trim_sub_category: Optional[str] = None        # "skirting" | "stair_nose" | "reducer" | "carpet_strip" | "quarter_round" (trim lines only)
     # source_feature (confirmed Aug 2026, Extra Rooms / Floor Prep
     # Collapsible brief) — a misc line's category alone can't tell "an
     # Extra Room/Floor Prep entry" apart from any other freeform misc

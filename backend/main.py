@@ -7,6 +7,7 @@ Run: uvicorn main:app --reload --port 8000
 """
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Any
+import json
 import os
 import re
 import shutil
@@ -271,6 +272,11 @@ def _ensure_new_columns():
         ("quotelineitem", "override_reason", "VARCHAR", "NULL"),
         ("quotelineitem", "override_by", "VARCHAR", "NULL"),
         ("quotelineitem", "override_at", "TIMESTAMP", "NULL"),
+        # Fixed Display Order + Revert to Original (confirmed Aug 2026,
+        # Add-Line Data-Loss brief §4/§5):
+        ("quotelineitem", "flooring_pricing_type", "VARCHAR", "NULL"),
+        ("quotelineitem", "trim_sub_category", "VARCHAR", "NULL"),
+        ("quote", "snapshot_json", "TEXT", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -725,6 +731,52 @@ def on_startup():
             print(f"Migration: seeded {len(floor_prep_seed)} FloorPrepProduct row(s) for Azura")
         session.commit()
 
+        # Fixed Display Order backfill (confirmed Aug 2026, Add-Line
+        # Data-Loss brief §4) — best-effort: existing flooring/trim lines
+        # were added before flooring_pricing_type/trim_sub_category
+        # existed, so they'd otherwise fall back to the sort's default
+        # bucket (Floor/Vinyl, Trims) forever. Looks up each line's
+        # CURRENT price-book product to backfill the real value — not
+        # perfect if that product was since deleted or its type/category
+        # changed, but strictly better than leaving every historical line
+        # unclassified, and each line is independent so one lookup miss
+        # can't affect any other.
+        try:
+            flooring_to_fix = session.exec(
+                select(QuoteLineItem).where(QuoteLineItem.category == "flooring", QuoteLineItem.flooring_pricing_type.is_(None))
+            ).all()
+            fixed = 0
+            for line in flooring_to_fix:
+                product = session.get(FlooringProduct, line.product_id)
+                if product:
+                    line.flooring_pricing_type = product.pricing_type
+                    session.add(line)
+                    fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: backfilled flooring_pricing_type for {fixed} existing line(s)")
+        except Exception as e:
+            session.rollback()
+            print(f"Migration: flooring_pricing_type backfill failed ({e}) — existing flooring lines keep the default sort bucket")
+
+        try:
+            trim_to_fix = session.exec(
+                select(QuoteLineItem).where(QuoteLineItem.category == "trim", QuoteLineItem.trim_sub_category.is_(None))
+            ).all()
+            fixed = 0
+            for line in trim_to_fix:
+                product = session.get(TrimProduct, line.product_id)
+                if product:
+                    line.trim_sub_category = product.category
+                    session.add(line)
+                    fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: backfilled trim_sub_category for {fixed} existing line(s)")
+        except Exception as e:
+            session.rollback()
+            print(f"Migration: trim_sub_category backfill failed ({e}) — existing trim lines keep the default sort bucket")
+
         # Job Workflow backfill (confirmed Aug 2026, Order Index / Job
         # Workflow Redesign brief) — one-time-per-row derivation of
         # workflow_status/job_number/accepted_at/declined_at/
@@ -880,6 +932,51 @@ def on_startup():
     # — production already has its users, so ordering here never affected
     # the real deploy — but placed correctly regardless for robustness.
     _post_rls_security_precaution()
+
+    # Diagnostic audit (confirmed Aug 2026, Add-Line Data-Loss brief §3
+    # — "audit whether any already-saved real quotes have already lost a
+    # line due to this bug"). Read-only, prints findings to the Render
+    # logs on every boot — cheap enough to just leave running rather than
+    # a true one-time migration, and re-checking costs nothing.
+    #
+    # IMPORTANT LIMITATION, stated plainly: _log_quote_line_audit() only
+    # writes to AuditLog for quotes already accepted/scheduled/completed
+    # at the time — a brand-new "quoted" draft quote losing a line this
+    # way leaves NO trace anywhere, by design of that existing gate (see
+    # its own docstring). So this can only find the bug's fingerprint on
+    # quotes that had already been accepted when it happened; it CANNOT
+    # prove a draft quote was never affected. The fingerprint itself: the
+    # bug's frontend mechanism (deleteLineBeingEditedIfAny(), called
+    # unconditionally before every add) deletes-then-adds in the same
+    # synchronous click — so a "__line_removed__" entry immediately
+    # followed by a "__line_added__" entry, same quote, same user, within
+    # a couple of seconds, is exactly what that looks like in the log.
+    # This does NOT prove data loss on its own (a genuine, intentional
+    # "delete this line, then add a replacement" edit looks identical) —
+    # it's a candidate list for Burgert to actually look at, not an
+    # automatic conclusion.
+    try:
+        with Session(engine) as session:
+            removals = session.exec(
+                select(AuditLog).where(AuditLog.field == "__line_removed__").order_by(AuditLog.timestamp)
+            ).all()
+            additions = session.exec(
+                select(AuditLog).where(AuditLog.field == "__line_added__").order_by(AuditLog.timestamp)
+            ).all()
+            candidates = []
+            for rem in removals:
+                for add in additions:
+                    if (add.entity_id == rem.entity_id and add.username == rem.username
+                            and 0 <= (add.timestamp - rem.timestamp).total_seconds() <= 5):
+                        candidates.append(f"Quote #{rem.entity_id} by {rem.username} at {rem.timestamp}: removed \"{rem.old_value}\", added \"{add.new_value}\" seconds later")
+            if candidates:
+                print(f"Audit (Add-Line Data-Loss brief): {len(candidates)} candidate remove-then-add event(s) found on already-accepted+ quotes — review needed, NOT automatic proof of data loss:")
+                for c in candidates:
+                    print(f"  - {c}")
+            else:
+                print("Audit (Add-Line Data-Loss brief): no remove-then-add candidates found in AuditLog — but this only covers quotes already accepted/scheduled/completed at the time; draft/quoted-status quotes are not logged and can't be checked this way.")
+    except Exception as e:
+        print(f"Audit (Add-Line Data-Loss brief): scan failed ({e})")
 
 
 def get_session():
@@ -3126,6 +3223,32 @@ def _job_workflow_info(quote: "Quote", today: date) -> dict:
     }
 
 
+def _quote_line_sort_key(line: dict) -> int:
+    """Fixed Display Order (confirmed Aug 2026, Add-Line Data-Loss brief
+    §4): Floor/Vinyl -> Screed -> Trims -> Skirtings -> everything else,
+    always in this order regardless of the order lines were actually
+    added in — applied once here, in get_quote(), so Quote Builder's
+    lines table, the printed/PDF document, and the client document
+    preview (buildPrintDocHtml(), shared.js — the print doc and the
+    preview are literally the same generated html) all agree
+    automatically, with zero risk of the three ever drifting apart
+    the way three independent copies of the same sort would.
+
+    `category` alone can't place a flooring or trim line correctly — see
+    flooring_pricing_type/trim_sub_category's own comment on
+    QuoteLineItem (models.py) for why those had to be added as
+    denormalized snapshots. Python's sort is stable, so lines within the
+    same bucket (and the whole "everything else" bucket — brief's own
+    words, "in whatever order makes sense") keep their original
+    relative order, nothing more elaborate needed there."""
+    category = line.get("category")
+    if category == "flooring":
+        return 2 if line.get("flooring_pricing_type") == "screed" else 1
+    if category == "trim":
+        return 4 if line.get("trim_sub_category") == "skirting" else 3
+    return 5
+
+
 def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dict:
     """Discount -> VAT -> deposit/balance math, shared (confirmed Aug
     2026, Client Order History Columns brief). Previously hand-
@@ -3914,7 +4037,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         line = QuoteLineItem(
             quote_id=quote_id, category="flooring", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, colour=product.colour, original_colour=product.colour,
-            job_type=job_type,
+            job_type=job_type, flooring_pricing_type=product.pricing_type,
             quantity_m2=quantity_m2, discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
@@ -3986,6 +4109,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         line = QuoteLineItem(
             quote_id=quote_id, category="trim", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, length_m=length_m,
+            trim_sub_category=product.category,
             discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
@@ -4150,6 +4274,13 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
         lines_out = [strip_sensitive_fields(l.dict(), role) for l in lines]
+        # Fixed Display Order (confirmed Aug 2026, Add-Line Data-Loss
+        # brief §4) — sorted here, once, so every consumer of this
+        # response (Quote Builder's table, the printed/PDF document, the
+        # client document preview) shows the same fixed hierarchy with
+        # zero risk of drifting apart. list.sort() is stable — original
+        # relative order is preserved within each bucket.
+        lines_out.sort(key=_quote_line_sort_key)
         # Courier/delivery fee — client-facing confirmation, NOT the
         # amount (confirmed Aug 2026, Courier Toggle brief: "delivery
         # stays folded into the total... no separate cost shown to the
@@ -4366,6 +4497,88 @@ def revert_quote_total_override(quote_id: int, role: str = Depends(require_owner
         session.commit()
         session.refresh(quote)
         return quote
+
+
+# ---------- Revert to Original (confirmed Aug 2026, Add-Line Data-Loss
+# brief §5 — "one level of undo back to what was last saved," NOT a
+# full multi-version history, deliberately kept simple). Not Owner-
+# only, unlike Manual Override above — undoing an editing mistake
+# should be available to whoever can edit a quote's lines in the first
+# place (same as add/delete line), not a separate restricted feature. ----------
+QUOTE_SNAPSHOT_FIELDS = [
+    "discount_pct", "transport_levy", "description",
+    "manual_override_total_incl_vat", "override_total_reason", "override_total_by", "override_total_at",
+]
+
+
+@app.post("/quotes/{quote_id}/snapshot")
+def snapshot_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Captures the current state as the "last saved" point a later
+    revert_quote() call restores. Called once, right when Quote Builder
+    is opened for this quote (openQuoteFromIndex(), index.html) — never
+    on every subsequent add/edit/delete, or a revert would just restore
+    whatever was already there instead of genuinely undoing this
+    editing session's changes."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)).all()
+        quote_fields = {f: getattr(quote, f) for f in QUOTE_SNAPSHOT_FIELDS}
+        # Explicit isoformat, not left to json.dumps' default=str fallback
+        # below — guarantees this round-trips cleanly through
+        # datetime.fromisoformat() in revert_quote(), rather than relying
+        # on str(datetime)'s implicit (also-usually-fine, but not
+        # guaranteed-by-us) formatting.
+        if quote_fields.get("override_total_at") is not None:
+            quote_fields["override_total_at"] = quote_fields["override_total_at"].isoformat()
+        snapshot = {
+            "quote_fields": quote_fields,
+            # .json() (Pydantic's own encoder) rather than .dict() —
+            # correctly ISO-formats every datetime field on the line
+            # (created_at, override_at) up front, so revert_quote() can
+            # just re-construct QuoteLineItem(**line_data) directly and
+            # let Pydantic's own validation parse them back.
+            "lines": [json.loads(l.json()) for l in lines],
+        }
+        quote.snapshot_json = json.dumps(snapshot, default=str)
+        session.add(quote)
+        session.commit()
+        return {"snapshotted": True, "line_count": len(lines)}
+
+
+@app.post("/quotes/{quote_id}/revert")
+def revert_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Restores line items and the editable quote-level fields above to
+    exactly the state captured by the most recent snapshot_quote() call.
+    Existing lines are deleted and recreated from the snapshot (fresh
+    ids, not the originals — any colour-change history tied to a
+    replaced line becomes orphaned; an accepted, rare trade-off for a
+    genuinely simple one-level undo, per the brief's own instruction)."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if not quote.snapshot_json:
+            raise HTTPException(400, "No saved snapshot to revert to yet — open this quote in Quote Builder first, then try again.")
+        snapshot = json.loads(quote.snapshot_json)
+
+        current_lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)).all()
+        for line in current_lines:
+            session.delete(line)
+
+        for line_data in snapshot["lines"]:
+            line_data.pop("id", None)
+            session.add(QuoteLineItem(**line_data))
+
+        for field, value in snapshot["quote_fields"].items():
+            if field == "override_total_at" and value is not None:
+                value = datetime.fromisoformat(value)
+            setattr(quote, field, value)
+
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+            field="__reverted__", old_value="(edited state)", new_value="(reverted to last-opened snapshot)",
+        ))
+        session.add(quote)
+        session.commit()
+        return {"reverted": True, "line_count": len(snapshot["lines"])}
 
 
 @app.put("/quotes/{quote_id}/lines/{line_id}/colour")

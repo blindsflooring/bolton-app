@@ -203,7 +203,24 @@
         <span></span> <button onclick="cancelLineEdit()" style="margin-left:10px; font-size:12px; padding:3px 10px;">Cancel</button>
       </div>
       <div class="field"><label>Category</label>
-        <select id="line_category" onchange="toggleLineFields()">
+        <!-- URGENT: Adding a Line Destroys an Existing Line (confirmed
+        Aug 2026) — root cause confirmed, not guessed: editQuoteLine()
+        sets editingLineId to the line being edited, cleared only by
+        cancelLineEdit() (the explicit Cancel button) or by a completed
+        Add (deleteLineBeingEditedIfAny() clears it after deleting the
+        old version). Switching this dropdown to a DIFFERENT category
+        mid-edit — instead of clicking Cancel — left editingLineId
+        stale: the next "Add Line"/"Add Floor Job" click still saw it
+        set, so deleteLineBeingEditedIfAny() silently deleted whatever
+        line was originally being edited (e.g. Vinyl or Screed) right
+        before posting the actually-intended new line (e.g. Trims) —
+        exactly the reported "existing line disappeared" data loss.
+        cancelLineEdit() only runs here (a real user change) because
+        editQuoteLine() sets this field's .value directly, which never
+        fires onchange — its own explicit toggleLineFields() call right
+        after is untouched, and it re-sets editingLineId itself
+        afterward regardless. -->
+        <select id="line_category" onchange="if (editingLineId) cancelLineEdit(); toggleLineFields();">
           <option value="flooring">Flooring</option>
           <option value="blinds">Blinds</option>
           <option value="skirting">Skirting</option>
@@ -498,6 +515,13 @@
         is actually open, same display:none-until-shown pattern as
         printInvoiceBtn just below. -->
         <button id="duplicateQuoteBtn" onclick="duplicateQuoteFromIndex(currentQuoteId, document.getElementById('q_client').value, currentQuoteClientId)" style="display:none; flex:1; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Duplicate Quote</button>
+        <!-- Revert to Original (confirmed Aug 2026, Add-Line Data-Loss
+        brief §5) — one level of undo back to the state this quote was
+        in when it was opened (snapshot_quote(), called from
+        openQuoteFromIndex()/createQuote() above), NOT a full multi-
+        version history, per the brief's own explicit scope. Same
+        display:none-until-shown pattern as duplicateQuoteBtn. -->
+        <button id="revertQuoteBtn" onclick="revertQuoteToOriginal()" style="display:none; flex:1; background:none; border:2px solid var(--ink-soft, #6b7280); color:var(--ink-soft, #6b7280); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Revert to Original</button>
         <!-- Confirmed Aug 2026, Client-Side Commercial Workflow brief,
         Sprint D — "Create invoice/order from accepted quote": the Print
         Invoice picker screen already existed and works for any quote,
@@ -3159,11 +3183,24 @@ async function openQuoteFromIndex(quoteId) {
   // into this one — the next "Add" click here would otherwise try to
   // delete a line ID that belongs to that other quote.
   cancelLineEdit();
+  // Revert to Original (confirmed Aug 2026, Add-Line Data-Loss brief
+  // §5) — snapshots the state as it exists right now, BEFORE any
+  // editing happens in this session, so a later "Revert to original"
+  // click restores exactly this. Deliberately called only here (once,
+  // on genuinely opening a quote) and NOT from loadQuote() itself,
+  // which also runs after every subsequent add/edit/delete — snapshot-
+  // ting there too would just re-capture whatever was already there,
+  // making revert a no-op. Awaited, not fire-and-forget: this is the
+  // real, common case (an existing quote with real data already on
+  // it), worth the brief wait to guarantee the snapshot exists before
+  // any edit can happen.
+  await fetch(`${API}/quotes/${quoteId}/snapshot`, {method:'POST'});
   goToTab('quoteBuilder');
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('duplicateQuoteBtn').style.display = '';
+  document.getElementById('revertQuoteBtn').style.display = '';
 
   // Pre-fill the New Quote form with the real quote's details and lock
   // "Start Quote" so amending an existing quote can never accidentally

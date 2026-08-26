@@ -669,6 +669,13 @@ async function createQuote() {
   const res = await fetch(`${API}/quotes?${params}`, {method:'POST'});
   const quote = await res.json();
   currentQuoteId = quote.id;
+  // Revert to Original (confirmed Aug 2026, Add-Line Data-Loss brief
+  // §5) — snapshots the (empty) starting state so "Revert to original"
+  // has something to restore to even for a brand-new quote. Fire-and-
+  // forget, same reasoning as the Builder Portal linkage below: a
+  // failure here shouldn't block quote creation, and there's nothing
+  // to lose yet at this exact moment for a revert to meaningfully undo.
+  fetch(`${API}/quotes/${quote.id}/snapshot`, {method:'POST'});
   // Defensive backstop against stale-quote residue (confirmed Aug 2026,
   // Client-Side Commercial Workflow brief) — a brand-new quote is
   // genuinely empty server-side, but the DOM (#linesTable, #quoteTotal,
@@ -692,6 +699,8 @@ async function createQuote() {
   document.getElementById('quotePhotosCard').style.display = 'block';
   const dupBtn = document.getElementById('duplicateQuoteBtn');
   if (dupBtn) dupBtn.style.display = '';
+  const revertBtn = document.getElementById('revertQuoteBtn');
+  if (revertBtn) revertBtn.style.display = '';
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -1088,6 +1097,20 @@ async function deleteLineBeingEditedIfAny() {
   if (!editingLineId) return;
   await fetch(`${API}/quotes/${currentQuoteId}/lines/${editingLineId}`, { method: 'DELETE' });
   cancelLineEdit();
+}
+
+// Revert to Original (confirmed Aug 2026, Add-Line Data-Loss brief §5)
+// — restores the state captured when this quote was opened
+// (snapshot_quote(), called from openQuoteFromIndex()/createQuote()).
+// One level of undo back to "what was last saved," not a full multi-
+// version history, per the brief's own explicit scope.
+async function revertQuoteToOriginal() {
+  if (!currentQuoteId) return;
+  if (!confirm('Discard every change made in this editing session and return to how this quote looked when you opened it?\n\nThis cannot be undone.')) return;
+  cancelLineEdit();   // an in-progress edit is exactly the kind of unsaved change this is meant to discard too
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/revert`, { method: 'POST' });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not revert this quote.'); return; }
+  loadQuote();
 }
 
 async function changeLineColour(lineId) {
