@@ -663,6 +663,23 @@ class Client(SQLModel, table=True):
     # this brief's scope") — a backend enum would make expanding that
     # list a migration instead of a one-line frontend edit.
     marketing_source: str = ""
+    # Client Info: Company Name, VAT Number, Multiple Phones/Emails
+    # (confirmed Aug 2026). company_name/vat_number are for
+    # business/company clients -- blank for individuals, same
+    # optional-string pattern as marketing_source above. phone/email
+    # above stay exactly as they are (the PRIMARY entry, unchanged --
+    # every existing client record already has its real data there, no
+    # migration/backfill needed); phone_extra/email_extra hold any
+    # ADDITIONAL entries as a JSON array of strings (e.g.
+    # '["082 111 2222", "083 333 4444"]'), blank ("") when there are
+    # none. A JSON-in-a-text-column list rather than a new table --
+    # this is a small, per-client, order-doesn't-matter set of strings,
+    # not a relation with its own fields/lifecycle, so a new table
+    # would be more machinery than the data shape actually needs.
+    company_name: str = ""
+    vat_number: str = ""
+    phone_extra: str = ""
+    email_extra: str = ""
 
 
 class BusinessSettings(SQLModel, table=True):

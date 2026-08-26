@@ -144,6 +144,64 @@ async function renderWithRetry(el, label, renderFn) {
 
 let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad(). This is always the REAL identity, never swapped by preview.
 
+// Client Info: Company Name, VAT Number, Multiple Phones/Emails
+// (confirmed Aug 2026) -- shared between the Add Client form, the Edit
+// Details form, and the printed quote/invoice, so all three read a
+// client's contact list the exact same way. A client's phone/email are
+// stored as one PRIMARY value (Client.phone/email, unchanged) plus an
+// optional JSON array of extras (Client.phone_extra/email_extra) --
+// these two helpers are the one place that combines them back into a
+// flat list; nothing else should parse phone_extra/email_extra
+// directly.
+function clientPhoneList(client) {
+  if (!client) return [];
+  const list = [];
+  if (client.phone) list.push(client.phone);
+  if (client.phone_extra) {
+    try { JSON.parse(client.phone_extra).forEach(p => { if (p) list.push(p); }); } catch (e) { /* malformed/legacy value -- ignore rather than break the page */ }
+  }
+  return list;
+}
+function clientEmailList(client) {
+  if (!client) return [];
+  const list = [];
+  if (client.email) list.push(client.email);
+  if (client.email_extra) {
+    try { JSON.parse(client.email_extra).forEach(e => { if (e) list.push(e); }); } catch (e) { /* malformed/legacy value -- ignore rather than break the page */ }
+  }
+  return list;
+}
+
+// Generic addable-row control (confirmed Aug 2026, same brief) -- one
+// pair of functions for both the phone list and the email list, on
+// both the Add Client and Edit Details forms (4 uses total from 2
+// functions, rather than 4 near-identical copies). addContactField()
+// appends a new blank, removable row; the very first row in each list
+// is rendered without a remove button by the caller (matches the
+// brief's own "starting with one entry each... no forced minimum
+// beyond that" -- you can always leave the one field blank, but the
+// UI never lets the list disappear to literally zero rows).
+function addContactField(listId, entryClass, placeholder, value) {
+  const list = document.getElementById(listId);
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'addable-row';
+  row.style.cssText = 'display:flex; gap:6px; margin-bottom:6px;';
+  row.innerHTML = `<input class="${entryClass}" placeholder="${placeholder}" value="${(value || '').replace(/"/g, '&quot;')}" style="flex:1;">` +
+    `<button type="button" onclick="this.parentElement.remove();" title="Remove" style="padding:6px 10px;">✕</button>`;
+  list.appendChild(row);
+}
+function collectContactValues(entryClass) {
+  return Array.from(document.querySelectorAll('.' + entryClass)).map(el => el.value.trim()).filter(v => v);
+}
+// Splits a collected list back into {primary, extraJson} for the
+// backend's own storage shape (Client.phone/email + phone_extra/
+// email_extra) -- kept here alongside the two collectors above so the
+// split logic only exists once.
+function contactListToFields(values) {
+  return { primary: values[0] || '', extraJson: values.length > 1 ? JSON.stringify(values.slice(1)) : '' };
+}
+
 // Default Branch per Staff (confirmed Aug 2026, Deposit Amount + Save
 // Confirmation + Default Branch brief) — a default only, pre-selected
 // wherever a branch dropdown appears for a NEW record (a fresh quote,
@@ -429,10 +487,21 @@ async function buildPrintDocHtml(quoteId, docType) {
           ${isInvoice ? `<div style="text-align:right; font-size:11px; color:#6b7280;">Ref: Quote #${quoteId}</div>` : ''}
         </div>
       </div>
+      <!-- Client Info: Company Name, VAT Number, Multiple Phones/Emails
+           brief §4 (confirmed with Burgert before building) — when a
+           company_name is on file, it REPLACES the "Quoted to" name
+           line (standard B2B invoice convention), with the individual
+           contact kept as a smaller "Attn:" line right underneath so
+           nothing about who to actually contact is lost. VAT number
+           gets its own line. Phone/Email now show every entry on file
+           (clientPhoneList()/clientEmailList() above), not just the
+           single primary value. -->
       <div style="margin-bottom:20px; font-size:13px;">
-        <div><b>${isInvoice ? 'Invoice to' : 'Quoted to'}:</b> ${data.quote.client_name}</div>
-        ${client && client.phone ? `<div><b>Phone:</b> ${client.phone}</div>` : ''}
-        ${client && client.email ? `<div><b>Email:</b> ${client.email}</div>` : ''}
+        <div><b>${isInvoice ? 'Invoice to' : 'Quoted to'}:</b> ${client && client.company_name ? client.company_name : data.quote.client_name}</div>
+        ${client && client.company_name ? `<div style="font-size:11px; color:#6b7280;">Attn: ${data.quote.client_name}</div>` : ''}
+        ${client && client.vat_number ? `<div><b>VAT no:</b> ${client.vat_number}</div>` : ''}
+        ${clientPhoneList(client).length ? `<div><b>Phone:</b> ${clientPhoneList(client).join(', ')}</div>` : ''}
+        ${clientEmailList(client).length ? `<div><b>Email:</b> ${clientEmailList(client).join(', ')}</div>` : ''}
         ${client && client.address ? `<div><b>Address:</b> ${client.address}</div>` : ''}
         <div><b>Branch:</b> ${data.quote.branch}</div>
       </div>

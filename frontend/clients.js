@@ -64,8 +64,21 @@ async function renderClients(el, searchTerm) {
       <h2>Add Client</h2>
       <div class="grid">
         <div class="field"><label>Name</label><input id="cl_name" placeholder="Client name"></div>
-        <div class="field"><label>Phone</label><input id="cl_phone" placeholder="082 555 1234"></div>
-        <div class="field"><label>Email</label><input id="cl_email" placeholder="client@example.com"></div>
+        <!-- Client Info: Company Name, VAT Number, Multiple Phones/
+             Emails brief (confirmed Aug 2026) — Company name/VAT
+             number optional, blank for individuals. -->
+        <div class="field"><label>Company name <span class="adj">(optional — leave blank for an individual)</span></label><input id="cl_company_name" placeholder="e.g. Aspeling Builders CC"></div>
+        <div class="field"><label>VAT number <span class="adj">(optional)</span></label><input id="cl_vat_number" placeholder="e.g. 4123456789"></div>
+        <div class="field" style="grid-column: span 2;">
+          <label>Phone</label>
+          <div id="cl_phone_list"><div class="addable-row" style="display:flex; gap:6px; margin-bottom:6px;"><input class="cl_phone_entry" placeholder="082 555 1234" style="flex:1;"></div></div>
+          <a href="#" onclick="addContactField('cl_phone_list', 'cl_phone_entry', '082 555 1234'); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">+ Add phone</a>
+        </div>
+        <div class="field" style="grid-column: span 2;">
+          <label>Email</label>
+          <div id="cl_email_list"><div class="addable-row" style="display:flex; gap:6px; margin-bottom:6px;"><input class="cl_email_entry" placeholder="client@example.com" style="flex:1;"></div></div>
+          <a href="#" onclick="addContactField('cl_email_list', 'cl_email_entry', 'client@example.com'); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">+ Add email</a>
+        </div>
         <div class="field"><label>Preferred branch</label>
           <!-- Default Branch per Staff (confirmed Aug 2026) — pre-
           selected from whoever's logged in, per-render (this whole card
@@ -106,10 +119,16 @@ async function renderClients(el, searchTerm) {
 async function addClient() {
   const btn = document.getElementById('addClientBtn');
   const statusEl = document.getElementById('addClientStatus');
+  // Client Info brief (confirmed Aug 2026) -- phone/email collected as
+  // addable lists, split back into the backend's primary+extra shape.
+  const phones = contactListToFields(collectContactValues('cl_phone_entry'));
+  const emails = contactListToFields(collectContactValues('cl_email_entry'));
   const body = {
     name: document.getElementById('cl_name').value,
-    phone: document.getElementById('cl_phone').value,
-    email: document.getElementById('cl_email').value,
+    company_name: document.getElementById('cl_company_name').value,
+    vat_number: document.getElementById('cl_vat_number').value,
+    phone: phones.primary, phone_extra: phones.extraJson,
+    email: emails.primary, email_extra: emails.extraJson,
     address: document.getElementById('cl_address').value,
     preferred_branch: document.getElementById('cl_branch').value,
     notes: document.getElementById('cl_notes').value,
@@ -220,10 +239,11 @@ async function renderClientDetail(el) {
   el.innerHTML = `
     <span class="back-link" onclick="landingView='clients'; renderLanding();">← Back to Clients</span>
     <div class="card" id="clientDetailCard">
-      <h2>${c.name}</h2>
+      <h2>${c.name}${c.company_name ? ` <span class="muted" style="font-weight:400; font-size:14px;">— ${c.company_name}</span>` : ''}</h2>
       <div class="product-info">
-        <div>Phone: <b>${c.phone || '—'}</b></div>
-        <div>Email: <b>${c.email || '—'}</b></div>
+        ${c.vat_number ? `<div>VAT no: <b>${c.vat_number}</b></div>` : ''}
+        <div>Phone: <b>${clientPhoneList(c).join(', ') || '—'}</b></div>
+        <div>Email: <b>${clientEmailList(c).join(', ') || '—'}</b></div>
         <div>Branch: <b>${c.preferred_branch}</b></div>
         <div>Address: <b>${c.address || '—'}</b></div>
         <div>Notes: <b>${c.notes || '—'}</b></div>
@@ -291,12 +311,40 @@ function showEditClientForm(clientId) {
   if (!c || c.id !== clientId) return;
   const card = document.getElementById('clientDetailCard');
   if (!card) return;
+  // Client Info brief (confirmed Aug 2026) -- pre-fill the addable
+  // phone/email lists from the client's real stored list
+  // (clientPhoneList()/clientEmailList(), shared.js), not just the
+  // single primary value -- first row has no remove button (matches
+  // the Add Client form's own "always at least one row" rule), every
+  // row after it does.
+  const existingPhones = clientPhoneList(c);
+  const existingEmails = clientEmailList(c);
+  const phoneRowsHtml = (existingPhones.length ? existingPhones : ['']).map((p, i) => `
+    <div class="addable-row" style="display:flex; gap:6px; margin-bottom:6px;">
+      <input class="ec_phone_entry" placeholder="082 555 1234" value="${p.replace(/"/g,'&quot;')}" style="flex:1;">
+      ${i > 0 ? `<button type="button" onclick="this.parentElement.remove();" title="Remove" style="padding:6px 10px;">✕</button>` : ''}
+    </div>`).join('');
+  const emailRowsHtml = (existingEmails.length ? existingEmails : ['']).map((em, i) => `
+    <div class="addable-row" style="display:flex; gap:6px; margin-bottom:6px;">
+      <input class="ec_email_entry" placeholder="client@example.com" value="${em.replace(/"/g,'&quot;')}" style="flex:1;">
+      ${i > 0 ? `<button type="button" onclick="this.parentElement.remove();" title="Remove" style="padding:6px 10px;">✕</button>` : ''}
+    </div>`).join('');
   card.innerHTML = `
     <h2>Edit ${c.name}</h2>
     <div class="grid">
       <div class="field"><label>Name</label><input id="ec_name" value="${c.name.replace(/"/g,'&quot;')}"></div>
-      <div class="field"><label>Phone</label><input id="ec_phone" value="${(c.phone||'').replace(/"/g,'&quot;')}"></div>
-      <div class="field"><label>Email</label><input id="ec_email" value="${(c.email||'').replace(/"/g,'&quot;')}"></div>
+      <div class="field"><label>Company name <span class="adj">(optional — leave blank for an individual)</span></label><input id="ec_company_name" value="${(c.company_name||'').replace(/"/g,'&quot;')}" placeholder="e.g. Aspeling Builders CC"></div>
+      <div class="field"><label>VAT number <span class="adj">(optional)</span></label><input id="ec_vat_number" value="${(c.vat_number||'').replace(/"/g,'&quot;')}" placeholder="e.g. 4123456789"></div>
+      <div class="field" style="grid-column: span 2;">
+        <label>Phone</label>
+        <div id="ec_phone_list">${phoneRowsHtml}</div>
+        <a href="#" onclick="addContactField('ec_phone_list', 'ec_phone_entry', '082 555 1234'); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">+ Add phone</a>
+      </div>
+      <div class="field" style="grid-column: span 2;">
+        <label>Email</label>
+        <div id="ec_email_list">${emailRowsHtml}</div>
+        <a href="#" onclick="addContactField('ec_email_list', 'ec_email_entry', 'client@example.com'); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">+ Add email</a>
+      </div>
       <div class="field"><label>Preferred branch</label>
         <select id="ec_branch">
           <option value="gansbaai" ${c.preferred_branch==='gansbaai'?'selected':''}>Gansbaai</option>
@@ -319,10 +367,16 @@ async function saveClientEdit(clientId) {
   const statusEl = document.getElementById('editClientStatus');
   const name = document.getElementById('ec_name').value.trim();
   if (!name) { alert('Client name is required.'); return; }
+  // Client Info brief (confirmed Aug 2026) -- same list-collection
+  // pattern as addClient().
+  const phones = contactListToFields(collectContactValues('ec_phone_entry'));
+  const emails = contactListToFields(collectContactValues('ec_email_entry'));
   const body = {
     name,
-    phone: document.getElementById('ec_phone').value,
-    email: document.getElementById('ec_email').value,
+    company_name: document.getElementById('ec_company_name').value,
+    vat_number: document.getElementById('ec_vat_number').value,
+    phone: phones.primary, phone_extra: phones.extraJson,
+    email: emails.primary, email_extra: emails.extraJson,
     address: document.getElementById('ec_address').value,
     preferred_branch: document.getElementById('ec_branch').value,
     notes: document.getElementById('ec_notes').value,

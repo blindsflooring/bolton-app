@@ -293,6 +293,12 @@ def _ensure_new_columns():
         # Source brief (confirmed Aug 2026):
         ("quote", "is_price_check", "BOOLEAN", "FALSE"),
         ("client", "marketing_source", "VARCHAR", "''"),
+        # Client Info: Company Name, VAT Number, Multiple Phones/Emails
+        # brief (confirmed Aug 2026):
+        ("client", "company_name", "VARCHAR", "''"),
+        ("client", "vat_number", "VARCHAR", "''"),
+        ("client", "phone_extra", "TEXT", "''"),
+        ("client", "email_extra", "TEXT", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
