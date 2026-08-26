@@ -228,7 +228,12 @@ function renderOrderIndexTable(searchTerm) {
         <div class="field"><label>Phone</label><input id="oi_cl_phone" placeholder="082 555 1234"></div>
         <div class="field"><label>Email</label><input id="oi_cl_email" placeholder="client@example.com"></div>
         <div class="field"><label>Preferred branch</label>
-          <select id="oi_cl_branch"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+          <!-- Default Branch per Staff (confirmed Aug 2026) — same
+          per-render defaulting as clients.js's own New Client form. -->
+          <select id="oi_cl_branch">
+            <option value="gansbaai" ${defaultBranchForCurrentUser()==='gansbaai'?'selected':''}>Gansbaai</option>
+            <option value="hermanus" ${defaultBranchForCurrentUser()==='hermanus'?'selected':''}>Hermanus</option>
+          </select>
         </div>
         <div class="field" style="grid-column: span 2;"><label>Address</label><input id="oi_cl_address" placeholder="Site/delivery address"></div>
       </div>
@@ -621,6 +626,18 @@ async function renderOrderDetail(el) {
 
         <div class="card">
           <h2>Job Details</h2>
+          <!-- Save confirmation (confirmed Aug 2026, Deposit Amount +
+          Save Confirmation + Default Branch brief §2) — replaces the
+          old small grey "Saved ✓ 13:05:17" note (easy to miss) with a
+          real, temporary success banner right at the top of this card.
+          Deliberately NOT a navigate-away-on-save, unlike Quote
+          Builder's own Save (Save Redirect brief) — this page hosts
+          several related actions in one visit (Job Details, Document
+          Preview, Follow-Ups), so auto-navigating away would interrupt
+          someone doing more than one of those. showJobDetailsSaveBanner()
+          (below) shows this and fades it after a few seconds; leaving
+          the page is always the user's own choice. -->
+          <div id="jobDetailsSaveBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
           <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
 
           <!-- Manual Override total display (confirmed Aug 2026, Manual
@@ -633,13 +650,25 @@ async function renderOrderDetail(el) {
           matches the real agreed figure). Badge visible to every
           internal role; Override/Revert action Owner-only, same split
           as Quote Builder's own line/total controls. -->
-          <p style="margin:0 0 12px;">
+          <p style="margin:0 0 4px;">
             <b>Total (incl VAT):</b> R${data.total_incl_vat.toFixed(2)}
             ${q.manual_override_total_incl_vat != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="${(q.override_total_reason || '').replace(/"/g,'&quot;')} — by ${q.override_total_by || ''}${q.override_total_at ? ' on ' + new Date(q.override_total_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Manually adjusted</span>` : ''}
             ${currentRole() === 'owner' ? (q.manual_override_total_incl_vat != null
               ? ` <a href="#" onclick="revertJobDetailTotalOverride(); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Revert to calculated</a>`
               : ` <a href="#" onclick="overrideJobDetailTotal(${data.total_incl_vat}); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Override total</a>`) : ''}
           </p>
+          <!-- Deposit Amount (confirmed Aug 2026, brief §1) — same
+          precedence/flagging pattern as the Manual Override total just
+          above, without a mandatory reason: this isn't a price
+          correction needing justification, just what was actually
+          paid. balance_amount below is already computed FROM this
+          figure server-side (_quote_totals()), never a second,
+          separate calculation here. -->
+          <p style="margin:0 0 4px;">
+            <b>Deposit:</b> R${data.deposit_amount.toFixed(2)}
+            ${q.actual_deposit_amount != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="Entered by ${q.actual_deposit_amount_by || ''}${q.actual_deposit_amount_at ? ' on ' + new Date(q.actual_deposit_amount_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Actual (manually entered)</span>` : ` <span class="muted" style="font-size:11px;">(${(q.deposit_pct*100).toFixed(0)}% calculated)</span>`}
+          </p>
+          <p style="margin:0 0 12px;"><b>Balance due:</b> R${data.balance_amount.toFixed(2)}</p>
 
           <!-- Client link (confirmed Aug 2026, Order Index -> Client
           Link Gap brief, Gap 2 fix) — real gap closed: there was
@@ -668,13 +697,13 @@ async function renderOrderDetail(el) {
             <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
             <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
             <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
+            <div class="field"><label>Deposit amount (R) <span class="adj">(actual amount paid — overrides the ${(q.deposit_pct*100).toFixed(0)}% calculated figure once entered; leave blank to use the percentage)</span></label><input id="od_actual_deposit_amount" type="number" step="0.01" value="${q.actual_deposit_amount != null ? q.actual_deposit_amount : ''}" placeholder="e.g. ${(data.total_incl_vat * q.deposit_pct).toFixed(2)} (calculated)"></div>
             <div class="field"><label>Deposit payment method</label><input id="od_deposit_payment_method" value="${q.deposit_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
             <div class="field"><label>Final payment date</label><input id="od_final_payment_date" type="date" value="${q.final_payment_date || ''}"></div>
             <div class="field"><label>Final payment method</label><input id="od_final_payment_method" value="${q.final_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
           <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
-          <p class="muted" id="orderDetailsSaveStatus" style="margin-top:8px;"></p>
 
           <h2 style="margin-top:20px;">Follow-Ups</h2>
           <div id="followUpList" style="margin-bottom:10px;"></div>
@@ -824,8 +853,33 @@ async function saveOrderDetails() {
     final_payment_date: document.getElementById('od_final_payment_date').value,
     final_payment_method: document.getElementById('od_final_payment_method').value,
   });
-  await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?${params}`, {method:'PUT'});
-  document.getElementById('orderDetailsSaveStatus').textContent = `Saved ✓ ${new Date().toLocaleTimeString('en-ZA')}`;
+  // Deposit Amount (confirmed Aug 2026) — blank means "use the
+  // percentage-calculated figure", sent as an explicit clear rather
+  // than just omitting the param, so the backend can tell "leave it
+  // alone" apart from "the user emptied this field on purpose."
+  const actualDepositVal = document.getElementById('od_actual_deposit_amount').value;
+  if (actualDepositVal !== '') { params.set('actual_deposit_amount', actualDepositVal); }
+  else { params.set('clear_actual_deposit_amount', 'true'); }
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?${params}`, {method:'PUT'});
+  if (!res.ok) { alert('Could not save — check your connection and try again.'); return; }
+  // Save confirmation (confirmed Aug 2026, brief §2) — re-renders this
+  // SAME screen in place (never navigates away, per the brief's own
+  // explicit instruction) so the Deposit/Balance figures and the
+  // "Actual" badge reflect what was just saved immediately, then shows
+  // the success banner — awaited first so #jobDetailsSaveBanner exists
+  // in the freshly-rebuilt DOM before this tries to show it.
+  await renderOrderDetail(document.getElementById('landing'));
+  showJobDetailsSaveBanner();
+}
+
+let jobDetailsSaveBannerTimeout = null;
+function showJobDetailsSaveBanner() {
+  const banner = document.getElementById('jobDetailsSaveBanner');
+  if (!banner) return;
+  banner.textContent = `✓ Saved — ${new Date().toLocaleTimeString('en-ZA')}`;
+  banner.style.display = 'block';
+  clearTimeout(jobDetailsSaveBannerTimeout);
+  jobDetailsSaveBannerTimeout = setTimeout(() => { banner.style.display = 'none'; }, 4000);
 }
 
 async function logFollowUp() {

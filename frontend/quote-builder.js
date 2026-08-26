@@ -819,6 +819,17 @@ function clearStaleQuoteResidue() {
 function resetQuoteBuilderUI() {
   currentQuoteId = null;
   document.getElementById('q_client').value = '';
+  // Default Branch per Staff (confirmed Aug 2026) — also closes a real,
+  // separate stale-residue gap found while investigating the reported
+  // "Client feed -> add new client -> Create new quote" occurrence:
+  // resetQuoteBuilderUI() never reset q_branch at all, so it silently
+  // kept whatever branch the PREVIOUS quote happened to be on, which
+  // could easily read as "stale previous quote data" even though the
+  // lines/total themselves were correctly cleared below. Explicit
+  // client-preference overrides (startQuoteForClient()'s preferredBranch
+  // param) are applied by the caller right after this returns, so they
+  // still correctly win over this staff default.
+  document.getElementById('q_branch').value = defaultBranchForCurrentUser();
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';

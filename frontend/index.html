@@ -724,6 +724,11 @@ function showApp() {
   // spot that must never be fooled by its own preview state).
   document.getElementById('previewToggleWrap').style.display = realRole() === 'owner' ? '' : 'none';
   applyRoleVisibility();
+  // Default Branch per Staff (confirmed Aug 2026) — pre-selected the
+  // moment login succeeds, so it's already correct even before the
+  // first resetQuoteBuilderUI() call (e.g. the very first time Quote
+  // Builder is opened this session).
+  document.getElementById('q_branch').value = defaultBranchForCurrentUser();
   loadFlooring();
   loadBlinds();
   loadTrims();

@@ -277,6 +277,11 @@ def _ensure_new_columns():
         ("quotelineitem", "flooring_pricing_type", "VARCHAR", "NULL"),
         ("quotelineitem", "trim_sub_category", "VARCHAR", "NULL"),
         ("quote", "snapshot_json", "TEXT", "NULL"),
+        # Deposit Amount (confirmed Aug 2026, Deposit Amount + Save
+        # Confirmation + Default Branch brief):
+        ("quote", "actual_deposit_amount", "FLOAT", "NULL"),
+        ("quote", "actual_deposit_amount_by", "VARCHAR", "NULL"),
+        ("quote", "actual_deposit_amount_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -3272,7 +3277,17 @@ def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dic
     going negative) purely so the printed doc's own subtotal -> discount
     -> net -> VAT breakdown still visibly adds up to the final total for
     the client — same clean, professional invoice either way, no
-    internal override language anywhere in it (brief's own requirement)."""
+    internal override language anywhere in it (brief's own requirement).
+
+    Deposit Amount (confirmed Aug 2026, Deposit Amount + Save
+    Confirmation + Default Branch brief) — deposit_amount was always
+    purely deposit_pct of the total, which doesn't reflect reality
+    (different clients pay different actual amounts). When
+    quote.actual_deposit_amount is set, it replaces the percentage
+    figure here — same "the real recorded figure wins" precedent as the
+    Manual Override total above — and balance_amount is computed from
+    THAT, not the percentage-derived one, so what shows as owing always
+    matches what was actually paid."""
     if quote.manual_override_total_incl_vat is not None:
         total_incl_vat = quote.manual_override_total_incl_vat
         total_ex_vat = total_incl_vat / (1 + vat_pct)
@@ -3281,7 +3296,7 @@ def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dic
         discount_amount = subtotal_ex_vat * quote.discount_pct
         total_ex_vat = subtotal_ex_vat - discount_amount
         total_incl_vat = total_ex_vat * (1 + vat_pct)
-    deposit_amount = total_incl_vat * quote.deposit_pct
+    deposit_amount = quote.actual_deposit_amount if quote.actual_deposit_amount is not None else total_incl_vat * quote.deposit_pct
     balance_amount = total_incl_vat - deposit_amount
     return {
         "discount_amount": round(discount_amount, 2), "total_ex_vat": round(total_ex_vat, 2),
@@ -3584,7 +3599,10 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
                           invoice_sent_date: str = None, deposit_paid_date: str = None,
                           deposit_payment_method: str = None, final_payment_date: str = None,
                           final_payment_method: str = None, installer_team: str = None,
-                          workflow_status: str = None, tenant_id: str = Depends(get_current_tenant)):
+                          workflow_status: str = None, actual_deposit_amount: float = None,
+                          clear_actual_deposit_amount: bool = False,
+                          tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
     """Update a quote's own details — client name, sales owner, branch,
     legacy status, plus order-tracking fields (site address, installation
     date, invoice/payment dates and methods) confirmed Aug 2026 for the
@@ -3677,6 +3695,34 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
             quote.final_payment_date = date.fromisoformat(final_payment_date) if final_payment_date else None
         if final_payment_method is not None:
             quote.final_payment_method = final_payment_method
+        # Deposit Amount (confirmed Aug 2026, Deposit Amount + Save
+        # Confirmation + Default Branch brief) — actual_deposit_amount
+        # (set) and clear_actual_deposit_amount (revert to the
+        # percentage-calculated figure) are mutually exclusive on any
+        # single save; a set always wins if somehow both were sent.
+        # Logged to AuditLog either way, same "every manual entry is
+        # logged" discipline as the Manual Override fields.
+        if actual_deposit_amount is not None:
+            old = quote.actual_deposit_amount
+            quote.actual_deposit_amount = actual_deposit_amount
+            quote.actual_deposit_amount_by = username
+            quote.actual_deposit_amount_at = datetime.utcnow()
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+                field="actual_deposit_amount",
+                old_value=(f"R{old:.2f}" if old is not None else "(calculated from %)"),
+                new_value=f"R{actual_deposit_amount:.2f}",
+            ))
+        elif clear_actual_deposit_amount and quote.actual_deposit_amount is not None:
+            old = quote.actual_deposit_amount
+            quote.actual_deposit_amount = None
+            quote.actual_deposit_amount_by = None
+            quote.actual_deposit_amount_at = None
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+                field="actual_deposit_amount_cleared", old_value=f"R{old:.2f}",
+                new_value="(reverted to % calculated)",
+            ))
         session.add(quote)
         session.commit()
         session.refresh(quote)

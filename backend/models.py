@@ -818,6 +818,23 @@ class Quote(SQLModel, table=True):
     override_total_by: Optional[str] = None
     override_total_at: Optional[datetime] = None
 
+    # ---------- Deposit Amount (confirmed Aug 2026, Deposit Amount +
+    # Save Confirmation + Default Branch brief) ----------
+    # deposit_amount was purely calculated (total_incl_vat *
+    # deposit_pct) — doesn't reflect reality, since different clients
+    # pay different actual amounts, not a fixed percentage every time.
+    # None = still purely percentage-calculated, the normal case. Once
+    # set, takes precedence over the percentage figure everywhere
+    # deposit_amount/balance_amount are computed (_quote_totals(),
+    # main.py) — same "the manually entered real figure wins, but is
+    # never a silent, invisible substitution" precedent as the Manual
+    # Override fields above, just without a mandatory reason (this
+    # isn't a price CORRECTION needing justification, it's simply
+    # recording what was actually paid).
+    actual_deposit_amount: Optional[float] = None
+    actual_deposit_amount_by: Optional[str] = None
+    actual_deposit_amount_at: Optional[datetime] = None
+
     # ---------- Revert to Original (confirmed Aug 2026, Add-Line
     # Data-Loss brief §5 — "one level of undo back to what was last
     # saved," explicitly not full multi-version history) ----------

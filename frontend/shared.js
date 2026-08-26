@@ -124,6 +124,18 @@ async function renderWithRetry(el, label, renderFn) {
 
 let currentUser = null;   // {username, display_name, role} — set once /auth/me or /auth/login succeeds; see index.html's doLogin()/checkAuthOnLoad(). This is always the REAL identity, never swapped by preview.
 
+// Default Branch per Staff (confirmed Aug 2026, Deposit Amount + Save
+// Confirmation + Default Branch brief) — a default only, pre-selected
+// wherever a branch dropdown appears for a NEW record (a fresh quote,
+// a fresh client); never forced on an existing, already-saved record's
+// own stored preference (e.g. the Client Detail edit page shows that
+// client's real preferred_branch, untouched by this). Always fully
+// changeable per quote/client afterward, per the brief's own words.
+const STAFF_DEFAULT_BRANCH = { burgert: 'hermanus', ryno: 'gansbaai', madri: 'gansbaai' };
+function defaultBranchForCurrentUser() {
+  return STAFF_DEFAULT_BRANCH[currentUser?.username] || 'gansbaai';
+}
+
 // Cross-feature state — read/written by more than one feature area:
 let currentQuoteId = null;
 let flooringProducts = [];   // price book cache — read by Price Book AND Quote Builder

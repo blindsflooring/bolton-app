@@ -62,7 +62,16 @@ async function renderClients(el, searchTerm) {
         <div class="field"><label>Phone</label><input id="cl_phone" placeholder="082 555 1234"></div>
         <div class="field"><label>Email</label><input id="cl_email" placeholder="client@example.com"></div>
         <div class="field"><label>Preferred branch</label>
-          <select id="cl_branch"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+          <!-- Default Branch per Staff (confirmed Aug 2026) — pre-
+          selected from whoever's logged in, per-render (this whole card
+          is rebuilt fresh each time renderClients() runs, so this
+          correctly re-applies every time, never a stale prior choice
+          left over from three renders ago). Fully changeable, same as
+          always — this is only ever the starting value. -->
+          <select id="cl_branch">
+            <option value="gansbaai" ${defaultBranchForCurrentUser()==='gansbaai'?'selected':''}>Gansbaai</option>
+            <option value="hermanus" ${defaultBranchForCurrentUser()==='hermanus'?'selected':''}>Hermanus</option>
+          </select>
         </div>
         <div class="field" style="grid-column: span 2;"><label>Address</label><input id="cl_address" placeholder="Site/delivery address"></div>
         <div class="field" style="grid-column: span 2;"><label>Notes <span class="adj">(anything worth remembering about this client — access instructions, preferences, etc.)</span></label><textarea id="cl_notes" rows="2" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;" placeholder="Optional"></textarea></div>
