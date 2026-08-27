@@ -619,6 +619,12 @@
       <div style="display:flex; gap:10px; margin-top:16px;">
         <button class="primary" onclick="saveQuote()" style="flex:1;">Save Quote</button>
         <button onclick="printQuote()" style="flex:1; background:none; border:2px solid var(--navy); color:var(--navy); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Print / PDF</button>
+        <!-- Send button (confirmed Aug 2026) — independent of Print, per
+        the brief's own explicit instruction ("Print stays exactly as it
+        is today — no changes there"); opens the default mail client
+        directly via sendDocumentEmail() (shared.js), which reuses
+        buildPrintDocHtml() for the actual email/subject/body. -->
+        <button onclick="sendDocumentEmail(currentQuoteId, 'quote')" style="flex:1; background:none; border:2px solid var(--navy); color:var(--navy); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Send</button>
         <!-- Duplicate Quote (confirmed Aug 2026) — available both here
         (from within an open quote) and per-row on the Order Index, per
         the brief's own explicit requirement; both call the same
@@ -643,6 +649,10 @@
         toggled by loadQuote() (quote-builder.js) once the quote's
         status is accepted/invoiced/paid. -->
         <button id="printInvoiceBtn" onclick="printInvoiceForQuote(currentQuoteId)" style="display:none; flex:1; background:var(--teal); color:white; border:2px solid var(--teal); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Print Invoice</button>
+        <!-- Send button (confirmed Aug 2026) — same display:none-until-
+        shown pattern as printInvoiceBtn, toggled alongside it
+        (quote-builder.js). -->
+        <button id="sendInvoiceBtn" onclick="sendDocumentEmail(currentQuoteId, 'invoice')" style="display:none; flex:1; background:none; border:2px solid var(--teal); color:var(--teal); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; cursor:pointer;">Send Invoice</button>
       </div>
       <p class="muted" id="saveStatus" style="margin-top:8px;"></p>
     </div>
@@ -1130,7 +1140,7 @@ async function renderPrintInvoicePicker(el, searchTerm) {
       <td>${q.branch}</td>
       <td>${workflowStatusBadge(q)}</td>
       <td>${new Date(q.created_at).toLocaleDateString('en-ZA')}</td>
-      <td><button class="primary" onclick="printInvoiceForQuote(${q.id})">Print Invoice</button></td>
+      <td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="primary" onclick="printInvoiceForQuote(${q.id})">Print Invoice</button><button onclick="sendDocumentEmail(${q.id}, 'invoice')" style="background:none; border:2px solid var(--teal); color:var(--teal); font-weight:600; border-radius:6px; cursor:pointer;">Send</button></td>
     </tr>`).join('') : '<tr><td colspan="6" class="muted">No quotes match.</td></tr>';
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
@@ -1180,7 +1190,7 @@ async function printInvoiceForQuote(quoteId) {
       const css = cssRes.ok ? await cssRes.text() : '';
       await fetch(`${API}/documents/archive`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ entity_type: 'Invoice', entity_id: quoteId, reference, html, css }),
+        body: JSON.stringify({ entity_type: 'Invoice', entity_id: quoteId, reference, html, css, branch: qData.quote.branch }),
       });
     }
   } catch (e) { /* best-effort — the print above already succeeded regardless */ }
@@ -2685,6 +2695,12 @@ function renderSupplierConsoleTable() {
       ? stagedForThisSupplier.default_delivery_fee_per_m2
       : (supplierDefaults[supplier] ? supplierDefaults[supplier].default_delivery_fee_per_m2 : null);
     const deliveryFeeDefaultDisplay = (deliveryFeeDefaultRaw !== null && deliveryFeeDefaultRaw !== undefined) ? deliveryFeeDefaultRaw : '';
+    // Send button brief (confirmed Aug 2026) — supplier email, for the
+    // Order Sheet Send button (order-index.js). Same staged-overrides-
+    // real precedence as every other supplier default field above.
+    const supplierEmailDisplay = stagedForThisSupplier.hasOwnProperty('email')
+      ? (stagedForThisSupplier.email || '')
+      : (supplierDefaults[supplier] ? (supplierDefaults[supplier].email || '') : '');
     // Per-supplier zone pricing (confirmed Aug 2026): the Zone A/B/C
     // selector only makes sense for a supplier that actually HAS zone
     // pricing (at least one product with price_zone_a/b/c set) — shown
@@ -2750,6 +2766,8 @@ function renderSupplierConsoleTable() {
           <input type="number" step="0.1" style="width:90px; display:block; margin-bottom:10px;" value="${supplierDefaultDisplay}" placeholder="e.g. 30" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_trade_discount_pct', this.value === '' ? null : parseFloat(this.value) / 100, this)">
           <label style="font-size:12px; font-weight:600;">Courier/delivery fee default (R/m²) <span class="adj">(Bolton-native cost, not from the supplier's price list — MARKED UP same as boxes/glue, e.g. Aspen's R15.00. Blank/0 = off. Default for NEW products only, never touched by a spreadsheet re-import; each product's own value stays individually editable afterward)</span></label>
           <input type="number" step="0.01" style="width:90px; display:block; margin-bottom:10px;" value="${deliveryFeeDefaultDisplay}" placeholder="e.g. 15.00" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'default_delivery_fee_per_m2', this.value === '' ? null : parseFloat(this.value), this)">
+          <label style="font-size:12px; font-weight:600;">Email <span class="adj">(used by the Order Sheet Send button to email this supplier directly)</span></label>
+          <input type="email" style="width:220px; display:block; margin-bottom:10px;" value="${supplierEmailDisplay}" placeholder="orders@supplier.co.za" onchange="stageSupplierDefaultField('${supplier.replace(/'/g,"\\'")}', 'email', this.value.trim(), this)">
           <label style="font-size:12px; font-weight:600;">Import from Standard Format spreadsheet (.xlsx) <span class="adj">(recommended — confirmed Aug 2026, Standard Import Format brief: no AI call, deterministic column mapping, either the whole file is accepted or clearly rejected. Convert the supplier's PDF to this fixed format outside Bolton first, and review it against the source PDF by hand before uploading here)</span></label>
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
             <input type="file" id="spreadsheet-import-file-${cssSafeId(supplier)}" accept=".xlsx" onchange="document.getElementById('spreadsheet-import-btn-${cssSafeId(supplier)}').disabled = !this.files.length">

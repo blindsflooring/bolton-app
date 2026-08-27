@@ -872,6 +872,8 @@ function clearStaleQuoteResidue() {
   currentQuoteClientId = null;   // must not leak the PREVIOUS quote's real client into a new one — createQuote() sets this fresh via loadQuote() once the new quote is actually saved
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) printInvoiceBtn.style.display = 'none';
+  const sendInvoiceBtn = document.getElementById('sendInvoiceBtn');
+  if (sendInvoiceBtn) sendInvoiceBtn.style.display = 'none';
   const tbody = document.querySelector('#linesTable tbody');
   if (tbody) tbody.innerHTML = '';
   const totalEl = document.getElementById('quoteTotal');
@@ -1442,6 +1444,8 @@ async function loadQuote() {
   if (descEl && data.quote) descEl.value = data.quote.description || '';
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) { printInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
+  const sendInvoiceBtn = document.getElementById('sendInvoiceBtn');
+  if (sendInvoiceBtn) { sendInvoiceBtn.style.display = POST_ACCEPT_LOCKED_STATUSES.includes(currentQuoteStatus) ? '' : 'none'; }
   // Read-only status badge (confirmed Aug 2026, Order Index / Job
   // Workflow Redesign brief) — replaces the old q_status <select>;
   // workflow_status only changes via an action on the Job Detail screen

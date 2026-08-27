@@ -341,6 +341,10 @@ def _ensure_new_columns():
         # Sheet archiving work did. Confirmed root cause via a real
         # production traceback before writing this fix, not guessed.
         ("documentarchive", "is_accepted_version", "BOOLEAN", "FALSE"),
+        # Send button brief (confirmed Aug 2026) — added to the model AND
+        # here together this time, having just found out the hard way
+        # (directly above) what happens when they drift apart.
+        ("supplierdefault", "email", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2258,6 +2262,7 @@ def get_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current_te
         d["lines"] = [l.dict() for l in lines]
         d["job_number"] = quote.job_number if quote else None
         d["client_name"] = quote.client_name if quote else None
+        d["branch"] = quote.branch if quote else None   # folder-flatten pass (confirmed Aug 2026) — the frontend needs this to archive into the right per-branch Dropbox folder (finalizeOrderSheet(), order-index.js)
         return d
 
 
@@ -2358,13 +2363,37 @@ def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = 
 ARCHIVE_CATEGORY_FOLDER = {
     "Quote": "Quotes", "Invoice": "Invoices", "OrderSheet": "Orders",
     "OrderIndexSnapshot": "Order Index Snapshots",
-}
+}   # NOTE (confirmed Aug 2026, folder-flatten pass): these labels are no
+    # longer used as real folder names for Quote/Invoice/OrderSheet — see
+    # _branch_folder_name() below — this dict now only (a) validates
+    # entity_type in archive_document(), and (b) still names the real
+    # folder for OrderIndexSnapshot, which stays whole-tenant/branch-
+    # independent (a snapshot spans every branch, so a per-branch folder
+    # makes no sense for it).
 ARCHIVE_FILE_EXTENSION = {"OrderIndexSnapshot": "csv"}   # everything else defaults to "pdf" — see .get() calls below
 ARCHIVE_MEDIA_TYPE = {"pdf": "application/pdf", "csv": "text/csv"}
 
 
+def _branch_folder_name(branch: Optional[str]) -> str:
+    """Folder-flatten pass (confirmed Aug 2026) — every Quote/Invoice/
+    Order for a branch lands directly in one flat Dropbox folder named
+    for that branch (no year/month, no Quotes/Invoices/Orders split —
+    the reference/filename itself, e.g. "Q-1042_Smith_v2.pdf", is what
+    keeps files findable). Only two real branches exist today
+    (gansbaai/hermanus, stored lowercase — see Quote.branch and the
+    q_branch/nc_branch <select> options, index.html), so .title() is
+    enough to get "Gansbaai"/"Hermanus"; a blank branch (confirmed
+    real, not hypothetical — a quote can be saved with branch never
+    explicitly set) falls back to "Unassigned" rather than silently
+    dropping the file somewhere unfindable or failing the archive
+    outright."""
+    if not branch or not branch.strip():
+        return "Unassigned"
+    return branch.strip().title()
+
+
 def _create_and_upload_archive(session: Session, tenant_id: str, username: str, entity_type: str, entity_id: int,
-                                reference: str, file_bytes: bytes, mark_as_accepted: bool = False) -> DocumentArchive:
+                                reference: str, file_bytes: bytes, mark_as_accepted: bool = False, branch: Optional[str] = None) -> DocumentArchive:
     """The actual reusable "pipeline" the brief's §2/§11 asks for (§2:
     "reuse the existing... generation... rather than building new
     rendering logic" — this is the shared HALF that follows rendering:
@@ -2380,17 +2409,29 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
     same version/upload/status logic — refactor confirmed safe:
     archive_document()'s own behaviour is unchanged, same commit, same
     return shape, same everything, just callable from more than one
-    place now instead of copy-pasted a second time."""
+    place now instead of copy-pasted a second time.
+
+    dropbox_path is now ALWAYS computed and persisted on the row up
+    front (confirmed Aug 2026, folder-flatten pass), regardless of
+    whether the upload itself succeeds — previously it stayed None
+    until a successful upload, which meant retry_document_archive() had
+    to separately RECONSTRUCT the intended path later using whatever
+    the CURRENT date happened to be at retry time (a real latent bug:
+    retrying in a later month than the row was created would have
+    reconstructed the wrong path, back when the path included year/
+    month). Now that the path is deterministic from (branch, reference,
+    version) alone — no date component at all — computing it once,
+    here, and trusting the stored value forever is both simpler and
+    correct."""
     version = _next_archive_version(session, tenant_id, entity_type, entity_id)
-    now = datetime.utcnow()
-    folder = ARCHIVE_CATEGORY_FOLDER[entity_type]
     ext = ARCHIVE_FILE_EXTENSION.get(entity_type, "pdf")
     safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", reference)
     # Brief §3 own example: B-1042_Smith_ACCEPTED.pdf — a distinct,
     # findable-by-name filename for the accepted version, not just
     # another _v{N} in the ordinary sequence.
     filename = f"{safe_reference}_ACCEPTED.{ext}" if mark_as_accepted else f"{safe_reference}_v{version}.{ext}"
-    dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{filename}"
+    folder = ARCHIVE_CATEGORY_FOLDER[entity_type] if entity_type == "OrderIndexSnapshot" else _branch_folder_name(branch)
+    dropbox_path = f"/Bolton/{folder}/{filename}"
     if mark_as_accepted:
         # At most one row per document ever carries this flag — unset
         # it on any earlier version before this new one claims it, so
@@ -2405,13 +2446,14 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
     archive = DocumentArchive(
         tenant_id=tenant_id, entity_type=entity_type, entity_id=entity_id, version=version,
         reference=reference, pdf_bytes=file_bytes, created_by=username, is_accepted_version=mark_as_accepted,
+        dropbox_path=dropbox_path,
     )
     upload_result = dropbox_archive.upload_document(file_bytes, dropbox_path)
     if upload_result["ok"]:
         archive.status = "uploaded"
         archive.dropbox_path = upload_result["path"]
         archive.dropbox_file_id = upload_result["file_id"]
-        archive.uploaded_at = now
+        archive.uploaded_at = datetime.utcnow()
     else:
         # "not configured yet" reads as an expected, known, temporary
         # state (Pending) — a genuine upload error (bad token, network
@@ -2439,6 +2481,7 @@ class ArchiveDocumentRequest(BaseModel):
     html: str            # exactly what buildPrintDocHtml() (shared.js) already produced for on-screen viewing
     css: str = ""
     mark_as_accepted: bool = False   # brief §3 — "preserve the accepted version distinctly"; frontend sets this on the one archive call it makes right after a quote is actually accepted
+    branch: Optional[str] = None     # folder-flatten pass (confirmed Aug 2026) — which per-branch Dropbox folder this lands in (_branch_folder_name()); the caller already has the quote's own branch on hand, so it's passed through rather than re-fetched here
 
 
 @app.post("/documents/archive")
@@ -2466,7 +2509,7 @@ def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_
     with Session(engine) as session:
         archive = _create_and_upload_archive(
             session, tenant_id, username, body.entity_type, body.entity_id,
-            body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
+            body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted, branch=body.branch,
         )
         return {
             "id": archive.id, "version": archive.version, "status": archive.status,
@@ -3470,7 +3513,7 @@ def _log_quote_line_audit(session: Session, quote: "Quote", username: str, actio
 
 
 FIELD_LABELS = {
-    "product_name": "Range", "colour": "Colour", "supplier": "Supplier",
+    "product_name": "Range", "colour": "Colour", "supplier": "Supplier", "email": "Email",
     "base_cost_ex_vat": "Price per m² (ex VAT, calculated)", "m2_per_pack": "m² per box",
     "price_per_box_ex_vat": "Price per box (ex VAT, before discount)",
     "price_per_box_zone_a": "Zone A price per box", "price_per_box_zone_b": "Zone B price per box", "price_per_box_zone_c": "Zone C price per box",
@@ -3987,6 +4030,21 @@ def list_supplier_defaults(role: str = Depends(require_owner), tenant_id: str = 
     create endpoint needed)."""
     with Session(engine) as session:
         return session.exec(select(SupplierDefault).where(SupplierDefault.tenant_id == tenant_id)).all()
+
+
+@app.get("/admin/supplier-emails")
+def list_supplier_emails(role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    """Send button brief (confirmed Aug 2026) — deliberately NOT owner-
+    only, unlike list_supplier_defaults() above: an Order Sheet's Send
+    button needs to look up its supplier's email regardless of who's
+    viewing that Order Sheet, and the pricing-sensitive fields on
+    SupplierDefault (trade discount, delivery fee, pricing zone) that
+    justify that endpoint being require_owner simply aren't returned
+    here at all — only {supplier: email}, for suppliers that actually
+    have one on file."""
+    with Session(engine) as session:
+        rows = session.exec(select(SupplierDefault).where(SupplierDefault.tenant_id == tenant_id, SupplierDefault.email != "")).all()
+        return {r.supplier: r.email for r in rows}
 
 
 @app.get("/admin/audit-log")

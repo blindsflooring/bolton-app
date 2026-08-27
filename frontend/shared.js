@@ -508,16 +508,24 @@ async function buildPrintDocHtml(quoteId, docType) {
   // Simple send path (confirmed Aug 2026, Client-Side Commercial
   // Workflow brief, Sprint C — "download / share-ready file, email or
   // WhatsApp-ready. Do not over-build CRM automation this sprint").
-  // Deliberately NOT a real attachment-send integration (that's the
-  // over-build this brief explicitly warns against) — window.print()'s
-  // own "Save as PDF" is still the actual file-download step, same as
-  // before; these are pre-filled email/WhatsApp starters so getting the
-  // saved PDF to the client is one click of composing, not a blank
-  // message typed from scratch every time.
+  // Deliberately NOT a real attachment-send integration — not possible
+  // from a browser regardless of implementation (confirmed again, Send
+  // button brief) — these are pre-filled email/WhatsApp starters so
+  // composing the message is one click, not typed from scratch. The
+  // instructional line in the body used to say "save this page as a
+  // PDF first" (the only way to get one, before the Dropbox archive
+  // existed) — now that every Print/Send action already auto-archives
+  // this exact document (acceptQuoteAction()/printInvoiceForQuote(),
+  // order-index.js/index.html), it points at the real Dropbox folder
+  // instead: flat, per-branch, filed by client name (folder-flatten
+  // pass, confirmed Aug 2026) — same _branch_folder_name() logic as
+  // the backend (main.py), mirrored here only for this message's own
+  // wording, not for anything that decides where the file actually goes.
   const docLabel = isInvoice ? 'Invoice' : 'Quote';
+  const branchFolder = data.quote.branch ? (data.quote.branch.charAt(0).toUpperCase() + data.quote.branch.slice(1).toLowerCase()) : 'Unassigned';
   const emailSubject = encodeURIComponent(`${docLabel} #${quoteId} from ${biz.business_name || 'us'}`);
   const emailBody = encodeURIComponent(
-    `Hi ${data.quote.client_name},\n\nPlease find attached your ${docLabel.toLowerCase()} #${quoteId}, total R${data.total_incl_vat.toFixed(2)} incl VAT.\n\n(Save this page as a PDF first — Print / Save as PDF below — then attach it here before sending.)\n\nKind regards,\n${biz.business_name || ''}`
+    `Hi ${data.quote.client_name},\n\nPlease find attached your ${docLabel.toLowerCase()} #${quoteId}, total R${data.total_incl_vat.toFixed(2)} incl VAT.\n\n(The PDF is saved automatically in Dropbox — Bolton/${branchFolder}/ — attach it from there before sending, it can't be attached automatically here.)\n\nKind regards,\n${biz.business_name || ''}`
   );
   const clientEmail = (client && client.email) ? client.email : '';
   const mailtoLink = `mailto:${clientEmail}?subject=${emailSubject}&body=${emailBody}`;
@@ -627,6 +635,26 @@ async function buildPrintDocHtml(quoteId, docType) {
     </div>
   `;
   return { html, docLabel, mailtoLink, waLink, clientEmail };
+}
+
+// Send button (confirmed Aug 2026) — a genuinely SEPARATE action from
+// Print, not bundled together the way the existing Print flow's own
+// send-actions-panel is (that stays exactly as it was — "Print stays
+// exactly as it is today, no changes there" is the brief's own explicit
+// instruction). This opens the user's default mail client directly, no
+// intermediate panel, and — the real, explicit requirement this adds —
+// refuses to open a blank/broken mailto at all when there's no email on
+// file, saying so clearly instead. Reuses buildPrintDocHtml() entirely
+// for the actual email/subject/body computation (zero duplication) —
+// this function's only job is the "is there actually an email" check
+// and firing the mailto.
+async function sendDocumentEmail(quoteId, docType) {
+  const { docLabel, mailtoLink, clientEmail } = await buildPrintDocHtml(quoteId, docType);
+  if (!clientEmail) {
+    alert(`No email address on file for this client — add one on their Client record first, then try Send again.`);
+    return;
+  }
+  window.location.href = mailtoLink;
 }
 
 // ===== Document Preview + Inline Edit (confirmed Aug 2026) =====

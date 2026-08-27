@@ -426,6 +426,14 @@ class SupplierDefault(SQLModel, table=True):
     default_trade_discount_pct: Optional[float] = None
     pricing_zone: Optional[str] = None
     default_delivery_fee_per_m2: Optional[float] = None
+    # Send button brief (confirmed Aug 2026) — a real contact address for
+    # the Order "Send" button's mailto link. Deliberately NOT owner-only
+    # to read (unlike this whole table's pricing-sensitive fields, which
+    # stay behind require_owner) — see the separate, unrestricted
+    # GET /admin/supplier-emails (main.py), which returns ONLY supplier
+    # name + email, nothing cost/pricing-related, so any role that can
+    # already see an Order Sheet can also Send it.
+    email: str = ""
 
 
 class BlindsProduct(SQLModel, table=True):

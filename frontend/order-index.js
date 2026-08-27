@@ -910,7 +910,7 @@ async function acceptQuoteAction(quoteId) {
       const css = cssRes.ok ? await cssRes.text() : '';
       await fetch(`${API}/documents/archive`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ entity_type: 'Quote', entity_id: quoteId, reference, html, css, mark_as_accepted: true }),
+        body: JSON.stringify({ entity_type: 'Quote', entity_id: quoteId, reference, html, css, mark_as_accepted: true, branch: qData.quote.branch }),
       });
     }
   } catch (e) { /* best-effort -- the accept itself already succeeded above; this screen re-renders and shows the real archive status regardless */ }
@@ -1166,6 +1166,13 @@ async function renderOrderSheetDetail(el) {
       ${orderSheetLinesEditorHtml(sheet, editable)}
       <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
         ${sheet.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${sheet.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:12px; align-self:center;">Placed by ${sheet.placed_by || ''}${sheet.placed_at ? ' on ' + new Date(sheet.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
+        <!-- Print + Send (confirmed Aug 2026) — Order Sheets had no
+        user-facing Print action at all before this (buildOrderSheetPrintHtml()
+        only fired internally, from finalizeOrderSheet()'s own archive
+        trigger) — added here so Orders get the same Print/Send parity
+        as Quotes/Invoices the brief asks for. -->
+        <button onclick="printOrderSheet(${sheet.id})" style="background:none; border:2px solid var(--navy); color:var(--navy); font-weight:600; border-radius:6px; cursor:pointer;">Print</button>
+        <button onclick="sendOrderSheetEmail(${sheet.id})" style="background:none; border:2px solid var(--navy); color:var(--navy); font-weight:600; border-radius:6px; cursor:pointer;">Send</button>
         ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${sheet.id})">Delete order sheet</button>` : ''}
       </div>
     </div>
@@ -1259,6 +1266,38 @@ async function buildOrderSheetPrintHtml(orderSheetId) {
   return { html };
 }
 
+// Print (confirmed Aug 2026, Send button brief) — Order Sheets had no
+// real user-facing Print action before this; reuses
+// buildOrderSheetPrintHtml() (the exact same HTML the archive already
+// stores) and the same triggerPrint() (shared.js) every other print
+// action in this app uses.
+async function printOrderSheet(orderSheetId) {
+  const { html } = await buildOrderSheetPrintHtml(orderSheetId);
+  triggerPrint(html);
+}
+
+// Send (confirmed Aug 2026, Send button brief) — an Order's recipient is
+// its SUPPLIER, not a client, so this can't reuse sendDocumentEmail()
+// (shared.js, client-based) — parallel logic instead: look up the
+// supplier's email (GET /admin/supplier-emails, deliberately not
+// owner-only — any role viewing this Order Sheet can Send it), refuse
+// to open a blank/broken mailto when there isn't one, same explicit
+// requirement as the client-facing Send button.
+async function sendOrderSheetEmail(orderSheetId) {
+  const sheet = await (await fetch(`${API}/order-sheets/${orderSheetId}`)).json();
+  const emails = await (await fetch(`${API}/admin/supplier-emails`)).json();
+  const email = emails[sheet.supplier];
+  if (!email) {
+    alert(`No email address on file for ${sheet.supplier} — add one via Price Book → Supplier Console first, then try Send again.`);
+    return;
+  }
+  const biz = await (await fetch(`${API}/business-settings`)).json();
+  const branchFolder = sheet.branch ? (sheet.branch.charAt(0).toUpperCase() + sheet.branch.slice(1).toLowerCase()) : 'Unassigned';
+  const subject = `Order ${sheet.order_number} — ${biz.business_name || ''}`;
+  const body = `Hi ${sheet.supplier},\n\nPlease find attached order ${sheet.order_number}, for job ${sheet.job_number || ('Q-' + sheet.quote_id)}${sheet.client_name ? ' (' + sheet.client_name + ')' : ''}.\n\n(The PDF is saved automatically in Dropbox — Bolton/${branchFolder}/ — attach it from there before sending, it can't be attached automatically here.)\n\nKind regards,\n${biz.business_name || ''}`;
+  window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 // Order Sheets UX brief §4 (confirmed Aug 2026) — "Executable... mark
 // the order as placed." Once placed, generate_order_sheets() no
 // longer treats this sheet as blocking a fresh one for the same
@@ -1280,7 +1319,7 @@ async function finalizeOrderSheet(orderSheetId) {
     const css = cssRes.ok ? await cssRes.text() : '';
     await fetch(`${API}/documents/archive`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ entity_type: 'OrderSheet', entity_id: orderSheetId, reference, html, css }),
+      body: JSON.stringify({ entity_type: 'OrderSheet', entity_id: orderSheetId, reference, html, css, branch: sheetForRef.branch }),
     });
   } catch (e) { /* best-effort — the finalize above already succeeded regardless */ }
   refreshOrderSheetContext(orderSheetId);
