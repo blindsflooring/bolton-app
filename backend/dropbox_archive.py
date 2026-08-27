@@ -88,17 +88,20 @@ def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
 
 
 def delete_document(dropbox_path: str) -> dict:
-    """Database Backups brief (Dropbox Document Archive & Backup Layer
-    §5) — the ONE deliberate exception to this whole module's "never
-    overwrite, never delete" document-archive philosophy: retention
-    pruning (keep last 7 daily / last 4 weekly backups, main.py) needs
-    to actually remove old backup files, unlike every archived Quote/
-    Invoice/Order Sheet PDF, which is permanent history by design and
-    has no delete path anywhere. Same never-raise contract as
-    upload_document() — a failed prune must never crash the backup job
-    that's still trying to do its real work (create today's backup);
-    the caller logs the failure and tries again next run rather than
-    blocking on it."""
+    """Two deliberate exceptions to this module's usual "never
+    overwrite, never delete" document-archive philosophy call this:
+    (1) Database Backups brief (§5) retention pruning — keep last 7
+    daily / last 4 weekly backups, main.py — since old backups aren't
+    permanent history the way an archived Quote/Invoice/Order Sheet is;
+    (2) Robust Owner Delete brief (confirmed Aug 2026) — an EXPLICIT,
+    off-by-default Owner choice at quote-delete time to also purge that
+    quote's archived Dropbox copies, for deliberate mockup/test cleanup.
+    Every other archive call site still never deletes. Same never-raise
+    contract as upload_document() — a failed delete must never crash
+    the caller's own larger operation (a backup-prune cycle, or a
+    quote delete that should still succeed even if Dropbox is
+    unreachable); the caller checks result["ok"] and decides what to
+    tell the user."""
     try:
         dbx = _get_client()
         if dbx is None:

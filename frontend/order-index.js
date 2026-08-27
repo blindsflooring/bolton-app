@@ -457,7 +457,14 @@ function updateBulkDeleteButtonState() {
 
 async function deleteQuoteFromIndex(quoteId) {
   if (!confirm(`Delete quote #${quoteId} and all its line items? This can't be undone.`)) return;
-  const res = await fetch(`${API}/quotes/${quoteId}`, {method:'DELETE'});
+  // Robust Owner Delete brief (confirmed Aug 2026) -- an explicit SECOND
+  // choice, defaulting to NO/Cancel (preserve, current behavior). Real
+  // business quotes should keep their archived copy even after the live
+  // record is gone; this is only for deliberate mockup/test cleanup
+  // (e.g. the "John Cena" quote). Clicking Cancel here, or backing out
+  // of the FIRST confirm entirely, both leave the archive untouched.
+  const purge = confirm(`Also permanently delete this quote's archived Dropbox copies (Quote/Invoice/Order Sheet PDFs)?\n\nChoose OK only for deliberate mockup/test cleanup -- real business records should normally keep their archived copy.\n\nChoose Cancel to keep the archive (recommended, default).`);
+  const res = await fetch(`${API}/quotes/${quoteId}${purge ? '?purge_dropbox_archive=true' : ''}`, {method:'DELETE'});
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     alert(err.detail || 'Could not delete this order.');

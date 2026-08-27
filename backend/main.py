@@ -715,6 +715,7 @@ def _fix_orphaned_quotes_remediation():
 
 @app.on_event("startup")
 def on_startup():
+    _verify_cascade_policy_complete()
     _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
     _enable_row_level_security()
@@ -4590,9 +4591,29 @@ def update_client(client_id: int, updates: Client, tenant_id: str = Depends(get_
 
 
 @app.delete("/clients/{client_id}")
-def delete_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
+def delete_client(client_id: int, role: str = Depends(require_owner),
+                   tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Owner-only (Robust Owner Delete brief, confirmed Aug 2026 — found
+    while cleaning up test data during unrelated verification work: this
+    endpoint had NO role check at all before this, unlike quote delete,
+    and NO dependency check either, so it 500'd outright on any client
+    with quotes attached — a Postgres FK-constraint violation raised
+    unhandled, the same silent-failure shape the rest of this brief
+    exists to eliminate. Fixed the minimal, safe way: block with a
+    clear, actionable error rather than deciding on this client's
+    behalf whether its quotes should be deleted too — that's a real
+    business decision the Owner should make explicitly, one quote at a
+    time, using the existing (now-fixed) quote delete."""
     with Session(engine) as session:
         client = get_or_404(session, Client, client_id, tenant_id, "Client")
+        quotes = session.exec(select(Quote).where(Quote.client_id == client_id, Quote.tenant_id == tenant_id)).all()
+        if quotes:
+            raise HTTPException(400, f"Can't delete {client.name} — {len(quotes)} quote(s) are linked to this client. Delete those first if you really need to remove this client.")
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Client", entity_id=client.id,
+            field="__deleted__", old_value=f"Client — {client.name}", new_value="(deleted)",
+        ))
+        _cascade_delete_children(session, "client", client.id, tenant_id)
         session.delete(client)
         session.commit()
         return {"deleted": client_id}
@@ -5373,88 +5394,143 @@ def _quote_delete_dependencies(session: Session, quote: "Quote", tenant_id: str)
     return reasons
 
 
+# Robust Owner Delete brief (confirmed Aug 2026) — root-cause fix for a
+# bug pattern that had already bitten this project THREE separate times
+# under the old hand-listed-per-table approach: PaymentFollowUp/
+# ColourChangeLog missed first, then QuotePhoto, then OrderSheet/
+# OrderSheetLine (real production incident, "Delete Not Working on
+# Quote #62"). Each time, a new feature added a table with a foreign
+# key pointing at quote.id, and the delete function silently forgot
+# about it — surfacing as an unhandled Postgres FK-constraint 500 in
+# production rather than a clean delete or a clear error.
+#
+# The fix is two parts, both required:
+#   1. _CASCADE_POLICY is an explicit, reviewed decision for every table
+#      that currently references quote.id/client.id/quotelineitem.id/
+#      ordersheet.id — "cascade" (delete the child too, recursing into
+#      ITS OWN dependents first), "nullify" (keep the row, clear the
+#      reference — for a soft backward-link that shouldn't vanish just
+#      because the quote it points at did), or "assert_empty" (this FK
+#      is guaranteed to have zero matching rows by a pre-delete
+#      dependency check elsewhere — e.g. _quote_delete_dependencies
+#      already blocks deleting a quote with logged hours or a linked
+#      builder estimate outright, so cascade code should never actually
+#      encounter a row here; if it ever does, that means the pre-check
+#      has a bug, and this raises loudly rather than silently deleting
+#      or orphaning real business data).
+#   2. _verify_cascade_policy_complete(), run at startup, scans the
+#      REAL SQLAlchemy schema for every foreign key pointing at one of
+#      the tables above and fails app startup immediately if any of
+#      them has no entry in _CASCADE_POLICY. This is what actually
+#      closes the failure class for good: a future table with
+#      foreign_key="quote.id" now can't reach production without a
+#      developer consciously deciding its policy — no more "found six
+#      months later via a real customer's failed delete click."
+#
+# Side effects that a DB-level cascade could never handle anyway
+# (deleting the QuotePhoto's real file out of Supabase Storage) stay as
+# an explicit per-entry side_effect callable, same reasoning that ruled
+# out a pure DB-level ON DELETE CASCADE for this brief.
+_CASCADE_POLICY = {
+    "quote": [
+        (QuoteLineItem, "quote_id", "cascade", None),
+        (OrderSheet, "quote_id", "cascade", None),
+        (PaymentFollowUp, "quote_id", "cascade", None),
+        (QuotePhoto, "quote_id", "cascade", lambda p: photo_storage.delete_photo(p.storage_path)),
+        (HoursWorked, "quote_id", "assert_empty", None),          # blocked upstream by _quote_delete_dependencies
+        (BuilderEstimate, "linked_quote_id", "assert_empty", None),  # blocked upstream by _quote_delete_dependencies
+    ],
+    "quotelineitem": [
+        (ColourChangeLog, "quote_line_item_id", "cascade", None),
+    ],
+    "ordersheet": [
+        (OrderSheetLine, "order_sheet_id", "cascade", None),
+    ],
+    "client": [
+        (Quote, "client_id", "assert_empty", None),  # blocked upstream by delete_client()'s own pre-check
+    ],
+}
+
+
+def _cascade_delete_children(session: Session, table_key: str, parent_id: int, tenant_id: str):
+    """Generic executor for _CASCADE_POLICY, rooted at table_key
+    (e.g. "quote"). Recurses into each cascaded child's OWN dependents
+    first and commits before deleting that child, generalizing the
+    ordering fix an earlier incident already established for OrderSheet/
+    OrderSheetLine specifically: Postgres enforces FK constraints
+    (SQLite never catches this locally), so batching a parent delete
+    into the same flush as its not-yet-committed child deletes fails —
+    deepest rows must be committed-deleted before anything that points
+    at them is deleted."""
+    for child_model, fk_col, policy, side_effect in _CASCADE_POLICY.get(table_key, []):
+        rows = session.exec(
+            select(child_model).where(getattr(child_model, fk_col) == parent_id, child_model.tenant_id == tenant_id)
+        ).all()
+        if not rows:
+            continue
+        if policy == "cascade":
+            child_key = child_model.__tablename__.lower()
+            for row in rows:
+                if child_key in _CASCADE_POLICY:
+                    _cascade_delete_children(session, child_key, row.id, tenant_id)
+                if side_effect:
+                    side_effect(row)  # best-effort storage/external cleanup — never blocks the DB delete
+                session.delete(row)
+            session.commit()
+        elif policy == "nullify":
+            for row in rows:
+                setattr(row, fk_col, None)
+                session.add(row)
+            session.commit()
+        elif policy == "assert_empty":
+            raise RuntimeError(
+                f"Cascade-delete safety net triggered: {child_model.__tablename__}.{fk_col} has "
+                f"{len(rows)} row(s) pointing at {table_key}.id={parent_id}, but this dependency is "
+                f"supposed to be blocked upstream before delete is ever attempted. The upstream "
+                f"pre-check has a bug — fix that, don't loosen this policy."
+            )
+
+
+def _verify_cascade_policy_complete():
+    """Startup-time safety net — the actual root-fix. Scans every real
+    ForeignKeyConstraint in the live schema pointing at a table this app
+    ever cascade-deletes from, and raises immediately if any of them has
+    no entry in _CASCADE_POLICY above. Fails app startup, not a future
+    customer's delete click — see the big comment on _CASCADE_POLICY."""
+    tracked_tables = set(_CASCADE_POLICY.keys())
+    known = {(child_model.__tablename__.lower(), fk_col)
+             for entries in _CASCADE_POLICY.values()
+             for child_model, fk_col, _policy, _side_effect in entries}
+    for table in SQLModel.metadata.tables.values():
+        for fk in table.foreign_keys:
+            target_table = fk.column.table.name
+            if target_table in tracked_tables:
+                key = (table.name, fk.parent.name)
+                if key not in known:
+                    raise RuntimeError(
+                        f"Cascade-delete policy gap: {table.name}.{fk.parent.name} references "
+                        f"{target_table}.{fk.column.name} but has no entry in _CASCADE_POLICY (main.py). "
+                        f"Add one (cascade / nullify / assert_empty, plus any needed side-effect) before "
+                        f"this can ship — this check exists specifically to stop the recurring "
+                        f"silent-cascade-miss bug (hit three times before: ColourChangeLog/PaymentFollowUp, "
+                        f"QuotePhoto, OrderSheet/OrderSheetLine)."
+                    )
+
+
 def _delete_quote_cascade(session: Session, quote: "Quote", tenant_id: str):
-    """Deletes a quote and everything hanging off it. SQLite doesn't
-    enforce the cascade from supabase_schema.sql, so it's all removed
-    explicitly here. Shared by the single-quote and bulk-delete
-    endpoints so this cascade exists in exactly one place, not two that
-    could quietly drift apart (same reasoning as
-    _builder_commission_for_quote). Caller is responsible for the
-    dependency check (_quote_delete_dependencies), the AuditLog entry,
-    and session.commit().
-
-    BUG FOUND AND FIXED Aug 2026 (while testing the v49 follow-up log
-    merge): PaymentFollowUp and ColourChangeLog rows were never included
-    in this cascade — deleting a quote orphaned them, and since SQLite
-    reuses a deleted row's rowid for the next insert, a brand new
-    unrelated quote could resurface a prior quote's "deleted" follow-up
-    history under its own id. Caught by a real test cycle, not
-    inspection.
-
-    BUG FOUND AND FIXED Aug 2026 (while building Order Index Bulk
-    Delete): QuotePhoto rows were never included either — predates that
-    feature — which would have quietly orphaned both the DB rows and
-    the actual files sitting in Supabase Storage forever. Best-effort
-    on the storage side (photo_storage.delete_photo() doesn't raise);
-    the DB row is removed either way.
-
-    BUG FOUND AND FIXED Aug 2026 (real production incident — "Delete
-    Not Working on Quote #62" brief): OrderSheet/OrderSheetLine rows
-    were never included either, predating Supplier Order Sheets
-    entirely. Confirmed via a real production traceback, not guessed —
-    the brief's own suspicion that this was Dropbox-archive-related
-    was checked and confirmed WRONG (DocumentArchive.entity_id is a
-    plain indexed int, not a DB foreign key, so it was never capable of
-    blocking a delete); the real cause was the exact same
-    structural risk already flagged (not yet confirmed) earlier this
-    session when delete_order_sheet() hit an identical FK-ordering bug:
-    ordersheet_quote_id_fkey (Postgres-enforced, SQLite never catches
-    this locally) blocked deleting a quote that still had an
-    OrderSheet pointing at it. Same fix shape as that earlier bug —
-    delete the children and commit BEFORE the rest of this cascade
-    queues up the quote delete for the caller's own final commit;
-    batching everything into one flush let SQLAlchemy attempt the
-    parent delete before the child deletes had actually landed."""
-    order_sheets = session.exec(
-        select(OrderSheet).where(OrderSheet.quote_id == quote.id, OrderSheet.tenant_id == tenant_id)
-    ).all()
-    if order_sheets:
-        sheet_ids = [s.id for s in order_sheets]
-        sheet_lines = session.exec(
-            select(OrderSheetLine).where(OrderSheetLine.order_sheet_id.in_(sheet_ids), OrderSheetLine.tenant_id == tenant_id)
-        ).all()
-        for sl in sheet_lines:
-            session.delete(sl)
-        session.commit()
-        for s in order_sheets:
-            session.delete(s)
-        session.commit()
-    lines = session.exec(
-        select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)
-    ).all()
-    for line in lines:
-        colour_logs = session.exec(
-            select(ColourChangeLog).where(ColourChangeLog.quote_line_item_id == line.id, ColourChangeLog.tenant_id == tenant_id)
-        ).all()
-        for log in colour_logs:
-            session.delete(log)
-        session.delete(line)
-    follow_ups = session.exec(
-        select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote.id, PaymentFollowUp.tenant_id == tenant_id)
-    ).all()
-    for f in follow_ups:
-        session.delete(f)
-    photos = session.exec(
-        select(QuotePhoto).where(QuotePhoto.quote_id == quote.id, QuotePhoto.tenant_id == tenant_id)
-    ).all()
-    for p in photos:
-        photo_storage.delete_photo(p.storage_path)
-        session.delete(p)
+    """Deletes a quote and everything hanging off it, per _CASCADE_POLICY
+    above. Shared by the single-quote and bulk-delete endpoints so this
+    cascade exists in exactly one place, not two that could quietly
+    drift apart (same reasoning as _builder_commission_for_quote).
+    Caller is responsible for the dependency check
+    (_quote_delete_dependencies), the AuditLog entry, and
+    session.commit() for the quote row itself."""
+    _cascade_delete_children(session, "quote", quote.id, tenant_id)
     session.delete(quote)
 
 
 @app.delete("/quotes/{quote_id}")
-def delete_quote(quote_id: int, role: str = Depends(require_owner),
+def delete_quote(quote_id: int, purge_dropbox_archive: bool = False, role: str = Depends(require_owner),
                   tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     """Owner-only (confirmed Aug 2026, Order Index Bulk Delete brief) —
     the brief's own hard requirement applies here too, not just the new
@@ -5463,7 +5539,21 @@ def delete_quote(quote_id: int, role: str = Depends(require_owner),
     Admin would trivially defeat the whole point. Blocked outright (not
     just warned) if the quote has a real dependency elsewhere — see
     _quote_delete_dependencies — and every deletion now writes to the
-    AuditLog, neither of which this endpoint did before this brief."""
+    AuditLog, neither of which this endpoint did before this brief.
+
+    purge_dropbox_archive (Robust Owner Delete brief, confirmed Aug
+    2026): an explicit, OFF-by-default choice — preserving archived
+    Dropbox copies stays the default behavior for every routine delete,
+    exactly as already verified in the Dropbox Archive brief, since
+    that's what protects real business data from being lost twice over
+    (once live, once in the backup). Only when the Owner deliberately
+    opts in (mockup/test cleanup, e.g. the "John Cena" quote) are the
+    quote's own archived Quote/Invoice PDFs, plus every archived Order
+    Sheet PDF for this job, genuinely removed from Dropbox — not just
+    hidden. DocumentArchive.entity_id is a plain indexed int, not a real
+    foreign key (confirmed during the "Delete Not Working on Quote #62"
+    incident), so these rows are gathered explicitly here rather than
+    through _CASCADE_POLICY, which only governs real FK-backed tables."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         reasons = _quote_delete_dependencies(session, quote, tenant_id)
@@ -5474,6 +5564,43 @@ def delete_quote(quote_id: int, role: str = Depends(require_owner),
             tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
             field="__deleted__", old_value=label, new_value="(deleted)",
         ))
+
+        archive_note = "archive preserved (default)"
+        if purge_dropbox_archive:
+            sheet_ids = [s.id for s in session.exec(
+                select(OrderSheet).where(OrderSheet.quote_id == quote.id, OrderSheet.tenant_id == tenant_id)
+            ).all()]
+            archives = session.exec(
+                select(DocumentArchive).where(
+                    DocumentArchive.tenant_id == tenant_id,
+                    DocumentArchive.entity_type.in_(["Quote", "Invoice"]),
+                    DocumentArchive.entity_id == quote.id,
+                )
+            ).all()
+            if sheet_ids:
+                archives += session.exec(
+                    select(DocumentArchive).where(
+                        DocumentArchive.tenant_id == tenant_id,
+                        DocumentArchive.entity_type == "OrderSheet",
+                        DocumentArchive.entity_id.in_(sheet_ids),
+                    )
+                ).all()
+            purged_paths = []
+            for a in archives:
+                if a.dropbox_path:
+                    result = dropbox_archive.delete_document(a.dropbox_path)  # never raises — best-effort
+                    if result.get("ok"):
+                        purged_paths.append(a.dropbox_path)
+                session.delete(a)
+            archive_note = (
+                f"archive purge requested — {len(purged_paths)}/{len(archives)} Dropbox file(s) removed"
+                if archives else "archive purge requested (no archived files existed)"
+            )
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="dropbox_archive", old_value="n/a", new_value=archive_note,
+        ))
+
         _delete_quote_cascade(session, quote, tenant_id)
         session.commit()
         return {"deleted": quote_id}
