@@ -1522,6 +1522,23 @@ def get_me(request: Request):
 
 @app.post("/auth/change-password")
 def change_password(body: ChangePasswordRequest, request: Request, role: str = Depends(get_current_role)):
+    """Old-Password-Still-Works Investigation (confirmed Aug 2026) — real
+    gap found while checking, not guessed: reset_password() (the Owner-
+    triggered one-time link) already force-ends every one of this user's
+    active sessions the moment a password changes; this self-service path
+    never did. The PASSWORD CHECK ITSELF was never the problem — login()
+    always verifies against user.password_hash fresh from the DB, no
+    caching layer anywhere, so the OLD password correctly stops working
+    immediately either way. This was the separate half of that
+    investigation's own question: a SESSION/token issued before the
+    change (a stolen/lost device, or one simply left logged in somewhere
+    forgotten) stayed valid indefinitely even after the legitimate user
+    "fixed" things by changing their own password. Same
+    end-other-sessions pattern login()/reset_password() already use —
+    the one difference from both: THIS session (the one making the
+    change-password request itself) is deliberately excluded, since a
+    genuine self-service change while actively logged in shouldn't log
+    the person out of the device they're sitting at right now."""
     if len(body.new_password) < 8:
         raise HTTPException(400, "New password must be at least 8 characters.")
     token = _get_bearer_token(request)
@@ -1533,6 +1550,15 @@ def change_password(body: ChangePasswordRequest, request: Request, role: str = D
         user.password_hash = hash_password(body.new_password)
         user.password_changed_at = datetime.utcnow()
         session.add(user)
+        now = datetime.utcnow()
+        other_active_sessions = session.exec(select(UserSession).where(
+            UserSession.user_id == user.id, UserSession.id != sess.id,
+            UserSession.ended_at.is_(None), UserSession.expires_at >= now,
+        )).all()
+        for old_sess in other_active_sessions:
+            old_sess.ended_at = now
+            old_sess.ended_reason = "password_changed"
+            session.add(old_sess)
         session.commit()
         return {"ok": True}
 

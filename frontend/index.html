@@ -1381,6 +1381,8 @@ function renderSessionLogTable() {
       <td>${r.still_active ? '<b style="color:var(--teal);">Still active</b>' : `${fmt(r.logout_time)}<br><span class="muted" style="font-size:11px;">${
         r.ended_reason === 'expired' ? '⏱ Expired (24h) — no explicit logout'
         : r.ended_reason === 'superseded' ? '↻ Superseded by a new login — old session closed automatically'
+        : r.ended_reason === 'password_reset' ? '🔑 Ended by a password reset link'
+        : r.ended_reason === 'password_changed' ? '🔑 Ended by a password change on another session'
         : 'Logged out'
       }</span>`}</td>
       <td>${fmtDuration(r.duration_minutes)}</td>
