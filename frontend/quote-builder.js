@@ -662,10 +662,6 @@ async function addFloorJob() {
   loadQuote();
 }
 
-function toggleScreedSubfields() {
-  // no longer used — screed prep is now its own dedicated card, not a subfield toggle
-}
-
 async function createQuote() {
   const typedClientName = document.getElementById('q_client').value;
   // Clarify Buttons + Price Check + Marketing Source (confirmed Aug

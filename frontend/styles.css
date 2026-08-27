@@ -26,7 +26,7 @@
     margin: 0; font-family: 'Figtree', system-ui, -apple-system, sans-serif;
     background: var(--bg); color: var(--navy);
   }
-  h1, h2, .header-font { font-family: 'Poppins', system-ui, sans-serif; }
+  h1, h2 { font-family: 'Poppins', system-ui, sans-serif; }
   /* Sticky Header brief (confirmed Aug 2026) — header, the Owner Preview
      banner, and nav are wrapped together in index.html as one sticky
      unit (#appHeaderWrap) so they never scroll away, on every page:
@@ -273,7 +273,6 @@
   .status-badge.active-status { background: #dcf5e6; color: #1a7a3e; }
   .status-badge.inactive-status { background: #f0f0f0; color: #6b7280; }
   .status-badge.pending-status { background: var(--cream); color: #8a6d00; }
-  .status-badge.approved-status { background: #dcf5e6; color: #1a7a3e; }
   .status-badge.rejected-status { background: #fbe0db; color: var(--coral); }
   .drill-tree details.tree-node { margin-bottom: 6px; }
   .drill-product-row {
@@ -287,7 +286,6 @@
     font-size: 12px; color: #6b7280; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap: 6px;
   }
   .product-info b { color: var(--navy); }
-  .per-m2-result { background: var(--navy); text-align: center; }
   .per-m2-label { color: #cfcfcf; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 10px; }
   .per-m2-value-row { display: flex; justify-content: center; gap: 32px; }
   .per-m2-value { font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 30px; }
