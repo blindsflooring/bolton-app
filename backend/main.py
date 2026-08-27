@@ -2943,6 +2943,38 @@ def list_users(role: str = Depends(require_owner), tenant_id: str = Depends(get_
         return [{"id": u.id, "username": u.username, "display_name": u.display_name, "role": u.role, "active": u.active} for u in users]
 
 
+class SetUserActiveRequest(BaseModel):
+    active: bool
+
+
+@app.put("/admin/users/{user_id}/active")
+def set_user_active(user_id: int, body: SetUserActiveRequest, role: str = Depends(require_owner),
+                     tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Closes a real pre-existing gap, found while cleaning up a QA
+    verification account for the Trusted Tester Accounts brief
+    (confirmed Aug 2026): the Accounts screen has displayed an Active/
+    Inactive badge since the Password Reset Link brief, but nothing
+    could ever actually change it — User.active existed and was already
+    correctly enforced at login (_resolve_session() checks it), just
+    with no way to set it except a direct DB edit. Owner-only, and
+    blocks deactivating your own account (the one making this request)
+    so an Owner can never accidentally lock themselves out."""
+    with Session(engine) as session:
+        user = get_or_404(session, User, user_id, tenant_id, "User")
+        if user.username == username and not body.active:
+            raise HTTPException(400, "You can't deactivate your own account.")
+        old_value = user.active
+        user.active = body.active
+        session.add(user)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="User", entity_id=user.id,
+            field="active", old_value=str(old_value), new_value=str(body.active),
+        ))
+        session.commit()
+        session.refresh(user)
+        return {"id": user.id, "username": user.username, "active": user.active}
+
+
 class CreateUserRequest(BaseModel):
     username: str
     display_name: str

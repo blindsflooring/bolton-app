@@ -3211,7 +3211,7 @@ async function renderAccounts(el) {
               <td>${u.display_name}</td>
               <td style="text-transform:capitalize;">${u.role.replace('_',' ')}</td>
               <td><span class="status-badge ${u.active ? 'active-status' : 'inactive-status'}">${u.active ? 'Active' : 'Inactive'}</span></td>
-              <td><button onclick="generatePasswordResetLink(${u.id}, '${u.display_name.replace(/'/g,"\\'")}')">Reset password</button></td>
+              <td><button onclick="generatePasswordResetLink(${u.id}, '${u.display_name.replace(/'/g,"\\'")}')">Reset password</button> <button onclick="setUserActive(${u.id}, ${!u.active}, '${u.display_name.replace(/'/g,"\\'")}')">${u.active ? 'Deactivate' : 'Reactivate'}</button></td>
             </tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts found.</td></tr>'}
         </tbody>
       </table>
@@ -3291,6 +3291,15 @@ async function generatePasswordResetLink(userId, displayName) {
     <p class="muted" id="resetLinkCopyStatus" style="margin:6px 0 0; font-size:12px;"></p>
   `;
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function setUserActive(userId, active, displayName) {
+  if (!confirm(`${active ? 'Reactivate' : 'Deactivate'} ${displayName}'s account? ${active ? 'They will be able to log in again.' : 'They will not be able to log in until reactivated.'}`)) return;
+  const res = await fetch(`${API}/admin/users/${userId}/active`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ active }),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not update this account.'); return; }
+  renderAccounts(document.getElementById('landing'));
 }
 
 function copyResetLink() {
