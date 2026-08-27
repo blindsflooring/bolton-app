@@ -5174,7 +5174,39 @@ def _delete_quote_cascade(session: Session, quote: "Quote", tenant_id: str):
     feature — which would have quietly orphaned both the DB rows and
     the actual files sitting in Supabase Storage forever. Best-effort
     on the storage side (photo_storage.delete_photo() doesn't raise);
-    the DB row is removed either way."""
+    the DB row is removed either way.
+
+    BUG FOUND AND FIXED Aug 2026 (real production incident — "Delete
+    Not Working on Quote #62" brief): OrderSheet/OrderSheetLine rows
+    were never included either, predating Supplier Order Sheets
+    entirely. Confirmed via a real production traceback, not guessed —
+    the brief's own suspicion that this was Dropbox-archive-related
+    was checked and confirmed WRONG (DocumentArchive.entity_id is a
+    plain indexed int, not a DB foreign key, so it was never capable of
+    blocking a delete); the real cause was the exact same
+    structural risk already flagged (not yet confirmed) earlier this
+    session when delete_order_sheet() hit an identical FK-ordering bug:
+    ordersheet_quote_id_fkey (Postgres-enforced, SQLite never catches
+    this locally) blocked deleting a quote that still had an
+    OrderSheet pointing at it. Same fix shape as that earlier bug —
+    delete the children and commit BEFORE the rest of this cascade
+    queues up the quote delete for the caller's own final commit;
+    batching everything into one flush let SQLAlchemy attempt the
+    parent delete before the child deletes had actually landed."""
+    order_sheets = session.exec(
+        select(OrderSheet).where(OrderSheet.quote_id == quote.id, OrderSheet.tenant_id == tenant_id)
+    ).all()
+    if order_sheets:
+        sheet_ids = [s.id for s in order_sheets]
+        sheet_lines = session.exec(
+            select(OrderSheetLine).where(OrderSheetLine.order_sheet_id.in_(sheet_ids), OrderSheetLine.tenant_id == tenant_id)
+        ).all()
+        for sl in sheet_lines:
+            session.delete(sl)
+        session.commit()
+        for s in order_sheets:
+            session.delete(s)
+        session.commit()
     lines = session.exec(
         select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)
     ).all()
@@ -5220,12 +5252,8 @@ def delete_quote(quote_id: int, role: str = Depends(require_owner),
             tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
             field="__deleted__", old_value=label, new_value="(deleted)",
         ))
-        try:  # TEMPORARY error-surfacing for live debugging — revert once root-caused
-            _delete_quote_cascade(session, quote, tenant_id)
-            session.commit()
-        except Exception as e:
-            import traceback
-            raise HTTPException(500, f"DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        _delete_quote_cascade(session, quote, tenant_id)
+        session.commit()
         return {"deleted": quote_id}
 
 
