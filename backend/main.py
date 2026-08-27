@@ -325,6 +325,21 @@ def _ensure_new_columns():
         # Order Sheet Corrections brief (confirmed Aug 2026):
         ("ordersheetline", "pre_discount_unit_cost", "FLOAT", "NULL"),
         ("ordersheetline", "discount_pct", "FLOAT", "NULL"),
+        # Dropbox Document Archive brief, ACCEPTED-version follow-up
+        # (confirmed Aug 2026) — real bug found while building the v2
+        # pass (Dead Code Audit-adjacent, caught the hard way: a live
+        # 500 on production, not a local test): is_accepted_version was
+        # added to the DocumentArchive model in that follow-up round but
+        # this migration entry was never added alongside it. The table
+        # itself was created (SQLModel.metadata.create_all()) BEFORE
+        # that column existed on the model, so every DocumentArchive
+        # query against the live Supabase Postgres table has been
+        # failing with UndefinedColumn ever since — silently, since
+        # nothing in this session had exercised any DocumentArchive
+        # SELECT against production again until today's Invoice/Order
+        # Sheet archiving work did. Confirmed root cause via a real
+        # production traceback before writing this fix, not guessed.
+        ("documentarchive", "is_accepted_version", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2429,14 +2444,10 @@ def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_
     except ValueError as e:
         raise HTTPException(500, f"Could not render this document to PDF: {e}")
     with Session(engine) as session:
-        try:  # TEMPORARY error-surfacing for live debugging — revert once root-caused
-            archive = _create_and_upload_archive(
-                session, tenant_id, username, body.entity_type, body.entity_id,
-                body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
-            )
-        except Exception as e:
-            import traceback
-            raise HTTPException(500, f"DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        archive = _create_and_upload_archive(
+            session, tenant_id, username, body.entity_type, body.entity_id,
+            body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
+        )
         return {
             "id": archive.id, "version": archive.version, "status": archive.status,
             "dropbox_path": archive.dropbox_path, "failure_reason": archive.failure_reason,
