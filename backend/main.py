@@ -32,7 +32,7 @@ from models import (
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
-    OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive,
+    OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -40,6 +40,7 @@ from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
 from pdf_render import render_html_to_pdf
 import dropbox_archive
+import database_backup
 import photo_storage
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
@@ -1179,12 +1180,27 @@ def on_startup():
     # — production already has its users, so ordering here never affected
     # the real deploy — but placed correctly regardless for robustness.
     _post_rls_security_precaution()
-    # Same "run after user seeding" reasoning — depends on real user
-    # rows already existing.
-    _old_password_still_works_remediation()
-    # Same reasoning, same ordering requirement.
-    _burgert_login_recovery_remediation()
-    _madri_login_recovery_remediation()
+    # _old_password_still_works_remediation() / _burgert_login_recovery_
+    # remediation() / _madri_login_recovery_remediation() — REMOVED from
+    # startup (confirmed Aug 2026, real incident: "Ryno's password
+    # doesn't work" after it had been freshly reset and verified working
+    # earlier the same day). Root cause: all three functions compare the
+    # account's CURRENT password_hash against ONE hardcoded historical
+    # hash and force-reset back to that exact hash on EVERY boot if it
+    # doesn't match — correct for their original one-time incident, but
+    # never guarded against a LEGITIMATE password change happening after
+    # that incident closed. Every redeploy since (this session alone:
+    # Dead Code Audit, Dropbox v2, the migration fix, the delete-quote
+    # fix...) silently reverted Ryno's password back to that old,
+    # unrecoverable-plaintext hash the moment a real reset (self-service
+    # or Owner-triggered link) set it to anything different. Burgert's
+    # and Madri's passwords happened to already equal their own target
+    # hash for each of today's redeploys, which is the only reason this
+    # wasn't ALSO visibly breaking their logins — the same latent risk
+    # applied to all three accounts equally. The three function bodies
+    # are left in place (real historical documentation, genuinely
+    # harmless once uncalled) but must never run again — a proper
+    # password change now has to actually stay changed.
     _fix_orphaned_quotes_remediation()
 
     # Diagnostic (confirmed Aug 2026, Supplier Order Sheets brief §4 —
@@ -1278,10 +1294,14 @@ def on_startup():
         from apscheduler.triggers.cron import CronTrigger
         scheduler = BackgroundScheduler(timezone="UTC")
         scheduler.add_job(run_order_index_snapshot_job, CronTrigger(hour=23, minute=0), id="order_index_snapshot", misfire_grace_time=3600, replace_existing=True)
+        # Database Backups (Dropbox brief §5, confirmed Aug 2026) — same
+        # scheduler, a different hour (02:00 UTC / 04:00 SAST) so it
+        # never runs at the exact same moment as the snapshot job above.
+        scheduler.add_job(run_database_backup_job, CronTrigger(hour=2, minute=0), id="database_backup", misfire_grace_time=3600, replace_existing=True)
         scheduler.start()
-        print("Order Index Snapshot: scheduler started, next run at 23:00 UTC (01:00 SAST)")
+        print("Scheduler started: Order Index Snapshot next at 23:00 UTC (01:00 SAST); Database Backup next at 02:00 UTC (04:00 SAST)")
     except Exception as e:
-        print(f"Order Index Snapshot: scheduler FAILED to start ({e}) — nightly snapshots will not run until this is fixed")
+        print(f"Scheduler FAILED to start ({e}) — nightly snapshots/backups will not run until this is fixed")
 
 
 def _get_bearer_token(request: Request) -> Optional[str]:
@@ -2578,6 +2598,94 @@ def run_order_index_snapshot_job():
                 print(f"Order Index snapshot ({tenant_id}, {today_str}): FAILED to build/archive ({e})")
 
 
+# ---------- Database Backups (Dropbox brief §5, confirmed Aug 2026 —
+# proceeded without further sign-off per explicit direction) ----------
+# Separate scheduled job from the Order Index snapshot above (different
+# hour — 02:00 UTC vs 23:00 UTC — so they never compete for DB/CPU at
+# the exact same moment), same in-process APScheduler (see on_startup()).
+DB_BACKUP_FOLDER = {"daily": "Daily", "weekly": "Weekly"}
+DB_BACKUP_KEEP = {"daily": 7, "weekly": 4}   # confirmed retention counts
+
+
+def _prune_old_backups(session: Session, tenant_id: str, tier: str, keep_n: int):
+    """Deletes the OLDEST backups beyond keep_n, both from Dropbox and
+    from this table — "older ones can be deleted automatically to
+    avoid unbounded storage growth" (confirmed requirement). If the
+    Dropbox delete itself fails, the DB record is deliberately LEFT in
+    place (not deleted) so this same row gets retried on the next run
+    rather than the tracking silently losing count of a file that's
+    still actually sitting in Dropbox."""
+    rows = session.exec(select(DatabaseBackupRecord).where(
+        DatabaseBackupRecord.tenant_id == tenant_id, DatabaseBackupRecord.tier == tier,
+    ).order_by(DatabaseBackupRecord.created_at.desc())).all()
+    for old in rows[keep_n:]:
+        if old.dropbox_path:
+            result = dropbox_archive.delete_document(old.dropbox_path)
+            if not result["ok"] and not result.get("not_configured"):
+                print(f"Database backup prune ({tier}): FAILED to delete {old.dropbox_path} from Dropbox ({result['reason']}) — leaving record, will retry next run")
+                continue
+        session.delete(old)
+    session.commit()
+
+
+def _record_and_upload_backup(session: Session, tenant_id: str, tier: str, reference: str, file_bytes: bytes, method: str) -> DatabaseBackupRecord:
+    ext = "sql.gz" if method == "pg_dump" else "json.gz"
+    safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", reference)
+    dropbox_path = f"/Bolton/Database Backups/{DB_BACKUP_FOLDER[tier]}/{safe_reference}.{ext}"
+    record = DatabaseBackupRecord(tenant_id=tenant_id, tier=tier, reference=reference, method=method, size_bytes=len(file_bytes))
+    upload_result = dropbox_archive.upload_document(file_bytes, dropbox_path)
+    if upload_result["ok"]:
+        record.status = "uploaded"
+        record.dropbox_path = upload_result["path"]
+        record.dropbox_file_id = upload_result["file_id"]
+        record.uploaded_at = datetime.utcnow()
+    else:
+        record.status = "pending" if upload_result.get("not_configured") else "failed"
+        record.failure_reason = upload_result["reason"]
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+    return record
+
+
+def run_database_backup_job():
+    """The scheduled job itself. Generates ONE real backup (pg_dump
+    preferred, pure-Python JSON fallback — see database_backup.py for
+    why both exist) and reuses those same bytes for both the daily
+    upload and, on Sundays, the weekly upload too — one real backup
+    generated per run, never two separate (possibly inconsistent)
+    snapshots for what's supposed to be "the same day's data." Runs
+    per-tenant, same pattern as the Order Index snapshot job."""
+    today_str = date.today().isoformat()
+    file_bytes = database_backup.try_pg_dump(DATABASE_URL)
+    method = "pg_dump"
+    if file_bytes is None:
+        file_bytes = database_backup.python_logical_backup(engine)
+        method = "python_json"
+    is_sunday = date.today().weekday() == 6
+    results = []
+    with Session(engine) as session:
+        tenant_ids = session.exec(select(Quote.tenant_id).distinct()).all() or [DEFAULT_TENANT_ID]
+        for tenant_id in tenant_ids:
+            try:
+                daily = _record_and_upload_backup(session, tenant_id, "daily", f"backup_{today_str}", file_bytes, method)
+                print(f"Database backup daily ({tenant_id}, {today_str}, {method}): {daily.status}")
+                _prune_old_backups(session, tenant_id, "daily", DB_BACKUP_KEEP["daily"])
+                results.append({"tenant_id": tenant_id, "tier": "daily", "id": daily.id, "status": daily.status, "method": method, "size_bytes": daily.size_bytes})
+                if is_sunday:
+                    weekly = _record_and_upload_backup(session, tenant_id, "weekly", f"backup_{today_str}", file_bytes, method)
+                    print(f"Database backup weekly ({tenant_id}, {today_str}, {method}): {weekly.status}")
+                    _prune_old_backups(session, tenant_id, "weekly", DB_BACKUP_KEEP["weekly"])
+                    results.append({"tenant_id": tenant_id, "tier": "weekly", "id": weekly.id, "status": weekly.status, "method": method, "size_bytes": weekly.size_bytes})
+            except Exception as e:
+                # Same "never blocks the real app" principle as every
+                # other scheduled job here — a failed backup run must
+                # never crash the scheduler thread or the web service.
+                print(f"Database backup ({tenant_id}, {today_str}): FAILED ({e})")
+                results.append({"tenant_id": tenant_id, "tier": "daily", "status": "failed", "error": str(e)})
+    return results
+
+
 @app.get("/clients/{client_id}/order-sheets")
 def get_order_sheets_for_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
     """New 'Orders' tab on the Client page (brief §6) — every order
@@ -2668,6 +2776,34 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
     if role != UserRole.owner:
         raise HTTPException(403, "Only the Owner role can do this.")
     return role
+
+
+@app.post("/admin/database-backup/run-now")
+def trigger_database_backup_now(role: str = Depends(require_owner)):
+    """Owner-only manual trigger — a genuinely useful standing
+    capability (not just a test hook): lets Burgert take a real,
+    immediate backup on demand (e.g. right before a risky price-book
+    import) rather than only ever getting one at the nightly scheduled
+    time. Runs the exact same run_database_backup_job() the scheduler
+    calls, synchronously, so the response reflects the real outcome.
+    Defined here, after require_owner, rather than back up alongside
+    run_database_backup_job() itself — same reason as list_users()
+    below: Depends(require_owner) needs that name to already exist at
+    import time."""
+    return {"results": run_database_backup_job()}
+
+
+@app.get("/admin/database-backup")
+def list_database_backups(tier: Optional[str] = None, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Owner-only — full backup history, newest first, so Burgert (or a
+    future support conversation) can see at a glance whether last
+    night's backup actually succeeded, not just trust that it did."""
+    with Session(engine) as session:
+        stmt = select(DatabaseBackupRecord).where(DatabaseBackupRecord.tenant_id == tenant_id)
+        if tier:
+            stmt = stmt.where(DatabaseBackupRecord.tier == tier)
+        rows = session.exec(stmt.order_by(DatabaseBackupRecord.created_at.desc())).all()
+        return rows
 
 
 @app.get("/admin/users")

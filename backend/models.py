@@ -1223,3 +1223,34 @@ class DocumentArchive(SQLModel, table=True):
     # was actually agreed to, regardless of how many later versions
     # (a post-acceptance Manual Override, say) get archived on top.
     is_accepted_version: bool = False
+
+
+class DatabaseBackupRecord(SQLModel, table=True):
+    """Database Backups brief (Dropbox Document Archive & Backup Layer
+    §5, confirmed Aug 2026) — deliberately a SEPARATE, lighter table
+    from DocumentArchive, not a reuse of it: DocumentArchive.pdf_bytes
+    is NOT NULL and holds the actual file so a failed upload can be
+    retried from the exact same bytes later (brief §10's historical-
+    pricing-integrity rule, for a QUOTE — never regenerate). A database
+    backup has no equivalent "must represent one exact historical
+    moment, forever" requirement — the whole point is CURRENT, correct
+    data, so if an upload fails, the next scheduled run just makes a
+    fresh backup rather than retrying a now-stale one. No bytes column
+    here at all: storing a full DB dump back inside the very database
+    it's protecting against loss would be circular, and pointlessly
+    bloats Postgres for data whose real safety copy already lives in
+    Dropbox. tier: "daily" | "weekly" — independent retention counts
+    (keep last 7 daily / last 4 weekly, confirmed Aug 2026), pruned by
+    run_database_backup_job() (main.py)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    tier: str = Field(index=True)   # "daily" | "weekly"
+    reference: str                  # human label, e.g. "backup_2026-08-27"
+    method: str                     # "pg_dump" | "python_json" — which strategy actually produced this one
+    status: str = "pending"         # "pending" | "uploaded" | "failed"
+    dropbox_path: Optional[str] = None
+    dropbox_file_id: Optional[str] = None
+    failure_reason: Optional[str] = None
+    size_bytes: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_at: Optional[datetime] = None

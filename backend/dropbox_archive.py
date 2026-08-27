@@ -56,3 +56,27 @@ def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
         return {"ok": True, "path": result.path_display, "file_id": result.id}
     except Exception as e:
         return {"ok": False, "not_configured": False, "reason": str(e)}
+
+
+def delete_document(dropbox_path: str) -> dict:
+    """Database Backups brief (Dropbox Document Archive & Backup Layer
+    §5) — the ONE deliberate exception to this whole module's "never
+    overwrite, never delete" document-archive philosophy: retention
+    pruning (keep last 7 daily / last 4 weekly backups, main.py) needs
+    to actually remove old backup files, unlike every archived Quote/
+    Invoice/Order Sheet PDF, which is permanent history by design and
+    has no delete path anywhere. Same never-raise contract as
+    upload_document() — a failed prune must never crash the backup job
+    that's still trying to do its real work (create today's backup);
+    the caller logs the failure and tries again next run rather than
+    blocking on it."""
+    token = os.environ.get("DROPBOX_ACCESS_TOKEN")
+    if not token:
+        return {"ok": False, "not_configured": True, "reason": "Dropbox not connected yet (no access token configured)."}
+    try:
+        import dropbox
+        dbx = dropbox.Dropbox(token)
+        dbx.files_delete_v2(dropbox_path)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "not_configured": False, "reason": str(e)}
