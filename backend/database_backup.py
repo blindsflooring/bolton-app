@@ -93,3 +93,33 @@ def python_logical_backup(engine) -> bytes:
                 data["tables"][table] = {"__error__": str(e)}
     raw = json.dumps(data, default=_json_default).encode("utf-8")
     return gzip.compress(raw)
+
+
+def summarize_for_preview(file_bytes: bytes, method: str) -> dict:
+    """Verification-only, confirmed Aug 2026 — "confirming it contains
+    real recognizable data, not just a success message." Called once,
+    right after a backup is generated, from the real in-memory bytes —
+    DatabaseBackupRecord deliberately never stores the bytes themselves
+    (see its own docstring), so this is the one place a real look at
+    what a given run actually captured is possible at all. Never
+    persisted — this dict only ever flows back in an API response."""
+    try:
+        if method == "python_json":
+            data = json.loads(gzip.decompress(file_bytes))
+            table_row_counts = {
+                t: (len(rows) if isinstance(rows, list) else f"export error: {rows.get('__error__')}")
+                for t, rows in data["tables"].items()
+            }
+            # One genuinely recognizable, real value — not just a count —
+            # so this can't be mistaken for a plausible-looking fake.
+            sample = None
+            quotes = data["tables"].get("quote")
+            if isinstance(quotes, list) and quotes:
+                sample = {"table": "quote", "client_name": quotes[0].get("client_name"), "id": quotes[0].get("id")}
+            return {"method": "python_json", "table_row_counts": table_row_counts, "sample_real_row": sample}
+        else:
+            text = gzip.decompress(file_bytes).decode("utf-8", errors="replace")
+            lines = [l for l in text.splitlines() if l.strip() and not l.startswith("--")]
+            return {"method": "pg_dump", "line_count": len(text.splitlines()), "sample_lines": lines[:15]}
+    except Exception as e:
+        return {"method": method, "preview_error": str(e)}

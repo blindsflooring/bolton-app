@@ -2662,6 +2662,14 @@ def run_database_backup_job():
     if file_bytes is None:
         file_bytes = database_backup.python_logical_backup(engine)
         method = "python_json"
+    # Verification-only preview (confirmed Aug 2026 — "confirming it
+    # contains real recognizable data, not just a success message"):
+    # DatabaseBackupRecord deliberately stores no bytes at all (see its
+    # own docstring), so once this function returns there is otherwise
+    # no way to inspect what a given run actually captured. Computed
+    # here, from the real in-memory bytes, before they're discarded —
+    # never persisted anywhere.
+    preview = database_backup.summarize_for_preview(file_bytes, method)
     is_sunday = date.today().weekday() == 6
     results = []
     with Session(engine) as session:
@@ -2683,7 +2691,7 @@ def run_database_backup_job():
                 # never crash the scheduler thread or the web service.
                 print(f"Database backup ({tenant_id}, {today_str}): FAILED ({e})")
                 results.append({"tenant_id": tenant_id, "tier": "daily", "status": "failed", "error": str(e)})
-    return results
+    return {"results": results, "preview": preview}
 
 
 @app.get("/clients/{client_id}/order-sheets")
@@ -2790,7 +2798,7 @@ def trigger_database_backup_now(role: str = Depends(require_owner)):
     run_database_backup_job() itself — same reason as list_users()
     below: Depends(require_owner) needs that name to already exist at
     import time."""
-    return {"results": run_database_backup_job()}
+    return run_database_backup_job()
 
 
 @app.get("/admin/database-backup")
