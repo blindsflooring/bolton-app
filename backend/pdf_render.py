@@ -27,23 +27,10 @@ import re
 from xhtml2pdf import pisa
 
 
-def _resolve_css_variables(css: str) -> str:
-    """xhtml2pdf's color parser has no concept of CSS custom properties
-    at all -- var(--navy) crashes it outright with `ValueError: Invalid
-    color value '<css function: var(--navy)>'`, raised directly from
-    pisa.CreatePDF() itself (found immediately after fixing the
-    @keyframes/@media print crash, re-verifying Save against a real
-    Invoice again -- a second, separate real bug in the same "xhtml2pdf
-    can't handle modern CSS" family, not a regression from that fix).
-
-    Since xhtml2pdf has no notion of custom properties to begin with,
-    resolve every var(...) reference to its literal value before handing
-    the CSS to pisa: parse every `--name: value;` declared inside any
-    :root { ... } block, then replace every var(--name) / var(--name,
-    fallback) occurrence with the resolved value -- falling back to the
-    fallback argument (per the CSS spec) when a name has no :root
-    definition, e.g. --ink-soft in the real stylesheet, which is only
-    ever referenced with a fallback and never actually declared."""
+def _extract_css_variables(css: str) -> dict:
+    """Parses every `--name: value;` declared inside any :root { ... }
+    block in css and returns them as a {name: value} dict. Brace-depth
+    aware for the same reason as _strip_at_rule_blocks."""
     variables = {}
     idx = 0
     while True:
@@ -63,7 +50,15 @@ def _resolve_css_variables(css: str) -> str:
         for name, value in re.findall(r"(--[a-zA-Z0-9-]+)\s*:\s*([^;]+);", block_content):
             variables[name.strip()] = value.strip()
         idx = j
+    return variables
 
+
+def _substitute_var_refs(text: str, variables: dict) -> str:
+    """Replaces every var(--name) / var(--name, fallback) occurrence in
+    text with its resolved value from `variables` -- falling back to the
+    fallback argument (per the CSS spec) when a name has no :root
+    definition, e.g. --ink-soft in the real stylesheet, which is only
+    ever referenced with a fallback and never actually declared."""
     def _replace_var(match):
         name = match.group(1)
         fallback = match.group(2)
@@ -73,7 +68,7 @@ def _resolve_css_variables(css: str) -> str:
             return fallback.strip()
         return match.group(0)  # nothing to resolve to -- leave as-is rather than guess
 
-    return re.sub(r"var\(\s*(--[a-zA-Z0-9-]+)\s*(?:,\s*([^)]+))?\)", _replace_var, css)
+    return re.sub(r"var\(\s*(--[a-zA-Z0-9-]+)\s*(?:,\s*([^)]+))?\)", _replace_var, text)
 
 
 def _strip_at_rule_blocks(css: str, at_rule: str) -> str:
@@ -146,10 +141,25 @@ def render_html_to_pdf(html: str, css: str = "") -> bytes:
     untouched. Both are lossless transforms for archival purposes, not
     real content loss — and the CreatePDF() call itself is now wrapped
     so ANY future unsupported CSS construct fails the same clean,
-    catchable way instead of crashing unhandled."""
+    catchable way instead of crashing unhandled.
+
+    Second real bug, found immediately after re-verifying the above fix
+    against a real Invoice again: xhtml2pdf's color parser also can't
+    resolve CSS custom properties (var(--navy)) at all, crashing with
+    `ValueError: Invalid color value '<css function: var(--navy)>'`.
+    The FIRST fix attempt only resolved var(...) inside the css string
+    -- but buildPrintDocHtml() (shared.js) also writes var(--x)
+    directly into inline style="..." attributes on the HTML it
+    generates (e.g. the Send button, the discount/deposit rows, colour
+    highlights), so a CSS-only fix still left the real Invoice HTML
+    itself crashing the same way. Both html and css are resolved below
+    using the same variable set, extracted once from css's own :root
+    block."""
     css = _strip_at_rule_blocks(css, "keyframes")
     css = _strip_at_rule_blocks(css, "media print")
-    css = _resolve_css_variables(css)
+    variables = _extract_css_variables(css)
+    css = _substitute_var_refs(css, variables)
+    html = _substitute_var_refs(html, variables)
     full_html = f"<html><head><style>{css}</style></head><body>{html}</body></html>"
     buffer = io.BytesIO()
     try:
