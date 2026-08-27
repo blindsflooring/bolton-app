@@ -37,9 +37,14 @@ const API = "https://bolton-backend.onrender.com"; // confirmed live Aug 2026 �
 // isn't subject to any cookie policy, so this sidesteps the whole
 // problem rather than fighting it.
 let sessionToken = localStorage.getItem('bolton_token') || null;
+// Single Active Session Per Login (confirmed Aug 2026) — reset on every
+// fresh token so a LATER supersession (e.g. this same account logging in
+// on another device again) can trigger the redirect-to-login handling
+// below again. See that handler's own comment for the full picture.
+let sessionInvalidatedHandled = false;
 function setSessionToken(token) {
   sessionToken = token;
-  if (token) localStorage.setItem('bolton_token', token);
+  if (token) { localStorage.setItem('bolton_token', token); sessionInvalidatedHandled = false; }
   else localStorage.removeItem('bolton_token');
 }
 
@@ -75,7 +80,8 @@ let previewRole = null;   // null | 'sales' | 'admin'
 // that "hangs forever" becomes "fails within 20s" instead.
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = function(url, options = {}) {
-  if (typeof url === 'string' && url.startsWith(API)) {
+  const isApiCall = typeof url === 'string' && url.startsWith(API);
+  if (isApiCall) {
     options = Object.assign({}, options);
     if (sessionToken) {
       options.headers = Object.assign({}, options.headers || {}, {'Authorization': `Bearer ${sessionToken}`});
@@ -89,7 +95,39 @@ window.fetch = function(url, options = {}) {
       options.signal = controller.signal;
     }
   }
-  return _nativeFetch(url, options);
+  const promise = _nativeFetch(url, options);
+  // Single Active Session Per Login (confirmed Aug 2026) — the backend
+  // already force-ends any OTHER active session for an account the
+  // moment a new login happens (login(), main.py — ended_reason=
+  // "superseded"), and _resolve_session() there already rejects that
+  // session's next request with a clean 401. The gap was entirely here:
+  // nothing on the frontend ever looked at a 401, so the old session's
+  // next action just fell into whatever generic error handling that one
+  // screen happened to have — renderWithRetry() (below) shows a
+  // MISLEADING "server may still be waking up... Tap to retry" message
+  // that would then fail forever, never actually telling the user
+  // they'd been logged out elsewhere. Checked here, once, for every one
+  // of the ~65 existing fetch(`${API}/...`) call sites with zero
+  // changes needed at any of them — same "one wrapper, all call sites"
+  // pattern the token/timeout handling just above already uses.
+  // Excludes /auth/login itself: a wrong-password 401 there is normal
+  // and must never force a "logged out" redirect.
+  if (isApiCall && !url.includes('/auth/login')) {
+    promise.then(res => {
+      if (res.status === 401 && sessionToken && !sessionInvalidatedHandled) {
+        sessionInvalidatedHandled = true;
+        setSessionToken(null);
+        currentUser = null;
+        previewRole = null;
+        if (typeof showLogin === 'function') {
+          showLogin();
+          const errEl = document.getElementById('login_error');
+          if (errEl) errEl.textContent = 'You were logged out — most likely because this account logged in elsewhere. Please log in again.';
+        }
+      }
+    }).catch(() => {});
+  }
+  return promise;
 };
 
 // Shared retry-and-fail-visibly wrapper for every landing "Loading..."
