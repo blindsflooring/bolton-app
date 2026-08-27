@@ -855,6 +855,11 @@ const LANDING_TILES = [
   { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
   { id: 'accounts', title: 'Accounts', desc: 'Staff logins, password reset links', ready: true },
   { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, estimates, commission', ready: true },
+  // Trusted Tester Accounts brief §3 (confirmed Aug 2026) — "one place
+  // Burgert can review [flags], rather than hunting through the Order
+  // Index." Owner-only (added to OWNER_ONLY_TILES below), same as
+  // Session Log/Change Log.
+  { id: 'flaggedItems', title: 'Flagged for Review', desc: 'Issues testers spotted, one list', ready: true },
 ];
 
 // Default role/tile split (confirmed Aug 2026, proposed per the go-live
@@ -874,12 +879,25 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
 // as Sales or Admin correctly loses this tile too, same as the backend
 // blocking the endpoint itself for a previewed non-owner role.
-const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts'];
+const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts', 'flaggedItems'];
+// Trusted Tester Accounts brief (confirmed Aug 2026) — same scope as
+// Sales (they're here for client/quote/job work, not business
+// operations), even though they get Sales's pricing-restriction
+// counterpart LIFTED (full cost/margin visibility, confirmed with
+// Burgert) — tile visibility and pricing visibility are two
+// independent axes in this codebase already, so combining "Sales-like
+// tile scope" with "Admin-like pricing visibility" needs no new
+// mechanism, just this second role check alongside the Sales one
+// below. 'business' (Business Overview Dashboard) is ALSO enforced
+// server-side now (analytics_overview(), main.py) — this hides the
+// tile too, but the real boundary is the 403, not this.
+const TRUSTED_TESTER_HIDDEN_TILES = ['business', 'settings', 'hr'];
 function visibleLandingTiles() {
   const role = currentRole();
   return LANDING_TILES.filter(t => {
     if (OWNER_ONLY_TILES.includes(t.id) && role !== 'owner') return false;
     if (role === 'sales' && SALES_HIDDEN_TILES.includes(t.id)) return false;
+    if (role === 'trusted_tester' && TRUSTED_TESTER_HIDDEN_TILES.includes(t.id)) return false;
     return true;
   });
 }

@@ -23,7 +23,7 @@ async function renderClients(el, searchTerm) {
   // unbreakable string that forces a table wider than the screen).
   const rows = clients.length ? clients.map(c => `
     <tr style="cursor:pointer;" onclick="openClientDetail(${c.id})">
-      <td class="card-title" data-label="Name">${c.name}</td><td data-label="Phone">${c.phone || '—'}</td><td data-label="Email">${c.email || '—'}</td><td data-label="Branch">${c.preferred_branch}</td>
+      <td class="card-title" data-label="Name">${c.name}${c.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${c.test_data_label}</span>` : ''}</td><td data-label="Phone">${c.phone || '—'}</td><td data-label="Email">${c.email || '—'}</td><td data-label="Branch">${c.preferred_branch}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="muted">No clients match.</td></tr>';
   // Possible Duplicate Clients (confirmed Aug 2026, Order Index ->
   // Client Link Gap brief — "check for and report any other duplicate

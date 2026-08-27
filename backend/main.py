@@ -33,6 +33,7 @@ from models import (
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
+    FlaggedRecord,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -345,6 +346,10 @@ def _ensure_new_columns():
         # here together this time, having just found out the hard way
         # (directly above) what happens when they drift apart.
         ("supplierdefault", "email", "VARCHAR", "''"),
+        # Trusted Tester Accounts brief (confirmed Aug 2026) — added to
+        # the model AND here together, same discipline learned from the
+        # documentarchive.is_accepted_version incident earlier today.
+        ("client", "created_by", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1859,8 +1864,31 @@ def delete_trim(product_id: int, tenant_id: str = Depends(get_current_tenant)):
 
 # ---------- Analytics ----------
 
+def _trusted_tester_usernames(session: Session, tenant_id: str) -> dict:
+    """Trusted Tester Accounts brief (confirmed Aug 2026) — the ONE
+    structural place this app decides "is this record test data," used
+    identically everywhere that decision matters: KPI exclusion
+    (analytics_overview below) and display labeling (Order Index,
+    client list). Derived from the CURRENT set of trusted_tester-role
+    users, never a stored per-record flag — same "derive, don't
+    duplicate state that could drift" principle used throughout this
+    codebase, and exactly what the brief itself asks for: "a single,
+    structural rule applied at the data-access layer... not a filter
+    added by hand to each query individually" — the recurring
+    delete-cascade bug fixed earlier today is the explicit reason the
+    brief gives for insisting on this, and this follows the same
+    lesson. Returns {username: display_name} — the display name feeds
+    the "TEST — [name]" badge directly; the dict itself doubles as the
+    membership set every caller actually needs (`username not in
+    result`). Tiny result set (a handful of users at most) — called
+    fresh per request, no caching needed at this scale."""
+    return {u.username: u.display_name for u in session.exec(
+        select(User).where(User.tenant_id == tenant_id, User.role == UserRole.trusted_tester)
+    ).all()}
+
+
 @app.get("/analytics/overview")
-def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
+def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """
     Business Overview data. Deliberately built from data that already
     exists — no new pricing logic here, just querying quotes/lines that
@@ -1869,14 +1897,32 @@ def analytics_overview(tenant_id: str = Depends(get_current_tenant)):
     hasn't been decided yet isn't a loss, so counting it as one would
     understate the real win rate. "Won" = accepted, invoiced, or paid.
     "Lost" = declined only.
+
+    Trusted Tester Accounts brief (confirmed Aug 2026): explicitly
+    blocked for trusted_tester specifically — this endpoint had NO role
+    restriction at all before this (Sales could already reach it via a
+    direct API call despite the frontend hiding the tile; that
+    pre-existing gap is untouched here, out of this brief's scope —
+    this only ADDS a new exclusion for trusted_tester, never removes
+    existing access from Owner/Admin/Sales). Every figure below also
+    excludes quotes created by a Trusted Tester account entirely, for
+    every role that CAN see this dashboard — a family member's test
+    quote must never inflate real Won Value even from Burgert's own
+    view of it.
     """
+    if role == UserRole.trusted_tester:
+        raise HTTPException(403, "Business Overview Dashboard is not available on a Trusted Tester account.")
     with Session(engine) as session:
+        tt_usernames = _trusted_tester_usernames(session, tenant_id)
         # Price Check (confirmed Aug 2026, New Quote Screen brief §3) —
         # "must not affect Order Index counts, Needs Attention, or any
         # dashboard KPI" — excluded at the source here, same as
         # list_quotes(), rather than trying to filter it back out of
-        # every downstream figure individually.
+        # every downstream figure individually. Trusted Tester quotes
+        # excluded the same way, same reasoning, right alongside it.
         quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id, Quote.is_price_check == False)).all()  # noqa: E712
+        if tt_usernames:
+            quotes = [q for q in quotes if q.sales_owner not in tt_usernames]
         lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.tenant_id == tenant_id)).all()
         VAT_PCT = get_settings(session, tenant_id).vat_pct
 
@@ -2244,11 +2290,16 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
 def get_order_sheets_for_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id).order_by(OrderSheet.created_at)).all()
+        tt_usernames = _trusted_tester_usernames(session, tenant_id)
         result = []
         for s in sheets:
             lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == s.id, OrderSheetLine.tenant_id == tenant_id)).all()
             d = s.dict()
             d["lines"] = [l.dict() for l in lines]
+            # Trusted Tester Accounts brief (confirmed Aug 2026) — same
+            # display-only labeling as list_quotes()/list_clients() above.
+            d["is_test_data"] = s.created_by in tt_usernames
+            d["test_data_label"] = f"TEST — {tt_usernames[s.created_by]}" if s.created_by in tt_usernames else None
             result.append(d)
         return result
 
@@ -2890,6 +2941,62 @@ def list_users(role: str = Depends(require_owner), tenant_id: str = Depends(get_
     with Session(engine) as session:
         users = session.exec(select(User).where(User.tenant_id == tenant_id).order_by(User.username)).all()
         return [{"id": u.id, "username": u.username, "display_name": u.display_name, "role": u.role, "active": u.active} for u in users]
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    display_name: str
+    role: str   # UserRole value
+
+
+@app.post("/admin/users")
+def create_user(body: CreateUserRequest, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Trusted Tester Accounts brief (confirmed Aug 2026) — the first
+    real account-creation endpoint in this app; every existing account
+    (Burgert/Ryno/Madri) was seeded directly, not created through the
+    app itself. Owner-only, and deliberately generic (not restricted to
+    trusted_tester specifically) since the underlying need — onboard a
+    new named person without a manual DB script — isn't specific to
+    this one brief.
+
+    No password is set here at all: a throwaway random hash is stored
+    (unusable — nobody is ever told it, including Burgert) and a
+    one-time reset link is generated immediately, the exact same
+    mechanism create_password_reset_link() below already provides for
+    an EXISTING account, so the new person sets their own first
+    password via that link. This is STRICTER than the "generate +
+    report in chat" pattern used earlier this session for an existing
+    account's reset (Ryno, under real time pressure) — a brand new
+    account has no such urgency, so it gets the fully correct "nobody
+    but the account holder ever knows the password" treatment from
+    day one."""
+    username = body.username.strip().lower()
+    if not username or not body.display_name.strip():
+        raise HTTPException(400, "Username and display name are required.")
+    if body.role not in (UserRole.admin, UserRole.sales, UserRole.trusted_tester):
+        raise HTTPException(400, "role must be 'admin', 'sales', or 'trusted_tester' (a second Owner account isn't supported here).")
+    with Session(engine) as session:
+        existing = session.exec(select(User).where(User.username == username, User.tenant_id == tenant_id)).first()
+        if existing:
+            raise HTTPException(400, f"A user named '{username}' already exists.")
+        throwaway_hash = hash_password(secrets.token_urlsafe(32))
+        user = User(tenant_id=tenant_id, username=username, display_name=body.display_name.strip(),
+                     password_hash=throwaway_hash, role=body.role)
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token = secrets.token_urlsafe(32)
+        reset = PasswordResetToken(
+            tenant_id=tenant_id, user_id=user.id, token=token, created_by="system (new account)",
+            expires_at=datetime.utcnow() + timedelta(minutes=RESET_LINK_MINUTES),
+        )
+        session.add(reset)
+        session.commit()
+        return {
+            "id": user.id, "username": user.username, "display_name": user.display_name, "role": user.role,
+            "reset_link": f"https://bolton-frontend.onrender.com/index.html?reset_token={token}",
+            "expires_in_minutes": RESET_LINK_MINUTES,
+        }
 
 
 @app.post("/admin/users/{user_id}/reset-password-link")
@@ -4106,6 +4213,83 @@ def get_audit_log(
         ]
 
 
+class FlagRecordRequest(BaseModel):
+    entity_type: str
+    entity_id: int
+    note: str
+
+
+@app.post("/flags")
+def flag_record(body: FlagRecordRequest, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Trusted Tester Accounts brief §3 (confirmed Aug 2026) — "Flag for
+    review," open to every role (Trusted Testers, and useful for Ryno/
+    Madri too, per the brief's own words), not just Owner — anyone
+    using the app can flag something that looks wrong; only REVIEWING
+    the list (below) and deciding what to do about it stays Owner-only.
+    No entity_type/entity_id validation against real tables here,
+    deliberately — same generic, non-FK pattern as AuditLog/
+    DocumentArchive, so flagging something can never itself fail
+    because of some OTHER unrelated data problem."""
+    if not body.note or not body.note.strip():
+        raise HTTPException(400, "A short note about what looked wrong is required.")
+    with Session(engine) as session:
+        flag = FlaggedRecord(
+            tenant_id=tenant_id, entity_type=body.entity_type, entity_id=body.entity_id,
+            note=body.note.strip(), flagged_by=username,
+        )
+        session.add(flag)
+        session.commit()
+        session.refresh(flag)
+        return flag
+
+
+@app.get("/admin/flags")
+def list_flags(resolved: Optional[bool] = None, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Owner-only review list (brief §3 — "one place, rather than
+    hunting through the Order Index"). resolved=False (the frontend's
+    default view) shows only what still needs a decision; omit the
+    param, or pass resolved=True, to see the full/resolved history
+    too — same optional-filter pattern as the audit log above."""
+    with Session(engine) as session:
+        stmt = select(FlaggedRecord).where(FlaggedRecord.tenant_id == tenant_id)
+        if resolved is not None:
+            stmt = stmt.where(FlaggedRecord.resolved == resolved)
+        rows = session.exec(stmt).all()
+        return sorted(rows, key=lambda r: r.flagged_at, reverse=True)
+
+
+class ResolveFlagRequest(BaseModel):
+    action: str   # "fixed" | "deleted" | "dismissed"
+
+
+@app.post("/admin/flags/{flag_id}/resolve")
+def resolve_flag(flag_id: int, body: ResolveFlagRequest, role: str = Depends(require_owner),
+                  tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Owner-only (brief §3 — "Burgert decides per item whether to fix
+    it live or delete it"). This endpoint only records the OUTCOME —
+    it never performs the fix or the delete itself; deleting the
+    underlying record (e.g. via Force Delete) is a separate action the
+    Owner takes on the actual Quote/Client/OrderSheet screen, same as
+    today, then comes back here (or the frontend does it in one flow)
+    to mark the flag resolved. Keeping this endpoint's only job as
+    "record what happened" means it can never itself get out of sync
+    with whether the underlying delete/fix actually succeeded."""
+    if body.action not in ("fixed", "deleted", "dismissed"):
+        raise HTTPException(400, "action must be 'fixed', 'deleted', or 'dismissed'.")
+    with Session(engine) as session:
+        flag = get_or_404(session, FlaggedRecord, flag_id, tenant_id, "Flag")
+        if flag.resolved:
+            raise HTTPException(400, "This flag is already resolved.")
+        flag.resolved = True
+        flag.resolved_action = body.action
+        flag.resolved_by = username
+        flag.resolved_at = datetime.utcnow()
+        session.add(flag)
+        session.commit()
+        session.refresh(flag)
+        return flag
+
+
 def _parse_audit_value(raw: str):
     """AuditLog stores every value as a plain string (see AuditLog's own
     docstring) — this is a best-effort re-parse purely for display
@@ -4558,7 +4742,18 @@ def list_clients(search: str = None, tenant_id: str = Depends(get_current_tenant
         if search:
             search_lower = search.lower()
             clients = [c for c in clients if search_lower in c.name.lower()]
-        return clients
+        # Trusted Tester Accounts brief (confirmed Aug 2026) — same
+        # display-only labeling as list_quotes() above, same shared
+        # _trusted_tester_usernames() source, never hidden from the
+        # normal client list.
+        tt_usernames = _trusted_tester_usernames(session, tenant_id)
+        result = []
+        for c in clients:
+            d = c.dict()
+            d["is_test_data"] = c.created_by in tt_usernames
+            d["test_data_label"] = f"TEST — {tt_usernames[c.created_by]}" if c.created_by in tt_usernames else None
+            result.append(d)
+        return result
 
 
 @app.get("/clients/{client_id}")
@@ -4568,8 +4763,14 @@ def get_client(client_id: int, tenant_id: str = Depends(get_current_tenant)):
 
 
 @app.post("/clients")
-def create_client(client: Client, tenant_id: str = Depends(get_current_tenant)):
+def create_client(client: Client, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     client.tenant_id = tenant_id
+    # Trusted Tester Accounts brief (confirmed Aug 2026) -- captured here,
+    # not client-suppliable, same trust boundary as tenant_id above: who
+    # actually created this record determines whether it's test data
+    # (_trusted_tester_usernames(), main.py), so it must come from the
+    # authenticated session, never a request body field.
+    client.created_by = username
     with Session(engine) as session:
         session.add(client)
         session.commit()
@@ -6776,6 +6977,7 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
     name / quote # / description match."""
     with Session(engine) as session:
         VAT_PCT = get_settings(session, tenant_id).vat_pct
+        tt_usernames = _trusted_tester_usernames(session, tenant_id)
         stmt = select(Quote).where(Quote.tenant_id == tenant_id)
         # Price Check (confirmed Aug 2026, New Quote Screen brief §3) —
         # excluded from the Order Index by default: it isn't a real
@@ -6825,6 +7027,15 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # above (no extra query) — Order Index shows a row's "Adjusted"
             # flag if EITHER is true.
             d["has_line_override"] = any(l.pre_override_line_total is not None for l in lines)
+            # Trusted Tester Accounts brief (confirmed Aug 2026) — NOT
+            # hidden from the Order Index, per the brief's own explicit
+            # requirement ("NOT hidden from Burgert, Ryno, or Madri's
+            # normal views — just clearly marked"); this is a display
+            # label only, computed fresh here via the same
+            # _trusted_tester_usernames() the KPI exclusion above uses,
+            # never a stored flag on the row itself.
+            d["is_test_data"] = q.sales_owner in tt_usernames
+            d["test_data_label"] = f"TEST — {tt_usernames[q.sales_owner]}" if q.sales_owner in tt_usernames else None
             # Next Action / Needs Attention (confirmed Aug 2026, Order
             # Index / Job Workflow Redesign brief + Next Action
             # Addendum) — computed per row so the Order Index table's

@@ -272,7 +272,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
   return `
     <tr id="oi-row-${q.id}" style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
       ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
-      <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}</td>
+      <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}${q.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${q.test_data_label}</span>` : ''}</td>
       <td data-label="Customer">${isChild ? '' : (q.client_id
           ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
           : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`)}
@@ -300,6 +300,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
         for standalone rows and rows nested inside an expanded group —
         toggleQuickView() only needs this row's own quote id. -->
         <a href="#" onclick="event.stopPropagation(); toggleQuickView(${q.id}); return false;" style="font-size:12px; margin-right:8px;" title="Preview this quote/invoice without leaving the Order Index">Quick View</a>
+        <a href="#" onclick="event.stopPropagation(); flagRecord('Quote', ${q.id}, '${(q.job_number || 'Quote #' + q.id).replace(/'/g,"\\'")}'); return false;" style="font-size:12px; margin-right:8px;" title="Flag something that looks wrong or worth a look">🚩 Flag</a>
         <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}', ${q.client_id || 'null'})">Duplicate</button>
         ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
       </td>

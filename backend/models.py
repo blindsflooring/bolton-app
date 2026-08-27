@@ -66,6 +66,23 @@ class UserRole(str, Enum):
     owner = "owner"       # Burgert — full access
     admin = "admin"       # Madri — price book edit, quotes, imports, send POs, CRM/HR/Admin areas
     sales = "sales"       # Ryno — build/view quotes, selling price only, no margin, Sales/Flooring/Blinds areas
+    # Trusted Tester Accounts brief (confirmed Aug 2026): three named,
+    # trusted people (Burgert's wife, his brother, a retired admin
+    # employee) — NOT a general-purpose testing platform, deliberately
+    # scaled down from an earlier, bigger walled-off-environment
+    # proposal. Full cost/margin visibility (confirmed with Burgert —
+    # admin-level, not sales-restricted), same practical create/edit
+    # capability on clients/quotes/jobs as Ryno or Madri, but excluded
+    # from Owner-only actions (require_owner already blocks these
+    # automatically) AND from Business Overview Dashboard specifically
+    # (analytics_overview() adds an explicit check for this role, since
+    # that endpoint had no role restriction at all before this — Admin
+    # keeps seeing it exactly as before, this only adds a NEW exclusion
+    # for trusted_tester, never removes existing access from anyone
+    # else). Every quote/client/order sheet they create is automatically
+    # excluded from KPI/dashboard math and clearly labeled everywhere
+    # else it's shown — see _trusted_tester_usernames() (main.py).
+    trusted_tester = "trusted_tester"
 
 
 class User(SQLModel, table=True):
@@ -688,6 +705,16 @@ class Client(SQLModel, table=True):
     preferred_branch: str = "gansbaai"
     notes: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Trusted Tester Accounts brief (confirmed Aug 2026) — Client had no
+    # creator field at all before this (unlike Quote.sales_owner and
+    # OrderSheet.created_by, which already existed). Needed so a client
+    # created by a Trusted Tester account can be identified the same
+    # derive-don't-duplicate way as everywhere else in this codebase —
+    # see _trusted_tester_usernames() (main.py) — rather than a stored
+    # is_test_data boolean that could drift if a role ever changed.
+    # "" for every client created before this field existed; never
+    # backfilled/guessed, and never treated as test data by omission.
+    created_by: str = ""
     # Marketing source (confirmed Aug 2026, New Quote Screen: Clarify
     # Buttons + Price Check + Marketing Source brief §4) — "how did you
     # hear about us." Plain free-form string, not an enum on this side —
@@ -1231,6 +1258,33 @@ class DocumentArchive(SQLModel, table=True):
     # was actually agreed to, regardless of how many later versions
     # (a post-acceptance Manual Override, say) get archived on top.
     is_accepted_version: bool = False
+
+
+class FlaggedRecord(SQLModel, table=True):
+    """Trusted Tester Accounts brief §3 (confirmed Aug 2026) — "Flag for
+    review": any record (Trusted Tester accounts, and Ryno/Madri too)
+    can be flagged with a short note about what looked wrong or worth a
+    look, landing in one Owner-only list instead of Burgert having to
+    hunt through the Order Index. Deliberately generic entity_type/
+    entity_id, same pattern as AuditLog/DocumentArchive — never a real
+    foreign key, so flagging something never risks blocking or
+    complicating a later delete of that record. resolved_action records
+    what Burgert actually did about it ("fixed" | "deleted" | "dismissed"
+    | None while still open) — a plain read-only record of the outcome,
+    not a workflow state machine; there's no un-resolve, matching the
+    "permanent record" philosophy AuditLog already established (a
+    flag's own history shouldn't be editable after the fact either)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    entity_type: str = Field(index=True)   # "Quote" | "Client" | "OrderSheet" — whatever screen the Flag action was used from
+    entity_id: int = Field(index=True)
+    note: str
+    flagged_by: str
+    flagged_at: datetime = Field(default_factory=datetime.utcnow)
+    resolved: bool = False
+    resolved_action: Optional[str] = None   # "fixed" | "deleted" | "dismissed"
+    resolved_by: Optional[str] = None
+    resolved_at: Optional[datetime] = None
 
 
 class DatabaseBackupRecord(SQLModel, table=True):

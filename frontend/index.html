@@ -1002,6 +1002,7 @@ function renderLanding() {
   if (landingView === 'changeLog') return renderChangeLog(el);
   if (landingView === 'accounts') return renderAccounts(el);
   if (landingView === 'builderPortal') return renderBuilderPortalAdmin(el);
+  if (landingView === 'flaggedItems') return renderFlaggedItems(el);
 }
 
 function renderLandingTiles(el) {
@@ -1040,6 +1041,7 @@ function onTileClick(tileId) {
   else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
   else if (tileId === 'accounts') { landingView = 'accounts'; renderLanding(); }
   else if (tileId === 'builderPortal') { landingView = 'builderPortal'; renderLanding(); }
+  else if (tileId === 'flaggedItems') { landingView = 'flaggedItems'; renderLanding(); }
   else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
 }
 
@@ -3207,7 +3209,7 @@ async function renderAccounts(el) {
             <tr>
               <td>${u.username}</td>
               <td>${u.display_name}</td>
-              <td style="text-transform:capitalize;">${u.role}</td>
+              <td style="text-transform:capitalize;">${u.role.replace('_',' ')}</td>
               <td><span class="status-badge ${u.active ? 'active-status' : 'inactive-status'}">${u.active ? 'Active' : 'Inactive'}</span></td>
               <td><button onclick="generatePasswordResetLink(${u.id}, '${u.display_name.replace(/'/g,"\\'")}')">Reset password</button></td>
             </tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts found.</td></tr>'}
@@ -3215,8 +3217,58 @@ async function renderAccounts(el) {
       </table>
       <div id="resetLinkResult" style="display:none; margin-top:16px; padding:14px; background:var(--bg); border-radius:8px;"></div>
     </div>
+    <!-- Trusted Tester Accounts brief (confirmed Aug 2026) — new
+    account creation, right alongside the existing list rather than a
+    separate screen. Same "nobody but the account holder ever knows
+    the password" flow as Reset above: this creates the account with
+    no usable password at all, then immediately shows a one-time set-
+    password link in the exact same resetLinkResult box. -->
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Create new account</h3>
+      <div class="grid">
+        <div class="field"><label>Full name</label><input id="newUserDisplayName" placeholder="e.g. Jane Burgert"></div>
+        <div class="field"><label>Username</label><input id="newUserUsername" placeholder="e.g. jane" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9]/g,'')"></div>
+        <div class="field"><label>Role</label>
+          <select id="newUserRole">
+            <option value="trusted_tester">Trusted Tester</option>
+            <option value="sales">Sales</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+      </div>
+      <button onclick="createNewAccount()">Create account</button>
+      <p class="muted" style="font-size:12px; margin-top:8px;">Trusted Tester: full working access to create/edit clients, quotes, and jobs, with everything they create automatically labeled as test data and excluded from Business Overview figures. No access to Business Overview, Business Settings, HR, Manual Override, or Delete.</p>
+    </div>
   `;
   });
+}
+
+async function createNewAccount() {
+  const display_name = document.getElementById('newUserDisplayName').value.trim();
+  const username = document.getElementById('newUserUsername').value.trim();
+  const role = document.getElementById('newUserRole').value;
+  if (!display_name || !username) { alert('Full name and username are both required.'); return; }
+  const res = await fetch(`${API}/admin/users`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ display_name, username, role }),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not create this account.'); return; }
+  const data = await res.json();
+  const box = document.getElementById('resetLinkResult');
+  if (box) {
+    box.style.display = 'block';
+    box.innerHTML = `
+      <p style="margin:0 0 8px;"><b>${data.display_name}'s account was created.</b> Share this one-time set-password link with them — expires in ${data.expires_in_minutes} minutes, works once:</p>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input id="resetLinkText" readonly value="${data.reset_link}" style="flex:1; font-family:monospace; font-size:12px;" onclick="this.select();">
+        <button onclick="copyResetLink()">Copy</button>
+      </div>
+      <p class="muted" id="resetLinkCopyStatus" style="margin:6px 0 0; font-size:12px;"></p>
+    `;
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  document.getElementById('newUserDisplayName').value = '';
+  document.getElementById('newUserUsername').value = '';
 }
 
 async function generatePasswordResetLink(userId, displayName) {
@@ -3248,6 +3300,82 @@ function copyResetLink() {
   navigator.clipboard.writeText(input.value)
     .then(() => { if (statusEl) statusEl.textContent = '✓ Copied.'; })
     .catch(() => { if (statusEl) statusEl.textContent = 'Could not auto-copy — select the text above and copy it manually.'; });
+}
+
+// ===== Flag for Review (Trusted Tester Accounts brief §3, confirmed
+// Aug 2026) ===== flagRecord() is the shared action any screen can call
+// (Trusted Tester accounts, and Ryno/Madri too — the brief's own
+// words, not Owner-restricted to CREATE a flag). This review LIST is
+// Owner-only (OWNER_ONLY_TILES in shared.js is the first layer;
+// GET/POST /admin/flags* are require_owner-gated server-side too, same
+// belt-and-braces pattern as every other Owner-only screen).
+async function flagRecord(entityType, entityId, label) {
+  const note = prompt(`Flag ${label} for review — what looked wrong or worth a look?`);
+  if (!note || !note.trim()) return;
+  const res = await fetch(`${API}/flags`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, note: note.trim() }),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not flag this.'); return; }
+  alert('Flagged for review.');
+}
+
+async function renderFlaggedItems(el) {
+  await renderWithRetry(el, 'Flagged for Review', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Flagged for Review</h2><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/admin/flags`);
+  const flags = res.ok ? await res.json() : [];
+  renderFlaggedItemsTable(flags);
+  });
+}
+
+function renderFlaggedItemsTable(flags) {
+  const el = document.getElementById('landing');
+  const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
+  const open = flags.filter(f => !f.resolved);
+  const resolved = flags.filter(f => f.resolved);
+  const row = (f) => `
+    <tr>
+      <td>${fmt(f.flagged_at)}</td>
+      <td>${f.flagged_by}</td>
+      <td>${f.entity_type} #${f.entity_id}</td>
+      <td>${f.note}</td>
+      <td>${f.resolved
+        ? `<span class="muted">${f.resolved_action} by ${f.resolved_by}</span>`
+        : `<button onclick="resolveFlag(${f.id}, 'fixed')">Mark fixed</button>
+           <button onclick="resolveFlag(${f.id}, 'dismissed')">Dismiss</button>
+           <button class="delete-btn" onclick="resolveFlag(${f.id}, 'deleted')">Mark deleted</button>`}
+      </td>
+    </tr>`;
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Flagged for Review</h1><p>Issues Trusted Testers (or Ryno/Madri) spotted and flagged, in one place. Go fix or delete the actual record on its own screen first (Force Delete for test data), then mark the outcome here.</p></div>
+    <div class="card">
+      <h3 style="margin-top:0;">Needs a decision (${open.length})</h3>
+      <table>
+        <thead><tr><th>When</th><th>Flagged by</th><th>Record</th><th>Note</th><th></th></tr></thead>
+        <tbody>${open.map(row).join('') || '<tr><td colspan="5" class="muted">Nothing flagged right now.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Resolved (${resolved.length})</h3>
+      <table>
+        <thead><tr><th>When</th><th>Flagged by</th><th>Record</th><th>Note</th><th>Outcome</th></tr></thead>
+        <tbody>${resolved.map(row).join('') || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function resolveFlag(flagId, action) {
+  const labels = {fixed: 'Mark this fixed?', dismissed: 'Dismiss this flag (no action needed)?', deleted: 'Mark this resolved by deletion? (Delete the actual record first, from its own screen, if you haven\'t already.)'};
+  if (!confirm(labels[action])) return;
+  const res = await fetch(`${API}/admin/flags/${flagId}/resolve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not update this flag.'); return; }
+  renderFlaggedItems(document.getElementById('landing'));
 }
 
 // ===== Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) =====
