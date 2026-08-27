@@ -2429,10 +2429,14 @@ def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_
     except ValueError as e:
         raise HTTPException(500, f"Could not render this document to PDF: {e}")
     with Session(engine) as session:
-        archive = _create_and_upload_archive(
-            session, tenant_id, username, body.entity_type, body.entity_id,
-            body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
-        )
+        try:  # TEMPORARY error-surfacing for live debugging — revert once root-caused
+            archive = _create_and_upload_archive(
+                session, tenant_id, username, body.entity_type, body.entity_id,
+                body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
+            )
+        except Exception as e:
+            import traceback
+            raise HTTPException(500, f"DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return {
             "id": archive.id, "version": archive.version, "status": archive.status,
             "dropbox_path": archive.dropbox_path, "failure_reason": archive.failure_reason,
