@@ -21,10 +21,6 @@ code change needed."""
 import os
 
 
-def is_configured() -> bool:
-    return bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
-
-
 def upload_document(pdf_bytes: bytes, dropbox_path: str) -> dict:
     """Returns {"ok": True, "path": ..., "file_id": ...} on a genuine,
     confirmed upload, or {"ok": False, "reason": ...} on absolutely any

@@ -49,17 +49,17 @@ STAIR_AREA_M2 = 0.45  # confirmed Aug 2026: 900mm wide tread x (300mm going + 20
 
 
 class JobType(str, Enum):
-    """Flooring job type — multiplier confirmed by Burgert, ex VAT."""
-    smooth = "smooth"              # base rate x1
-    over_tiles = "over_tiles"      # base rate x1.5
-    removed_tiles = "removed_tiles"  # base rate x2
-
-
-JOB_TYPE_MULTIPLIERS = {
-    JobType.smooth: 1.0,
-    JobType.over_tiles: 1.5,
-    JobType.removed_tiles: 2.0,
-}
+    """Flooring job type. The multiplier itself is NOT fixed here — see
+    calculate_flooring_line()'s own screed_multipliers (calculations.py):
+    Over Tiles/Removed Tiles rates are per-product and editable
+    (product.over_tiles_multiplier/removed_tiles_multiplier), not a flat
+    system-wide 1x/1.5x/2x (Dead Code Audit, confirmed Aug 2026: removed
+    the old fixed JOB_TYPE_MULTIPLIERS constant that used to live here —
+    it was fully superseded by the per-product fields and had zero
+    remaining callers)."""
+    smooth = "smooth"
+    over_tiles = "over_tiles"
+    removed_tiles = "removed_tiles"
 
 
 class UserRole(str, Enum):

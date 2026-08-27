@@ -1,7 +1,11 @@
 """
-Blinds & Flooring Studio bolt-on — Phase 1 backend.
-Price Book + Quote Builder. No Xero, no PDF import, no AI assistant yet —
-those are Phase 2+ per the build brief.
+Blinds & Flooring Studio bolt-on backend.
+Price Book + Quote Builder, plus everything built on top of that
+foundation since: HR/commissions, the Builder Referral Portal, Manual
+Override, Order Sheets, the Dropbox document archive, AI-assisted and
+deterministic spreadsheet price sheet import. (Dead Code Audit,
+confirmed Aug 2026 — the original "No Xero, no PDF import, no AI
+assistant yet" note above was stale; all three exist now.)
 
 Run: uvicorn main:app --reload --port 8000
 """
@@ -15,7 +19,7 @@ import secrets
 import shutil
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Depends, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
@@ -1239,11 +1243,6 @@ def on_startup():
         print(f"Audit (Add-Line Data-Loss brief): scan failed ({e})")
 
 
-def get_session():
-    with Session(engine) as session:
-        yield session
-
-
 def _get_bearer_token(request: Request) -> Optional[str]:
     """Session token transport, changed Aug 2026 (see auth.py's docstring
     for the full root-cause writeup): moved off an HttpOnly cookie onto a
@@ -1292,17 +1291,6 @@ def _resolve_session(request: Request) -> Optional[dict]:
                     result = {"role": user.role, "tenant_id": user.tenant_id, "user_id": user.id, "username": user.username}
     request.state.bolton_session = result
     return result
-
-
-def get_real_role(request: Request) -> str:
-    """The actual authenticated role — NEVER affected by Owner Preview
-    Mode (confirmed Aug 2026). Used only where the real identity matters
-    regardless of any active preview: deciding whether to honor a
-    preview header at all, and /auth/me's own response."""
-    session_data = _resolve_session(request)
-    if session_data is None:
-        raise HTTPException(401, "Not logged in — please log in again")
-    return session_data["role"]
 
 
 def get_current_role(request: Request) -> str:

@@ -3,7 +3,7 @@ Pricing calculations — the actual proprietary IP of this app.
 All formulas here are confirmed by Burgert; do not change without his sign-off.
 """
 from models import (
-    FlooringProduct, BlindsProduct, JobType, JOB_TYPE_MULTIPLIERS,
+    FlooringProduct, BlindsProduct, JobType,
     StairwellType, STAIRWELL_NOSING_MM, STAIRWELL_LABOUR_PER_STAIR, TILES_PER_STAIR, STAIR_AREA_M2,
 )
 
