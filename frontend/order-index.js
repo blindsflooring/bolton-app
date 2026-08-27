@@ -464,13 +464,39 @@ async function deleteQuoteFromIndex(quoteId) {
   // (e.g. the "John Cena" quote). Clicking Cancel here, or backing out
   // of the FIRST confirm entirely, both leave the archive untouched.
   const purge = confirm(`Also permanently delete this quote's archived Dropbox copies (Quote/Invoice/Order Sheet PDFs)?\n\nChoose OK only for deliberate mockup/test cleanup -- real business records should normally keep their archived copy.\n\nChoose Cancel to keep the archive (recommended, default).`);
-  const res = await fetch(`${API}/quotes/${quoteId}${purge ? '?purge_dropbox_archive=true' : ''}`, {method:'DELETE'});
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert(err.detail || 'Could not delete this order.');
+  const purgeParam = purge ? 'purge_dropbox_archive=true' : '';
+  const res = await fetch(`${API}/quotes/${quoteId}${purgeParam ? '?' + purgeParam : ''}`, {method:'DELETE'});
+  if (res.ok) {
+    renderOrderIndex(document.getElementById('landing'), document.getElementById('orderSearchInput').value);
     return;
   }
-  renderOrderIndex(document.getElementById('landing'), document.getElementById('orderSearchInput').value);
+  const err = await res.json().catch(() => ({}));
+  // Force Delete override (confirmed Aug 2026) -- ONLY offered after the
+  // normal delete was actually blocked, showing the real reason(s) from
+  // the server (never guessed/generic), and requiring a SEPARATE, more
+  // explicit confirmation than the routine delete above -- this bypasses
+  // a real safety check meant to protect quotes with genuine payment
+  // history, so it must never be as easy to trigger as a normal delete.
+  // Reserved for known mockup/test data (e.g. "John Cena" reaching
+  // Completed with a real deposit/final payment recorded).
+  const detail = err.detail || 'Could not delete this order.';
+  if (res.status === 400 && currentRole() === 'owner') {
+    const wantsForce = confirm(`${detail}\n\nThis quote has real recorded history blocking a normal delete (shown above).\n\nUse FORCE DELETE anyway? Only do this for known mockup/test data -- this permanently removes the quote and everything attached to it (Order Sheets, follow-ups, photos), bypassing the safety check that protects real payment records.\n\nChoose Cancel to leave this quote alone (recommended unless you're sure this is test data).`);
+    if (wantsForce) {
+      const params = new URLSearchParams({ force: 'true' });
+      if (purge) params.set('purge_dropbox_archive', 'true');
+      const forceRes = await fetch(`${API}/quotes/${quoteId}?${params}`, {method:'DELETE'});
+      if (!forceRes.ok) {
+        const forceErr = await forceRes.json().catch(() => ({}));
+        alert(forceErr.detail || 'Could not force-delete this order.');
+        return;
+      }
+      renderOrderIndex(document.getElementById('landing'), document.getElementById('orderSearchInput').value);
+      return;
+    }
+    return;
+  }
+  alert(detail);
 }
 
 // Order Index Bulk Delete, Owner-only (confirmed Aug 2026). The

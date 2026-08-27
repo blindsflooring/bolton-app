@@ -5452,7 +5452,7 @@ _CASCADE_POLICY = {
 }
 
 
-def _cascade_delete_children(session: Session, table_key: str, parent_id: int, tenant_id: str):
+def _cascade_delete_children(session: Session, table_key: str, parent_id: int, tenant_id: str, force: bool = False):
     """Generic executor for _CASCADE_POLICY, rooted at table_key
     (e.g. "quote"). Recurses into each cascaded child's OWN dependents
     first and commits before deleting that child, generalizing the
@@ -5461,7 +5461,22 @@ def _cascade_delete_children(session: Session, table_key: str, parent_id: int, t
     (SQLite never catches this locally), so batching a parent delete
     into the same flush as its not-yet-committed child deletes fails —
     deepest rows must be committed-deleted before anything that points
-    at them is deleted."""
+    at them is deleted.
+
+    force (Force Delete override, confirmed Aug 2026 — real case: the
+    "John Cena" mockup had progressed all the way to a Completed Job
+    with a real install date, deposit, and final payment recorded,
+    which _quote_delete_dependencies correctly blocks a NORMAL delete
+    for) changes what "assert_empty" means: normally it's a defense-in-
+    depth assertion that _quote_delete_dependencies already guaranteed
+    zero matching rows before cascade code ever runs, so finding one
+    means the PRE-CHECK has a bug and this raises loudly. Under an
+    explicit Owner force-override, that pre-check is deliberately
+    bypassed, so real rows (logged hours, a linked builder estimate)
+    can legitimately be present — those are real historical/payroll
+    records that must survive even a forced delete, so force mode
+    treats "assert_empty" as "nullify" instead of raising: the record
+    is kept, only its link to the deleted quote is cleared."""
     for child_model, fk_col, policy, side_effect in _CASCADE_POLICY.get(table_key, []):
         rows = session.exec(
             select(child_model).where(getattr(child_model, fk_col) == parent_id, child_model.tenant_id == tenant_id)
@@ -5472,7 +5487,7 @@ def _cascade_delete_children(session: Session, table_key: str, parent_id: int, t
             child_key = child_model.__tablename__.lower()
             for row in rows:
                 if child_key in _CASCADE_POLICY:
-                    _cascade_delete_children(session, child_key, row.id, tenant_id)
+                    _cascade_delete_children(session, child_key, row.id, tenant_id, force=force)
                 if side_effect:
                     side_effect(row)  # best-effort storage/external cleanup — never blocks the DB delete
                 session.delete(row)
@@ -5483,12 +5498,18 @@ def _cascade_delete_children(session: Session, table_key: str, parent_id: int, t
                 session.add(row)
             session.commit()
         elif policy == "assert_empty":
-            raise RuntimeError(
-                f"Cascade-delete safety net triggered: {child_model.__tablename__}.{fk_col} has "
-                f"{len(rows)} row(s) pointing at {table_key}.id={parent_id}, but this dependency is "
-                f"supposed to be blocked upstream before delete is ever attempted. The upstream "
-                f"pre-check has a bug — fix that, don't loosen this policy."
-            )
+            if force:
+                for row in rows:
+                    setattr(row, fk_col, None)
+                    session.add(row)
+                session.commit()
+            else:
+                raise RuntimeError(
+                    f"Cascade-delete safety net triggered: {child_model.__tablename__}.{fk_col} has "
+                    f"{len(rows)} row(s) pointing at {table_key}.id={parent_id}, but this dependency is "
+                    f"supposed to be blocked upstream before delete is ever attempted. The upstream "
+                    f"pre-check has a bug — fix that, don't loosen this policy."
+                )
 
 
 def _verify_cascade_policy_complete():
@@ -5517,20 +5538,31 @@ def _verify_cascade_policy_complete():
                     )
 
 
-def _delete_quote_cascade(session: Session, quote: "Quote", tenant_id: str):
-    """Deletes a quote and everything hanging off it, per _CASCADE_POLICY
-    above. Shared by the single-quote and bulk-delete endpoints so this
+def _delete_quote_cascade(session: Session, quote: "Quote", tenant_id: str, force: bool = False):
+    """Deletes a quote — which IS the Job (job_number/workflow_status/
+    installation_date/completion_date all live directly on this same
+    row; there is no separate Job table) — and everything hanging off
+    it, per _CASCADE_POLICY above. This is also what makes any KPI it
+    contributed to self-correct on next load with zero extra work:
+    analytics_overview() (Business Overview Dashboard) queries `select
+    (Quote)` fresh on every call, same "derive, don't duplicate state
+    that could drift" principle as everywhere else in this codebase —
+    there is no separate cached/materialized KPI table that could go
+    stale, confirmed directly (Force Delete brief, Aug 2026) by reading
+    real Won Value/conversion figures before and after a real deletion.
+    Shared by the single-quote and bulk-delete endpoints so this
     cascade exists in exactly one place, not two that could quietly
     drift apart (same reasoning as _builder_commission_for_quote).
     Caller is responsible for the dependency check
-    (_quote_delete_dependencies), the AuditLog entry, and
-    session.commit() for the quote row itself."""
-    _cascade_delete_children(session, "quote", quote.id, tenant_id)
+    (_quote_delete_dependencies, unless force=True), the AuditLog
+    entry, and session.commit() for the quote row itself."""
+    _cascade_delete_children(session, "quote", quote.id, tenant_id, force=force)
     session.delete(quote)
 
 
 @app.delete("/quotes/{quote_id}")
-def delete_quote(quote_id: int, purge_dropbox_archive: bool = False, role: str = Depends(require_owner),
+def delete_quote(quote_id: int, purge_dropbox_archive: bool = False, force: bool = False,
+                  role: str = Depends(require_owner),
                   tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     """Owner-only (confirmed Aug 2026, Order Index Bulk Delete brief) —
     the brief's own hard requirement applies here too, not just the new
@@ -5553,17 +5585,41 @@ def delete_quote(quote_id: int, purge_dropbox_archive: bool = False, role: str =
     hidden. DocumentArchive.entity_id is a plain indexed int, not a real
     foreign key (confirmed during the "Delete Not Working on Quote #62"
     incident), so these rows are gathered explicitly here rather than
-    through _CASCADE_POLICY, which only governs real FK-backed tables."""
+    through _CASCADE_POLICY, which only governs real FK-backed tables.
+
+    force (Force Delete override, confirmed Aug 2026 — real case: the
+    "John Cena" mockup quote had progressed all the way to a Completed
+    Job with a real installation date, deposit, and final payment
+    recorded, which _quote_delete_dependencies correctly blocks a
+    NORMAL delete for). OFF by default — this bypasses the exact
+    safety check that protects real business quotes with real payment
+    history from accidental deletion, so it must stay a deliberate,
+    separate choice, never the default. When on, the reasons that would
+    normally have blocked this delete are recorded to AuditLog verbatim
+    (what was overridden, not just that something was), and the
+    dynamic cascade (_delete_quote_cascade/_cascade_delete_children,
+    same mechanism as every other delete — no separate, narrower path)
+    still runs in full: every Order Sheet/line, colour log, follow-up,
+    and photo hanging off this quote is genuinely removed, and real
+    historical records that must never be destroyed even by a forced
+    delete (logged hours, a linked builder estimate) are preserved and
+    only unlinked, never deleted outright."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         reasons = _quote_delete_dependencies(session, quote, tenant_id)
-        if reasons:
-            raise HTTPException(400, f"Can't delete Quote #{quote.id} ({quote.client_name}) — it {' and '.join(reasons)}. Resolve this first if you really need to delete it.")
+        if reasons and not force:
+            raise HTTPException(400, f"Can't delete Quote #{quote.id} ({quote.client_name}) — it {' and '.join(reasons)}. Resolve this first if you really need to delete it, or use Force Delete if this is deliberate mockup/test cleanup.")
         label = f"Quote #{quote.id} — {quote.client_name}" + (f" ({quote.description})" if quote.description else "")
         session.add(AuditLog(
             tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
             field="__deleted__", old_value=label, new_value="(deleted)",
         ))
+        if force and reasons:
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+                field="force_delete_override", old_value=' and '.join(reasons),
+                new_value="deleted anyway (Owner Force Delete)",
+            ))
 
         archive_note = "archive preserved (default)"
         if purge_dropbox_archive:
@@ -5601,7 +5657,7 @@ def delete_quote(quote_id: int, purge_dropbox_archive: bool = False, role: str =
             field="dropbox_archive", old_value="n/a", new_value=archive_note,
         ))
 
-        _delete_quote_cascade(session, quote, tenant_id)
+        _delete_quote_cascade(session, quote, tenant_id, force=force)
         session.commit()
         return {"deleted": quote_id}
 
