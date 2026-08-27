@@ -679,7 +679,16 @@ async function sendDocumentEmail(quoteId, docType) {
 // placements only ever render a handful of tiles at once (one client's
 // own job history, or a single quote's own preview), so eagerly
 // fetching all of them is cheap in practice.
-function documentPreviewTileHtml(previewId, quoteId) {
+// docType (confirmed Aug 2026, Document Action Bar brief) — optional,
+// defaults to 'quote' so all three pre-existing call sites (client
+// Order History, Job Detail, Order Index Quick View) keep working
+// completely unchanged. The single old bespoke "Edit" button inside
+// this tile is gone — superseded by the standardized 5-button bar
+// (documentActionBarHtml() below), rendered right under the tile now,
+// same "one consistent, predictable place" the brief asks for instead
+// of Edit living in a different spot per document type.
+function documentPreviewTileHtml(previewId, id, docType, opts) {
+  docType = docType || 'quote';
   return `
     <div class="doc-preview-tile" id="${previewId}">
       <div class="doc-preview-frame" onclick="toggleDocumentPreview('${previewId}')">
@@ -687,9 +696,9 @@ function documentPreviewTileHtml(previewId, quoteId) {
       </div>
       <div class="doc-preview-actions">
         <span class="doc-preview-hint" onclick="toggleDocumentPreview('${previewId}')">Expand / collapse</span>
-        <button onclick="event.stopPropagation(); editDocumentPreview(${quoteId})">Edit</button>
       </div>
-    </div>`;
+    </div>
+    ${documentActionBarHtml(docType, id, previewId, opts)}`;
 }
 
 function toggleDocumentPreview(previewId) {
@@ -697,11 +706,12 @@ function toggleDocumentPreview(previewId) {
   if (el) el.classList.toggle('expanded');
 }
 
-async function loadDocumentPreview(previewId, quoteId) {
+async function loadDocumentPreview(previewId, id, docType) {
+  docType = docType || 'quote';
   const el = document.getElementById(previewId);
   if (!el) return;
   try {
-    const { html } = await buildPrintDocHtml(quoteId, 'quote');
+    const { html } = docType === 'ordersheet' ? await buildOrderSheetPrintHtml(id) : await buildPrintDocHtml(id, docType);
     const wrap = el.querySelector('.doc-preview-scale-wrap');
     if (wrap) wrap.innerHTML = html;
   } catch (e) {
@@ -710,14 +720,103 @@ async function loadDocumentPreview(previewId, quoteId) {
   }
 }
 
-// Edit button (confirmed Aug 2026, brief §2) — opens the real Quote
-// Builder for this record via Sprint B's existing line-editing
-// capability. Deliberately the SAME function every other "edit this
-// quote's lines" entry point already calls — on the Quote Detail page
-// this is the identical action as that screen's own "Open in Quote
-// Builder (line items)" button, never a second/duplicate entry point.
-function editDocumentPreview(quoteId) {
-  openQuoteFromIndex(quoteId);   // switches to the Quote Builder tab itself, no separate goToTab needed here
+// Standard Document Action Bar (confirmed Aug 2026) — same five
+// actions, same order, same visual style across every Quote/Invoice/
+// Order Sheet preview placement, per the brief's own words: "Right now
+// these actions exist in different places with different names
+// depending on which screen you're on." Print and Mail are never
+// reimplemented here — this just calls the exact same functions
+// already shipped (renderPrintDoc/printInvoiceForQuote/printOrderSheet,
+// sendDocumentEmail/sendOrderSheetEmail), so what those two actions DO
+// is completely unchanged, only WHERE they're offered is standardized.
+//
+// Edit, resolved per document type (confirmed with Burgert):
+// - Quote: always enabled — opens Quote Builder, freely editable at
+//   any stage, no restriction, matching existing behaviour exactly.
+// - Invoice: disabled once this quote has ever had a real Invoice
+//   archived (checked by the caller, passed in as opts.editDisabled —
+//   see applyInvoiceEditLock(), order-index.js) — "no editing after
+//   an invoice has been sent, full stop... the correct process is a
+//   supplementary invoice" via the existing Duplicate action. This is
+//   a UI-level steer at the Invoice entry point only — it does NOT add
+//   any new restriction to the underlying Quote/Quote Builder itself,
+//   which stays exactly as freely editable as the Quote rule above
+//   requires; the same record just can't be edited FROM the Invoice
+//   context anymore once sent.
+// - Order Sheet: disabled once "placed" — enforced server-side too
+//   (update_order_sheet_line()/add_order_sheet_line()/
+//   delete_order_sheet_line(), main.py), not just hidden here.
+//
+// Save, resolved per document type (the brief's own explicit "these
+// are different actions, don't assume" — genuinely different per
+// type, not one shared meaning):
+// - Quote: saveDocumentArchive() below detects whether this id is the
+//   quote currently open in Quote Builder and, if so, defers to the
+//   EXISTING saveQuote() (header fields — client/branch/description —
+//   the one thing not already saved immediately by each line's own
+//   add/edit/delete). Not currently open in the builder (i.e.
+//   triggered from a read-only preview card)? Same meaning as Invoice/
+//   Order Sheet below — there's no in-progress form to save from a
+//   read-only context either.
+// - Invoice / Order Sheet: neither has a separate in-progress edit
+//   STATE to persist (every field already saves immediately on its
+//   own) — Save here means "capture a fresh archive snapshot to
+//   Dropbox right now," on demand, decoupled from Print/Mark-as-Placed
+//   auto-archiving it.
+function documentActionBarHtml(docType, id, previewId, opts) {
+  opts = opts || {};
+  const editDisabled = !!opts.editDisabled;
+  const editReason = (opts.editDisabledReason || '').replace(/"/g, '&quot;');
+  const editFn = docType === 'ordersheet' ? `openOrderSheetDetail(${id})` : `openQuoteFromIndex(${id})`;
+  const printFn = docType === 'quote' ? `renderPrintDoc(${id}, 'quote')`
+    : docType === 'invoice' ? `printInvoiceForQuote(${id})`
+    : `printOrderSheet(${id})`;
+  const mailFn = docType === 'ordersheet' ? `sendOrderSheetEmail(${id})` : `sendDocumentEmail(${id}, '${docType}')`;
+  const style = (disabled) => `font-size:12px; padding:4px 10px; background:none; border:1.5px solid ${disabled ? '#c7c7c7' : 'var(--navy)'}; color:${disabled ? '#c7c7c7' : 'var(--navy)'}; border-radius:5px; cursor:${disabled ? 'not-allowed' : 'pointer'};`;
+  return `
+    <div class="doc-action-bar" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+      <button onclick="event.stopPropagation(); toggleDocumentPreview('${previewId}')" style="${style(false)}">View</button>
+      <button id="docActionEditBtn_${docType}_${id}" ${editDisabled ? `disabled title="${editReason}"` : `onclick="event.stopPropagation(); ${editFn}"`} style="${style(editDisabled)}">Edit</button>
+      <button onclick="event.stopPropagation(); ${printFn}" style="${style(false)}">Print</button>
+      <button onclick="event.stopPropagation(); saveDocumentArchive('${docType}', ${id})" style="${style(false)}">Save</button>
+      <button onclick="event.stopPropagation(); ${mailFn}" style="${style(false)}">Mail</button>
+    </div>`;
+}
+
+// Save (confirmed Aug 2026) — see documentActionBarHtml()'s own
+// docstring above for the full reasoning on what Save means per type.
+async function saveDocumentArchive(docType, id) {
+  if (docType === 'quote' && typeof currentQuoteId !== 'undefined' && currentQuoteId === id) {
+    return saveQuote();
+  }
+  try {
+    let reference, html, entityType, branch;
+    if (docType === 'ordersheet') {
+      const sheet = await (await fetch(`${API}/order-sheets/${id}`)).json();
+      reference = sheet.order_number;
+      entityType = 'OrderSheet';
+      branch = sheet.branch;
+      ({ html } = await buildOrderSheetPrintHtml(id));
+    } else {
+      const qData = await (await fetch(`${API}/quotes/${id}?role=${currentRole()}`)).json();
+      entityType = docType === 'invoice' ? 'Invoice' : 'Quote';
+      reference = docType === 'invoice' ? ('INV-' + (qData.quote.job_number || id)) : (qData.quote.job_number || ('Q-' + id));
+      branch = qData.quote.branch;
+      ({ html } = await buildPrintDocHtml(id, docType));
+    }
+    const cssRes = await fetch('styles.css');
+    const css = cssRes.ok ? await cssRes.text() : '';
+    const res = await fetch(`${API}/documents/archive`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ entity_type: entityType, entity_id: id, reference, html, css, branch }),
+    });
+    const result = await res.json();
+    if (result.status === 'uploaded') alert('Saved — a new version has been uploaded to Dropbox.');
+    else if (result.status === 'pending') alert('Saved — will upload to Dropbox automatically once connected (currently pending).');
+    else alert(`Saved locally, but the Dropbox upload failed: ${result.failure_reason || 'unknown error'}`);
+  } catch (e) {
+    alert('Could not save this document right now — check your connection and try again.');
+  }
 }
 
 // Moved here at v56 (not in the shared.js pass at v53) — genuinely used

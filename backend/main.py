@@ -2306,6 +2306,21 @@ def update_order_sheet_line(order_sheet_id: int, line_id: int, body: OrderSheetL
             raise HTTPException(404, "Order sheet line not found")
         if sheet.sheet_type != "floor_prep":
             raise HTTPException(400, "Only floor-prep order sheets can have their quantities amended.")
+        # Document Action Bar brief (confirmed Aug 2026, resolved with
+        # Burgert) — once "placed," an order sheet is locked, same rule
+        # as an Invoice after it's been sent: the materials were
+        # genuinely already ordered from the supplier, so changing
+        # quantities after the fact could silently disagree with what
+        # was actually placed. A genuine correction/re-order still goes
+        # through generate_order_sheets() as its own fresh sheet
+        # (unaffected by this — that path was never blocked by "placed"
+        # anyway, confirmed directly with Burgert). Previously only
+        # hidden client-side (the UI didn't offer the input once
+        # placed) — never actually enforced here, the exact "hidden in
+        # the UI, not enforced server-side" gap the standing rule warns
+        # against.
+        if sheet.status == "placed":
+            raise HTTPException(400, "This order sheet is already placed — quantities can no longer be changed. Generate a new order sheet for this job if more materials are needed.")
         line.quantity = body.quantity
         session.add(line)
         session.commit()
@@ -2330,6 +2345,8 @@ def add_order_sheet_line(order_sheet_id: int, body: OrderSheetLineCreate, tenant
         sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
         if sheet.sheet_type != "floor_prep":
             raise HTTPException(400, "Extra line items can only be added to floor-prep order sheets.")
+        if sheet.status == "placed":
+            raise HTTPException(400, "This order sheet is already placed — no more items can be added. Generate a new order sheet for this job if more materials are needed.")
         if not body.product_name.strip():
             raise HTTPException(400, "Enter a product/item description first.")
         line = OrderSheetLine(tenant_id=tenant_id, order_sheet_id=order_sheet_id, product_name=body.product_name.strip(),
@@ -2344,8 +2361,11 @@ def add_order_sheet_line(order_sheet_id: int, body: OrderSheetLineCreate, tenant
 def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         line = get_or_404(session, OrderSheetLine, line_id, tenant_id, "Order sheet line")
+        sheet = get_or_404(session, OrderSheet, order_sheet_id, tenant_id, "Order sheet")
         if line.order_sheet_id != order_sheet_id:
             raise HTTPException(404, "Order sheet line not found")
+        if sheet.status == "placed":
+            raise HTTPException(400, "This order sheet is already placed — items can no longer be removed. Generate a new order sheet for this job if needed.")
         session.delete(line)
         session.commit()
         return {"deleted": line_id}

@@ -643,10 +643,10 @@ async function renderOrderDetail(el) {
   // panel alongside Workflow + Job Details, roughly spanning their
   // combined height. Same documentPreviewTileHtml() component as
   // placement 1a (client Order History) — one template, two placements,
-  // per the brief's own explicit instruction. Edit button inside it
-  // calls editDocumentPreview(), which is the exact same
-  // openQuoteFromIndex() the "Open in Quote Builder (line items)"
-  // button below already uses — not a duplicate entry point.
+  // per the brief's own explicit instruction. Edit lives in the
+  // standard action bar now (Document Action Bar brief, confirmed Aug
+  // 2026), same openQuoteFromIndex() the "Open in Quote Builder (line
+  // items)" button below already uses — not a duplicate entry point.
   el.innerHTML = `
     <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
     <div class="landing-welcome">
@@ -790,6 +790,22 @@ async function renderOrderDetail(el) {
           ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
         </div>
 
+        <!-- Invoice Preview (confirmed Aug 2026, Document Action Bar
+        brief) — same shared documentPreviewTileHtml() component,
+        docType='invoice' this time; "Invoice" isn't a separate entity
+        (buildPrintDocHtml() just relabels the same quote document), so
+        this is the SAME underlying data as the card above, only the
+        on-page labels/subject-line differ. Edit button here starts
+        enabled and gets disabled by applyInvoiceEditLock() below, once
+        it's confirmed (async, after this initial render) whether this
+        quote has ever had a real Invoice archived — "no editing after
+        an invoice has been sent," resolved with Burgert; use Duplicate
+        for a supplementary invoice instead once that happens. -->
+        <div class="card">
+          <h2>Invoice Preview</h2>
+          ${documentPreviewTileHtml('dp_invoice_jobdetail_' + q.id, q.id, 'invoice')}
+        </div>
+
         <!-- Dropbox Document Archive brief (confirmed Aug 2026) — this
         card is the Quote's own archive history. Manual trigger only,
         same "explicit action, not silent autosave" philosophy already
@@ -843,6 +859,16 @@ async function renderOrderDetail(el) {
                 ${s.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${s.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:11px; align-self:center;">Placed by ${s.placed_by || ''}${s.placed_at ? ' on ' + new Date(s.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
                 ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${s.id})">Delete</button>` : ''}
               </div>
+              <!-- Standard Document Action Bar (confirmed Aug 2026) —
+              same shared documentPreviewTileHtml() component as the
+              Quote/Invoice cards above, docType='ordersheet'. "View"
+              here is the TRUE static document (buildOrderSheetPrintHtml()
+              — what actually gets archived/printed/mailed), genuinely
+              distinct from the interactive editable table already shown
+              above it. Edit is disabled once "placed" — enforced
+              server-side too (update_order_sheet_line() etc., main.py),
+              not just hidden here. -->
+              ${documentPreviewTileHtml('dp_ordersheet_' + s.id, s.id, 'ordersheet', s.status === 'placed' ? {editDisabled: true, editDisabledReason: 'This order sheet is already placed — generate a new one for this job if more materials are needed.'} : null)}
             </div>`).join('')}
         </div>` : ''}
       </div>
@@ -850,6 +876,9 @@ async function renderOrderDetail(el) {
   `;
   loadFollowUps();
   loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
+  loadDocumentPreview('dp_invoice_jobdetail_' + q.id, q.id, 'invoice');
+  applyInvoiceEditLock(q.id);
+  orderSheets.forEach(s => loadDocumentPreview('dp_ordersheet_' + s.id, s.id, 'ordersheet'));
   loadDocumentArchiveStatus('Quote', q.id, q.job_number || ('Q-' + q.id), q.id, 'quote');
   // Immediate, visible confirmation after Generate (confirmed Aug
   // 2026, brief §1+§4 -- "immediate, visible confirmation/preview...
@@ -861,6 +890,31 @@ async function renderOrderDetail(el) {
     window._orderSheetsResultMessage = null;
   }
   });
+}
+
+// Invoice Edit-lock (confirmed Aug 2026, Document Action Bar brief,
+// resolved with Burgert: "NO editing after an invoice has been sent,
+// full stop"). "Sent" = this quote has ever had a real Invoice
+// successfully archived — a real, already-existing signal (no new
+// field needed), checked async here (after the initial render, same
+// pattern as loadDocumentPreview/loadDocumentArchiveStatus above)
+// since it needs its own request. Disables the SAME Edit button
+// documentActionBarHtml() already rendered (enabled by default) rather
+// than re-rendering the whole card — cheap, and avoids a flash of
+// "disabled" on every load for the common case (never sent yet).
+async function applyInvoiceEditLock(quoteId) {
+  try {
+    const hist = await (await fetch(`${API}/documents/archive?entity_type=Invoice&entity_id=${quoteId}`)).json();
+    if (!Array.isArray(hist) || hist.length === 0) return;   // never sent — stays enabled
+    const btn = document.getElementById(`docActionEditBtn_invoice_${quoteId}`);
+    if (!btn) return;
+    btn.disabled = true;
+    btn.style.borderColor = '#c7c7c7';
+    btn.style.color = '#c7c7c7';
+    btn.style.cursor = 'not-allowed';
+    btn.removeAttribute('onclick');
+    btn.title = 'This invoice has already been sent — use Duplicate on the original quote to create a supplementary invoice instead.';
+  } catch (e) { /* best-effort — Edit just stays enabled if this check fails, never a hard error on the page */ }
 }
 
 let orderSheetsResultBannerTimeout = null;
