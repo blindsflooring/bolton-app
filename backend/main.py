@@ -1242,6 +1242,32 @@ def on_startup():
     except Exception as e:
         print(f"Audit (Add-Line Data-Loss brief): scan failed ({e})")
 
+    # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
+    # confirmed Aug 2026) — in-process APScheduler, not a separate Render
+    # Cron Job service: confirmed bolton-backend is on an always-on
+    # (paid) Render plan, so this process is genuinely running at 23:00
+    # UTC / 01:00 SAST every night, not asleep waiting for a request the
+    # way a free-tier service would be — the one condition that makes an
+    # in-process scheduler reliable instead of a gamble. hour=23 UTC is
+    # deliberately 01:00 SAST (UTC+2, no DST) — a real low-activity
+    # window, not an arbitrary number. BackgroundScheduler runs on its
+    # own thread inside this same process; runs the job function
+    # directly (run_order_index_snapshot_job(), defined further down this
+    # file — already available by the time this actually fires, since
+    # on_startup() itself only runs once the whole module has finished
+    # importing). misfire_grace_time covers a redeploy that happens to
+    # land exactly on the scheduled minute — the job still runs shortly
+    # after instead of being silently skipped for that day.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        scheduler = BackgroundScheduler(timezone="UTC")
+        scheduler.add_job(run_order_index_snapshot_job, CronTrigger(hour=23, minute=0), id="order_index_snapshot", misfire_grace_time=3600, replace_existing=True)
+        scheduler.start()
+        print("Order Index Snapshot: scheduler started, next run at 23:00 UTC (01:00 SAST)")
+    except Exception as e:
+        print(f"Order Index Snapshot: scheduler FAILED to start ({e}) — nightly snapshots will not run until this is fixed")
+
 
 def _get_bearer_token(request: Request) -> Optional[str]:
     """Session token transport, changed Aug 2026 (see auth.py's docstring
@@ -2286,17 +2312,82 @@ def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = 
 
 
 # ---------- Dropbox Document Archive & Backup Layer (confirmed Aug
-# 2026) ----------
-# Scope for this pass, confirmed with Burgert: no Dropbox access token
-# exists yet, so real uploads stay in "pending" until one is set — but
-# everything else (PDF rendering, archive-version tracking, the
-# never-overwrite-history guarantee, retry) is real and working today.
-# Wired up for Quotes/Invoices/Order Sheets (all reuse the identical
-# render_pdf_and_archive() below); a nightly Order Index CSV snapshot
-# is a separate mechanism (no scheduled-job infrastructure exists in
-# this app yet) and is intentionally NOT built in this pass — flagged
-# as a follow-up, not silently skipped.
-ARCHIVE_CATEGORY_FOLDER = {"Quote": "Quotes", "Invoice": "Invoices", "OrderSheet": "Orders"}
+# 2026, extended to full scope v2 pass — confirmed Aug 2026) ----------
+# Scope: no Dropbox access token exists yet, so real uploads stay in
+# "pending" until one is set — but everything else (PDF/CSV rendering,
+# archive-version tracking, the never-overwrite-history guarantee,
+# retry) is real and working today. Wired up for Quotes, Invoices,
+# Order Sheets (finalize), and the nightly Order Index CSV snapshot
+# (APScheduler — confirmed always-on Render plan, so an in-process
+# scheduler is reliable; no separate Render Cron Job service needed).
+ARCHIVE_CATEGORY_FOLDER = {
+    "Quote": "Quotes", "Invoice": "Invoices", "OrderSheet": "Orders",
+    "OrderIndexSnapshot": "Order Index Snapshots",
+}
+ARCHIVE_FILE_EXTENSION = {"OrderIndexSnapshot": "csv"}   # everything else defaults to "pdf" — see .get() calls below
+ARCHIVE_MEDIA_TYPE = {"pdf": "application/pdf", "csv": "text/csv"}
+
+
+def _create_and_upload_archive(session: Session, tenant_id: str, username: str, entity_type: str, entity_id: int,
+                                reference: str, file_bytes: bytes, mark_as_accepted: bool = False) -> DocumentArchive:
+    """The actual reusable "pipeline" the brief's §2/§11 asks for (§2:
+    "reuse the existing... generation... rather than building new
+    rendering logic" — this is the shared HALF that follows rendering:
+    version tracking, the Dropbox path/filename, the never-overwrite
+    guarantee, the accepted-version flag, and the pending/uploaded/
+    failed status mapping). Callers are responsible for producing
+    file_bytes however is appropriate for their entity_type (PDF via
+    render_html_to_pdf() for Quote/Invoice/OrderSheet, plain CSV bytes
+    for OrderIndexSnapshot) — this function itself never renders
+    anything, only archives and uploads whatever it's given. Extracted
+    Aug 2026 (v2 pass) from what used to be archive_document()'s own
+    body, once a second real caller (the snapshot job) needed the exact
+    same version/upload/status logic — refactor confirmed safe:
+    archive_document()'s own behaviour is unchanged, same commit, same
+    return shape, same everything, just callable from more than one
+    place now instead of copy-pasted a second time."""
+    version = _next_archive_version(session, tenant_id, entity_type, entity_id)
+    now = datetime.utcnow()
+    folder = ARCHIVE_CATEGORY_FOLDER[entity_type]
+    ext = ARCHIVE_FILE_EXTENSION.get(entity_type, "pdf")
+    safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", reference)
+    # Brief §3 own example: B-1042_Smith_ACCEPTED.pdf — a distinct,
+    # findable-by-name filename for the accepted version, not just
+    # another _v{N} in the ordinary sequence.
+    filename = f"{safe_reference}_ACCEPTED.{ext}" if mark_as_accepted else f"{safe_reference}_v{version}.{ext}"
+    dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{filename}"
+    if mark_as_accepted:
+        # At most one row per document ever carries this flag — unset
+        # it on any earlier version before this new one claims it, so
+        # "the accepted version" always means exactly one, findable row.
+        prior_accepted = session.exec(select(DocumentArchive).where(
+            DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type,
+            DocumentArchive.entity_id == entity_id, DocumentArchive.is_accepted_version == True,  # noqa: E712
+        )).all()
+        for row in prior_accepted:
+            row.is_accepted_version = False
+            session.add(row)
+    archive = DocumentArchive(
+        tenant_id=tenant_id, entity_type=entity_type, entity_id=entity_id, version=version,
+        reference=reference, pdf_bytes=file_bytes, created_by=username, is_accepted_version=mark_as_accepted,
+    )
+    upload_result = dropbox_archive.upload_document(file_bytes, dropbox_path)
+    if upload_result["ok"]:
+        archive.status = "uploaded"
+        archive.dropbox_path = upload_result["path"]
+        archive.dropbox_file_id = upload_result["file_id"]
+        archive.uploaded_at = now
+    else:
+        # "not configured yet" reads as an expected, known, temporary
+        # state (Pending) — a genuine upload error (bad token, network
+        # issue, Dropbox itself down) reads as an actual Failed worth
+        # Burgert's attention.
+        archive.status = "pending" if upload_result.get("not_configured") else "failed"
+        archive.failure_reason = upload_result["reason"]
+    session.add(archive)
+    session.commit()
+    session.refresh(archive)
+    return archive
 
 
 def _next_archive_version(session: Session, tenant_id: str, entity_type: str, entity_id: int) -> int:
@@ -2338,47 +2429,10 @@ def archive_document(body: ArchiveDocumentRequest, tenant_id: str = Depends(get_
     except ValueError as e:
         raise HTTPException(500, f"Could not render this document to PDF: {e}")
     with Session(engine) as session:
-        version = _next_archive_version(session, tenant_id, body.entity_type, body.entity_id)
-        now = datetime.utcnow()
-        folder = ARCHIVE_CATEGORY_FOLDER[body.entity_type]
-        safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", body.reference)
-        # Brief §3 own example: B-1042_Smith_ACCEPTED.pdf — a distinct,
-        # findable-by-name filename for the accepted version, not just
-        # another _v{N} in the ordinary sequence.
-        filename = f"{safe_reference}_ACCEPTED.pdf" if body.mark_as_accepted else f"{safe_reference}_v{version}.pdf"
-        dropbox_path = f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{filename}"
-        if body.mark_as_accepted:
-            # At most one row per document ever carries this flag —
-            # unset it on any earlier version before this new one
-            # claims it, so "the accepted version" always means
-            # exactly one, findable row.
-            prior_accepted = session.exec(select(DocumentArchive).where(
-                DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == body.entity_type,
-                DocumentArchive.entity_id == body.entity_id, DocumentArchive.is_accepted_version == True,  # noqa: E712
-            )).all()
-            for row in prior_accepted:
-                row.is_accepted_version = False
-                session.add(row)
-        archive = DocumentArchive(
-            tenant_id=tenant_id, entity_type=body.entity_type, entity_id=body.entity_id, version=version,
-            reference=body.reference, pdf_bytes=pdf_bytes, created_by=username, is_accepted_version=body.mark_as_accepted,
+        archive = _create_and_upload_archive(
+            session, tenant_id, username, body.entity_type, body.entity_id,
+            body.reference, pdf_bytes, mark_as_accepted=body.mark_as_accepted,
         )
-        upload_result = dropbox_archive.upload_document(pdf_bytes, dropbox_path)
-        if upload_result["ok"]:
-            archive.status = "uploaded"
-            archive.dropbox_path = upload_result["path"]
-            archive.dropbox_file_id = upload_result["file_id"]
-            archive.uploaded_at = now
-        else:
-            # "not configured yet" reads as an expected, known,
-            # temporary state (Pending) — a genuine upload error (bad
-            # token, network issue, Dropbox itself down) reads as an
-            # actual Failed worth Burgert's attention.
-            archive.status = "pending" if upload_result.get("not_configured") else "failed"
-            archive.failure_reason = upload_result["reason"]
-        session.add(archive)
-        session.commit()
-        session.refresh(archive)
         return {
             "id": archive.id, "version": archive.version, "status": archive.status,
             "dropbox_path": archive.dropbox_path, "failure_reason": archive.failure_reason,
@@ -2411,8 +2465,9 @@ def download_archived_document(archive_id: int, tenant_id: str = Depends(get_cur
     ever unreachable, not just a convenience."""
     with Session(engine) as session:
         archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
-        return Response(content=archive.pdf_bytes, media_type="application/pdf",
-                         headers={"Content-Disposition": f'inline; filename="{archive.reference}_v{archive.version}.pdf"'})
+        ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
+        return Response(content=archive.pdf_bytes, media_type=ARCHIVE_MEDIA_TYPE[ext],
+                         headers={"Content-Disposition": f'inline; filename="{archive.reference}_v{archive.version}.{ext}"'})
 
 
 @app.post("/documents/archive/{archive_id}/retry")
@@ -2428,9 +2483,10 @@ def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current
         if archive.status == "uploaded":
             raise HTTPException(400, "This version is already uploaded — nothing to retry.")
         folder = ARCHIVE_CATEGORY_FOLDER.get(archive.entity_type, archive.entity_type)
+        ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
         safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", archive.reference)
         now = datetime.utcnow()
-        dropbox_path = archive.dropbox_path or f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{archive.version}.pdf"
+        dropbox_path = archive.dropbox_path or f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{archive.version}.{ext}"
         upload_result = dropbox_archive.upload_document(archive.pdf_bytes, dropbox_path)
         if upload_result["ok"]:
             archive.status = "uploaded"
@@ -2444,6 +2500,67 @@ def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current
         session.add(archive)
         session.commit()
         return {"id": archive.id, "status": archive.status, "failure_reason": archive.failure_reason}
+
+
+def _order_index_snapshot_csv(session: Session, tenant_id: str) -> bytes:
+    """Order Index Snapshot (Dropbox Document Archive brief v2, §2 —
+    "Archive it as a dated snapshot export... on a nightly schedule,
+    rather than trying to trigger it on every row change"). Deliberately
+    a SEPARATE, simpler query from list_quotes() (main.py's own Order
+    Index endpoint) — that endpoint's role-stripping/search/filter
+    params make no sense for an unconditional full-tenant export, and a
+    snapshot job has no role context to strip for anyway (it's an
+    internal record, not served to any particular logged-in user). Still
+    shares the ONE real source of totals math (_quote_totals()) rather
+    than a third parallel copy of that calculation — same discipline
+    list_quotes()/get_quote() already follow."""
+    import csv, io
+    VAT_PCT = get_settings(session, tenant_id).vat_pct
+    quotes = session.exec(select(Quote).where(Quote.tenant_id == tenant_id, Quote.is_price_check == False)).all()  # noqa: E712
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["job_number", "client_name", "workflow_status", "sales_owner", "branch",
+                      "site_address", "total_incl_vat", "deposit_amount", "balance_amount", "created_at"])
+    for q in quotes:
+        lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
+        subtotal_ex_vat = sum(l.line_total for l in lines) + q.transport_levy
+        totals = _quote_totals(subtotal_ex_vat, q, VAT_PCT)
+        writer.writerow([
+            q.job_number or f"Q-{q.id}", q.client_name, q.workflow_status, q.sales_owner, q.branch,
+            q.site_address or "", f"{totals['total_incl_vat']:.2f}", f"{totals['deposit_amount']:.2f}",
+            f"{totals['balance_amount']:.2f}", q.created_at.isoformat(),
+        ])
+    return buf.getvalue().encode("utf-8")
+
+
+def run_order_index_snapshot_job():
+    """The scheduled job itself (APScheduler, see on_startup() below for
+    the trigger setup). One snapshot per tenant per run — today that's
+    just tenant '1', but scoped correctly for when a second tenant is
+    real (multi-tenant groundwork). entity_id=0 (a synthetic, non-FK
+    value — there's no real "Order Index" row to point at) with the
+    date-stamped reference as the real distinguishing label; a genuine
+    second run on the same calendar day (e.g. a manual re-trigger)
+    correctly becomes _v2 rather than silently overwriting _v1, same
+    never-overwrite guarantee (brief §4) as every other archived
+    document, not a special case."""
+    today_str = date.today().isoformat()
+    with Session(engine) as session:
+        tenant_ids = session.exec(select(Quote.tenant_id).distinct()).all() or [DEFAULT_TENANT_ID]
+        for tenant_id in tenant_ids:
+            try:
+                csv_bytes = _order_index_snapshot_csv(session, tenant_id)
+                archive = _create_and_upload_archive(
+                    session, tenant_id, "scheduled_job", "OrderIndexSnapshot", 0,
+                    f"OrderIndex_{today_str}", csv_bytes,
+                )
+                print(f"Order Index snapshot ({tenant_id}, {today_str}): {archive.status}")
+            except Exception as e:
+                # A snapshot job failing must never crash the scheduler
+                # thread or take the web service down with it — same
+                # "background operation, never blocks the real app"
+                # principle as every other Dropbox failure path (brief §7).
+                print(f"Order Index snapshot ({tenant_id}, {today_str}): FAILED to build/archive ({e})")
 
 
 @app.get("/clients/{client_id}/order-sheets")

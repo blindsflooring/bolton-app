@@ -1155,6 +1155,35 @@ async function renderPrintInvoicePicker(el, searchTerm) {
 
 async function printInvoiceForQuote(quoteId) {
   await renderPrintDoc(quoteId, 'invoice');
+  // Dropbox Document Archive brief v2 (confirmed Aug 2026, §2) — "invoice"
+  // has no standalone PDF of its own; confirmed by inspecting
+  // buildPrintDocHtml() (shared.js) before building anything here, per
+  // the brief's own "inspect before building" instruction: it's the SAME
+  // quote document, docType='invoice' just swaps the on-page label from
+  // "Quote" to "Invoice" (isInvoice, shared.js). So archiving it is the
+  // exact same call acceptQuoteAction() already makes for a Quote
+  // (order-index.js) — entity_type="Invoice" instead of "Quote", no
+  // mark_as_accepted (that concept is specific to a customer accepting a
+  // QUOTE; an invoice has no equivalent single "the one that counts"
+  // version — every Print Invoice is a real, separately versioned
+  // generation event, never silently overwriting an earlier one, same
+  // §4 no-overwrite rule). Best-effort, same reasoning as
+  // acceptQuoteAction()'s own try/catch: a Dropbox/archive hiccup must
+  // never block the print/download that already happened above.
+  try {
+    const qRes = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
+    if (qRes.ok) {
+      const qData = await qRes.json();
+      const reference = 'INV-' + (qData.quote.job_number || quoteId);
+      const { html } = await buildPrintDocHtml(quoteId, 'invoice');
+      const cssRes = await fetch('styles.css');
+      const css = cssRes.ok ? await cssRes.text() : '';
+      await fetch(`${API}/documents/archive`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ entity_type: 'Invoice', entity_id: quoteId, reference, html, css }),
+      });
+    }
+  } catch (e) { /* best-effort — the print above already succeeded regardless */ }
 }
 
 // Today/Monthly Sales & Profit + Weekly Graph (confirmed Aug 2026) --

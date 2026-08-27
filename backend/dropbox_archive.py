@@ -21,13 +21,19 @@ code change needed."""
 import os
 
 
-def upload_document(pdf_bytes: bytes, dropbox_path: str) -> dict:
+def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
     """Returns {"ok": True, "path": ..., "file_id": ...} on a genuine,
     confirmed upload, or {"ok": False, "reason": ...} on absolutely any
     failure — including no token configured — never raises. The
     caller (main.py) is responsible for turning this into the correct
     DocumentArchive status; this function's only job is "did a real
     file land in Dropbox, and if not, why not."
+
+    file_bytes (renamed from pdf_bytes, v2 pass, confirmed Aug 2026):
+    genuinely generic now — every archived PDF (Quote/Invoice/Order
+    Sheet) AND the nightly Order Index CSV snapshot both flow through
+    this exact same function; it has never actually cared about the
+    byte content's format, only that it's bytes headed to a path.
 
     mode=WriteMode("add") (not "overwrite") — brief §4's own hard
     requirement: a version already archived must never be silently
@@ -46,7 +52,7 @@ def upload_document(pdf_bytes: bytes, dropbox_path: str) -> dict:
     try:
         import dropbox
         dbx = dropbox.Dropbox(token)
-        result = dbx.files_upload(pdf_bytes, dropbox_path, mode=dropbox.files.WriteMode("add"))
+        result = dbx.files_upload(file_bytes, dropbox_path, mode=dropbox.files.WriteMode("add"))
         return {"ok": True, "path": result.path_display, "file_id": result.id}
     except Exception as e:
         return {"ok": False, "not_configured": False, "reason": str(e)}

@@ -790,19 +790,23 @@ async function renderOrderDetail(el) {
           ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
         </div>
 
-        <!-- Dropbox Document Archive brief (confirmed Aug 2026) —
-        scoped to Quotes for this pass (Order Sheets have no existing
-        print-style document template to archive yet — a real gap,
-        flagged as its own follow-up rather than rushed here). Manual
-        trigger only, same "explicit action, not silent autosave"
-        philosophy already established for Order Sheets generation —
-        archives whatever the Document Preview above is ACTUALLY
-        showing right now (buildPrintDocHtml(), shared.js — the exact
-        same function, unchanged), so there is exactly one source for
-        what this quote's document looks like. No Dropbox token is
-        configured yet (confirmed with Burgert) — every version still
-        renders and stores a real PDF and shows honestly as "Pending"
-        until one is set; nothing here is faked or skipped. -->
+        <!-- Dropbox Document Archive brief (confirmed Aug 2026) — this
+        card is the Quote's own archive history. Manual trigger only,
+        same "explicit action, not silent autosave" philosophy already
+        established for Order Sheets generation — archives whatever the
+        Document Preview above is ACTUALLY showing right now
+        (buildPrintDocHtml(), shared.js — the exact same function,
+        unchanged), so there is exactly one source for what this
+        quote's document looks like. Order Sheets get their OWN archive
+        history now too (v2 pass, confirmed Aug 2026) — triggered on
+        finalizeOrderSheet() via a separate buildOrderSheetPrintHtml()
+        (this same file), not shown in a second card here to avoid
+        clutter; inspect via GET /documents/archive?entity_type=
+        OrderSheet&entity_id={id} or the download endpoint directly.
+        No Dropbox token is configured yet (confirmed with Burgert) —
+        every version still renders and stores a real PDF and shows
+        honestly as "Pending" until one is set; nothing here is faked
+        or skipped. -->
         <div class="card" id="documentArchiveCard">
           <h2>Document Archive</h2>
           <p class="muted" style="margin-top:-8px;">Backup copy in Dropbox, separate from Bolton's own database — every archived version is kept, never overwritten.</p>
@@ -1195,6 +1199,66 @@ async function addOrderSheetExtraLine(orderSheetId) {
   refreshOrderSheetContext(orderSheetId);
 }
 
+// Dropbox Document Archive brief v2 (confirmed Aug 2026, §2) — the real
+// gap the original Dropbox brief pass flagged and deliberately left open
+// ("no print-style document template to archive yet" — see
+// documentArchiveCard's own comment above): Order Sheets had no clean,
+// static rendering of their own — orderSheetLinesEditorHtml() is the
+// EDITABLE in-app table (quantity inputs, delete buttons), wrong for an
+// archived document. This builds a genuinely separate, non-interactive
+// print-doc, then feeds it through the exact same shared pipeline every
+// other archived document already uses (render_html_to_pdf() via
+// /documents/archive) — per the brief's own "reuse the existing
+// Document Preview PDF generation... rather than building new rendering
+// logic" (§2): the RENDERING PIPELINE is reused unchanged; only this one
+// new HTML-string builder is new, same relationship buildPrintDocHtml()
+// (shared.js) already has to that same pipeline for quotes/invoices.
+// Real cost (unit_cost) IS shown here, deliberately — this is an
+// internal, supplier-facing procurement document, never sent to a
+// client, exactly what Order Sheets already are elsewhere in this app.
+async function buildOrderSheetPrintHtml(orderSheetId) {
+  const sheet = await (await fetch(`${API}/order-sheets/${orderSheetId}`)).json();
+  const logoSrc = document.querySelector('header .logo-row img').src;
+  const biz = await (await fetch(`${API}/business-settings`)).json();
+  const total = sheet.lines.reduce((sum, l) => sum + (l.unit_cost * l.quantity), 0);
+  const rows = sheet.lines.map(l => `
+    <tr>
+      <td>${l.product_name}${l.colour ? `<br><b style="color:var(--teal);">${l.colour}</b>` : ''}${l.is_extra ? '<br><span style="font-size:11px; color:#9aa0a6;">(added manually)</span>' : ''}</td>
+      <td class="num">${l.quantity} ${l.unit || ''}</td>
+      <td class="num">R${l.unit_cost.toFixed(2)}</td>
+      <td class="num">R${(l.unit_cost * l.quantity).toFixed(2)}</td>
+    </tr>`).join('');
+  const html = `
+    <div class="print-doc">
+      <div class="doc-header">
+        <div>
+          <img src="${logoSrc}" style="height:36px;">
+          <div style="margin-top:8px; font-size:11px; color:#6b7280; line-height:1.5;">
+            ${biz.business_name ? `<b style="color:var(--navy); font-size:12px;">${biz.business_name}</b><br>` : ''}
+            ${biz.address ? `${biz.address}<br>` : ''}
+            ${biz.phone ? `Tel: ${biz.phone}` : ''}${biz.phone && biz.email ? ' · ' : ''}${biz.email ? biz.email : ''}
+          </div>
+        </div>
+        <div>
+          <div class="doc-title">ORDER ${sheet.order_number}</div>
+          <div style="text-align:right; font-size:12px; color:#6b7280;">${new Date().toLocaleDateString('en-ZA')}</div>
+          <div style="text-align:right; font-size:11px; color:#6b7280;">Ref: ${sheet.job_number || ('Q-' + sheet.quote_id)}${sheet.client_name ? ' — ' + sheet.client_name : ''}</div>
+        </div>
+      </div>
+      <div style="margin-bottom:20px; font-size:13px;">
+        <div><b>Supplier:</b> ${sheet.supplier}</div>
+        <div><b>Type:</b> ${sheet.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</div>
+        <div><b>Status:</b> ${sheet.status === 'placed' ? `Placed${sheet.placed_by ? ' by ' + sheet.placed_by : ''}${sheet.placed_at ? ' on ' + new Date(sheet.placed_at).toLocaleDateString('en-ZA') : ''}` : 'Draft'}</div>
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead><tr><th style="text-align:left;">Product</th><th class="num">Qty</th><th class="num">Cost/unit</th><th class="num">Line total</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="3" style="text-align:right;"><b>Total (ex VAT)</b></td><td class="num"><b>R${total.toFixed(2)}</b></td></tr></tfoot>
+      </table>
+    </div>`;
+  return { html };
+}
+
 // Order Sheets UX brief §4 (confirmed Aug 2026) — "Executable... mark
 // the order as placed." Once placed, generate_order_sheets() no
 // longer treats this sheet as blocking a fresh one for the same
@@ -1203,6 +1267,22 @@ async function finalizeOrderSheet(orderSheetId) {
   if (!confirm('Mark this order sheet as placed? This means the order has genuinely been sent to the supplier — quantities can no longer be edited after this.')) return;
   const res = await fetch(`${API}/order-sheets/${orderSheetId}/finalize`, {method: 'POST'});
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not mark this order sheet as placed.'); return; }
+  // Archive the FINAL, placed state — same "meaningful event, not every
+  // edit" trigger philosophy as acceptQuoteAction() (Quote) — a draft
+  // being tweaked isn't worth a Dropbox version yet; "genuinely sent to
+  // the supplier" is. Best-effort: this finalize already succeeded above
+  // and must not be undone by an archive hiccup (brief §7).
+  try {
+    const sheetForRef = await (await fetch(`${API}/order-sheets/${orderSheetId}`)).json();
+    const reference = sheetForRef.order_number;
+    const { html } = await buildOrderSheetPrintHtml(orderSheetId);
+    const cssRes = await fetch('styles.css');
+    const css = cssRes.ok ? await cssRes.text() : '';
+    await fetch(`${API}/documents/archive`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ entity_type: 'OrderSheet', entity_id: orderSheetId, reference, html, css }),
+    });
+  } catch (e) { /* best-effort — the finalize above already succeeded regardless */ }
   refreshOrderSheetContext(orderSheetId);
 }
 
