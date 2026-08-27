@@ -5493,6 +5493,294 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
         return strip_sensitive_fields(line.dict(), role)
 
 
+# ---------- Edit Quote Line In Place (confirmed Aug 2026, Edit Quote Line
+# In Place brief) — the highest direct-value fix for the vinyl workflow per
+# the brief's own words. Before this, changing a line meant delete + re-add
+# (editQuoteLine()/deleteLineBeingEditedIfAny(), quote-builder.js) — the
+# endpoints below UPDATE the existing QuoteLineItem row instead, so the
+# line keeps its own id/identity throughout (display order was already
+# driven by category via _quote_line_sort_key(), not insertion order, but
+# an in-place update also means the row's own position in the table never
+# moves either). One PUT endpoint per category, deliberately mirroring its
+# POST add_*_line() sibling's exact params and calc call — the SAME trusted
+# formula, never a second shadow calc, per the standing rule that already
+# governed how quote-builder.js's pre-brief editQuoteLine() prefill worked.
+# Stairwell is excluded — same as the pre-existing edit UI (no Edit button
+# offered for it there either); Vaporite/Bondite/stairwell calculator are
+# explicit non-goals per the brief.
+def _reapply_line_calc_respecting_override(line: "QuoteLineItem", calc_line_total: float, product_changed: bool,
+                                            session: Session, tenant_id: str, username: str) -> dict:
+    """Manual Override survival rule (confirmed Aug 2026, Edit Quote Line In
+    Place brief §2) — applied identically by every edit-in-place endpoint
+    below and by change_line_colour():
+      - No override on this line: nothing to do, the caller's fresh calc
+        just applies normally.
+      - Override present AND the underlying product/colour changed: the
+        override no longer means anything against different pricing, so
+        it's CLEARED outright — line_total becomes the fresh calculated
+        value, override fields reset to None — and flagged back to the
+        caller (override_cleared=True) so the frontend can show a plain
+        heads-up that the Owner should reconfirm/re-apply if still wanted.
+        This is the brief's own proposed safest default, not a guess.
+      - Override present AND only quantity/dimensions changed (product/
+        colour unchanged): confirmed with Burgert (Aug 2026) — the override
+        amount STAYS FIXED, full stop. The caller is responsible for
+        re-asserting line.line_total = the pre-edit override amount AFTER
+        calling this (this function only updates pre_override_line_total,
+        the recorded "true calculated value" baseline, so a future "Revert
+        to calculated value" restores the CURRENT correct calculation
+        rather than a stale pre-edit one — everything else about the line,
+        e.g. margin/cost bookkeeping, is left to reflect the fresh calc).
+    Requires the caller to have already set line.line_total = calc_line_total
+    (or the equivalent) before calling this, when product_changed is True —
+    this function does not itself write calc_line_total anywhere except
+    into pre_override_line_total."""
+    if line.pre_override_line_total is None:
+        return {"override_cleared": False}
+
+    if product_changed:
+        old_total = line.line_total
+        line.line_total = calc_line_total
+        line.pre_override_line_total = None
+        line.override_reason = None
+        line.override_by = None
+        line.override_at = None
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="QuoteLineItem", entity_id=line.id,
+            field="manual_override_cleared_on_edit",
+            old_value=f"R{old_total:.2f} (manual override)",
+            new_value=f"R{calc_line_total:.2f} (recalculated — override cleared because the product/colour changed; reconfirm if an override is still needed)",
+        ))
+        return {"override_cleared": True}
+
+    line.pre_override_line_total = calc_line_total
+    return {"override_cleared": False}
+
+
+def _log_quote_line_edit_audit(session: Session, quote: "Quote", username: str, old_label: str, new_label: str):
+    """Same gating as _log_quote_line_audit() above (only logged once a
+    quote is past Draft — see that function's own docstring for why).
+    '__line_edited__' sits alongside the existing __line_added__/
+    __line_removed__ pair rather than being shoehorned into either — an
+    in-place edit is neither of those."""
+    if quote.workflow_status not in ("accepted", "scheduled", "completed"):
+        return
+    session.add(AuditLog(
+        tenant_id=quote.tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+        field="__line_edited__", old_value=old_label, new_value=new_label,
+    ))
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/flooring")
+def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2: float,
+                        job_type: JobType, discount_pct: float = 0.0,
+                        glue_cost_per_unit: float = 0.0, glue_coverage_m2: float = 0.0,
+                        labour_rate_per_m2: float = 45.0,
+                        bag_cost: float = 235.0, bag_coverage_m2: float = None,
+                        own_staff: bool = True, markup_override: float = None,
+                        include_tile_removal_fee: bool = False,
+                        apply_delivery_fee: bool = True,
+                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                        username: str = Depends(get_current_username)):
+    """Covers both vinyl and screed (job_type/pricing_type distinguishes
+    them, same as add_flooring_line() — see that endpoint's own docstring
+    for the param meanings, unchanged here)."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "flooring":
+            raise HTTPException(400, "This line is not a flooring/screed line.")
+        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        settings = get_settings(session, tenant_id)
+
+        product_changed = (line.product_id != product_id)
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = f"{line.product_name}{', ' + line.colour if line.colour else ''}, {line.quantity_m2}m²"
+
+        calc = calculate_flooring_line(
+            resolve_zone_price(session, tenant_id, product, settings), quantity_m2, job_type, discount_pct,
+            glue_cost_per_unit, glue_coverage_m2, labour_rate_per_m2,
+            bag_cost, bag_coverage_m2, own_staff, markup_override,
+            include_tile_removal_fee,
+            apply_delivery_fee=apply_delivery_fee,
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
+        )
+        line.product_id = product_id
+        line.product_name = product.product_name
+        line.colour = product.colour   # original_colour is set once at creation, permanently — never touched by an edit, same rule change_line_colour() already follows
+        line.job_type = job_type
+        line.flooring_pricing_type = product.pricing_type
+        line.quantity_m2 = quantity_m2
+        line.discount_pct = discount_pct
+        line.unit_cost = calc["unit_cost"]
+        line.unit_price = calc["unit_price"]
+        line.line_total = calc["line_total"]
+        line.margin_pct = calc["margin_pct"]
+        line.glue_cost_total = calc["glue_cost_total"]
+        line.glue_sell_total = calc["glue_sell_total"]
+        line.glue_units_needed = calc["glue_units_needed"]
+        line.labour_cost_total = calc["labour_cost_total"]
+        line.labour_charged_total = calc["labour_charged_total"]
+        line.own_staff = calc["own_staff"]
+        line.bags_allowed = calc["bags_allowed"]
+        line.boxes_needed = calc.get("packs_needed")
+        line.compound_cost_total = calc["compound_cost_total"]
+        line.tile_removal_fee_total = calc["tile_removal_fee_total"]
+        line.delivery_fee_total = calc["delivery_fee_total"]
+        line.total_job_cost = calc["total_job_cost"]
+
+        override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total   # stays fixed, confirmed Aug 2026
+
+        new_desc = f"{line.product_name}{', ' + line.colour if line.colour else ''}, {line.quantity_m2}m²"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role)
+        if calc["warning"] and role != UserRole.sales:
+            result["warning"] = calc["warning"]
+        if "packs_needed" in calc:
+            result["packs_needed"] = calc["packs_needed"]
+        if "glue_units_needed" in calc:
+            result["glue_units_needed"] = calc["glue_units_needed"]
+            result["glue_sell_total"] = calc["glue_sell_total"]
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/blinds")
+def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: float, drop_mm: float,
+                      discount_pct: float = 0.0, role: str = Depends(get_current_role),
+                      tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "blinds":
+            raise HTTPException(400, "This line is not a blinds line.")
+        product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
+
+        product_changed = (line.product_id != product_id)
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = f"{line.product_name}, {line.width_mm}×{line.drop_mm}mm"
+
+        calc = calculate_blinds_line(product, width_mm, drop_mm, discount_pct)
+        line.product_id = product_id
+        line.product_name = product.product_name
+        line.width_mm = width_mm
+        line.drop_mm = drop_mm
+        line.discount_pct = discount_pct
+        line.unit_cost = calc["unit_cost"]
+        line.unit_price = calc["unit_price"]
+        line.line_total = calc["line_total"]
+        line.margin_pct = calc["margin_pct"]
+
+        override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total
+
+        new_desc = f"{line.product_name}, {line.width_mm}×{line.drop_mm}mm"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        result = strip_sensitive_fields(line.dict(), role)
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/trims")
+def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float,
+                    discount_pct: float = 0.0, role: str = Depends(get_current_role),
+                    tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "trim":
+            raise HTTPException(400, "This line is not a trim/skirting line.")
+        product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
+        settings = get_settings(session, tenant_id)
+
+        product_changed = (line.product_id != product_id)
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = f"{line.product_name}, {line.length_m}lm"
+
+        calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
+        line.product_id = product_id
+        line.product_name = product.product_name
+        line.length_m = length_m
+        line.trim_sub_category = product.category
+        line.discount_pct = discount_pct
+        line.unit_cost = calc["unit_cost"]
+        line.unit_price = calc["unit_price"]
+        line.line_total = calc["line_total"]
+        line.margin_pct = calc["margin_pct"]
+
+        override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total
+
+        new_desc = f"{line.product_name}, {line.length_m}lm"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        result = strip_sensitive_fields(line.dict(), role)
+        if calc["warning"] and role != UserRole.sales:
+            result["warning"] = calc["warning"]
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/misc")
+def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
+                    role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                    username: str = Depends(get_current_username)):
+    """Misc lines have no product record — 'product changed' has no direct
+    equivalent, so per the brief's own 'propose the safest default'
+    guidance (§2), ANY edit to an already-overridden misc line clears the
+    override (same conservative treatment as a product/colour change on a
+    real product line), rather than guessing whether a freeform
+    description/amount edit counts as 'quantity-only'."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "misc":
+            raise HTTPException(400, "This line is not a freeform/extra line.")
+
+        old_desc = f"{line.product_name} — R{line.unit_price:.2f}"
+        margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
+
+        line.product_name = description
+        line.unit_cost = cost_ex_vat
+        line.unit_price = amount_ex_vat
+        line.line_total = amount_ex_vat
+        line.margin_pct = margin_pct
+
+        override_result = _reapply_line_calc_respecting_override(line, amount_ex_vat, True, session, tenant_id, username)
+
+        new_desc = f"{line.product_name} — R{line.unit_price:.2f}"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        result = strip_sensitive_fields(line.dict(), role)
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
@@ -5809,16 +6097,30 @@ def revert_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant), us
 
 
 @app.put("/quotes/{quote_id}/lines/{line_id}/colour")
-def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str = "", changed_by: str = "", tenant_id: str = Depends(get_current_tenant)):
+def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str = "", changed_by: str = "",
+                        tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     """Confirmed Aug 2026 — a colour quoted might go out of stock and
     need substituting. This changes the ACTIVE colour on the line (what
     shows on the quote, what gets ordered), while logging the change so
     the full history is never lost. original_colour on the line itself
-    is never touched here — it's set once, at creation, permanently."""
+    is never touched here — it's set once, at creation, permanently.
+
+    Manual Override (confirmed Aug 2026, Edit Quote Line In Place brief §2/
+    §3 — "confirm the edit path doesn't reopen any... risk", checked here
+    too, not just the new PUT .../flooring|blinds|trims|misc endpoints):
+    this is exactly the kind of change the brief calls out — a colour swap
+    is meaningful enough that an active override should not silently keep
+    applying. Uses the same clear-and-flag rule as those endpoints (via
+    _reapply_line_calc_respecting_override()), with calc_line_total passed
+    as the line's own PRE-override value, since a pure colour swap (no
+    product/quantity change here) never changes the real calculated price
+    — there is nothing new to compute."""
     with Session(engine) as session:
         line = session.get(QuoteLineItem, line_id)
         if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
+
+        colour_changed = (line.colour or "") != new_colour
 
         # BUG FIXED Aug 2026: this used to reject setting a colour when the
         # line had none yet — but "forgot to set a colour, add it now" is
@@ -5832,10 +6134,19 @@ def change_line_colour(quote_id: int, line_id: int, new_colour: str, reason: str
         session.add(log_entry)
 
         line.colour = new_colour
+
+        override_cleared = False
+        if colour_changed and line.pre_override_line_total is not None:
+            calc_line_total = line.pre_override_line_total   # nothing new to compute here — restore the real pre-override figure
+            override_result = _reapply_line_calc_respecting_override(line, calc_line_total, True, session, tenant_id, username)
+            override_cleared = override_result["override_cleared"]
+
         session.add(line)
         session.commit()
         session.refresh(line)
-        return line
+        result = line.dict()
+        result["override_cleared"] = override_cleared
+        return result
 
 
 @app.get("/quotes/{quote_id}/lines/{line_id}/colour-history")

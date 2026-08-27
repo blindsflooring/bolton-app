@@ -566,7 +566,6 @@ async function addFloorJob() {
   const floorM2 = parseFloat(document.getElementById('fj_floor_m2').value);
   if (!floorM2 || floorM2 <= 0) { alert('Enter a floor size first.'); return; }
   if (!confirmPostAcceptChange(editingLineId ? 'saving this change' : 'adding this line')) return;
-  await deleteLineBeingEditedIfAny();   // if this is a Save on an in-progress edit, remove the old version of this line first
   const includeVinyl = document.getElementById('fj_include_vinyl').checked;
   const includeScreed = document.getElementById('fj_include_screed').checked;
   const role = currentRole();
@@ -575,6 +574,47 @@ async function addFloorJob() {
   // Quote-level discount (confirmed Aug 2026: applied to the whole quote, not per line)
   if (discountPct) {
     await fetch(`${API}/quotes/${currentQuoteId}/discount?discount_pct=${discountPct}`, {method:'PUT'});
+  }
+
+  // Edit Quote Line In Place (confirmed Aug 2026) — saving an in-progress
+  // edit on a flooring/screed line now PUTs to that SAME line id instead
+  // of the old delete-then-re-add (deleteLineBeingEditedIfAny(), removed).
+  // prefillFlooringEdit() always leaves exactly one of includeVinyl/
+  // includeScreed checked, matching whichever type this line actually is.
+  if (editingLineId) {
+    const editingScreed = includeScreed && !includeVinyl;
+    let params;
+    if (editingScreed) {
+      const productId = document.getElementById('fj_screed_product').value;
+      if (!productId) { alert('Pick a screed product first.'); return; }
+      params = new URLSearchParams({
+        product_id: productId, quantity_m2: floorM2, job_type: document.getElementById('fj_screed_jobtype').value, discount_pct: 0,
+        labour_rate_per_m2: 0, own_staff: document.getElementById('fj_own_staff').value,
+        bag_cost: document.getElementById('fj_bag_cost').value || 235,
+        include_tile_removal_fee: document.getElementById('fj_tile_removal').checked,
+        role,
+      });
+    } else {
+      const productId = document.getElementById('fj_vinyl_product').value;
+      const materialOnly = document.getElementById('fj_material_only').checked;
+      const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
+      params = new URLSearchParams({
+        product_id: productId, quantity_m2: floorM2, job_type: document.getElementById('fj_jobtype').value, discount_pct: 0,
+        glue_cost_per_unit: glueRate * 70, glue_coverage_m2: 70,
+        labour_rate_per_m2: materialOnly ? 0 : (document.getElementById('fj_labour_rate').value || 0),
+        own_staff: document.getElementById('fj_own_staff').value,
+        markup_override: 1 + (parseFloat(document.getElementById('fj_markup').value) / 100 || 0),
+        apply_delivery_fee: document.getElementById('fj_courier_toggle')?.checked ?? false,
+        role,
+      });
+    }
+    const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${editingLineId}/flooring?${params}`, {method:'PUT'});
+    const result = await res.json();
+    if (result.warning) alert(result.warning);
+    if (result.override_cleared) alert('This line had a Manual Override applied — because the product/colour changed, the override was cleared and the price recalculated from the new figures. Reconfirm the override if one is still needed.');
+    cancelLineEdit();
+    loadQuote();
+    return;
   }
 
   if (includeVinyl) {
@@ -1004,7 +1044,6 @@ async function addLine() {
   const discount = parseFloat(document.getElementById('line_discount').value) / 100;
   const role = currentRole();
   if (!confirmPostAcceptChange(editingLineId ? 'saving this change' : 'adding this line')) return;
-  if (cat !== 'stairwell') { await deleteLineBeingEditedIfAny(); }   // if this is a Save on an in-progress edit, remove the old version of this line first (stairwell lines are never in edit mode — no Edit button offered for them)
 
   if (cat === 'stairwell') {
     const vinylProductId = document.getElementById('line_stair_vinyl').value;
@@ -1030,6 +1069,42 @@ async function addLine() {
     const line = await res.json();
     if (line.warning) alert(line.warning);
     if (landingTotal > 0) clearLandingRows();
+    loadQuote();
+    return;
+  }
+
+  // Edit Quote Line In Place (confirmed Aug 2026) — saving an in-progress
+  // edit on a blinds/trim/misc line PUTs to that SAME line id instead of
+  // the old delete-then-re-add.
+  if (editingLineId) {
+    let editUrl;
+    if (cat === 'blinds') {
+      const params = new URLSearchParams({
+        product_id: productId, width_mm: document.getElementById('line_width').value,
+        drop_mm: document.getElementById('line_drop').value, discount_pct: discount, role,
+      });
+      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds?${params}`;
+    } else if (cat === 'trim' || cat === 'skirting') {
+      const params = new URLSearchParams({
+        product_id: productId, length_m: document.getElementById('line_length').value,
+        discount_pct: discount, role,
+      });
+      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/trims?${params}`;
+    } else if (cat === 'misc') {
+      if (!document.getElementById('line_misc_desc').value) { alert('Enter a description first.'); return; }
+      const params = new URLSearchParams({
+        description: document.getElementById('line_misc_desc').value,
+        amount_ex_vat: document.getElementById('line_misc_amount').value || 0,
+        cost_ex_vat: document.getElementById('line_misc_cost').value || 0,
+        role,
+      });
+      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/misc?${params}`;
+    }
+    const res = await fetch(editUrl, {method:'PUT'});
+    const line = await res.json();
+    if (line.warning) alert(line.warning);
+    if (line.override_cleared) alert('This line had a Manual Override applied — because the product changed, the override was cleared and the price recalculated from the new figures. Reconfirm the override if one is still needed.');
+    cancelLineEdit();
     loadQuote();
     return;
   }
@@ -1096,27 +1171,29 @@ async function deleteQuoteLine(lineId) {
 }
 
 // Edit an existing line (confirmed Aug 2026, Client-Side Commercial
-// Workflow brief, Sprint B — "Edit quantity, product, job type, extras
-// without total corruption"). Real constraint found while building
-// this: QuoteLineItem only ever stores the CALCULATED outputs
-// (unit_cost, line_total, labour_charged_total...), never the raw
-// inputs that produced them (wastage %, trade discount %, markup %,
-// glue/labour rate) — those were never persisted, so a flooring line's
-// exact original inputs can't be recovered once saved. Rather than
-// build a second, approximate recalculation engine here (the exact
-// class of bug this project has repeatedly found and fixed — a
-// frontend shadow-calc silently drifting from the real backend
-// formula), editing works by pre-filling the Add Line form with
-// whatever CAN be recovered (product, quantity/length/width/drop,
-// discount) plus the CURRENT price book defaults for anything else,
-// then deleting the old line and creating a fresh one through the SAME
-// trusted backend endpoint used for a brand new line (see
-// deleteLineBeingEditedIfAny(), called from addFloorJob()/addLine()) —
-// so "total corruption" is structurally impossible: the total is
-// always freshly computed server-side from whatever lines currently
-// exist, never patched in place. Stairwell lines are excluded for now
-// (landings/nosing make a faithful pre-fill materially more complex) —
-// flagged honestly rather than shipped half-working.
+// Workflow brief, Sprint B, then rebuilt Aug 2026 by the Edit Quote Line
+// In Place brief — "same line, updated product/colour/quantity — without
+// delete-and-re-add", the highest direct-value fix for the vinyl workflow
+// per that brief's own words). Real constraint that still applies: a
+// QuoteLineItem only ever stores the CALCULATED outputs (unit_cost,
+// line_total, labour_charged_total...), never the raw inputs that produced
+// them (wastage %, trade discount %, markup %, glue/labour rate) — those
+// were never persisted, so a flooring line's exact original inputs can't
+// be recovered once saved. Editing still works by pre-filling the Add Line
+// form with whatever CAN be recovered (product, quantity/length/width/
+// drop, discount) plus the CURRENT price book defaults for anything else —
+// but Save now PUTs to the SAME line id through edit_flooring_line()/
+// edit_blinds_line()/edit_trim_line()/edit_misc_line() (main.py), the same
+// trusted calc functions add_*_line() itself uses, just updating the
+// existing row in place instead of delete-then-recreate. The line's id
+// (and therefore its position — see _quote_line_sort_key(), main.py) never
+// changes. Manual Override survival on an edited line is handled entirely
+// server-side (see _reapply_line_calc_respecting_override(), main.py) —
+// this file never has to reason about it beyond showing the
+// override_cleared flag the backend hands back. Stairwell lines are
+// excluded (landings/nosing make a faithful pre-fill materially more
+// complex) — flagged honestly rather than shipped half-working, matching
+// the brief's own non-goals.
 let editingLineId = null;
 
 function editQuoteLine(lineId) {
@@ -1153,11 +1230,30 @@ function editQuoteLine(lineId) {
 }
 
 function prefillFlooringEdit(line) {
-  document.getElementById('fj_include_vinyl').checked = true;
-  document.getElementById('fj_include_screed').checked = false;   // editing ONLY this vinyl line — a screed line on the same quote, if any, is a separate line item and untouched
   document.getElementById('fj_floor_m2').value = line.quantity_m2 || '';
+  // Edit Quote Line In Place (confirmed Aug 2026, brief §1 — "should be
+  // checked against Screed... since they share the quote builder"): this
+  // used to ALWAYS prefill as a vinyl line, even when editing a real
+  // screed line — a genuine gap the brief asked to be checked for before
+  // building. flooring_pricing_type ("material" | "screed", set on the
+  // line at creation — see add_flooring_line()/edit_flooring_line(),
+  // main.py) is what distinguishes them; branch on it instead of assuming.
+  const isScreed = line.flooring_pricing_type === 'screed';
+  document.getElementById('fj_include_vinyl').checked = !isScreed;
+  document.getElementById('fj_include_screed').checked = isScreed;   // editing ONLY this one line — a companion vinyl/screed line on the same quote, if any, is a separate line item and untouched
   const product = flooringProducts.find(p => p.id === line.product_id);
-  if (product) {
+  if (isScreed) {
+    if (product) {
+      document.getElementById('fj_screed_product').value = product.id;
+      document.getElementById('fj_screed_jobtype').value = line.job_type || 'smooth';
+      applyScreedRateForJobType();   // pre-fills fj_screed_rate from this product's CURRENT price book rate (see this function's own doc comment for why the ORIGINAL rate can't be recovered instead) and defaults fj_tile_removal by job type
+      // Override applyScreedRateForJobType()'s job-type-based DEFAULT for
+      // the tile removal fee with what this line was ACTUALLY saved with.
+      document.getElementById('fj_tile_removal').checked = !!line.tile_removal_fee_total;
+    } else {
+      alert('The original screed product for this line no longer exists in the price book — pick the replacement product manually before saving.');
+    }
+  } else if (product) {
     populateVinylRangeDropdown(product.product_name);
     document.getElementById('fj_vinyl_colour').value = product.id;
     onVinylColourChange();   // sets fj_vinyl_product + pre-fills wastage/box price/trade discount/markup/labour/courier from this product's CURRENT price book entry (see this function's own doc comment for why the ORIGINAL inputs can't be recovered instead)
@@ -1177,16 +1273,6 @@ function cancelLineEdit() {
   editingLineId = null;
   const banner = document.getElementById('editLineBanner');
   if (banner) banner.style.display = 'none';
-}
-
-// Called at the top of both addFloorJob() and addLine() — if a line is
-// currently being edited, its old version is deleted first so the
-// "Add" click that follows creates its replacement rather than an
-// extra duplicate line.
-async function deleteLineBeingEditedIfAny() {
-  if (!editingLineId) return;
-  await fetch(`${API}/quotes/${currentQuoteId}/lines/${editingLineId}`, { method: 'DELETE' });
-  cancelLineEdit();
 }
 
 // Revert to Original (confirmed Aug 2026, Add-Line Data-Loss brief §5)
@@ -1211,6 +1297,11 @@ async function changeLineColour(lineId) {
   const params = new URLSearchParams({new_colour: newColour, reason, changed_by: changedBy});
   const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}/colour?${params}`, {method:'PUT'});
   if (!res.ok) { const err = await res.json(); alert('Error: ' + (err.detail || 'could not change colour')); return; }
+  const result = await res.json();
+  // Edit Quote Line In Place brief (confirmed Aug 2026) — a colour swap
+  // clears an active Manual Override on this line too, same rule as a
+  // product change (see change_line_colour(), main.py).
+  if (result.override_cleared) alert('This line had a Manual Override applied — because the colour changed, the override was cleared. Reconfirm the override if one is still needed.');
   loadQuote();
 }
 

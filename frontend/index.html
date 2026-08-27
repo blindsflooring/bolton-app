@@ -306,19 +306,25 @@
         Aug 2026) — root cause confirmed, not guessed: editQuoteLine()
         sets editingLineId to the line being edited, cleared only by
         cancelLineEdit() (the explicit Cancel button) or by a completed
-        Add (deleteLineBeingEditedIfAny() clears it after deleting the
-        old version). Switching this dropdown to a DIFFERENT category
-        mid-edit — instead of clicking Cancel — left editingLineId
-        stale: the next "Add Line"/"Add Floor Job" click still saw it
-        set, so deleteLineBeingEditedIfAny() silently deleted whatever
-        line was originally being edited (e.g. Vinyl or Screed) right
-        before posting the actually-intended new line (e.g. Trims) —
-        exactly the reported "existing line disappeared" data loss.
-        cancelLineEdit() only runs here (a real user change) because
-        editQuoteLine() sets this field's .value directly, which never
-        fires onchange — its own explicit toggleLineFields() call right
-        after is untouched, and it re-sets editingLineId itself
-        afterward regardless. -->
+        Save. Switching this dropdown to a DIFFERENT category mid-edit —
+        instead of clicking Cancel — left editingLineId stale: the next
+        "Add Line"/"Add Floor Job" click still saw it set, and (back when
+        editing meant delete-then-re-add) silently deleted whatever line
+        was originally being edited (e.g. Vinyl or Screed) right before
+        posting the actually-intended new line (e.g. Trims) — exactly the
+        reported "existing line disappeared" data loss. Editing was
+        rebuilt Aug 2026 (Edit Quote Line In Place brief) to PUT in place
+        against editingLineId's own category-specific endpoint instead of
+        deleting anything, which removes that failure mode entirely — but
+        a stale editingLineId surviving a category switch would still be
+        wrong (it would try to save the NEW category's fields against the
+        OLD line's id/category and get rejected by the category check in
+        edit_flooring_line()/edit_blinds_line()/edit_trim_line()/
+        edit_misc_line(), main.py), so this guard stays. cancelLineEdit()
+        only runs here (a real user change) because editQuoteLine() sets
+        this field's .value directly, which never fires onchange — its
+        own explicit toggleLineFields() call right after is untouched,
+        and it re-sets editingLineId itself afterward regardless. -->
         <select id="line_category" onchange="if (editingLineId) cancelLineEdit(); toggleLineFields();">
           <option value="flooring">Flooring</option>
           <option value="blinds">Blinds</option>
