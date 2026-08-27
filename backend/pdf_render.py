@@ -23,7 +23,57 @@ in the archived PDF than in a browser, since those use
 display:flex — a real, disclosed limitation, not a data-fidelity
 gap."""
 import io
+import re
 from xhtml2pdf import pisa
+
+
+def _resolve_css_variables(css: str) -> str:
+    """xhtml2pdf's color parser has no concept of CSS custom properties
+    at all -- var(--navy) crashes it outright with `ValueError: Invalid
+    color value '<css function: var(--navy)>'`, raised directly from
+    pisa.CreatePDF() itself (found immediately after fixing the
+    @keyframes/@media print crash, re-verifying Save against a real
+    Invoice again -- a second, separate real bug in the same "xhtml2pdf
+    can't handle modern CSS" family, not a regression from that fix).
+
+    Since xhtml2pdf has no notion of custom properties to begin with,
+    resolve every var(...) reference to its literal value before handing
+    the CSS to pisa: parse every `--name: value;` declared inside any
+    :root { ... } block, then replace every var(--name) / var(--name,
+    fallback) occurrence with the resolved value -- falling back to the
+    fallback argument (per the CSS spec) when a name has no :root
+    definition, e.g. --ink-soft in the real stylesheet, which is only
+    ever referenced with a fallback and never actually declared."""
+    variables = {}
+    idx = 0
+    while True:
+        m = re.search(r":root\s*{", css[idx:])
+        if not m:
+            break
+        block_start = idx + m.end()
+        depth = 1
+        j = block_start
+        while j < len(css) and depth > 0:
+            if css[j] == "{":
+                depth += 1
+            elif css[j] == "}":
+                depth -= 1
+            j += 1
+        block_content = css[block_start:j - 1]
+        for name, value in re.findall(r"(--[a-zA-Z0-9-]+)\s*:\s*([^;]+);", block_content):
+            variables[name.strip()] = value.strip()
+        idx = j
+
+    def _replace_var(match):
+        name = match.group(1)
+        fallback = match.group(2)
+        if name in variables:
+            return variables[name]
+        if fallback is not None:
+            return fallback.strip()
+        return match.group(0)  # nothing to resolve to -- leave as-is rather than guess
+
+    return re.sub(r"var\(\s*(--[a-zA-Z0-9-]+)\s*(?:,\s*([^)]+))?\)", _replace_var, css)
 
 
 def _strip_at_rule_blocks(css: str, at_rule: str) -> str:
@@ -99,6 +149,7 @@ def render_html_to_pdf(html: str, css: str = "") -> bytes:
     catchable way instead of crashing unhandled."""
     css = _strip_at_rule_blocks(css, "keyframes")
     css = _strip_at_rule_blocks(css, "media print")
+    css = _resolve_css_variables(css)
     full_html = f"<html><head><style>{css}</style></head><body>{html}</body></html>"
     buffer = io.BytesIO()
     try:
