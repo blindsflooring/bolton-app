@@ -5220,8 +5220,12 @@ def delete_quote(quote_id: int, role: str = Depends(require_owner),
             tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
             field="__deleted__", old_value=label, new_value="(deleted)",
         ))
-        _delete_quote_cascade(session, quote, tenant_id)
-        session.commit()
+        try:  # TEMPORARY error-surfacing for live debugging — revert once root-caused
+            _delete_quote_cascade(session, quote, tenant_id)
+            session.commit()
+        except Exception as e:
+            import traceback
+            raise HTTPException(500, f"DEBUG: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return {"deleted": quote_id}
 
 
