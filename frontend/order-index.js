@@ -612,22 +612,33 @@ function openOrderDetailScreen(quoteId) {
   renderLanding();
 }
 
-// Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) — the
+// Job Workflow Design Proposal Phase 2+3 (confirmed Aug 2026) — the
 // numbered step strip + compact per-Order-Sheet procurement tiles.
-// Purely additive/visual: renders job_steps exactly as computed
-// server-side (_job_steps(), main.py — never re-derived here), and
-// every actual action (Accept/Schedule/Complete/Generate Order
-// Sheet(s)/Mark as Placed) stays the EXISTING button it already was,
-// right below this strip — this deliberately does NOT introduce a
-// second, competing "Next" mechanism. The existing Order Sheets list
-// card and Order Sheet Preview panel are UNCHANGED in this phase —
-// Phase 3 retires the redundant ones, once this is proven. Renders
-// nothing at all for a quote that isn't a job yet, or was declined
-// (job_steps is [] in both cases, from the server). While a job is on
-// hold, workflow_status/materials_ordered are untouched, so this
-// naturally shows the frozen step exactly where it was — no special
-// case needed here for that.
-function renderJobStepsHtml(jobSteps) {
+// Renders job_steps exactly as computed server-side (_job_steps(),
+// main.py — never re-derived here), and every actual action (Accept/
+// Schedule/Complete/Generate Order Sheet(s)/Mark as Placed) stays the
+// EXISTING button it already was — this deliberately does NOT
+// introduce a second, competing "Next" mechanism. Renders nothing at
+// all for a quote that isn't a job yet, or was declined (job_steps is
+// [] in both cases, from the server). While a job is on hold,
+// workflow_status/materials_ordered are untouched, so this naturally
+// shows the frozen step exactly where it was — no special case needed
+// here for that.
+//
+// Phase 3: the procurement tiles are now shown WHENEVER this job has
+// a Procurement step at all — not only while it's the active step.
+// Real gap caught before shipping: Order Sheets must stay reachable
+// for the life of the job (re-ordering more materials while
+// Scheduled, checking what was ordered during Installation), not
+// disappear the moment the job moves past that step. This is now the
+// ONLY place Order Sheets are surfaced on Job Detail — the old compact
+// "Order Sheets" list card and the old full editable "Order Sheet
+// Preview" panel are both retired here: every real action (edit
+// quantities, Mark as Placed, Delete, View/Edit/Print/Save/Mail) now
+// lives solely on the standalone Order Sheet Detail screen, reached by
+// clicking a tile — exactly "compact tiles replace all three surfaces
+// with one," per the proposal.
+function renderJobStepsHtml(jobSteps, quoteId) {
   if (!jobSteps || !jobSteps.length) return '';
   const activeIndex = jobSteps.findIndex(st => st.active);
   const activeStep = activeIndex >= 0 ? jobSteps[activeIndex] : jobSteps[jobSteps.length - 1];
@@ -646,32 +657,38 @@ function renderJobStepsHtml(jobSteps) {
     return dot + line;
   }).join('');
 
-  let tilesHtml = '';
-  if (activeStep && activeStep.id === 'procurement') {
-    if (!activeStep.tiles.length) {
-      tilesHtml = `<p class="muted" style="font-size:12.5px; margin:8px 0 0;">No Order Sheet generated yet — use "Generate Order Sheet(s)" below.</p>`;
-    } else {
-      const tileHtml = activeStep.tiles.map(t => {
-        // Label reflects the merged sheet honestly (Phase 1) — a sheet
-        // covering both categories says so; a flooring-only sheet
-        // doesn't imply floor prep was included.
-        const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
-        const isPlaced = t.status === 'placed';
-        return `
-          <div onclick="openOrderSheetDetail(${t.id})" style="cursor:pointer; flex:1; min-width:150px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
-            <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
-            <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
-          </div>`;
-      }).join('');
-      tilesHtml = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">${tileHtml}</div>`;
-    }
+  const procurementStep = jobSteps.find(st => st.id === 'procurement');
+  let procurementHtml = '';
+  if (procurementStep) {
+    const isCurrentStep = activeStep && activeStep.id === 'procurement';
+    const tileHtml = procurementStep.tiles.map(t => {
+      // Label reflects the merged sheet honestly (Phase 1) — a sheet
+      // covering both categories says so; a flooring-only sheet
+      // doesn't imply floor prep was included.
+      const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
+      const isPlaced = t.status === 'placed';
+      return `
+        <div onclick="openOrderSheetDetail(${t.id})" style="cursor:pointer; flex:1; min-width:150px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
+          <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
+          <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+        </div>`;
+    }).join('');
+    procurementHtml = `
+      <div id="procurementTilesBlock" style="margin-top:10px;">
+        ${!isCurrentStep ? `<p class="muted" style="font-size:11px; margin:0 0 6px; font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Materials</p>` : ''}
+        <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-weight:700; font-size:13.5px;"></div>
+        ${tileHtml
+          ? `<div style="display:flex; gap:8px; flex-wrap:wrap;">${tileHtml}</div>`
+          : `<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>`}
+        <button onclick="generateOrderSheetsForQuote(${quoteId})" style="margin-top:8px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
+      </div>`;
   }
 
   return `
     <div style="margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border);">
       <div style="display:flex; align-items:center; gap:4px; margin-bottom:8px;">${dots}</div>
       <p style="margin:0; font-weight:700; font-size:13.5px;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}</p>
-      ${tilesHtml}
+      ${procurementHtml}
     </div>`;
 }
 
@@ -776,10 +793,12 @@ async function resumeJobAction(quoteId) {
 async function renderOrderDetail(el) {
   await renderWithRetry(el, 'Job Detail', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
-  const [res, orderSheetsRes] = await Promise.all([
-    fetch(`${API}/quotes/${currentOrderDetailQuoteId}?role=${currentRole()}`),
-    fetch(`${API}/quotes/${currentOrderDetailQuoteId}/order-sheets`),
-  ]);
+  // Job Workflow Design Proposal Phase 3 (confirmed Aug 2026) -- the
+  // separate GET .../order-sheets fetch this screen used to make is
+  // gone: Order Sheets are now surfaced entirely via the compact
+  // procurement tiles inside data.job_steps (Phase 2), so a second
+  // round trip for the raw list is no longer needed here at all.
+  const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?role=${currentRole()}`);
   const data = await res.json();
   const q = data.quote;
   // Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) --
@@ -789,7 +808,6 @@ async function renderOrderDetail(el) {
   // ordered read below picks up the fresh derived value, never the
   // stale DB column the old manual checkbox used to write.
   q.materials_ordered = data.materials_ordered;
-  const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
   // Page Title in Sticky Header brief -- mirrors this same screen's own
   // <h1> formula below exactly, so the two never say something different.
   setPageTitle(`${q.job_number || 'Quote #' + q.id}${q.description ? ' — ' + q.description : ''}`);
@@ -814,7 +832,7 @@ async function renderOrderDetail(el) {
       <div class="job-detail-main">
         <div class="card">
           <h2>Workflow</h2>
-          ${renderJobStepsHtml(data.job_steps)}
+          ${renderJobStepsHtml(data.job_steps, q.id)}
           ${renderWorkflowActionsHtml(q)}
           <details style="margin-top:16px;">
             <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>
@@ -825,29 +843,6 @@ async function renderOrderDetail(el) {
               <button onclick="overrideWorkflowStatus(${q.id})">Override</button>
             </div>
           </details>
-        </div>
-
-        <!-- Order Sheets UX brief §3 (confirmed Aug 2026) — "Generate
-        Order Sheet(s) is buried... move it to a prominent position...
-        alongside or directly below the Workflow section." Moved out of
-        the Job Details card (was near the bottom of a long page) to
-        its own card right here, immediately below Workflow -- visible
-        without scrolling on exactly the screen this matters most on
-        (arriving via "Prepare Job" from Needs Attention). §1's real
-        result banner (the earlier duplicate happened because pressing
-        Generate gave no visible confirmation) shows here too. -->
-        <div class="card">
-          <h2>Order Sheets</h2>
-          <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
-          ${orderSheets.length ? orderSheets.map(s => `
-            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer;" onclick="openOrderSheetDetail(${s.id})">
-              <b>${s.order_number}</b>
-              <span class="muted">${s.supplier}</span>
-              <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
-              ${s.status === 'placed' ? `<span class="status-badge active-status">Placed</span>` : `<span class="status-badge pending-status">Draft</span>`}
-              <span class="muted" style="margin-left:auto; font-size:12px;">View →</span>
-            </div>`).join('') : '<p class="muted" style="margin-top:-6px;">No order sheets generated yet for this job.</p>'}
-          <button class="primary" onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px;">Generate Order Sheet(s)</button>
         </div>
 
         <div class="card">
@@ -986,48 +981,6 @@ async function renderOrderDetail(el) {
           <div id="documentArchiveContent" class="muted">Loading...</div>
         </div>
 
-        <!-- Order Sheet Preview (confirmed Aug 2026, Order Sheets UX
-        brief §4) — a SECOND, equally prominent preview panel, clearly
-        labelled so there's never ambiguity about which panel is the
-        client-facing quote (above) and which is the supplier-facing
-        procurement document (this one). Only shown once at least one
-        order sheet exists for this job -- an empty card here before
-        anything's been generated would just be dead space alongside a
-        real Document Preview. Editable/savable/executable per the
-        brief's own words: orderSheetLinesEditorHtml() (shared with the
-        standalone Order Sheet Detail screen) is the same live-save-on-
-        change table used there, "Mark as Placed" is the executable
-        action, Delete is the owner-only cleanup action (§2) -- this is
-        genuinely the real order sheet, not a read-only summary of it. -->
-        ${orderSheets.length ? `
-        <div class="card" id="orderSheetPreviewCard">
-          <h2>Order Sheet Preview <span class="muted" style="font-weight:400; font-size:12px;">(supplier-facing procurement document — not the client's quote)</span></h2>
-          ${orderSheets.map(s => `
-            <div style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px;">
-              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
-                <b>${s.order_number}</b>
-                <span class="muted">${s.supplier}</span>
-                <span class="badge ${s.sheet_type === 'floor_prep' ? 'flooring' : 'trim'}">${s.sheet_type === 'floor_prep' ? 'Floor Prep' : 'Flooring'}</span>
-                ${s.status === 'placed' ? `<span class="status-badge active-status">Placed</span>` : `<span class="status-badge pending-status">Draft</span>`}
-                <a href="#" onclick="openOrderSheetDetail(${s.id}); return false;" style="font-size:12px; margin-left:auto;">Full page →</a>
-              </div>
-              ${orderSheetLinesEditorHtml(s, s.sheet_type === 'floor_prep' && s.status !== 'placed')}
-              <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-                ${s.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${s.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:11px; align-self:center;">Placed by ${s.placed_by || ''}${s.placed_at ? ' on ' + new Date(s.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
-                ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${s.id})">Delete</button>` : ''}
-              </div>
-              <!-- Standard Document Action Bar (confirmed Aug 2026) —
-              same shared documentPreviewTileHtml() component as the
-              Quote/Invoice cards above, docType='ordersheet'. "View"
-              here is the TRUE static document (buildOrderSheetPrintHtml()
-              — what actually gets archived/printed/mailed), genuinely
-              distinct from the interactive editable table already shown
-              above it. Edit is disabled once "placed" — enforced
-              server-side too (update_order_sheet_line() etc., main.py),
-              not just hidden here. -->
-              ${documentPreviewTileHtml('dp_ordersheet_' + s.id, s.id, 'ordersheet', s.status === 'placed' ? {editDisabled: true, editDisabledReason: 'This order sheet is already placed — generate a new one for this job if more materials are needed.'} : null)}
-            </div>`).join('')}
-        </div>` : ''}
       </div>
     </div>
   `;
@@ -1035,7 +988,6 @@ async function renderOrderDetail(el) {
   loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
   loadDocumentPreview('dp_invoice_jobdetail_' + q.id, q.id, 'invoice');
   applyInvoiceEditLock(q.id);
-  orderSheets.forEach(s => loadDocumentPreview('dp_ordersheet_' + s.id, s.id, 'ordersheet'));
   loadDocumentArchiveStatus('Quote', q.id, q.job_number || ('Q-' + q.id), q.id, 'quote');
   // Immediate, visible confirmation after Generate (confirmed Aug
   // 2026, brief §1+§4 -- "immediate, visible confirmation/preview...
@@ -1082,12 +1034,13 @@ function showOrderSheetsResultBanner(message) {
   banner.style.display = 'block';
   clearTimeout(orderSheetsResultBannerTimeout);
   orderSheetsResultBannerTimeout = setTimeout(() => { banner.style.display = 'none'; }, 6000);
-  // Scroll the Order Sheet Preview panel into view too -- the banner
-  // sits in the left column's Order Sheets card, but the actual
-  // generated content (what genuinely proves it worked) is in the
-  // right column, which can be below the fold on mobile.
-  const previewCard = document.getElementById('orderSheetPreviewCard');
-  if (previewCard) previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  // Scroll the procurement tiles into view too (Phase 3, confirmed Aug
+  // 2026 -- was the now-retired Order Sheet Preview panel) -- the
+  // banner and the real generated tiles both live in this same block
+  // already, so this is mostly a no-op scroll on desktop, but keeps
+  // the confirmation visible on mobile where it can be below the fold.
+  const tilesBlock = document.getElementById('procurementTilesBlock');
+  if (tilesBlock) tilesBlock.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // Job Workflow actions (confirmed Aug 2026) — each a specific named
@@ -1375,17 +1328,25 @@ async function renderOrderSheetDetail(el) {
       ${orderSheetLinesEditorHtml(sheet, editable)}
       <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
         ${sheet.status !== 'placed' ? `<button class="primary" onclick="finalizeOrderSheet(${sheet.id})">Mark as Placed</button>` : `<span class="muted" style="font-size:12px; align-self:center;">Placed by ${sheet.placed_by || ''}${sheet.placed_at ? ' on ' + new Date(sheet.placed_at).toLocaleDateString('en-ZA') : ''}</span>`}
-        <!-- Print + Send (confirmed Aug 2026) — Order Sheets had no
-        user-facing Print action at all before this (buildOrderSheetPrintHtml()
-        only fired internally, from finalizeOrderSheet()'s own archive
-        trigger) — added here so Orders get the same Print/Send parity
-        as Quotes/Invoices the brief asks for. -->
-        <button onclick="printOrderSheet(${sheet.id})" style="background:none; border:2px solid var(--navy); color:var(--navy); font-weight:600; border-radius:6px; cursor:pointer;">Print</button>
-        <button onclick="sendOrderSheetEmail(${sheet.id})" style="background:none; border:2px solid var(--navy); color:var(--navy); font-weight:600; border-radius:6px; cursor:pointer;">Send</button>
         ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="deleteOrderSheet(${sheet.id})">Delete order sheet</button>` : ''}
       </div>
     </div>
+
+    <!-- Job Workflow Design Proposal Phase 3 (confirmed Aug 2026) —
+    Document Preview + the standard 5-button Action Bar (View/Edit/
+    Print/Save/Mail), moved here from the now-retired inline "Order
+    Sheet Preview" panel on Job Detail — this screen is now the ONE
+    place that panel's full functionality lives, reached via a tile
+    click. Print/Mail here call the exact same printOrderSheet()/
+    sendOrderSheetEmail() functions the removed panel's own bespoke
+    Print/Send buttons already called, so nothing about what those
+    DO has changed, only where the buttons live. -->
+    <div class="card">
+      <h2>Document Preview <span class="muted" style="font-weight:400; font-size:12px;">(supplier-facing procurement document — not the client's quote)</span></h2>
+      ${documentPreviewTileHtml('dp_ordersheet_detail_' + sheet.id, sheet.id, 'ordersheet', sheet.status === 'placed' ? {editDisabled: true, editDisabledReason: 'This order sheet is already placed — generate a new one for this job if more materials are needed.'} : null)}
+    </div>
   `;
+  loadDocumentPreview('dp_ordersheet_detail_' + sheet.id, sheet.id, 'ordersheet');
   });
 }
 
