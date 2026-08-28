@@ -1,0 +1,339 @@
+# Bolton Build Log
+
+This is the permanent, narrative build history of Bolton — Blinds & Flooring
+Studio's internal quoting/job-workflow app. It exists so Burgert (or any
+future developer who inherits this codebase) has a real account of what was
+built, why, and what's still open — not just a list of commit messages.
+
+**Ongoing practice:** every future work session appends a new dated entry
+here before the session is considered wrapped up. Reverse-chronological —
+newest entry at the top.
+
+For the pre-repo history (v1–v65, before this git repository existed), see
+[`CHANGELOG.md`](../CHANGELOG.md) in the repo root — it was carried in as-is
+at the very first commit and is the authoritative record of that earlier
+period. This file picks up from the repo's actual creation (2026-08-19) and
+continues forward from there, reconstructed from the real git commit
+history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
+
+---
+
+## 2026-08-28
+
+### What shipped
+- **Job Workflow Phase 1** — supplier-merge rewrite for `generate_order_sheets()`, retiring the `materials_ordered` manual checkbox in favour of a real derivation from Order Sheet status, and a new On Hold capability (`on_hold_reason`/`on_hold_at`, `POST /quotes/{id}/hold`/`resume`).
+- **Job Workflow Phase 2** — the numbered step indicator (`_job_steps()`/`renderJobStepsHtml()`) and compact per-Order-Sheet procurement tiles inside Job Detail.
+- **Job Workflow Phase 3** — retired the two redundant Order Sheet surfaces on Job Detail (the compact list card and the full inline "Order Sheet Preview" panel); moved their real functionality (Document Preview + the 5-button Action Bar) onto the standalone Order Sheet Detail screen, which is now the one place with every real Order Sheet action.
+- Together, these three phases implement the approved [Job Workflow Design Proposal](https://claude.ai/code/artifact/985d91e7-96f6-4b24-a649-7dbfbd9385b9) — a cross-cutting redesign proposed first, approved, then built and verified in three separately-deployed, separately-verified phases.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Real, confirmed data-quality finding**: the same real supplier appears under three different exact strings in the live price book — `"Azura"` (floor-prep), `"Azura Distributors"` (most flooring material), `"Azura Distributors (iTe)"` (screed). The *old* hardcoded `if supplier == "Azura"` merge check could never have matched `"Azura Distributors"` — confirmed as the real mechanism behind a job showing two separate Azura sheets instead of one combined delivery. Fixed with a small, explicit, extensible alias list used *only* for the merge decision — never changes what's actually displayed or stored.
+- **Real bug fixed**: `materials_ordered` was a checkbox with zero connection to whether an Order Sheet was actually placed — a real, live source of disagreement between what Next Action said and what had actually happened.
+- Chose a general supplier-based merge rule over a hardcoded "Azura is special" case specifically because which suppliers cover multiple categories could change over time — a structural fix, not a one-off patch.
+- **Phase 3 caught a real design gap before shipping, not after**: Phase 2's tiles only rendered while Procurement was the *active* step. Removing the old surfaces as originally planned would have made a job's Order Sheets completely unreachable once it moved to Scheduling — fixed by making the tiles persist for the whole life of the job.
+- **Blinds explicitly excluded from this whole redesign**, per direct instruction — flooring gets built and proven end-to-end first; Blinds procurement tracking is deferred to its own later phase.
+- On Hold deliberately kept as two nullable fields alongside `workflow_status`, never a 5th status value — matches the standing "no second status system" principle and the existing `declined_at` pattern.
+
+### Deferred / parked (and why)
+- Blinds procurement tracking (Order Sheet `sheet_type` extension, `generate_order_sheets()` branch) — deliberately deferred to its own phase, not bolted onto this one.
+- The Master Workflow proposal (Lead tracking, formal payment ledger, Job Card, installation "In Progress" state, Job Sign-off, Proof-of-Work principle) — investigated and proposed (same Artifact, expanded), approved for full build, not yet started as of end of day.
+
+### Open going into next session
+- Lead feature build (backend model + endpoints + frontend screen) — the next task, explicitly called out as important and about to start.
+- Build order for the rest of the Master Workflow proposal, smallest/lowest-risk first: booking visibility fix + Decline Quote reason → Order receiving state + Installation "In Progress" + Sign-off → Job Card → PaymentRecord ledger → Lead + Proof-of-Work.
+
+---
+
+## 2026-08-27
+
+### What shipped
+- **Real, urgent bug fixed**: passwords silently reverting on every deploy. Three incident-remediation functions (`_old_password_still_works_remediation()` and two others) ran unconditionally on *every* startup and force-reset three real accounts back to one hardcoded historical password hash whenever the current hash didn't match — with no guard against a legitimate later change. Removed from `on_startup()`.
+- **Database Backups** — daily/weekly automated Postgres backups (pg_dump preferred, pure-Python JSON fallback), stored in Dropbox, 7-daily/4-weekly retention with automatic pruning, plain-language restore documentation (`RESTORE_BACKUP.md`), a verification-only content preview so a real backup's contents can actually be inspected.
+- **Dropbox long-lived refresh token** support, replacing the short-lived access token that required manual renewal.
+- **Dropbox Document Archive v2** — extended the existing Quote-only archiving to Invoices and Order Sheets, plus a nightly Order Index CSV snapshot (new in-process APScheduler, since no scheduling infrastructure existed anywhere in the repo before this).
+- **Dropbox folders flattened to per-branch** (`Bolton/Gansbaai/`, `Bolton/Hermanus/`, blank branch falling back to `Bolton/Unassigned/`) and a new **Send button** (Quotes/Invoices/Orders) opening the user's default mail client, with a clear "no email on file" message when there isn't one.
+- **Standard Document Action Bar** — one shared View/Edit/Print/Save/Mail component across Quote/Invoice/Order Sheet, replacing three previously-inconsistent per-screen implementations. Order Sheet quantity edits are now genuinely enforced server-side once "placed" (previously UI-hidden only).
+- Two **real production bugs found and fixed** in the PDF rendering pipeline while verifying the above: xhtml2pdf crashing outright (not a clean error) on `@keyframes`/`@media print` at-rules, and separately on CSS custom properties (`var(--x)`) — both had been silently 500ing every real archive call that sent the actual production stylesheet, for as long as archiving had existed.
+- **Dead Code Audit** — two small, separately-deployed batches (backend, then frontend) removing confirmed zero-reference code; several ambiguous items explicitly flagged and left alone rather than guessed at.
+- **Single Active Session Per Login** — the backend half already existed and was correct; the real gap was the frontend never looking at a 401 response. Fixed via the existing global fetch wrapper.
+- **Old-Password-Still-Works investigation** — the password check itself was never wrong; the real gap was that self-service password changes (unlike Owner-triggered resets) never ended a user's other active sessions.
+- **Real production bug fixed**: quote delete blocked by its own Order Sheets — a Postgres-enforced FK ordering issue (`ordersheet_quote_id_fkey`) that SQLite never caught locally; `_delete_quote_cascade()` had been extended piecemeal three separate times over the project's history and OrderSheet/OrderSheetLine were never added.
+- **Real production bug fixed**: `DocumentArchive.is_accepted_version` was added to the model without its matching `_ensure_new_columns()` migration entry — every DocumentArchive query on production had been failing since that column was introduced.
+- **Edit Quote Line In Place** — replaced the old delete-then-re-add pattern with genuine in-place edit endpoints per category, with explicit Manual Override survival rules (cleared on product/colour change, preserved on quantity-only edits).
+- **Robust Owner Delete** — root-fixed the recurring cascade-delete bug (missed a table three separate times under the old hand-maintained list) via dynamic FK discovery with a startup-time completeness check; added an explicit, off-by-default Dropbox archive purge option at delete time.
+- **Force Delete** override for quotes blocked by real dependency history (deposit/final payment, logged hours, linked builder estimate) — reuses the exact same cascade mechanism, never a narrower path; real historical records (hours, builder estimates) survive even a forced delete, only their link is cleared.
+- **Trusted Tester Accounts** — three named, trusted non-staff people get real working accounts; everything they create is automatically labelled and structurally excluded from KPI calculations (derived at read time, not a stored flag); a "Flag for Review" mechanism for any user to flag something for Owner attention.
+- Closed a small pre-existing gap: accounts could be shown as Active/Inactive but nothing could actually change that — added deactivate/reactivate.
+
+### Why (root causes, decisions, rejected alternatives)
+- The password-reversion bug's real root cause: three *incident-specific* remediation functions, written to fix one-time historical problems, kept running on every single deploy with no "has this already been legitimately changed since" guard — every redeploy silently undid any real password change.
+- Chose dynamic FK discovery over DB-level `ON DELETE CASCADE` for the cascade-delete root-fix specifically because a pure DB cascade can never clean up Supabase Storage files or Dropbox archives anyway, and SQLite (used for local testing) doesn't enforce Postgres-style cascades the same way — a DB-only fix would still have left local tests blind to the exact bug class that kept recurring.
+- The PDF-rendering bugs were found as a *byproduct* of rigorous verification (testing with the real, full production stylesheet instead of a trivial test string), not something anyone had reported — directly validated the project's own "verify against the real deployed app, never a success message" standing rule.
+- Single Active Session and Old-Password-Still-Works were investigated and shipped as two *separately tested* changes, per both briefs' own instruction, despite sharing the same underlying `UserSession`-ending pattern.
+- Database Backups deliberately excluded from the same-day Dropbox Document Archive v2 work, per that brief's own explicit "propose the safest approach rather than immediately implementing" instruction — then built same-day once explicit proceed-without-further-signoff instruction was given.
+
+### Deferred / parked (and why)
+- Full environment isolation (a separate walled-off Test environment with an Owner view-toggle) — proposed, then deliberately scaled down by Burgert to the smaller Trusted Tester Accounts version actually built.
+- Various Dead Code Audit findings explicitly left alone as ambiguous rather than guessed at: `CommissionPayment` (looks like unfinished work, not dead code), the AI-Assisted Price Sheet Import path (confirmed still live, contrary to the brief's own premise).
+
+### Open going into next session
+- The three real Trusted Tester accounts weren't created yet at end of day (needed real names from Burgert) — later created (Erna/Anine/Ockert) and one-time set-password links issued.
+- Live production verification for Database Backups' actual Dropbox landing wasn't yet possible (no Dropbox token configured at time of that specific commit) — resolved later the same day once the long-lived refresh token was set up.
+
+---
+
+## 2026-08-26
+
+The single biggest day of the project so far — 33 commits.
+
+### What shipped
+- **Manual Override** on quote line items and quote total, Owner-only — a real urgent business need: a client had already accepted and paid a deposit under Burgert's old pre-Bolton system, at figures different from what Bolton's calculator produces, and needed entering into Bolton matching those exact already-agreed numbers rather than recalculated. New per-line and per-quote override endpoints (mandatory reason, full audit trail, revert-to-calculated), a "Manually adjusted" badge visible to every role wherever an override is in effect (Quote Builder, Job Detail, Order Index), Owner-only apply/revert respecting Owner Preview Mode.
+- **Builder Portal mobile layout bug fixed** — whole page was rendering confined to the left half of the screen with blank space on the right.
+- **Order Index group header row** now shows real Value/Status/Install Date instead of a blank cell, matching the individual-row column layout.
+- **Post-RLS security precaution** — force-ended every session live as of the RLS-fix cutover, and reset the three real staff passwords, once Burgert confirmed the RLS fix (see 2026-08-25) was live and stable.
+- **Dropbox Document Archive & Backup Layer foundation** built — the base of what would later become the full v2 archive system (2026-08-27): Dropbox integration, archived-version tracking (`is_accepted_version`), and the mechanism later extended to Invoices/Order Sheets.
+- **Sticky Header** brief implemented, plus a same-day **flicker fix**, plus **Page Title** added into it, plus a full **Mobile Rendering Audit** off the back of it (card-overlap and preview-overflow bugs found and fixed).
+- **Order Sheets**: v1 of Supplier Order Sheets shipped; a UX pass plus a duplicate-sheet bug fix; **Order Sheet Corrections** capability added; two separate real bug fixes to `delete_order_sheet()` for Postgres foreign-key-violation failures that SQLite's local testing never caught.
+- **Self-Service Password Reset** shipped.
+- **Client Info** gained company/VAT fields and multi-contact support.
+- **Dashboard**: Today/Monthly Sales & Profit figures added; **Business Overview** got a Total Quote Value figure (with a same-day follow-up correction) and two separate conversion-rate calculation fixes.
+- **New Quote screen**: Price Check tool and a marketing-source field added.
+- **Single Active Session Per User** — the backend mechanism (ending other sessions on new login) first built this day; its frontend counterpart (acting on a 401) was the actual gap fixed later, on 2026-08-27.
+- **Create New Client From Quote** action added, plus a **Name Link Uniformity** pass making client-name links behave consistently everywhere they appear.
+- **Order Index Quick View** gained a document preview.
+- Real bug fixed: **add-line data loss** in Quote Builder — adding a line could silently lose data; fixed alongside a **fixed display order** for line items and a **Revert to Original** action.
+- Real incident: **Old-Password-Still-Works** — first fix attempt this day (the deeper root cause, missing session-invalidation on self-service password change, wasn't fully understood until the 2026-08-27 investigation).
+- **Deposit Amount** field added to jobs, with a save confirmation and a sensible default.
+- Closed off every remaining **orphaned-quote path** (quotes that could end up with no client link) found up to that point.
+- Two **urgent password recoveries** performed directly for Burgert.
+
+### Why (root causes, decisions, rejected alternatives)
+- Manual Override: chose to mutate `line_total` directly (preserving the true calculated value separately for revert) rather than adding a parallel "effective value" field, because the real subtotal is already summed from `line_total` in four separate places in the codebase — an in-place mutation means all four keep working correctly with zero risk of one of them forgetting to check for an override.
+- Manual Override deliberately Owner-only, with a mandatory reason on every apply and a permanent AuditLog entry on both apply and revert — never a silent number change.
+- The client-facing printed document was confirmed (by inspection, not assumption) to already only ever render `line_total`/`total_incl_vat` directly with no generic field dump — so an override shows a clean number to the client automatically, with zero internal override language, no frontend change needed there.
+- Builder Portal mobile bug root cause confirmed empirically (headless Chrome, measured actual rendered widths): a long unbroken referral-link string was forcing one table wider than its container with no overflow containment, which forced the *whole* mobile page to zoom out to fit it — not a fixed-width container as originally suspected, the opposite: an unconstrained table forcing everything else to shrink around it. Fixed with the same `overflow-x:auto` wrapper pattern already used on Order Index, Supplier Console, and Change Log — simply missed when Builder Portal was first built.
+- Order Index group header fix: which value to show when collapsed (combined total vs. leave blank) was confirmed directly with Burgert rather than guessed.
+- Post-RLS precaution: `usersession` held live tokens and was publicly readable via PostgREST for the entire window RLS was disabled — a token alone is enough to impersonate a user with no password needed, and it would never show up as a failed login anywhere. Force-ending every session as of a hardcoded cutover timestamp (not "all sessions ever") means nobody who logs in after the deploy is affected.
+- The two `delete_order_sheet()` fixes are the same recurring pattern later confirmed as the root reason for Robust Owner Delete (2026-08-27): Postgres enforces FK ordering that SQLite's local test DB silently ignores, so a cascade delete can pass every local test and still fail in production the first time a new dependent table is added.
+- Old-Password-Still-Works' first fix this day addressed the visible symptom; the real root cause (self-service password changes never ending other active sessions, unlike Owner-triggered resets) wasn't fully identified until the dedicated investigation the next day.
+
+### Deferred / parked (and why)
+- None explicitly deferred this day — an unusually large, mostly bug-fix-and-polish day rather than a proposal/scoping day.
+
+### Open going into next session
+- The RLS incident (see 2026-08-25) was fully closed out with this day's precautionary session/password reset.
+- Old-Password-Still-Works needed a deeper root-cause pass — picked up and actually resolved the next day.
+
+---
+
+## 2026-08-25
+
+18 commits — a security-incident day plus a major architecture rebuild (Order Index / Job Workflow), on top of a full pilot feature.
+
+### What shipped
+- **URGENT: Row-Level Security enabled on every table** (real Supabase-flagged security incident) — chased through three commits: the initial fix (`1c479ca`), a follow-up making table discovery dynamic instead of hardcoded (`e8e2900`) once a 25th, unaccounted-for table was found, and an emergency same-day fix (`40b4b65`) for a production-down crash the RLS fix itself introduced.
+- **Clear the Unlinked Quotes List** — one-time, per-quote-confirmed data remediation for three specific real quotes (#48/#49/#40), executed directly against the data with Burgert's explicit per-quote sign-off; isolated into independent try/except blocks per action so one failure couldn't crash the whole startup migration.
+- **Save Quote redirect** to the Order Index instead of a "Saved ✓" message, plus a root-cause fix for **Duplicate Quote silently orphaning clients**.
+- **Order Index → Client Link Gap** — two real gaps found and fixed: missing "Edit client" link on non-grouped rows, and quotes silently created without a real `client_id` when a client's name was typed but the autocomplete suggestion never clicked.
+- **Keyboard Dismiss on Enter** shipped (global delegated listener); a reported **Order Index Edit Button bug** investigated and NOT reproduced — most likely a stale mobile browser cache, not a live bug.
+- **Remove Unwanted Auto-Focus** (3 real bugs fixed, 1 already-correct case left alone) and **Consistent Mobile Back Navigation** (History API integration + persistent back button).
+- **Client Page & Quote Detail: Document Preview + Inline Edit** — one reusable document-preview component used in two places (client Order History, Quote/Job Detail), built from the real print-doc HTML so it can never drift from what's actually sent to a client; plus AuditLog entries on any line added/removed after acceptance.
+- **Order Index: Group Multi-Quote Clients** addendum — clients with 2+ jobs collapse into one row showing the single most urgent Next Action across their jobs.
+- **The big one: Order Index / Job Workflow Redesign + Next Action Addendum** — the first version of the 4-status workflow model (`quoted/accepted/scheduled/completed`), `job_number`, a real Quote-vs-Job structural distinction, and the Next Action / Needs Attention engine computed at read time. This is the architecture that later Job Workflow phases (2026-08-28) built on top of.
+- **Client Order History**: Address + Value columns added; `_quote_totals()` extracted to kill a duplicated discount/VAT/deposit/balance formula that existed in two places.
+- **Quote Builder Layout Corrections** — Order Details card relocated to the Order Index; Floor Prep genuinely nested inside the Screed tile (a previous comment had incorrectly claimed it already was).
+- **Duplicate Quote + Quote Description field**, and **Order Index Bulk Delete (Owner-only)** — the existing single-quote delete was found to have no owner gate and no audit trail at all; fixed to match the new bulk endpoint rather than leaving a weaker, ungated path standing.
+- **Quote Photo Attachments, Phase 1 pilot** — Supabase Storage-backed photo uploads on quotes and builder estimates, proxied through authenticated endpoints rather than public storage URLs.
+- **Builder Referral Portal, Phase 1 pilot** — a fully public, unauthenticated estimate/statement flow for external builders, with commission computed at read time (never stored) from the real linked quote's final payment.
+- **Login Activity Log**: fixed the real root causes of two known issues — a double-submit race creating duplicate session rows, and no way to distinguish a real logout from a 24h auto-expiry in the log.
+
+### Why (root causes, decisions, rejected alternatives)
+- RLS incident root cause: Supabase auto-generates a public PostgREST API for every table, completely independent of this app's own FastAPI auth — with RLS never enabled, anyone with the project URL could read/edit/delete every row of every table, no authentication required. `app_user` (password hashes) and `usersession` (live tokens) were the two most urgent tables.
+- The dynamic-table-discovery follow-up was needed because the hardcoded 24-table list (from SQLModel classes) didn't match the Advisor's 25 flagged issues — rather than guess the 25th table's name, the fix now asks the live database for every table that exists, which is correct regardless of what that table turns out to be and self-covers any future table too.
+- The production-down follow-up: `inspect`/`text` were used in the new RLS code but only ever imported at LOCAL scope inside a different function — never at module scope — so the RLS code crashed the whole app on every startup with a `NameError` the instant it ran, meaning RLS was, ironically, never actually being enabled by the code that shipped to fix it.
+- Duplicate Quote's orphaning bug: `duplicateQuoteFromIndex()` prompted for "client name" as free text pre-filled with the source's name — editing that text at all (even to add a genuinely useful note) silently sent it back as a different client by name, no real `client_id`, orphaning the copy. Fixed structurally by removing the free-text override from the backend entirely — the only way to change a duplicate's client is now a validated `client_id`, never free text, so this failure mode can't recur regardless of what any future frontend sends.
+- The Order Index / Job Workflow Redesign's 7 open questions were each explicitly confirmed with Burgert before building (sequential job numbers; declining as its own action, not a 5th status; invoice status computed not stored; manual override always available as an escape hatch, automation as the default path not the only path; two independent manual "materials ordered"/"ready for installation" fields, since Bolton has no real stock tracking to infer either from).
+- Two real staleness bugs found and fixed while migrating off the legacy `status` field: `commission_statement()` and the Business Overview conversion-rate report were both still filtering on the old field, which the new workflow endpoints never touched — both would have silently gone stale for every job processed through the new system if not caught during this migration.
+- Order Index Bulk Delete: found the pre-existing single-quote `DELETE /quotes/{id}` had no owner gate and no audit trail at all — leaving it as-is would have trivially defeated the entire point of gating the new bulk-delete endpoint, so it was fixed to match in the same pass.
+- Quote Photo Attachments: confirmed with the user which storage mechanism to use before building, rather than assuming — the brief's own named reference (AI Price Sheet Import) turned out not to store files at all, it streams straight to the Claude API and discards the bytes.
+
+### Deferred / parked (and why)
+- Stairwell line editing (Sprint B) — explicitly not built; landings/nosing make a faithful pre-fill materially more complex, flagged honestly as a known gap rather than shipped half-working. Delete-and-re-add still works for stairwell lines.
+- Retroactive cleanup of old orphaned login sessions, rate-limiting, and account lockout — explicitly out of scope for the Login Activity Log fix, per that brief's own stated limits.
+
+### Open going into next session
+- Post-RLS precaution (force-logout + password reset) still needed live confirmation the RLS fix was stable before it could run — done the next day (2026-08-26) once Burgert confirmed.
+- Order Index / Job Workflow Redesign was v1 of the 4-status model — later substantially extended by the Job Workflow Design Proposal work (2026-08-27/28).
+
+---
+
+## 2026-08-24
+
+14 commits — the Client-Side Commercial Workflow (Sprints A–D), the Screed/Floor-Prep calculator, and a Supplier Console pricing-data-quality pass.
+
+### What shipped
+- **Client-Side Commercial Workflow, Sprints A–D**, built in sequence over the day:
+  - Sprint A — client creation gaps (duplicate-name warning, double-submit guard, a working Edit form for an existing client that had never been wired to the frontend despite the backend endpoint already existing) and a real quote-builder residue bug.
+  - Sprint B — Edit button for existing quote lines (flooring/blinds/trim/skirting/misc; stairwell explicitly excluded as a known, honestly-flagged gap).
+  - Sprint C — a simple send path for quotes (pre-filled mailto:/wa.me links), after finding the real gap wasn't the print/PDF layout (already solid) but that there was no way to hand a quote to a client beyond the browser's native print dialog.
+  - Sprint D — rebuilt a completely missing Order Details + Follow-Ups card (the backend and JS were already fully correct; the HTML for it had simply never been built, so those functions had been throwing on a null reference the entire time), plus controlled post-accept edit confirmations and a Print Invoice shortcut.
+- **Screed Calculator: Extra Rooms + Floor-Prep Material Calculator** — new `FloorPrepProduct` model living in the Supplier Console like every other product category, calculated and manual modes, verified against the brief's own worked reference example. Same-day UI refinement pass added collapsible per-room cards and a room-name field.
+- **Courier/delivery fee clarified + reused**, plus a new, independent **Transport Levy** field — courier reuses the existing `delivery_fee_per_m2` field rather than adding a new one (confirmed with Burgert); found and fixed a real bug where Sales could see the internal delivery cost figure despite a schema comment claiming it was already stripped.
+- **Transport levy relocated** into the floor job calculator as a toggle, and a new genuinely-per-job **Courier toggle** added alongside it.
+- **Supplier Console UI cleanup** — Dismiss button on the import summary card, a new "Discard staged changes" safety net (previously the only way to back out of a staged import was to not click Commit and navigate away), and removal of the now-fully-superseded Como-specific manual correction tool.
+- **Master Spreadsheet as System of Record** — re-import via the Standard Import Format is now a genuine update cycle (governed fields only, never touching Burgert's own trade-discount/wastage/markup settings), with unmatched existing products flagged Discontinued (never deleted) rather than silently dropped.
+- **Standard Import Format** — a new deterministic, non-AI spreadsheet import path (exact-header validation, `openpyxl`), replacing the AI-PDF path as the primary/recommended route; the AI-PDF path demoted to a collapsed section, not removed.
+- Two **real Supplier Console pricing bugs found and fixed**: Azura AI extraction missing plank dimensions/zone prices for some rows, and a structural Como pricing bug (box price landing directly in the per-m² field with nowhere correct to go).
+
+### Why (root causes, decisions, rejected alternatives)
+- Sprint D's real substantial finding: `saveOrderDetails()`, `logFollowUp()`, and `loadFollowUps()` — with fully correct, already-working backend support — had **no corresponding HTML anywhere in the page**. Every one of those functions had been throwing immediately on a null-element reference the whole time; Order Index displayed deposit/payment data per row, but there was never actually a way for Ryno or Madri to write it.
+- Sprint B deliberately did NOT build a second, approximate recalculation engine to reconstruct a line's original raw inputs (wastage %, discount %, markup %, glue/labour rate) for editing — `QuoteLineItem` only ever stored calculated outputs, never raw inputs. Re-deriving from the product's *current* price book entry (same as adding a new line) was chosen as honest-by-construction, over guessing backward from a possibly-since-changed override — explicitly the same shadow-calculation-drift bug class this project had already found and fixed elsewhere.
+- Como pricing bug root cause: the Console never had a dedicated "price per box" field, so when a supplier's sheet states box price (as Como's does), it had nowhere correct to go and landed directly in the per-m² fields instead — a genuine schema gap, not a formula bug. Reusing Azura's logic never caught this because Azura's sheet gives per-m² directly, so Azura never exposed the gap. Fixed by adding real box-price fields as the raw input and making the per-m² fields calculated-only, rejected on any direct staged edit going forward.
+- Azura extraction bug root cause: two concrete, addressable prompt gaps — the AI was never told how to split a combined "L × W × T" dimension string, and this project's own earlier "compact JSON" instruction (added for a real token-ceiling bug) was ambiguous enough to be misread as license to drop optional fields on a long sheet, not just whitespace.
+- Standard Import Format replacing AI-PDF as primary: every import bug hit up to this point (Como's box-price confusion, Azura's missing fields, a 150s timeout) traced back to the same root cause — an AI inferring column meaning fresh from an unpredictable PDF layout, live, with no human check before commit. A deterministic, exact-header spreadsheet format removes that inference step entirely.
+
+### Deferred / parked (and why)
+- Stairwell line editing (Sprint B) — not built; landings/nosing make a faithful pre-fill materially more complex than other categories, flagged as a known gap rather than shipped half-working.
+- Persisted per-supplier extraction-mapping config (referenced by the Field Sequence Redesign brief) — confirmed not yet built, flagged rather than silently assumed to exist.
+- The PDF-to-spreadsheet conversion step for the new Standard Import Format — explicitly manual/outside Bolton by design (Burgert + Claude in chat), nothing to build.
+- Full 94-row hand-verification of the Como price correction — intentionally not part of the same-day commit, flagged separately.
+
+### Open going into next session
+- A confirmed cross-supplier product-name contamination ("Como Bonsai 2.0 / Como Bellagio") needed a manual rename — the price-correction tooling fixed the number but deliberately never guesses a corrected name.
+- A second, related name-contamination case ("deZIGN series 200" attached to a Como product, actually an Azura naming convention) was found and alias-matched the same day, building on the previous day's (2026-08-23) verified-pricing work — see that entry below for the original finding.
+
+---
+
+## 2026-08-23
+
+20 commits, dominated by two real production incidents chased to genuine root cause — a mobile auth/loading outage and a cascading Como Flooring 94-product import failure — plus Supplier Console hardening.
+
+### What shipped
+- **"Loading..." hangs forever on mobile, fixed** — bound every API request to a 20s timeout via the shared global fetch wrapper, plus a `renderWithRetry` pattern (auto-retry once, then a clear "Tap to retry") applied to every landing screen.
+- **Mobile 401s after login, fixed** — moved the session token off a cookie entirely and onto a `localStorage`-backed `Authorization: Bearer` header.
+- **Stale Cloudflare edge cache serving a poisoned 502 as shared.js**, fixed via a forced cache-busting redeploy — a second, separate incident layered on top of the first, initially indistinguishable from it.
+- **Supplier Console**: new-supplier creation flow, an audited/staged product Delete (with a live reference-check against real quote lines before allowing it), a "Local Supplier" → "Skirtings" display rename, sticky column headers (three iterations to get right), redundant dead front-page tiles removed (Supplier Prices/Supplier Uploads — the old, unaudited, un-staged direct-write price book).
+- **AI price sheet import (Como Flooring's 94-product sheet)**: a real cascading failure chased through five separate fixes in sequence over the day — request timeout too low, `max_tokens` ceiling too low, verbose non-compact JSON output wasting the token budget, a `NOT NULL` violation on zone-priced products with no flat per-m² price, and finally the Commit Changes call itself having no timeout/catch at all (so a slow 94-row commit could silently "succeed" with nothing actually saved).
+- **Supplier-level Trade Discount % default** and **per-supplier zone pricing** (replacing one business-wide zone setting) — both via a new small `SupplierDefault` table, reusing the existing staged-commit-audit pipeline.
+- **Real Como pricing data-quality bugs found and flagged/corrected**: a stored price for one product turned out to be a box price, not a per-m² price (AI misclassification, not a code bug); a second product had another supplier's naming convention attached to it entirely (cross-supplier name contamination).
+
+### Why (root causes, decisions, rejected alternatives)
+- Loading-hang root cause: native `fetch()` has no default timeout, and 62 of ~65 call sites across the frontend had no try/catch at all — on mobile specifically, a carrier silently dropping an idle TCP connection during a Render free-tier cold start leaves the fetch promise never settling, with no error and no way out; desktop/broadband just waits it out, matching exactly the reported "desktop fine, mobile hangs forever" split.
+- Mobile-401 root cause: `bolton-frontend.onrender.com` and `bolton-backend.onrender.com` are different subdomains of `onrender.com`, which is on the Public Suffix List — browsers treat them as different *sites*, making the session cookie a genuine third-party cookie. `SameSite=None; Secure` satisfied the SameSite policy but not mobile browsers' separate third-party-cookie-blocking defaults (mobile Safari's ITP specifically) — login succeeded and set the cookie, but mobile browsers silently declined to persist or send it back. CORS and `credentials:'include'` were both already correct; this was never a missing-header bug. Moving the token to a normal `Authorization` header sidesteps cookie policy entirely rather than fighting it.
+- The Cloudflare edge-cache incident looked identical to the auth bug at first (mobile broken, desktop fine, "hangs then goes blank") but was a completely separate, coincidental issue — a transient 502 from a prior deploy got cached at the edge with a spoofed 200 status. Confirmed by directly comparing `cf-cache-status: HIT` (poisoned) against a cache-busted `MISS` (correct content) — evidence-first, not assumed to be the same bug as the one just fixed.
+- Como import cascade: each of the five fixes addressed a real, distinct root cause rather than symptom-patching the same error message repeatedly — the frontend's outer timeout and backend's inner timeout were coincidentally identical (an exact tie, not a deliberate margin), `max_tokens` was tuned for the smaller sheets this feature was originally tested against, the extraction prompt never told the model to output compact JSON, and the zone-priced NOT-NULL bug was a real edge case the existing "never silently convert an ambiguous price" safety logic hadn't accounted for (a zone price is a directly-extracted real number, not a guessed conversion, so using it as a fallback isn't the same risk class that safety rule exists to prevent).
+- The Como box-price/per-m² confusion was confirmed (by tracing the actual mapping code) to be a real AI extraction misclassification for that specific row, not a bug in this project's own mapping/staging logic, which does no unit conversion by deliberate design.
+- Trade Discount % default and per-supplier zone pricing both chosen to live in a new small `SupplierDefault` table (one row per supplier name) rather than bolted onto `BusinessSettings`, since there's no existing `Supplier` entity to attach to and each needs to persist independently per supplier.
+
+### Deferred / parked (and why)
+- Deleting the 4 duplicate "Azura Distributors" products — investigated and the tooling (audited Delete with a live reference-check) was built, but the actual deletion deliberately left for Burgert to trigger once he's seen the real reference-check result firsthand, rather than assumed safe.
+- A known gap noted, not fixed: a `TrimProduct` used only as a stairwell's nosing isn't tracked by id on `QuoteLineItem`, so the delete-reference-check can't catch that specific usage.
+- The 94-individual-flush pattern in the Supplier Console commit handler (one DB round-trip per row rather than batched) — flagged as a real, understood performance improvement, deliberately not bundled into the timeout fix since it trades away precise per-row error attribution, a genuine tradeoff needing its own decision.
+- Full 94-row hand-verification of Como Flooring pricing against the source PDF — intentionally left as Burgert's own review step, not automated.
+
+### Open going into next session
+- The Como Flooring 94-product commit needed to actually be re-attempted and confirmed successful once all five import-pipeline fixes landed.
+- The Como Bonsai 2.0/Bellagio and "deZIGN series 200" name-contamination findings needed a manual rename — picked up as a same/next-day follow-up (see 2026-08-24 above).
+
+---
+
+## 2026-08-22
+
+12 commits — the Supplier & Price Book Console's foundational build, Owner Preview Mode, Login Activity Log Phase 1, a real production migration crash, and the AI-Assisted Price Sheet Import.
+
+### What shipped
+- **Real pricing bug found and fixed**: all 35 Aspen Flooring products were storing (Feb 2025 list price ÷ m² per box) instead of the real list price — corrected across the board; a 20m² job's ex-VAT cost went from R2,524.99 (wrong) to R6,796.86 (correct). Confirmed no existing quote had used an Aspen product, so no historical quote needed review.
+- **Supplier & Price Book Management Console** built from scratch — per-product glue/labour rate defaults, Azura's real zone-tiered pricing (`price_zone_a/b/c`), a business-wide pricing zone setting, and plank-dimension fields that genuinely drive `tiles_per_pack` rather than sitting as reference-only data.
+- **Commit-and-acknowledge workflow** — edits stage locally in the browser; nothing hits the database until an explicit "Commit Changes", which applies the whole batch atomically and reports plain-English per-field change lines, not a generic "Saved."
+- **Change Log** — new general-purpose `AuditLog` table (not special-cased to pricing), read-only, no edit/delete endpoint ever, same principle as the session log.
+- **AI-Assisted Price Sheet Import** — built ahead of its own stated precondition (the brief said not to start until the Console had seen real manual use; built anyway per explicit instruction) — sends a supplier's PDF/photo to the Claude API describing fields to find (not a fixed table shape, since every supplier's sheet layout differs), explicitly instructed never to convert a per-box price into per-m² itself.
+- Real production migration crash fixed same day: `DATETIME` isn't a valid Postgres type name (Postgres uses `TIMESTAMP`) — SQLite had silently accepted it in every local test, masking the bug until it hit the real production database and rolled back the entire migration batch.
+- **Sticky Supplier Console table headers** — three separate attempts before landing on a spec-correct fix; plus collapsible sections with per-browser memory, search-across-all-suppliers, and (later) genuinely screen-fixed scroll arrows with an `IntersectionObserver` handing off control between tables.
+- Real column-alignment regression fixed (an import-work side effect had left existing-product rows one column left of their header) and a real horizontal-scroll-unreachable bug fixed (a global `table { width: 100% }` rule was silently capping the table instead of letting it overflow).
+- A real markup-percent display inconsistency found and fixed — the raw stored value was always correct, but the Console showed it as a raw multiplier ("1.3") while the Floor Job builder showed the same number as "30.0%" elsewhere in the same app.
+- **Owner Preview Mode ("View As")** — lets the real Owner preview the app as Sales/Admin, with genuinely stripped fields and blocked actions server-side (not hidden client-side), via one shared `get_current_role()` dependency nearly every endpoint already reads through.
+- **Login & Session Activity Log, Phase 1** (session-level only — a feature-level breakdown explicitly flagged and deferred) — real logout now soft-ends a session rather than deleting the row, so there's an actual history to report.
+- Real cost-leakage bug found and fixed during Owner Preview Mode regression testing: two stairwell-specific cost fields were stripped for Sales only at line-creation time, not when re-opening a saved quote — `get_quote`/`list_quotes` shared a stripping function that didn't yet know about those two fields.
+
+### Why (root causes, decisions, rejected alternatives)
+- Aspen pricing bug: confirmed the exact wrong-formula pattern held for every single one of the 35 products, no exceptions — verified against the real `calculate_flooring_line()` function, then live on the deployed backend, not just by inspection.
+- AI Price Sheet Import deliberately never does unit conversion itself (per-box → per-m²) — extracts the raw price and its stated unit basis separately and leaves the conversion to a human reviewer, specifically to avoid repeating the exact shape of bug that caused the real Aspen price-book mix-up this project had already found and fixed once.
+- `DATETIME`-vs-`TIMESTAMP` root cause: SQLite has no real type enforcement on column declarations, so it silently accepted an invalid type name in every local test — the bug was structurally invisible until it hit real Postgres. Every other type string in that same migration was then manually re-audited against real Postgres syntax rather than assumed safe by association.
+- Sticky-header root cause (confirmed twice, across three attempts): setting `overflow-x: auto` on a wrapper div forces its computed `overflow-y` to `auto` too, per the CSS overflow spec — not overridable by also setting `overflow-y: visible` — which silently makes that div `position: sticky`'s containing block instead of the page, so a naively-applied sticky header parks at a fixed offset into the table rather than tracking real scroll. The final fix moved the header out of the scrolling wrapper entirely (a cloned header bar as a page-flow sibling) rather than fighting the spec.
+- Column-misalignment bug traced to a real regression: the AI import work added a leading empty header cell for the "NEW (import)" indicator, but the renderer for *existing* products never grew a matching leading cell to match.
+- Markup-display fix scoped deliberately narrow (exact field-name match, not a "multiplier" substring match) because `over_tiles_multiplier`/`removed_tiles_multiplier` are a genuinely different kind of multiplier (a screed job-type rate factor) where the raw "×1.5" display is already correct and shouldn't be touched.
+
+### Deferred / parked (and why)
+- SPC Rigid Core 6mm and Premium Stair Treads — still missing from the Aspen price book entirely, flagged rather than added, per Burgert's own choice to hold off.
+- Login & Session Activity Log Phase 2 (feature-level breakdown, not just session-level) — explicitly flagged as not built this pass.
+- Real extraction-accuracy testing of the AI Price Sheet Import against actual supplier PDFs — could not be done in this environment (no API key, no real documents available at the time); everything around it (staging, commit, audit log, role-gating, an atomicity bug caught along the way) was verified against real running servers instead.
+
+### Open going into next session
+- Real Supplier Console usability problems (column truncation, unreachable horizontal scroll, sticky headers) surfaced immediately once used with real multi-supplier data — chased through the first half of the next day (2026-08-23 in reverse order above) before the Como import cascade took over the rest of it.
+
+---
+
+## 2026-08-21
+
+One commit — multi-tenant groundwork, done invisibly ahead of any real second tenant existing.
+
+### What shipped
+- **`tenant_id` added to every business-data table** (17 tables — the original 14 the brief named, plus the 3 price-book tables identified as obviously business-specific too) and every query scoped through a new `get_current_tenant` dependency, sourced from the logged-in user's own record, never client-supplied.
+- New idempotent `_ensure_new_columns()` startup migration mechanism — added specifically because `SQLModel.metadata.create_all()` only ever creates brand-new tables, never alters an existing one, and this was the first time an already-live table needed a new column added under it. This mechanism went on to carry essentially every future schema change in the project.
+- Hardcoded business-rule constants (flooring margin warning threshold, stairwell labour rates, floor-prep bag defaults, tile removal fee) moved out of `calculations.py`/`models.py` and into `BusinessSettings`, with the original hardcoded values kept as defaults — no behaviour change, just made them editable going forward.
+- Two real, small findings fixed in the same pass: uploads now land under a tenant-scoped path; the printed quote's hardcoded logo can now be overridden via `BusinessSettings.logo_base64`.
+
+### Why (root causes, decisions, rejected alternatives)
+- `UserSession` was deliberately excluded from `tenant_id` scoping — it's looked up by its own random token, not by tenant, so tenant-scoping it would add nothing.
+- Business-rule constants were moved to settings specifically to make them owner-editable later without a code deploy, while deliberately changing nothing about the actual formulas — the functions gained new parameters that default to the exact original hardcoded values, so this shipped as a pure plumbing change with zero calculation risk.
+- Real-money verification discipline: the whole migration was tested against a real historical copy of the local database (82 flooring products, 14 quotes, 24 line items) before shipping, confirming a real historical quote's totals and a fresh quote's figures were byte-identical to pre-migration numbers.
+
+### Deferred / parked (and why)
+- No UI changes, no tenant switcher, and no way to actually create a second tenant through the app yet — explicitly scoped as groundwork only, per the brief. This remains invisible infrastructure until a real second tenant is onboarded.
+
+### Open going into next session
+- None carried forward — a clean, self-contained infrastructure day.
+
+---
+
+## 2026-08-20
+
+Two commits — real per-person login (replacing a spoofable client-supplied role) and a stairwell calculator correction.
+
+### What shipped
+- **Real per-person login** — replaced the earlier self-reported "Viewing as" role dropdown, flagged in the original go-live handover as a blocking dependency, since a client-supplied role query param meant anyone could claim to be Owner just by editing the URL. Server-side sessions (PBKDF2-hashed passwords, `httponly`/`secure`/`samesite=none` cookies), three real accounts seeded (Burgert/owner, Ryno/sales, Madri/admin) with random initial passwords given to Burgert directly in chat, never committed.
+- **Stairwell tread coverage correction** — tread width per stair corrected from 2 to 3 planks, per three independent flooring reps' confirmation — plus multi-landing support (L/U-shaped staircases), billed as a normal flooring material line rather than folded into the stairwell tile/glue formula.
+- **Two real security gaps closed**, found while reviewing a parallel, unapplied auth patch rather than adopting it wholesale: a closed-by-default `require_auth` middleware (previously, protection depended entirely on every endpoint individually remembering to declare its own role dependency — nothing stopped a future endpoint from silently shipping unprotected), and server-side enforcement added to commission-rate CRUD, which had only ever been Owner-gated by UI convention.
+
+### Why (root causes, decisions, rejected alternatives)
+- The parallel auth patch (a bcrypt+JWT-in-localStorage design from a different dev lineage) was reviewed but deliberately not applied — it conflicted outright with the PBKDF2+server-side-session auth already built, tested end-to-end, and committed. Discarding a tested implementation for an unreviewed one wasn't worth it, but the review itself caught two real, independent gaps worth keeping regardless of which auth mechanism won.
+- The closed-by-default middleware was registered *before* `CORSMiddleware` deliberately — verified live that without that exact ordering, a blocked (401) response was missing its CORS header entirely, which would have broken every blocked request from the real frontend with an opaque CORS error instead of a readable 401.
+- Tread-width correction sourced from three independent professional confirmations, not a single guess — the previous 2-plank figure had been silently wrong in every stairwell quote calculated before this fix.
+
+### Deferred / parked (and why)
+- None explicitly deferred this day.
+
+### Open going into next session
+- None carried forward — real login replaced the last known spoofable trust boundary from the original handover.
+
+---
+
+## 2026-08-19
+
+Four commits — the actual creation of this git repository, and the first days getting the pre-existing Phase 1 app (already at v65 per `CHANGELOG.md`) live on Render + Supabase.
+
+### What shipped
+- **`f7dc67f` — Initial commit: Bolton Phase 1, v65.** The starting point of this repository — Price Book + Quote Builder + HR & Commission, already refactored into six frontend modules (`shared.js`, `price-book.js`, `clients.js`, `order-index.js`, `quote-builder.js`, `hr.js`) plus the app shell, FastAPI + SQLModel backend, ready to switch from local SQLite to Supabase Postgres via `DATABASE_URL`. Everything before this point lived as pre-repo history — see [`CHANGELOG.md`](../CHANGELOG.md) (v1–v65) for that record.
+- **Supabase migration fixed** — the hand-written `supabase_schema.sql` used snake_case table names (`flooring_product`) that never matched SQLModel's real auto-generated names (`flooringproduct`), meaning the schema file's tables had never actually been queryable by the running app at all; renamed and reordered to respect real foreign keys, plus a working one-time SQLite → Supabase migration script.
+- **Live backend cutover verified** — API constant pointed at the real Render backend only after confirming the real price book (81 flooring products, 15 trims) and Business Settings data were actually present and a real calculation matched.
+- **Real production bug found and fixed on the live deployed app**: the Flooring Quotes screen showed "No flooring products in the price book yet" despite 81 real products existing — a race condition where a rendering function read a product cache synchronously, assuming an unawaited page-load fetch had already finished. Invisible against instant local SQLite; trivially easy to hit against a real Render free-tier cold start (30–60+ seconds).
+
+### Why (root causes, decisions, rejected alternatives)
+- The Supabase schema mismatch was a real, structural gap — the hand-written schema file had simply never been run against real Postgres before this deployment, so the naming mismatch had never been caught until it mattered.
+- The flooring-products race condition was the *same class* of bug already fixed once elsewhere in the code (an unguarded synchronous cache read racing an unawaited fetch) but had not yet been applied to this specific rendering function — found by deliberately checking every other call site for the identical unguarded shape rather than assuming the earlier fix was complete, and confirmed present in three more places (blinds/trim/skirting dropdowns) in the same pass.
+
+### Deferred / parked (and why)
+- Nothing explicitly deferred — this was the project's first days getting a pre-built app through its first real production deploy and finding the bugs only a real cold-start deploy could surface.
+
+### Open going into next session
+- None carried forward from this earliest window — the app was live, real data was confirmed present, and the immediate priority shifted to closing the spoofable-role security gap, addressed the very next day (2026-08-20 above).
