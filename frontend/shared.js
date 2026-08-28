@@ -983,6 +983,12 @@ function showRawSection(tabName) {
   document.getElementById('quoteBuilder').style.display = tabName === 'quoteBuilder' ? 'block' : 'none';
   const priceBookEl = document.getElementById('priceBook');
   if (priceBookEl) priceBookEl.style.display = tabName === 'priceBook' ? 'block' : 'none';
+  // Widened Quote Builder (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §03, approved) — same body-class toggle as showSection()
+  // (index.html); kept in sync here for the same reason this whole
+  // function mirrors that one's display logic — see this function's own
+  // comment above.
+  document.body.classList.toggle('quote-builder-active', tabName === 'quoteBuilder');
 }
 
 function applyNavState(navState) {

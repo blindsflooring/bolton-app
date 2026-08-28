@@ -70,6 +70,55 @@
   }
   nav button.active { color: var(--teal); border-bottom-color: var(--teal); }
   main { padding: 16px; padding-bottom: 76px; max-width: 900px; margin: 0 auto; }   /* bottom padding confirmed Aug 2026 — clears the fixed #mobileBackBtn so it never covers the last bit of page content */
+  /* Widened Quote Builder (Vinyl Quoting UX Redesign proposal §03,
+     confirmed Aug 2026, approved, Phase 3) — SCOPED to this one screen
+     via body.quote-builder-active (toggled in showSection()/
+     showRawSection()), not a change to the shared main{} rule above —
+     every other screen keeps the 900px cap untouched. */
+  body.quote-builder-active main { max-width: 1200px; }
+  .quote-builder-layout { display: block; }
+  @media (min-width: 900px) {
+    body.quote-builder-active .quote-builder-layout {
+      display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start;
+    }
+  }
+  /* Persistent summary panel (proposal §03/§10, approved, Phase 3) —
+     STATIC by design, matching the header's own same-day lesson
+     explicitly: one fixed size on desktop (a normal position:sticky
+     sidebar, repositioned only on render/resize via JS, never on
+     scroll) and one fixed size on mobile (position:fixed, bottom of
+     the viewport) — nothing here reacts to scroll position or
+     direction. The "expanded" class is a plain click toggle
+     (toggleQuoteSummaryExpanded(), quote-builder.js), not scroll-driven. */
+  #quoteSummaryPanel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .qsp-compact { display: none; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; font-weight: 700; font-size: 13px; }
+  .qsp-chevron { font-size: 11px; color: var(--ink-faint, #8A93A0); transition: transform 0.15s ease; }
+  .qsp-full { padding: 14px 16px; }
+  .qsp-title { font-weight: 800; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-faint, #8A93A0); margin-bottom: 8px; }
+  .qsp-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 5px 0; }
+  .qsp-row-done { font-weight: 600; }
+  .qsp-row-empty { color: var(--ink-faint, #8A93A0); }
+  .qsp-row-active { color: var(--navy); font-weight: 600; }
+  .qsp-total { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; font-weight: 800; font-size: 14.5px; }
+  @media (min-width: 900px) {
+    #quoteSummaryPanel { position: sticky; /* top set by positionQuoteSummaryPanel() */ }
+  }
+  @media (max-width: 899px) {
+    #quoteSummaryPanel {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+      border-radius: 0; border-left: none; border-right: none; border-bottom: none;
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    }
+    .qsp-compact { display: flex; }
+    .qsp-full { display: none; max-height: 55vh; overflow-y: auto; border-top: 1px solid var(--border); }
+    #quoteSummaryPanel.expanded .qsp-full { display: block; }
+    #quoteSummaryPanel.expanded .qsp-chevron { transform: rotate(180deg); }
+    /* Room for the bar so it never overlaps the two existing fixed
+       buttons — same body-class hook the widened-main rule above
+       reuses, not a second mechanism. */
+    body.quote-builder-active #backToTopBtn,
+    body.quote-builder-active #mobileBackBtn { bottom: 74px; }
+  }
   .card {
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px; margin-bottom: 16px;

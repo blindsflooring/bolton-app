@@ -85,6 +85,118 @@ function syncActiveCategoryTab() {
   });
 }
 
+// Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+// Redesign proposal §03/§10, approved, Phase 3) — "what's been added,
+// what's outstanding, and the total, visible at all times without
+// scrolling." Same seven buckets as the category tabs above (a screed
+// line is still category "flooring" server-side — flooring_pricing_type
+// is what tells the two apart, exactly like the tabs already do).
+const QUOTE_SUMMARY_CATEGORIES = [
+  ['flooring', 'Flooring'], ['screed', 'Screed'], ['blinds', 'Blinds'],
+  ['skirting', 'Skirting'], ['trim', 'Trim'], ['stairwell', 'Stairwell'], ['misc', 'Misc'],
+];
+function lineSummaryBucket(line) {
+  if (line.category === 'flooring') return line.flooring_pricing_type === 'screed' ? 'screed' : 'flooring';
+  return line.category;
+}
+
+// Three states, formalized in the approved proposal §10 — Not started
+// (○, muted, "none yet" — informational, never a warning: not every
+// job needs every category), Calculated (→, the tab currently being
+// worked on, no line saved yet), Included in Quote (✓, a real saved
+// line, with its subtotal). "Calculated" here is approximated by "this
+// is the active tab" rather than tracking every field's dirty state —
+// a deliberately simpler, lower-risk signal that's already available
+// (activeLineCategoryTab(), same file) rather than a new mechanism
+// built just for this.
+// Cached purely so a tab switch (selectLineCategoryTab()) can refresh
+// just the "active/in-progress" row without re-fetching the whole
+// quote — always overwritten with the real, backend-computed figure
+// every time loadQuote() runs, never independently calculated.
+let lastKnownQuoteTotalInclVat = 0;
+function renderQuoteSummaryPanel(totalInclVat) {
+  const panel = document.getElementById('quoteSummaryPanel');
+  if (!panel) return;
+  if (!currentQuoteId) { panel.style.display = 'none'; return; }
+  if (totalInclVat === undefined) { totalInclVat = lastKnownQuoteTotalInclVat; }
+  else { lastKnownQuoteTotalInclVat = totalInclVat; }
+  panel.style.display = '';
+
+  const buckets = {};
+  (currentQuoteLinesCache || []).forEach(l => {
+    const b = lineSummaryBucket(l);
+    if (!buckets[b]) buckets[b] = { count: 0, subtotal: 0 };
+    buckets[b].count += 1;
+    buckets[b].subtotal += l.line_total;
+  });
+  const addLineCardVisible = document.getElementById('addLineCard').style.display !== 'none';
+  const active = addLineCardVisible ? activeLineCategoryTab() : null;
+
+  const rows = QUOTE_SUMMARY_CATEGORIES.map(([id, label]) => {
+    const b = buckets[id];
+    if (b) {
+      return `<div class="qsp-row qsp-row-done"><span>✓ ${label}${b.count > 1 ? ` (${b.count})` : ''}</span><span>R${b.subtotal.toFixed(2)}</span></div>`;
+    }
+    if (id === active) {
+      return `<div class="qsp-row qsp-row-active"><span>→ ${label} — in progress</span><span></span></div>`;
+    }
+    return `<div class="qsp-row qsp-row-empty"><span>○ ${label} — none yet</span><span></span></div>`;
+  }).join('');
+
+  const outstanding = QUOTE_SUMMARY_CATEGORIES.filter(([id]) => !buckets[id]).map(([, label]) => label);
+  const lineCount = (currentQuoteLinesCache || []).length;
+  const outstandingText = outstanding.length
+    ? `${outstanding.slice(0, 2).join(', ')}${outstanding.length > 2 ? '…' : ''} outstanding`
+    : 'nothing outstanding';
+  const compactText = lineCount
+    ? `${lineCount} added · ${outstandingText} · R${totalInclVat.toFixed(2)}`
+    : `No lines yet · R0.00`;
+
+  panel.innerHTML = `
+    <div class="qsp-compact" onclick="toggleQuoteSummaryExpanded()">
+      <span class="qsp-compact-text">${compactText}</span>
+      <span class="qsp-chevron">▲</span>
+    </div>
+    <div class="qsp-full">
+      <div class="qsp-title">This Quote</div>
+      ${rows}
+      <div class="qsp-row qsp-total"><span>Total incl. VAT</span><span>R${totalInclVat.toFixed(2)}</span></div>
+    </div>`;
+  positionQuoteSummaryPanel();
+}
+
+// Mobile only — desktop's .qsp-full is always visible (CSS), this
+// toggle has no effect there. Click-driven, not scroll-driven — the
+// header's own five-pass saga earlier today is exactly why that
+// distinction is being made explicit in a comment here.
+function toggleQuoteSummaryExpanded() {
+  const panel = document.getElementById('quoteSummaryPanel');
+  if (panel) panel.classList.toggle('expanded');
+}
+
+// Positions the desktop sticky sidebar just below the real, CURRENT
+// header height — measured via JS rather than a hardcoded CSS value,
+// since #appHeaderWrap's height genuinely varies (the Owner Preview
+// banner adds to it when active) and the header is otherwise static in
+// height now (Header Flicker: Static By Design, same day) — no
+// scroll-linked repositioning here, only ever called from a render
+// (loadQuote()) or a resize, never from a scroll listener.
+function positionQuoteSummaryPanel() {
+  const panel = document.getElementById('quoteSummaryPanel');
+  const header = document.getElementById('appHeaderWrap');
+  if (!panel || !header) return;
+  // Desktop only (matches styles.css's own min-width:900px breakpoint
+  // for the sticky sidebar) — the mobile layout uses position:fixed
+  // with bottom:0 and no set height; leaving an inline `top` from a
+  // previous desktop measurement would combine with that bottom:0 and
+  // stretch the bar to fill the whole screen height instead of sitting
+  // as a slim bar at the bottom. Cleared explicitly on mobile rather
+  // than just never set, since a resize (e.g. rotating a tablet) can
+  // cross the breakpoint in either direction after it was already set.
+  panel.style.top = (window.innerWidth >= 900) ? (header.offsetHeight + 12) + 'px' : '';
+}
+window.addEventListener('resize', positionQuoteSummaryPanel);
+
 async function toggleLineFields() {
   const cat = document.getElementById('line_category').value;
   const isFlooring = cat === 'flooring';
@@ -134,6 +246,7 @@ async function toggleLineFields() {
   // not just the category), same reasoning as that call site's own
   // comment.
   syncActiveCategoryTab();
+  renderQuoteSummaryPanel();   // refreshes the "→ in progress" row for whichever tab is now active — §03/§10, Phase 3
 }
 
 function populateFloorProductDropdowns() {
@@ -379,6 +492,7 @@ function fjOnIncludeChange() {
   // these same two checkboxes (the real state), so a direct checkbox
   // toggle (not just a tab click) keeps the visible tab honest too.
   syncActiveCategoryTab();
+  renderQuoteSummaryPanel();   // same refresh as toggleLineFields()'s non-flooring path — §03/§10, Phase 3
   fjCalc();
 }
 
@@ -803,6 +917,13 @@ async function createQuote() {
   // stock" is exactly the moment that'd be most useful. Shown directly
   // here too now, same as the other cards on this line.
   document.getElementById('quotePhotosCard').style.display = 'block';
+  // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+  // Redesign proposal §03, approved, Phase 3) — this function never
+  // calls loadQuote() (only addLine() does, after the first real
+  // line — see this function's own earlier comment), so without this
+  // the panel would stay hidden/stale until then. 0 is correct here,
+  // not a placeholder — a brand-new quote genuinely has no lines yet.
+  renderQuoteSummaryPanel(0);
   const dupBtn = document.getElementById('duplicateQuoteBtn');
   if (dupBtn) dupBtn.style.display = '';
   const revertBtn = document.getElementById('revertQuoteBtn');
@@ -871,6 +992,7 @@ async function startPriceCheck() {
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('quotePhotosCard').style.display = 'block';
+  renderQuoteSummaryPanel(0);   // same reasoning as createQuote()'s own comment just above it — this entry point never calls loadQuote() either
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -925,6 +1047,16 @@ async function convertPriceCheckToQuote() {
 function clearStaleQuoteResidue() {
   currentQuoteStatus = 'quoted';   // a brand-new quote's workflow_status is always 'quoted' — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
   currentQuoteClientId = null;   // must not leak the PREVIOUS quote's real client into a new one — createQuote() sets this fresh via loadQuote() once the new quote is actually saved
+  // Real, pre-existing gap this function's own stated purpose already
+  // covers, closed while building the persistent summary panel
+  // (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal §03,
+  // approved, Phase 3): this cache was never reset here, only ever
+  // reassigned inside loadQuote() — meaning renderFloorPrepRoomCards()
+  // and the new summary panel could both briefly read the PREVIOUS
+  // quote's lines on a fresh quote, before the first addLine()/
+  // loadQuote() call overwrote it. Same "cheap and always correct to
+  // clear here too" reasoning as everything else in this function.
+  currentQuoteLinesCache = [];
   const printInvoiceBtn = document.getElementById('printInvoiceBtn');
   if (printInvoiceBtn) printInvoiceBtn.style.display = 'none';
   const sendInvoiceBtn = document.getElementById('sendInvoiceBtn');
@@ -1009,6 +1141,13 @@ function resetQuoteBuilderUI() {
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
+  // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+  // Redesign proposal §03, approved, Phase 3) — currentQuoteId is
+  // already null above, so this just hides the panel; without this
+  // call it would keep showing the PREVIOUS quote's stale summary
+  // until the next loadQuote(), same stale-residue class of bug
+  // q_branch/q_owner above were fixed for.
+  renderQuoteSummaryPanel();
   document.getElementById('quotePhotosCard').style.display = 'none';
   const dupBtnHide = document.getElementById('duplicateQuoteBtn');
   if (dupBtnHide) dupBtnHide.style.display = 'none';
@@ -1706,6 +1845,14 @@ async function loadQuote() {
     totalText += `<br><span style="font-size:14px; font-weight:600;">Overall cost: R${data.overall_cost_ex_vat.toFixed(2)} — Overall margin: ${pct}%${flag}</span>`;
   }
   document.getElementById('quoteTotal').innerHTML = totalText;
+  // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+  // Redesign proposal §03, approved, Phase 3) — reuses inclVat, the
+  // SAME backend-computed total_incl_vat this function's own total
+  // line above already uses, never a second, independently-summed
+  // total that could disagree with it (discount/VAT/transport
+  // levy/Manual Override all already folded into this one figure
+  // server-side).
+  renderQuoteSummaryPanel(inclVat);
   applyRoleVisibility();
 }
 

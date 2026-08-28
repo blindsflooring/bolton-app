@@ -275,6 +275,22 @@
     mini-form below), Price Check (no client required at all — a real
     dummy quote, same calculator, explicitly not a saved job until
     converted). -->
+    <!-- Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+    Redesign proposal §03/§10, approved, Phase 3) — this wrapper is the
+    two-column desktop layout: everything already here (New Quote,
+    category tabs + entry cards) becomes the left/main column;
+    #quoteSummaryPanel (below, before linesCard) is the new right
+    column, sticky, one fixed size, nothing scroll-linked about it —
+    same static-by-design constraint the header now follows, stated
+    explicitly in the proposal itself given that saga. On narrow
+    viewports this collapses to a single column and the summary instead
+    renders as the fixed mobile bottom bar (styles.css) — same content,
+    different placement, driven by CSS alone, no separate mobile-only
+    render path to keep in sync. linesCard (the full itemized table +
+    Save/Print/etc.) deliberately stays OUTSIDE this wrapper, below it,
+    full width — this panel is an overview, not a replacement for it. -->
+    <div class="quote-builder-layout">
+    <div class="quote-builder-main">
     <div class="card">
       <h2>New Quote</h2>
       <div class="grid">
@@ -645,6 +661,26 @@
       </div>
       <br><button class="primary" onclick="addLine()">Add Line</button>
     </div>
+    </div><!-- /.quote-builder-main -->
+
+    <!-- Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
+    Redesign proposal §03/§10, approved, Phase 3) — content built by
+    renderQuoteSummaryPanel() (quote-builder.js): one row per category
+    (Flooring/Screed/Blinds/Skirting/Trim/Stairwell/Misc), ✓ with a
+    subtotal for categories that have at least one line, a plain muted
+    "none yet" for categories that don't — never a warning, since not
+    every job needs every category (§03's own explicit point) — plus
+    the running total. Empty by default; hidden until a quote is
+    actually open (same display:none-until-shown pattern as linesCard
+    itself). STATIC — one fixed size on both the desktop sticky sidebar
+    and the mobile fixed bottom bar (CSS media query below decides
+    which renders; same HTML, same content, no separate mobile render
+    path), nothing about it changes with scroll position or direction,
+    full stop — the header's own five-pass saga earlier today is the
+    reason this is stated this plainly rather than left to be
+    rediscovered the hard way a second time. -->
+    <div id="quoteSummaryPanel" style="display:none;"></div>
+    </div><!-- /.quote-builder-layout -->
 
     <div class="card" id="linesCard" style="display:none;">
       <h2>Quote Lines</h2>
@@ -778,6 +814,14 @@ function showSection(tabName) {
   document.getElementById('landing').style.display = tabName === 'landing' ? 'block' : 'none';
   document.getElementById('priceBook').style.display = tabName === 'priceBook' ? 'block' : 'none';
   document.getElementById('quoteBuilder').style.display = tabName === 'quoteBuilder' ? 'block' : 'none';
+  // Widened Quote Builder (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §03, approved) — scoped ONLY to this screen via a body
+  // class + a single CSS rule (styles.css), not a global main{} change
+  // — every other screen keeps the shared 900px cap untouched. Mirrored
+  // in showRawSection() (shared.js) for the same reason that function
+  // duplicates the rest of this display-toggling logic — see its own
+  // comment.
+  document.body.classList.toggle('quote-builder-active', tabName === 'quoteBuilder');
   // Page Title (confirmed Aug 2026) -- priceBook/quoteBuilder are the
   // two tabs renderLanding() never touches (same reasoning as the
   // history-push comment below), so they need their own title here.
