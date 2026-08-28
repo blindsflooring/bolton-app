@@ -703,6 +703,7 @@ editing" scope. -->
 <script src="price-book.js"></script>
 <script src="clients.js"></script>
 <script src="order-index.js"></script>
+<script src="leads.js"></script>
 <script src="quote-builder.js"></script>
 <script src="hr.js"></script>
 <script>
@@ -989,6 +990,8 @@ function renderLanding() {
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
+  if (landingView === 'leads') return renderLeads(el);
+  if (landingView === 'leadDetail') return renderLeadDetail(el);
   if (landingView === 'orderDetail') return renderOrderDetail(el);
   if (landingView === 'orderSheetDetail') return renderOrderSheetDetail(el);
   if (landingView === 'printInvoice') return renderPrintInvoicePicker(el);
@@ -1031,6 +1034,7 @@ function onTileClick(tileId) {
   if (!tile.ready) return; // coming-soon tiles do nothing yet — no fake functionality
   if (tileId === 'flooring') { landingView = 'flooring-drill'; renderLanding(); }
   else if (tileId === 'orders') { landingView = 'orders'; renderLanding(); }
+  else if (tileId === 'leads') { landingView = 'leads'; renderLanding(); }
   else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
   else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }

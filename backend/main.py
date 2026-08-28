@@ -33,7 +33,7 @@ from models import (
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
-    FlaggedRecord,
+    FlaggedRecord, Lead,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -5829,6 +5829,252 @@ def resume_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant), us
         return quote
 
 
+# ---------------------------------------------------------------------------
+# Leads (confirmed Aug 2026, Master Workflow proposal §02/§05/§06/§07 — the
+# "LEAD" stage of the master flow, which had nowhere to live at all before
+# this: the earliest tracked stage was previously a Quote). Deliberately
+# isolated from the Job workflow (proposal §08's own risk assessment): a
+# Lead only ever feeds INTO a Quote via converted_quote_id; nothing here
+# reads back from Quote to Lead, so this can't destabilise anything already
+# shipped.
+# ---------------------------------------------------------------------------
+
+LEAD_TRANSITIONABLE_STATUSES = ("contacted", "potential", "lost")  # "converted" is reachable ONLY via /convert, never a manual status flip
+LEAD_STALE_DAYS = 3   # shorter than _job_workflow_info()'s 7-day stale-quote threshold — an uncontacted lead goes cold quicker than a sent quote (proposal §02)
+
+
+class LeadStatusRequest(BaseModel):
+    new_status: str
+    note: str
+
+
+def _log_lead_status_audit(session: Session, lead: "Lead", username: str, old_status: str, new_status: str, note: str):
+    """Proof-of-Work principle (Master Workflow proposal §02) — one
+    AuditLog row IS the entire outcome-note mechanism, not a parallel
+    notes-with-timestamp field: "every outcome note is one more AuditLog
+    row, nothing else needed." The note is folded into new_value
+    alongside the status itself (AuditLog.old_value/new_value are plain
+    strings regardless of the real field's shape, per that model's own
+    docstring) so one row tells the whole story — what changed AND why —
+    exactly as read back in the Lead's own activity trail (get_lead())."""
+    session.add(AuditLog(
+        tenant_id=lead.tenant_id, username=username, entity_type="Lead", entity_id=lead.id,
+        field="lead_status", old_value=old_status, new_value=f"{new_status} — {note.strip()}",
+    ))
+
+
+def _lead_last_outcome_at(session: Session, lead: "Lead", tenant_id: str) -> datetime:
+    """The most recent logged-outcome timestamp, for staleness detection
+    (_lead_next_action() below) — read fresh from the real AuditLog
+    trail every time, never a separately-stored timestamp field on Lead
+    that could drift from what the audit trail actually says (same
+    "derive, don't duplicate state" discipline as _job_workflow_info()).
+    Falls back to created_at for a lead that's never had a status change
+    logged yet (still sitting at "new")."""
+    last = session.exec(
+        select(AuditLog)
+        .where(AuditLog.tenant_id == tenant_id, AuditLog.entity_type == "Lead", AuditLog.entity_id == lead.id)
+        .order_by(AuditLog.timestamp.desc())
+    ).first()
+    return last.timestamp if last else lead.created_at
+
+
+def _lead_next_action(lead: "Lead", last_outcome_at: datetime, today: date) -> dict:
+    """Next Action for a Lead (Master Workflow proposal §07) — a
+    deliberately separate, smaller engine from _job_workflow_info(),
+    not a branch bolted onto it: a Lead is isolated from the Job
+    workflow and has its own, much shorter lifecycle, so merging the
+    two would mix two genuinely different engines for two genuinely
+    different stages. "new" -> "Contact customer"; "contacted"/
+    "potential" gone quiet for LEAD_STALE_DAYS -> "Follow up lead",
+    system-detected rather than manually chased; "converted"/"lost" are
+    terminal, nothing left to prompt."""
+    if lead.lead_status == "new":
+        return {"next_action": "Contact customer", "attention_priority": "critical", "attention_label": "New lead"}
+    if lead.lead_status in ("contacted", "potential") and (today - last_outcome_at.date()).days >= LEAD_STALE_DAYS:
+        return {"next_action": "Follow up lead", "attention_priority": "notice", "attention_label": "Follow up"}
+    return {"next_action": None, "attention_priority": None, "attention_label": None}
+
+
+@app.post("/leads")
+def create_lead(lead: Lead, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """New enquiry (Master Workflow proposal §02/§05). lead_status/
+    converted_quote_id/id are reset here regardless of what's sent —
+    same trust-boundary discipline as tenant_id/created_by
+    (create_client()) — a lead only ever starts at "new", and can only
+    ever reach "converted" through POST /leads/{id}/convert actually
+    creating a real Quote, never a client-supplied field at creation
+    time. No AuditLog entry on creation itself — the trail exists to
+    record what happened TO an existing lead, not the fact of its own
+    creation, same as Client."""
+    if not lead.name or not lead.name.strip():
+        raise HTTPException(400, "A name is required.")
+    lead.id = None
+    lead.tenant_id = tenant_id
+    lead.created_by = username
+    lead.lead_status = "new"
+    lead.converted_quote_id = None
+    with Session(engine) as session:
+        session.add(lead)
+        session.commit()
+        session.refresh(lead)
+        return lead
+
+
+@app.get("/leads")
+def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+    """Leads screen (Master Workflow proposal §06) — same table-with-
+    Next-Action pattern as the Order Index (list_quotes() above), each
+    row carrying its own computed next_action/attention_priority rather
+    than a second, separate lookup the frontend would have to make."""
+    with Session(engine) as session:
+        stmt = select(Lead).where(Lead.tenant_id == tenant_id)
+        if lead_status:
+            stmt = stmt.where(Lead.lead_status == lead_status)
+        leads = session.exec(stmt).all()
+        if search:
+            search_lower = search.lower()
+            leads = [l for l in leads if search_lower in l.name.lower() or search_lower in l.contact.lower()]
+        today = date.today()
+        result = []
+        for lead in leads:
+            last_outcome_at = _lead_last_outcome_at(session, lead, tenant_id)
+            d = lead.dict()
+            d.update(_lead_next_action(lead, last_outcome_at, today))
+            d["last_outcome_at"] = last_outcome_at
+            result.append(d)
+        # Urgency before recency, same instinct as the Order Index's own
+        # Needs Attention list: new leads needing first contact and
+        # stale follow-ups surface above quiet in-progress/terminal ones.
+        priority_order = {"critical": 0, "notice": 1, None: 2}
+        result.sort(key=lambda d: (priority_order.get(d["attention_priority"], 2), -d["id"]))
+        return result
+
+
+@app.get("/leads/{lead_id}")
+def get_lead(lead_id: int, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        last_outcome_at = _lead_last_outcome_at(session, lead, tenant_id)
+        history = session.exec(
+            select(AuditLog)
+            .where(AuditLog.tenant_id == tenant_id, AuditLog.entity_type == "Lead", AuditLog.entity_id == lead.id)
+            .order_by(AuditLog.timestamp.desc())
+        ).all()
+        d = lead.dict()
+        d.update(_lead_next_action(lead, last_outcome_at, date.today()))
+        d["last_outcome_at"] = last_outcome_at
+        d["history"] = history
+        return d
+
+
+@app.put("/leads/{lead_id}")
+def update_lead(lead_id: int, updates: Lead, tenant_id: str = Depends(get_current_tenant)):
+    """Editing the lead's own captured details (name/contact/source/
+    notes) only — deliberately excludes lead_status/converted_quote_id
+    from this generic update: status only ever changes via
+    POST /leads/{id}/status (mandatory outcome note) or
+    POST /leads/{id}/convert, never a silent field edit here, same
+    "no bypassing the audited path" discipline as everywhere else in
+    this codebase that gates a status change behind its own endpoint."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id", "lead_status", "converted_quote_id", "created_by", "created_at"})
+        for k, v in data.items():
+            setattr(lead, k, v)
+        session.add(lead)
+        session.commit()
+        session.refresh(lead)
+        return lead
+
+
+@app.post("/leads/{lead_id}/status")
+def change_lead_status(lead_id: int, body: LeadStatusRequest, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Proof-of-Work principle (Master Workflow proposal §02) — every
+    status change requires a real, attributable outcome note, "less
+    effort than a WhatsApp, not more": a single field, never a form.
+    "converted" is deliberately not a valid target here — a Lead can
+    only become Converted by actually linking a real Quote, via
+    POST /leads/{id}/convert, never a manual label (§02's "Quoted must
+    be backed by a real Quote" rule, applied identically to Lead)."""
+    new_status = body.new_status.strip().lower()
+    if new_status not in LEAD_TRANSITIONABLE_STATUSES:
+        raise HTTPException(400, "Status must be one of: contacted, potential, lost. Use Convert to Quote to mark a lead converted.")
+    if not body.note or not body.note.strip():
+        raise HTTPException(400, "A short outcome note is required — what happened, in one line.")
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        if lead.lead_status in ("converted", "lost"):
+            raise HTTPException(400, f"This lead is already {lead.lead_status} — its status can't be changed further.")
+        old_status = lead.lead_status
+        lead.lead_status = new_status
+        session.add(lead)
+        _log_lead_status_audit(session, lead, username, old_status, new_status, body.note)
+        session.commit()
+        session.refresh(lead)
+        return lead
+
+
+@app.post("/leads/{lead_id}/convert")
+def convert_lead(lead_id: int, sales_owner: str, branch: str = "gansbaai", client_id: int = None,
+                  tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """'Convert to Quote' (Master Workflow proposal §02/§06) — the ONLY
+    way lead_status can ever become "converted". Creates a genuine new
+    Quote (same shape as create_quote() above) and links it back via
+    converted_quote_id, rather than a manual label claiming a quote
+    exists.
+
+    client_id lets an already-existing Client be linked directly (the
+    lead turned out to be an existing client enquiring again); otherwise
+    an exact name match is reused (same convention as
+    _resolve_or_create_client()) or a brand-new Client is created from
+    the lead's own name/contact/source — real data already captured on
+    the Lead, carried forward rather than dropped and re-typed from
+    scratch. Never overwrites an EXISTING client's real data — phone/
+    marketing_source are only ever filled in when a brand-new Client
+    record is created here, same "additive, never clobber a real
+    record" discipline as SupplierDefault's non-retroactive pre-fill."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        if lead.lead_status in ("converted", "lost"):
+            raise HTTPException(400, f"This lead is already {lead.lead_status} and can't be converted.")
+        if client_id:
+            client = get_or_404(session, Client, client_id, tenant_id, "Client")
+        else:
+            existing = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+            match = next((c for c in existing if c.name.strip().lower() == lead.name.strip().lower()), None)
+            if match:
+                client = match
+            else:
+                client = Client(tenant_id=tenant_id, name=lead.name, phone=lead.contact, marketing_source=lead.source, created_by=username)
+                session.add(client)
+                session.commit()
+                session.refresh(client)
+        quote = Quote(
+            client_name=client.name, client_id=client.id, sales_owner=sales_owner,
+            branch=branch, site_address=client.address or "", tenant_id=tenant_id,
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+
+        old_status = lead.lead_status
+        lead.lead_status = "converted"
+        lead.converted_quote_id = quote.id
+        session.add(lead)
+        _log_lead_status_audit(session, lead, username, old_status, "converted", f"Converted to Quote #{quote.id}")
+        session.commit()
+        # This second commit expires every object still attached to this
+        # session (SQLAlchemy's default expire_on_commit) — including the
+        # already-refreshed `quote` above. Real bug caught before shipping
+        # (not a live incident): without re-refreshing it here too, `quote`
+        # serializes as an empty {} in the response below, since its
+        # attributes are now expired and the session is about to close.
+        session.refresh(lead)
+        session.refresh(quote)
+        return {"lead": lead, "quote": quote}
+
+
 @app.post("/quotes/{quote_id}/follow-ups")
 def log_follow_up(quote_id: int, follow_up_date: str, notes: str = "", tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
@@ -5920,6 +6166,7 @@ _CASCADE_POLICY = {
         (QuotePhoto, "quote_id", "cascade", lambda p: photo_storage.delete_photo(p.storage_path)),
         (HoursWorked, "quote_id", "assert_empty", None),          # blocked upstream by _quote_delete_dependencies
         (BuilderEstimate, "linked_quote_id", "assert_empty", None),  # blocked upstream by _quote_delete_dependencies
+        (Lead, "converted_quote_id", "nullify", None),  # Leads brief (confirmed Aug 2026): the enquiry genuinely happened and is real history — deleting the quote it converted into must not delete the Lead, only clear the backward-link (lead_status stays "converted", same as a builder estimate surviving a Force Delete with only its link cleared)
     ],
     "quotelineitem": [
         (ColourChangeLog, "quote_line_item_id", "cascade", None),

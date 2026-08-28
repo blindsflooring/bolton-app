@@ -744,6 +744,47 @@ class Client(SQLModel, table=True):
     email_extra: str = ""
 
 
+class Lead(SQLModel, table=True):
+    """New enquiry tracking, from first contact through to becoming a
+    real Quote or being lost (confirmed Aug 2026, Master Workflow
+    proposal §05 — Job Workflow Design Proposal / Phase3-Final-Workflow-
+    Build, "LEAD" as the first stage of the master flow). Deliberately a
+    separate table, not an early Quote or Client state — a lead is often
+    just a name and a phone number, before a real Client record exists;
+    forcing it into Quote or Client would mean fields neither needs the
+    rest of the time.
+
+    lead_status describes the sales process BEFORE a Quote exists, not
+    the job itself — never a 5th Quote.workflow_status value, same "no
+    second status system" principle as On Hold (Job Workflow Design
+    Proposal Phase 1). Values: new -> contacted -> potential ->
+    converted/lost. "Isolated from the Job workflow" by design (proposal
+    §08's own risk assessment): a Lead only ever feeds INTO a Quote via
+    converted_quote_id; nothing reads back from Quote to Lead.
+
+    No separate "outcome note" field, per the proposal's Proof-of-Work
+    principle (§02): every status change requires a one-line note,
+    captured as a plain AuditLog row (entity_type="Lead") instead of a
+    parallel notes-with-timestamp mechanism — see
+    _log_lead_status_audit() (main.py). Also drives "Follow up lead" in
+    _lead_next_action() below: a Lead with no logged outcome for 3+ days
+    surfaces automatically rather than needing to be manually chased.
+
+    converted_quote_id is the ONLY way lead_status can ever become
+    "converted" — set exclusively by POST /leads/{id}/convert (main.py),
+    never a manual status flip claiming a quote exists that doesn't."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    name: str
+    contact: str = ""      # phone/email, free text — often the only detail known this early
+    source: str = ""       # how the enquiry came in — same free-form convention as Client.marketing_source, not an enum
+    lead_status: str = "new"   # new | contacted | potential | converted | lost
+    notes: str = ""        # general notes about the enquiry itself, distinct from the per-status-change AuditLog outcome trail
+    converted_quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
+    created_by: str = ""   # real authenticated username, same convention as Client.created_by (Trusted Tester Accounts brief)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class BusinessSettings(SQLModel, table=True):
     """Singleton — always id=1, one row, created with sensible defaults
     on first call and edited via PUT from then on, rather than a full

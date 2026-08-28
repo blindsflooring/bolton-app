@@ -831,6 +831,12 @@ const CATEGORY_LABELS = {
 const LANDING_TILES = [
   { id: 'business', title: 'Business Overview', desc: 'Live KPIs, dynamic', ready: true },
   { id: 'orders', title: 'Order Index', desc: 'All jobs, searchable', ready: true },
+  // Master Workflow proposal §02/§05/§06 (confirmed Aug 2026) — the
+  // "LEAD" stage of the master flow, which had nowhere to live at all
+  // before this: the earliest tracked stage was previously a Quote.
+  // Placed right after Order Index, before quoting itself — a lead is
+  // the step BEFORE a quote exists.
+  { id: 'leads', title: 'Leads', desc: 'New enquiries, before they’re a quote', ready: true },
   { id: 'flooring', title: 'Flooring Quotes', desc: 'Vinyl, SPC, laminate...', ready: true },
   { id: 'blinds', title: 'Blinds', desc: 'Blinds quoting', ready: true },
   { id: 'clients', title: 'Clients', desc: 'Client records', ready: true },
