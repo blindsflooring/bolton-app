@@ -978,6 +978,16 @@ class Quote(SQLModel, table=True):
     # track physical stock-on-hand per job, so there's no signal to
     # automate this from even if it wanted to.
     installer_team: str = ""             # free text, same not-an-enum reasoning as sales_owner
+    # Job Card Content Spec (confirmed Aug 2026) — the one small new
+    # field that spec called for: free-text notes about the floor/
+    # installation, plus anything else the installer needs on-site
+    # (access, parking) that isn't already captured elsewhere. Printed
+    # on the Job Card; editable right up until it's printed, same as
+    # every other Job Details field — deliberately NOT the internal
+    # AuditLog outcome-note pattern used for Leads/On Hold/Force Delete,
+    # which is a permanent, append-only trail; this is a plain,
+    # correctable field on the job itself.
+    installation_notes: str = ""
     # materials_ordered (confirmed Aug 2026, Job Workflow Design Proposal
     # Phase 1) — RETIRED as a manually-set field. Left in place, unused,
     # rather than dropped, so this stays a safe/reversible change (no

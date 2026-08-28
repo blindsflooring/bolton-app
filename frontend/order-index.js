@@ -969,6 +969,13 @@ async function renderOrderDetail(el) {
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
           <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
+          <!-- Job Card (confirmed Aug 2026, Job Card Content Spec) --
+          only once a job genuinely exists (job_number assigned at
+          Accept, same "not a job until accepted" precedent _job_steps()
+          already follows) -- no separate Next Action/workflow-state
+          gating added here, that's a later build-order item, not this
+          spec's own scope. -->
+          ${q.job_number ? `<button onclick="openJobCardScreen(${q.id})" style="margin-top:10px;">Job Card</button>` : ''}
 
           <h2 style="margin-top:20px;">Follow-Ups</h2>
           <div id="followUpList" style="margin-bottom:10px;"></div>
@@ -1277,6 +1284,175 @@ function openOrderSheetDetail(orderSheetId) {
   currentOrderSheetId = orderSheetId;
   landingView = 'orderSheetDetail';
   renderLanding();
+}
+
+// ===== Job Card (confirmed Aug 2026, Job Card Content Spec) =====
+// A printable, installer-facing document — what a team needs on-site to
+// actually do the job, without navigating the quoting system and
+// without seeing any pricing. Per the original Master Workflow
+// proposal, this is a VIEW ONLY screen — no new data beyond the one
+// small installation_notes field (get_job_card(), main.py already pulls
+// everything else fresh from Quote/QuoteLineItem/OrderSheet/Client/Lead
+// on every load). Deliberately NOT built on the compact click-to-expand
+// documentPreviewTileHtml() component the way Quote/Invoice/Order Sheet
+// previews are — this is its own full, standalone page (same category
+// as Order Sheet Detail itself), so the content is already fully
+// visible without needing an expand/collapse tile; "View" (brief's own
+// action-bar question) is satisfied by the page simply existing.
+//
+// Edit deliberately excluded — explicitly view-only per the original
+// proposal, generated fresh from existing data every time, never
+// something edited in place (the one exception, installation_notes, has
+// its own dedicated Save action right in this screen, not a generic
+// "Edit" entry point into some other editor).
+//
+// Save (Dropbox archival) deliberately excluded too, unlike Quote/
+// Invoice/Order Sheet — those three are genuine documents OF RECORD
+// (proof of what was quoted/invoiced/ordered, worth a permanent
+// version history); a Job Card is a regenerate-on-demand operational
+// aid with no independent existence of its own — archiving snapshots
+// of it wouldn't carry the same evidentiary value, and doing it
+// properly would mean adding a new entity type to
+// ARCHIVE_CATEGORY_FOLDER (main.py) for comparatively little real
+// benefit. Mail IS kept — genuinely cheap (a plain mailto, no new
+// backend surface) and directly serves the brief's own named use case
+// (a team member having this on their phone before heading out).
+let currentJobCardQuoteId = null;
+function openJobCardScreen(quoteId) {
+  currentJobCardQuoteId = quoteId;
+  landingView = 'jobCard';
+  renderLanding();
+}
+
+function jobCardMaterialsHtml(jc) {
+  if (!jc.order_sheets.length) return '<p class="muted" style="margin:0;">No Order Sheet generated for this job yet.</p>';
+  return jc.order_sheets.map(s => `
+    <div style="margin-bottom:14px;">
+      <p style="margin:0 0 6px; font-weight:700; font-size:13px;">${s.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring'} <span class="muted" style="font-weight:400;">(${s.supplier})</span></p>
+      <table class="mobile-card-table"><tbody>
+        ${s.lines.map(l => `<tr><td data-label="Item">${l.product_name}${l.colour ? `<br><b style="color:var(--teal);">${l.colour}</b>` : ''}</td><td class="num" data-label="Qty">${l.quantity} ${l.unit || ''}</td></tr>`).join('')}
+      </tbody></table>
+    </div>`).join('');
+}
+
+const SUBSTRATE_LABELS = {smooth: 'Smooth', over_tiles: 'Over Tiles', removed_tiles: 'Removed Tiles'};
+
+async function renderJobCard(el) {
+  await renderWithRetry(el, 'Job Card', async () => {
+  el.innerHTML = `<span class="back-link" onclick="openOrderDetailScreen(${currentJobCardQuoteId}); return false;">← Back to Job Detail</span><div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/quotes/${currentJobCardQuoteId}/job-card`);
+  const jc = await res.json();
+  setPageTitle(`Job Card — ${jc.job_number || 'Job'}`);
+
+  const referenceNotes = (jc.client_notes || jc.lead_notes) ? `
+    <div class="card">
+      <h2>Reference notes <span class="muted" style="font-weight:400; font-size:12px;">(pulled in from elsewhere on file — read-only here)</span></h2>
+      ${jc.client_notes ? `<p style="margin:0 0 8px;"><b>Client notes:</b> ${jc.client_notes.replace(/</g,'&lt;')}</p>` : ''}
+      ${jc.lead_notes ? `<p style="margin:0;"><b>From original enquiry:</b> ${jc.lead_notes.replace(/</g,'&lt;')}</p>` : ''}
+    </div>` : '';
+
+  el.innerHTML = `
+    <span class="back-link" onclick="openOrderDetailScreen(${currentJobCardQuoteId}); return false;">← Back to Job Detail</span>
+    <div class="landing-welcome">
+      <h1>Job Card — ${jc.job_number || 'Job'}</h1>
+      <p>${jc.client_name} &nbsp; ${jc.site_address || ''}</p>
+    </div>
+
+    <div class="card">
+      <h2>Job info</h2>
+      <p style="margin:0 0 4px;"><b>Install date:</b> ${dateOrDash(jc.installation_date)}</p>
+      <p style="margin:0 0 4px;"><b>Team:</b> ${jc.installer_team || '—'}</p>
+      ${jc.substrate ? `<p style="margin:0;"><b>Substrate:</b> ${SUBSTRATE_LABELS[jc.substrate] || jc.substrate}</p>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Materials to load</h2>
+      ${jobCardMaterialsHtml(jc)}
+    </div>
+
+    ${referenceNotes}
+
+    <div class="card">
+      <h2>Job Card notes</h2>
+      <p class="muted" style="margin-top:-8px;">Access, parking, anything about the floor or install the team needs to know — enter here before printing.</p>
+      <textarea id="jc_notes" rows="3" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;" placeholder="e.g. Narrow driveway, use the small van. Gate code on file with client notes above.">${(jc.installation_notes || '').replace(/</g,'&lt;')}</textarea>
+      <button class="primary" onclick="saveJobCardNotes()" style="margin-top:8px;">Save notes</button>
+      <p class="muted" id="jcNotesSaveStatus" style="margin-top:6px;"></p>
+    </div>
+
+    <div class="card">
+      <div class="doc-action-bar" style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button onclick="printJobCard(${currentJobCardQuoteId})" style="font-size:12px; padding:4px 10px; background:none; border:1.5px solid var(--navy); color:var(--navy); border-radius:5px;">Print</button>
+        <button onclick="sendJobCardEmail(${currentJobCardQuoteId})" style="font-size:12px; padding:4px 10px; background:none; border:1.5px solid var(--navy); color:var(--navy); border-radius:5px;">Mail</button>
+      </div>
+    </div>
+  `;
+  });
+}
+
+async function saveJobCardNotes() {
+  const notes = document.getElementById('jc_notes').value;
+  const statusEl = document.getElementById('jcNotesSaveStatus');
+  const res = await fetch(`${API}/quotes/${currentJobCardQuoteId}?installation_notes=${encodeURIComponent(notes)}`, {method: 'PUT'});
+  if (statusEl) statusEl.textContent = res.ok ? '✓ Saved.' : '❌ Could not save — check your connection and try again.';
+}
+
+// Hard constraint — no pricing anywhere on this document (Job Card
+// Content Spec's own words). Deliberately built from the SAME
+// get_job_card() response the on-screen version above renders — never
+// a second, separately-fetched copy that could drift or accidentally
+// carry a cost field the on-screen version was careful to exclude.
+async function buildJobCardPrintHtml(quoteId) {
+  const jc = await (await fetch(`${API}/quotes/${quoteId}/job-card`)).json();
+  const logoSrc = document.querySelector('header .logo-row img').src;
+  const materialsRows = jc.order_sheets.flatMap(s => s.lines.map(l => `
+    <tr>
+      <td>${l.product_name}${l.colour ? `<br><b style="color:var(--teal);">${l.colour}</b>` : ''}</td>
+      <td class="num">${l.quantity} ${l.unit || ''}</td>
+    </tr>`)).join('');
+  const html = `
+    <div class="print-doc">
+      <div class="doc-header">
+        <img src="${logoSrc}" style="height:36px;">
+        <div class="doc-title">JOB CARD — ${jc.job_number || ''}</div>
+      </div>
+      <div style="margin-bottom:16px; font-size:13px;">
+        <div><b>${jc.client_name}</b></div>
+        <div>${jc.site_address || ''}</div>
+        <div style="margin-top:8px;"><b>Install date:</b> ${jc.installation_date ? new Date(jc.installation_date).toLocaleDateString('en-ZA') : '—'} &nbsp; <b>Team:</b> ${jc.installer_team || '—'}</div>
+        ${jc.substrate ? `<div><b>Substrate:</b> ${SUBSTRATE_LABELS[jc.substrate] || jc.substrate}</div>` : ''}
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead><tr><th style="text-align:left;">Materials to load</th><th class="num">Qty</th></tr></thead>
+        <tbody>${materialsRows || '<tr><td colspan="2">No Order Sheet generated for this job yet.</td></tr>'}</tbody>
+      </table>
+      ${(jc.client_notes || jc.lead_notes) ? `
+      <div style="margin-top:16px; font-size:12px;">
+        ${jc.client_notes ? `<div><b>Client notes:</b> ${jc.client_notes.replace(/</g,'&lt;')}</div>` : ''}
+        ${jc.lead_notes ? `<div><b>From original enquiry:</b> ${jc.lead_notes.replace(/</g,'&lt;')}</div>` : ''}
+      </div>` : ''}
+      ${jc.installation_notes ? `<div style="margin-top:16px; font-size:13px;"><b>Notes:</b> ${jc.installation_notes.replace(/</g,'&lt;')}</div>` : ''}
+    </div>`;
+  return { html, jc };
+}
+
+async function printJobCard(quoteId) {
+  const { html } = await buildJobCardPrintHtml(quoteId);
+  triggerPrint(html);
+}
+
+// Mail (confirmed Aug 2026) — no recipient pre-filled: unlike a
+// supplier (Order Sheets) or a client (Quote/Invoice), "the installer
+// team" has no stored contact record anywhere in this app
+// (Quote.installer_team is plain free text, e.g. "Ryno + 1", not a
+// structured Employee reference) — whoever sends this types in
+// wherever it's actually going. Subject/body still fully pre-filled,
+// same as every other Mail action in this app.
+async function sendJobCardEmail(quoteId) {
+  const { jc } = await buildJobCardPrintHtml(quoteId);
+  const subject = `Job Card — ${jc.job_number || ''} — ${jc.client_name}`;
+  const body = `Job Card for ${jc.job_number || ''} (${jc.client_name}, ${jc.site_address || ''}).\n\n(Use Print → "Save as PDF" on the Job Card screen to attach a file — it can't be attached automatically here.)`;
+  window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
 async function generateOrderSheetsForQuote(quoteId) {

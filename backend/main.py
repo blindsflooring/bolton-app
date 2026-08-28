@@ -364,6 +364,10 @@ def _ensure_new_columns():
         # learned from the documentarchive.is_accepted_version incident).
         ("lead", "visit_date", "DATE", "NULL"),
         ("lead", "site_address", "VARCHAR", "''"),
+        # Job Card Content Spec (confirmed Aug 2026) — added to the model
+        # AND here together, same discipline learned from the
+        # documentarchive.is_accepted_version incident.
+        ("quote", "installation_notes", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -5551,7 +5555,7 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
                           deposit_payment_method: str = None, final_payment_date: str = None,
                           final_payment_method: str = None, installer_team: str = None,
                           workflow_status: str = None, actual_deposit_amount: float = None,
-                          clear_actual_deposit_amount: bool = False,
+                          clear_actual_deposit_amount: bool = False, installation_notes: str = None,
                           tenant_id: str = Depends(get_current_tenant),
                           username: str = Depends(get_current_username)):
     """Update a quote's own details — client name, sales owner, branch,
@@ -5560,6 +5564,18 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
     Order Index. Used by the "Save Quote" button. Line items are already
     saved individually as they're added — this covers quote-level fields
     only.
+
+    installation_notes (confirmed Aug 2026, Job Card Content Spec) — the
+    one small new field that spec called for: free-text notes about the
+    floor/installation, plus anything else the installer needs (access,
+    parking) that isn't already captured elsewhere. Deliberately reused
+    from this SAME existing endpoint (the Job Card screen's own "Save
+    notes" action calls this, not a new parallel one) rather than a
+    separate mechanism — and deliberately NOT the internal AuditLog
+    outcome-note pattern used for Leads/On Hold/Force Delete: this is a
+    plain, freely-editable field on the job itself, never a permanent,
+    append-only audit trail — it can be corrected or rewritten before
+    printing, same as every other Job Details field on this endpoint.
 
     client_id (confirmed Aug 2026, Order Index -> Client Link Gap brief)
     — real gap closed: there was previously NO way to link an existing
@@ -5634,6 +5650,8 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
             quote.site_address = site_address
         if installer_team is not None:
             quote.installer_team = installer_team
+        if installation_notes is not None:
+            quote.installation_notes = installation_notes
         if installation_date is not None:
             quote.installation_date = date.fromisoformat(installation_date) if installation_date else None
         if invoice_sent_date is not None:
@@ -7280,6 +7298,86 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             response["overall_margin_pct"] = round(overall_margin, 4)
 
         return response
+
+
+@app.get("/quotes/{quote_id}/job-card")
+def get_job_card(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Job Card Content Spec (confirmed Aug 2026) — a printable,
+    installer-facing document: what a team needs on-site to actually do
+    the job, without navigating the quoting system and without seeing
+    any pricing. Per the original Master Workflow proposal, this pulls
+    from records that already exist — no new tables, and (per this
+    spec) exactly one small new field (Quote.installation_notes).
+
+    "What's being installed" + "quantities to load" (spec items 2+3)
+    are deliberately sourced ENTIRELY from this job's real Order
+    Sheet(s) — never re-derived from QuoteLineItem separately — per the
+    spec's own explicit "reuse the exact same data Order Sheets already
+    use, so the two can never disagree." unit_cost is never selected
+    onto the returned line dicts at all (not stripped after the fact —
+    never fetched in the first place), the same hard "no pricing
+    anywhere on this document" constraint the spec requires, matching
+    the same principle already applied to the Builder Portal's public
+    responses (hand-picked dicts, cost/margin fields structurally
+    unable to leak even if the model grows more of them later).
+
+    Known, deliberate scope limit: Blinds lines never produce an Order
+    Sheet at all (Job Workflow Design Proposal, confirmed Aug 2026 —
+    Blinds explicitly excluded from that whole redesign), so a job with
+    only Blinds lines gets an empty order_sheets list here today. Not a
+    bug — the same scope boundary already applied everywhere else in
+    this codebase's current Job Workflow build; Blinds Job Cards are a
+    future phase's problem, same as Blinds procurement tracking itself.
+
+    Substrate (spec item 4) reuses QuoteLineItem.job_type directly (the
+    same field screed pricing already uses) — the first screed line
+    found, since a job has at most one substrate condition in practice.
+
+    Notes pulled in from elsewhere on the system, read-only reference
+    material (per direct instruction — "notes may be pulled in from
+    notes anywhere on the system"): the client's own on-file notes
+    (Client.notes — exactly where a gate code or access quirk already
+    likely lives) and, if this job originated from a Lead, that Lead's
+    own notes. PaymentFollowUp entries deliberately NOT pulled in here
+    despite also being real per-job notes — they're payment-chasing
+    records ("Called about outstanding balance"), not installation
+    information, and surfacing them on an installer-facing document
+    would work against the same "operational, not commercial" principle
+    the no-pricing constraint exists for."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
+        order_sheets_out = []
+        for s in sheets:
+            lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == s.id, OrderSheetLine.tenant_id == tenant_id)).all()
+            order_sheets_out.append({
+                "supplier": s.supplier, "sheet_type": s.sheet_type,
+                "lines": [{"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity, "unit": l.unit} for l in lines],
+            })
+
+        substrate_line = session.exec(
+            select(QuoteLineItem).where(
+                QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.job_type.is_not(None),
+            )
+        ).first()
+
+        client_notes = None
+        if quote.client_id:
+            client = session.get(Client, quote.client_id)
+            if client and client.notes:
+                client_notes = client.notes
+
+        lead = session.exec(select(Lead).where(Lead.converted_quote_id == quote_id, Lead.tenant_id == tenant_id)).first()
+        lead_notes = lead.notes if lead and lead.notes else None
+
+        return {
+            "job_number": quote.job_number, "client_name": quote.client_name, "site_address": quote.site_address,
+            "installation_date": quote.installation_date, "installer_team": quote.installer_team,
+            "substrate": substrate_line.job_type if substrate_line else None,
+            "order_sheets": order_sheets_out,
+            "installation_notes": quote.installation_notes,
+            "client_notes": client_notes, "lead_notes": lead_notes,
+        }
 
 
 @app.delete("/quotes/{quote_id}/lines/{line_id}")
