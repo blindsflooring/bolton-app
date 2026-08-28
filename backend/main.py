@@ -350,6 +350,9 @@ def _ensure_new_columns():
         # the model AND here together, same discipline learned from the
         # documentarchive.is_accepted_version incident earlier today.
         ("client", "created_by", "VARCHAR", "''"),
+        # Job Workflow Design Proposal, Phase 1 (confirmed Aug 2026).
+        ("quote", "on_hold_reason", "VARCHAR", "NULL"),
+        ("quote", "on_hold_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2091,6 +2094,31 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
 # Burgert's real cost, never the client's sell price. Manual trigger
 # only (brief §2) — never generated automatically at any status change.
 
+# Known supplier-name variants that refer to the SAME real supplier,
+# entered inconsistently in the price book over time (confirmed with
+# Burgert, Job Workflow Design Proposal Phase 1, Aug 2026 — production
+# data itself proved this: flooring-material products use both "Azura"
+# and "Azura Distributors", screed products use "Azura Distributors
+# (iTe)", and FloorPrepProduct uses "Azura" — three different exact
+# strings for one real company). Used ONLY to decide whether two
+# categories should merge onto one Order Sheet — never changes what's
+# actually displayed, printed, or stored; the sheet keeps whichever
+# real supplier string that category's own product actually has. A
+# narrow data-normalization step, not a hardcoded assumption about
+# which supplier matters — extend this list if another supplier's
+# price book entries are ever found to have the same inconsistency.
+_SUPPLIER_ALIAS_GROUPS = [
+    {"Azura", "Azura Distributors", "Azura Distributors (iTe)"},
+]
+
+
+def _merge_supplier_key(supplier: str) -> str:
+    for group in _SUPPLIER_ALIAS_GROUPS:
+        if supplier in group:
+            return sorted(group)[0]   # stable canonical key regardless of which alias matched
+    return supplier
+
+
 def _next_order_number(session: Session, tenant_id: str) -> str:
     """Sequential O-0001 format, tenant-wide, never reused — same
     pattern/reasoning as _next_job_number() above."""
@@ -2104,15 +2132,51 @@ def _next_order_number(session: Session, tenant_id: str) -> str:
     return f"O-{next_seq:04d}"
 
 
+def _floor_prep_supplier(session: Session, tenant_id: str) -> str:
+    """Job Workflow Design Proposal, Phase 1 (confirmed Aug 2026) —
+    resolves the REAL current floor-prep supplier from price-book data
+    (FloorPrepProduct.supplier, a genuine Console-editable field) rather
+    than a hardcoded "Azura" literal. Replaces the old fixed constant
+    that generate_order_sheets() used to compare every flooring
+    supplier against — the confirmed real mechanism behind J-0002
+    showing two separate Azura sheets instead of one merged sheet:
+    that comparison could silently fail to merge even when the real
+    supplier genuinely was Azura, and would never adapt if floor-prep
+    sourcing ever changed.
+
+    A screed QuoteLineItem does not currently store which specific
+    FloorPrepProduct its bags_allowed figure was calculated from (only
+    the resulting bag count/cost, confirmed by reading
+    calculate_flooring_line() directly) — so this can't yet resolve a
+    TRUE per-line supplier. It resolves the majority supplier across
+    the tenant's current FloorPrepProduct rows instead, which matches
+    every real row today (all 11 are Azura) and, unlike the literal it
+    replaces, updates automatically if that ever changes — a known,
+    intentionally scoped limitation flagged in the proposal, not a
+    silent gap. Falls back to "Azura" only if the price book has no
+    FloorPrepProduct rows at all yet, matching the seed-data default so
+    a fresh/empty price book never breaks order sheet generation."""
+    products = session.exec(select(FloorPrepProduct).where(FloorPrepProduct.tenant_id == tenant_id)).all()
+    if not products:
+        return "Azura"
+    from collections import Counter
+    return Counter(p.supplier for p in products if p.supplier).most_common(1)[0][0]
+
+
 @app.post("/quotes/{quote_id}/generate-order-sheets")
 def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
-    """Splitting rule (brief §1) — screed/floor-prep materials are
-    ALWAYS ordered from Azura, regardless of which supplier the
-    flooring itself comes from:
-    - Flooring product ALSO from Azura -> ONE combined sheet.
-    - Flooring from a DIFFERENT supplier -> TWO separate sheets (one to
-      that flooring supplier, flooring only; one to Azura, floor-prep
-      only).
+    """Splitting/merging rule (Job Workflow Design Proposal Phase 1,
+    confirmed Aug 2026 — REPLACES the old hardcoded "if supplier ==
+    'Azura'" special case): every procurable category's line items are
+    grouped by their REAL resolved supplier (FlooringProduct.supplier
+    for flooring material; _floor_prep_supplier() above for floor-prep)
+    — any supplier covering 2+ categories on this job gets ONE combined
+    Order Sheet, never a hardcoded company check. This is a general
+    rule keyed purely on matching supplier strings, so it keeps working
+    correctly if which suppliers cover which categories ever changes,
+    with zero code change needed. Blinds is explicitly out of scope for
+    this phase — flooring gets built and proven first.
+
     Trims are explicitly out of scope (brief §1, Burgert orders those
     separately in bulk direct from Supertrim) — category=="trim" lines
     are never even looked at here.
@@ -2179,13 +2243,6 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed"]
         screed_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type == "screed"]
 
-        material_by_supplier: dict = {}
-        for l in material_lines:
-            product = session.get(FlooringProduct, l.product_id)
-            supplier = product.supplier if product else "Unknown supplier"
-            material_by_supplier.setdefault(supplier, []).append(l)
-
-        AZURA = "Azura"
         floor_prep_lines_data = []
         for l in screed_lines:
             if l.bags_allowed:
@@ -2238,11 +2295,18 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         reused_sheets = []
 
         def make_sheet(supplier, sheet_type, line_items_data):
-            existing = session.exec(select(OrderSheet).where(
+            # Matched by merge key, not exact string (confirmed Aug 2026,
+            # Phase 1) — otherwise re-generating for a job whose lines
+            # happen to iterate in a different order this time (no
+            # explicit ORDER BY on `lines` above) could pick a DIFFERENT
+            # alias string as display_supplier and fail to find the
+            # existing draft sheet, creating a real duplicate — exactly
+            # the class of bug this dedup check exists to prevent.
+            candidates = session.exec(select(OrderSheet).where(
                 OrderSheet.tenant_id == tenant_id, OrderSheet.quote_id == quote_id,
-                OrderSheet.supplier == supplier, OrderSheet.sheet_type == sheet_type,
-                OrderSheet.status == "draft",
-            )).first()
+                OrderSheet.sheet_type == sheet_type, OrderSheet.status == "draft",
+            )).all()
+            existing = next((c for c in candidates if _merge_supplier_key(c.supplier) == _merge_supplier_key(supplier)), None)
             if existing:
                 reused_sheets.append(existing)
                 return
@@ -2256,19 +2320,43 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             session.commit()
             created_sheets.append(sheet)
 
-        for supplier, sup_lines in material_by_supplier.items():
-            line_data = [material_line_data(l) for l in sup_lines]
-            if supplier == AZURA:
-                # ONE combined sheet — flooring + floor-prep together
-                # (brief §1). Consumed here so the standalone Azura
-                # floor-prep sheet below doesn't also get created.
-                make_sheet(AZURA, "floor_prep", line_data + floor_prep_lines_data)
-                floor_prep_lines_data = []
-            else:
-                make_sheet(supplier, "flooring", line_data)
+        # General supplier-merge grouping (Job Workflow Design Proposal
+        # Phase 1) — every category's line items land in ONE dict, keyed
+        # by real resolved supplier (through _merge_supplier_key(), which
+        # only normalizes KNOWN naming inconsistencies for the merge
+        # decision — see its own docstring). Any supplier that ends up
+        # with items from more than one category naturally gets a single
+        # combined sheet below, with no per-supplier special case at
+        # all — this is what makes the rule general rather than
+        # hardcoded, and it's also what keeps the pre-existing
+        # multi-supplier-within-flooring case (material_by_supplier's
+        # old job) working unchanged: two genuinely different flooring
+        # brands on one job still land in two different dict entries.
+        # Each entry remembers the REAL supplier string first seen for
+        # it — that's what actually gets stored/printed on the sheet,
+        # never the normalized key.
+        lines_by_merge_key: dict = {}   # merge_key -> {"display_supplier": str, "items": [dict, ...]}
+        for l in material_lines:
+            product = session.get(FlooringProduct, l.product_id)
+            supplier = product.supplier if product else "Unknown supplier"
+            entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
+            entry["items"].append(material_line_data(l))
 
+        floor_prep_merge_key = None
         if floor_prep_lines_data:
-            make_sheet(AZURA, "floor_prep", floor_prep_lines_data)
+            floor_prep_supplier = _floor_prep_supplier(session, tenant_id)
+            floor_prep_merge_key = _merge_supplier_key(floor_prep_supplier)
+            entry = lines_by_merge_key.setdefault(floor_prep_merge_key, {"display_supplier": floor_prep_supplier, "items": []})
+            entry["items"].extend(floor_prep_lines_data)
+
+        for key, entry in lines_by_merge_key.items():
+            # sheet_type convention unchanged, generalized: any sheet
+            # carrying floor-prep lines stays the freely-editable
+            # "floor_prep" type (brief §5) — whether or not flooring
+            # lines are merged into it — a flooring-only sheet stays
+            # locked "flooring", reflecting the quote exactly.
+            sheet_type = "floor_prep" if key == floor_prep_merge_key else "flooring"
+            make_sheet(entry["display_supplier"], sheet_type, entry["items"])
 
         if not created_sheets and not reused_sheets:
             raise HTTPException(400, "This quote has no flooring or screed line items to generate an order sheet from.")
@@ -4852,7 +4940,7 @@ def delete_client(client_id: int, role: str = Depends(require_owner),
         return {"deleted": client_id}
 
 
-def _job_workflow_info(quote: "Quote", today: date) -> dict:
+def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False) -> dict:
     """Next Action / Needs Attention engine (confirmed Aug 2026, Order
     Index / Job Workflow Redesign brief + Next Action Addendum).
     Computed at read time from workflow_status plus the operational/
@@ -4870,13 +4958,35 @@ def _job_workflow_info(quote: "Quote", today: date) -> dict:
     7-day staleness threshold for "Follow up" is a fresh constant here,
     deliberately NOT businessSettings.order_overdue_days — that setting
     means something different (days since INVOICE sent), and reusing it
-    would conflate two unrelated concepts."""
+    would conflate two unrelated concepts.
+
+    materials_ordered (Job Workflow Design Proposal Phase 1, confirmed
+    Aug 2026) — REAL BUG FIXED: this used to be read directly off
+    Quote.materials_ordered, a manually-ticked checkbox with zero
+    connection to whether an Order Sheet was actually placed. The
+    caller now derives it fresh from real OrderSheet.status rows
+    (get_quote()/list_quotes() below) and passes it in here — this
+    function no longer touches the stale field at all, same "derive,
+    don't duplicate" principle as everything else it already follows.
+
+    On Hold (Phase 1) is checked FIRST, before any workflow_status
+    branch — deliberately not a 5th status (quote.on_hold_reason/
+    on_hold_at sit alongside workflow_status, never replace one of its
+    4 values), so the job's step progress freezes exactly where it was
+    and resumes there once taken off hold, with nothing else about its
+    state touched."""
     QUOTE_STALE_DAYS = 7
     ws = quote.workflow_status
     invoiced = bool(quote.invoice_sent_date)
     paid = bool(quote.final_payment_date)
     next_action = action_button = action_target = None
     attention_priority = attention_label = None
+
+    if quote.on_hold_reason:
+        return {
+            "next_action": f"On Hold — {quote.on_hold_reason}", "action_button": "VIEW HOLD", "action_target": "job_detail",
+            "attention_priority": "critical", "attention_label": "On Hold",
+        }
 
     if ws == "quoted":
         next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
@@ -4896,7 +5006,7 @@ def _job_workflow_info(quote: "Quote", today: date) -> dict:
         if quote.installation_date and quote.installation_date == today + timedelta(days=1):
             next_action, action_button, action_target = "Prepare job", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Upcoming"
-        elif not quote.materials_ordered:
+        elif not materials_ordered:
             next_action, action_button, action_target = "Prepare / order materials", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Materials required"
         elif not quote.ready_for_installation:
@@ -4916,6 +5026,20 @@ def _job_workflow_info(quote: "Quote", today: date) -> dict:
         "next_action": next_action, "action_button": action_button, "action_target": action_target,
         "attention_priority": attention_priority, "attention_label": attention_label,
     }
+
+
+def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str) -> bool:
+    """Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) — the
+    real derivation Quote.materials_ordered used to fake with a manual
+    checkbox. True once the job has generated at least one Order Sheet
+    AND every Order Sheet it produced has status == "placed" — matches
+    the proposal's own definition exactly (§03: "Every Order Sheet the
+    job actually produced has status == 'placed'"), and naturally
+    handles the post-merge case where 1 sheet now covers what used to
+    be 2: one shared status for one real delivery, not two independently
+    tracked flags that could disagree."""
+    sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
+    return bool(sheets) and all(s.status == "placed" for s in sheets)
 
 
 def _quote_line_sort_key(line: dict) -> int:
@@ -5576,6 +5700,68 @@ def complete_quote(quote_id: int, completion_date: str = None, tenant_id: str = 
         quote.completion_date = date.fromisoformat(completion_date) if completion_date else date.today()
         quote.workflow_status = "completed"
         session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+class HoldQuoteRequest(BaseModel):
+    reason: str
+
+
+@app.post("/quotes/{quote_id}/hold")
+def hold_quote(quote_id: int, body: HoldQuoteRequest, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Job Workflow Design Proposal Phase 1, §7 (confirmed Aug 2026) —
+    "a way to handle [real exceptions] without corrupting its state."
+    Deliberately NOT a 5th workflow_status value (on_hold_reason/
+    on_hold_at sit alongside it, models.py) — the job's step progress
+    freezes exactly where it was; nothing about workflow_status,
+    installation_date, or materials-ordered state is touched by this
+    endpoint. _job_workflow_info() checks this pair FIRST, before its
+    normal per-status branches, so Next Action reads "On Hold — [reason]"
+    regardless of which status the job was in when held. Restricted to
+    accepted/scheduled — a quote that hasn't become a job yet, or a job
+    already completed, has no in-progress step to freeze."""
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(400, "A reason is required to put a job on hold.")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.workflow_status not in ("accepted", "scheduled"):
+            raise HTTPException(400, "Only an accepted or scheduled job can be put on hold.")
+        if quote.on_hold_reason:
+            raise HTTPException(400, "This job is already on hold.")
+        quote.on_hold_reason = body.reason.strip()
+        quote.on_hold_at = datetime.utcnow()
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="on_hold", old_value="not on hold", new_value=quote.on_hold_reason,
+        ))
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+@app.post("/quotes/{quote_id}/resume")
+def resume_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Taking a job off hold (Phase 1, §7) — clears the pair set by
+    hold_quote() above and nothing else. The job resumes exactly where
+    it was: workflow_status, installation_date, and materials-ordered
+    state were never touched while on hold, so Next Action immediately
+    goes back to reading whatever it would have said if the hold had
+    never happened."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if not quote.on_hold_reason:
+            raise HTTPException(400, "This job isn't on hold.")
+        old_reason = quote.on_hold_reason
+        quote.on_hold_reason = None
+        quote.on_hold_at = None
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="on_hold", old_value=old_reason, new_value="resumed",
+        ))
         session.commit()
         session.refresh(quote)
         return quote
@@ -6655,6 +6841,7 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # Columns brief — see that function's own comment).
         VAT_PCT = get_settings(session, tenant_id).vat_pct
         totals = _quote_totals(subtotal_ex_vat, quote, VAT_PCT)
+        materials_ordered_flag = _materials_ordered_for_quote(session, quote_id, tenant_id)
 
         response = {
             "quote": quote.dict(),
@@ -6666,7 +6853,12 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             # Addendum) — same engine list_quotes() uses, so the Job
             # Detail screen's own action button always agrees with
             # whatever the Order Index row showed to get here.
-            "workflow": _job_workflow_info(quote, date.today()),
+            "workflow": _job_workflow_info(quote, date.today(), materials_ordered_flag),
+            # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
+            # exposed directly, not just folded into next_action's prose,
+            # so the frontend can show a clean derived status line
+            # instead of parsing a sentence.
+            "materials_ordered": materials_ordered_flag,
         }
 
         # "At a glance" job margin check (owner/admin only — never shown to
@@ -7074,6 +7266,10 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # Next Action column and the Needs Attention list can both
             # be built client-side from this one response, no second
             # request.
-            d.update(_job_workflow_info(q, today))
+            row_materials_ordered = _materials_ordered_for_quote(session, q.id, tenant_id)
+            d.update(_job_workflow_info(q, today, row_materials_ordered))
+            # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
+            # same direct field as get_quote() above.
+            d["materials_ordered"] = row_materials_ordered
             result.append(d)
         return result

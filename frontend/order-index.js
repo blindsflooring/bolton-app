@@ -38,7 +38,13 @@ const WORKFLOW_STATUS_META = {
 function workflowStatusBadge(q) {
   const meta = WORKFLOW_STATUS_META[q.workflow_status] || WORKFLOW_STATUS_META.quoted;
   const declined = q.declined_at ? ' <span class="muted" style="font-size:10.5px;">(declined)</span>' : '';
-  return `<span class="status-badge" style="background:${meta.bg}; color:${meta.color};">${meta.label}</span>${declined}`;
+  // On Hold (Job Workflow Design Proposal Phase 1, confirmed Aug 2026)
+  // -- an overlay, same reasoning as declined above: workflow_status
+  // itself is untouched while on hold, so the badge still shows
+  // Accepted/Scheduled underneath, with this appended for visibility
+  // at a glance -- never a 5th status value of its own.
+  const onHold = q.on_hold_reason ? ' <span style="font-size:10.5px; font-weight:700; color:var(--coral);">⏸ On Hold</span>' : '';
+  return `<span class="status-badge" style="background:${meta.bg}; color:${meta.color};">${meta.label}</span>${declined}${onHold}`;
 }
 // Next Action button — action_target from _job_workflow_info() (main.py)
 // decides where it goes: 'print_invoice' opens the existing Print
@@ -617,6 +623,19 @@ function renderWorkflowActionsHtml(q) {
   if (q.declined_at) {
     return `<p class="muted" style="margin:0;">Declined ${new Date(q.declined_at).toLocaleDateString('en-ZA')} — no further workflow action.</p>`;
   }
+  // On Hold (Job Workflow Design Proposal Phase 1, confirmed Aug 2026,
+  // §7) -- replaces the whole panel, same pattern as declined_at above:
+  // the job's step progress freezes exactly where it was (nothing about
+  // workflow_status/installation_date/materials-ordered state changes
+  // server-side while on hold), Resume below picks back up right there.
+  if (q.on_hold_reason) {
+    return `
+      <div style="background:var(--coral-bg, #fdece7); border:1px solid var(--coral); border-radius:8px; padding:12px 14px;">
+        <p style="margin:0; font-weight:700; color:var(--coral);">⏸ On Hold — ${(q.on_hold_reason||'').replace(/</g,'&lt;')}</p>
+        <p class="muted" style="margin:6px 0 0; font-size:12px;">Since ${new Date(q.on_hold_at).toLocaleDateString('en-ZA')}. Nothing about this job's progress has changed — Resume picks up exactly where it was.</p>
+      </div>
+      <button class="primary" onclick="resumeJobAction(${q.id})" style="margin-top:10px;">Resume Job</button>`;
+  }
   if (q.workflow_status === 'quoted') {
     return `
       <button class="primary" onclick="acceptQuoteAction(${q.id})">Accept Quote</button>
@@ -627,7 +646,8 @@ function renderWorkflowActionsHtml(q) {
     return `
       <div class="field" style="max-width:220px;"><label>Installation date</label><input type="date" id="wf_install_date" value="${q.installation_date || ''}"></div>
       <button class="primary" onclick="scheduleQuoteAction(${q.id})" style="margin-top:6px;">Confirm Installation — Book</button>
-      <p class="muted" style="margin-top:8px;">Confirming a date is what moves this job to Scheduled automatically.</p>`;
+      <p class="muted" style="margin-top:8px;">Confirming a date is what moves this job to Scheduled automatically.</p>
+      ${holdButtonHtml(q.id)}`;
   }
   if (q.workflow_status === 'scheduled') {
     // ready_for_installation means, precisely (confirmed directly): the
@@ -640,11 +660,22 @@ function renderWorkflowActionsHtml(q) {
     const readyHtml = q.ready_for_installation
       ? `<span style="color:var(--teal); font-weight:700;">✓ Materials received</span> <a href="#" onclick="setMaterialsReceived(${q.id}, false); return false;" style="font-size:12px; margin-left:8px;">Undo</a>`
       : `<button onclick="setMaterialsReceived(${q.id}, true)">Mark Materials Received</button>`;
+    // Materials ordered (Job Workflow Design Proposal Phase 1, confirmed
+    // Aug 2026) -- REAL BUG FIXED: this used to be a manual checkbox
+    // with zero connection to whether an Order Sheet was actually
+    // placed. Now a read-only, server-derived status line -- true once
+    // every Order Sheet this job produced has status "placed"
+    // (_materials_ordered_for_quote(), main.py). No control to click
+    // here any more; place the real Order Sheet(s) below to change it.
+    const materialsHtml = q.materials_ordered
+      ? `<span style="color:var(--teal); font-weight:700;">✓ Materials ordered</span>`
+      : `<span class="muted">Materials not yet ordered — place the Order Sheet(s) below</span>`;
     return `
-      <div class="field"><label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="wf_materials_ordered" ${q.materials_ordered ? 'checked' : ''} onchange="setMaterialsOrdered(${q.id}, this.checked)" style="width:auto; margin-right:6px;"> Materials ordered</label></div>
+      <div class="field"><label style="font-weight:600; color:var(--navy);">Materials</label><div>${materialsHtml}</div></div>
       <div class="field" style="margin-top:8px;">${readyHtml}</div>
       <div class="field" style="margin-top:10px; max-width:260px;"><label>Installer / team</label><input id="wf_installer" value="${(q.installer_team||'').replace(/"/g,'&quot;')}" onchange="saveInstallerTeam(${q.id})" placeholder="e.g. Ryno + 1"></div>
-      <button class="primary" onclick="completeQuoteAction(${q.id})" style="margin-top:10px;">Mark Installation Complete</button>`;
+      <button class="primary" onclick="completeQuoteAction(${q.id})" style="margin-top:10px;">Mark Installation Complete</button>
+      ${holdButtonHtml(q.id)}`;
   }
   if (q.workflow_status === 'completed') {
     if (!q.invoice_sent_date) {
@@ -658,6 +689,27 @@ function renderWorkflowActionsHtml(q) {
   return '';
 }
 
+function holdButtonHtml(quoteId) {
+  return `<a href="#" onclick="holdJobAction(${quoteId}); return false;" style="display:inline-block; margin-top:10px; font-size:12px; color:var(--ink-faint, #8A93A0);">Put job on hold…</a>`;
+}
+
+async function holdJobAction(quoteId) {
+  const reason = prompt('Why is this job going on hold? (e.g. "Supplier delay", "Customer postponed")');
+  if (!reason || !reason.trim()) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/hold`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ reason: reason.trim() }),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not put this job on hold.'); return; }
+  openOrderDetailScreen(quoteId);
+}
+
+async function resumeJobAction(quoteId) {
+  if (!confirm('Resume this job? It picks back up exactly where it was before the hold.')) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/resume`, {method: 'POST'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not resume this job.'); return; }
+  openOrderDetailScreen(quoteId);
+}
+
 async function renderOrderDetail(el) {
   await renderWithRetry(el, 'Job Detail', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span><div class="card"><p class="muted">Loading...</p></div>`;
@@ -667,6 +719,13 @@ async function renderOrderDetail(el) {
   ]);
   const data = await res.json();
   const q = data.quote;
+  // Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) --
+  // materials_ordered is now server-derived from real OrderSheet
+  // status (main.py), returned as a sibling of `quote`, not a field
+  // on it any more -- overwritten here so every existing q.materials_
+  // ordered read below picks up the fresh derived value, never the
+  // stale DB column the old manual checkbox used to write.
+  q.materials_ordered = data.materials_ordered;
   const orderSheets = orderSheetsRes.ok ? await orderSheetsRes.json() : [];
   // Page Title in Sticky Header brief -- mirrors this same screen's own
   // <h1> formula below exactly, so the two never say something different.
@@ -1046,16 +1105,14 @@ async function revertJobDetailTotalOverride() {
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not revert override.'); return; }
   renderOrderDetail(document.getElementById('landing'));
 }
-// Three independent actions (confirmed Aug 2026), not one combined
-// save — materials_ordered, ready_for_installation, and installer_team
-// each change independently in real life, at different times, so each
-// gets its own immediate call rather than waiting for a shared "Save"
-// click that could silently overwrite one with a stale value from the
-// other.
-async function setMaterialsOrdered(quoteId, checked) {
-  await fetch(`${API}/quotes/${quoteId}/materials?materials_ordered=${checked}`, {method: 'PUT'});
-  renderOrderDetail(document.getElementById('landing'));
-}
+// ready_for_installation and installer_team each change independently
+// in real life, at different times (confirmed Aug 2026), so each gets
+// its own immediate call rather than waiting for a shared "Save" click
+// that could silently overwrite one with a stale value from the other.
+// materials_ordered's own manual setter was removed in the same spirit
+// this comment already established -- it's now a read-only, server-
+// derived value (renderWorkflowActionsHtml() above), not a field
+// anything on this screen sets directly any more.
 async function setMaterialsReceived(quoteId, received) {
   // "Mark Materials Received" (confirmed directly): the flooring/blinds
   // have been delivered and are physically on hand, ready to install —

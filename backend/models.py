@@ -923,8 +923,32 @@ class Quote(SQLModel, table=True):
     # track physical stock-on-hand per job, so there's no signal to
     # automate this from even if it wanted to.
     installer_team: str = ""             # free text, same not-an-enum reasoning as sales_owner
+    # materials_ordered (confirmed Aug 2026, Job Workflow Design Proposal
+    # Phase 1) — RETIRED as a manually-set field. Left in place, unused,
+    # rather than dropped, so this stays a safe/reversible change (no
+    # destructive column-drop migration bundled into today's work). Real
+    # bug found and fixed: this was a manual checkbox with ZERO connection
+    # to OrderSheet.status — a staff member could Mark an Order Sheet
+    # Placed and this would still read False, or the reverse, and
+    # _job_workflow_info() (main.py) would show the wrong Next Action
+    # either way. Materials-ordered is now DERIVED from whether every
+    # OrderSheet the job actually produced has status == "placed" —
+    # same "derive, don't duplicate state that could drift" principle as
+    # everywhere else in this codebase, computed fresh in
+    # _job_workflow_info() rather than read from this field.
     materials_ordered: bool = False
     ready_for_installation: bool = False
+    # On Hold (confirmed Aug 2026, Job Workflow Design Proposal Phase 1)
+    # — deliberately NOT a 5th workflow_status value, per the brief's own
+    # explicit "no second status system" instruction: same pattern as
+    # declined_at above, two nullable fields sitting alongside
+    # workflow_status rather than replacing any of its 4 values. A job's
+    # step progress freezes wherever it was when put on hold — nothing
+    # about workflow_status/installation_date/materials-ordered state
+    # changes, this pair is purely an overlay _job_workflow_info() checks
+    # FIRST, before its normal per-status branches.
+    on_hold_reason: Optional[str] = None
+    on_hold_at: Optional[datetime] = None
 
     # ---------- Manual Override, Owner-only (confirmed Aug 2026, Manual
     # Override brief — urgent real use case: a job already quoted/
