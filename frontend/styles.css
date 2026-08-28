@@ -82,7 +82,25 @@
     #appHeaderWrap.scrolled header { padding: 6px 12px; gap: 8px; }
     #appHeaderWrap.scrolled header .role-select { font-size: 12px; gap: 6px; }
   }
-  header .logo-row img { height: 34px; width: auto; display: block; background: white; border-radius: 6px; padding: 4px 8px; }
+  /* Header Flicker: Real Cause Found on Video brief (confirmed Aug
+     2026) — REAL ROOT CAUSE FOUND, on video, not guessed: the header
+     TITLE TEXT was oscillating between fitting on one line and
+     wrapping to three, repeatedly, within about a second of scrolling
+     — a text-wrap width threshold flipping back and forth, not the
+     padding/compositing mechanism the two earlier passes targeted.
+     Traced directly: `width: auto` on this 340×70 logo meant its
+     rendered WIDTH changed continuously as a side effect of the
+     height 34px->24px scroll-compact transition (~165px -> ~117px,
+     confirmed by decoding the embedded PNG's own dimensions) — a
+     48px swing in the h1 title's available flex width, animating
+     smoothly over the SAME 150ms window, easily crossing a wrap
+     threshold sitting right at that boundary, possibly more than once
+     per transition. `width` fixed at the resting-state value (was
+     `auto`) removes that side effect entirely — the logo now only
+     ever gets visually smaller via object-fit within a footprint that
+     never changes, so nothing next to it has its available width
+     disturbed by this transition again. */
+  header .logo-row img { height: 34px; width: 165px; object-fit: contain; object-position: left center; display: block; background: white; border-radius: 6px; padding: 4px 8px; }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; color: #cfcfcf; }
   header .role-select { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   select, input, button {
