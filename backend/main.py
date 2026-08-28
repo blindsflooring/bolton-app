@@ -5008,8 +5008,29 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
         if (today - quote.created_at.date()).days >= QUOTE_STALE_DAYS:
             attention_priority, attention_label = "notice", "Follow up"
     elif ws == "accepted":
-        next_action, action_button, action_target = "Book installation", "BOOK INSTALLATION", "job_detail"
-        attention_priority, attention_label = "critical", "Book installation"
+        # Booking visibility fix (confirmed Aug 2026, Master Workflow
+        # proposal §01/§05/§07) — REAL GAP FIXED, not a new field.
+        # installation_date/installation_confirmed_date were already two
+        # separate fields (installation_date settable via Job Details
+        # alone, without touching workflow_status — see
+        # update_quote_details() below), but this branch never looked at
+        # installation_date at all, so a tentative date already sitting
+        # on an accepted job was invisible to Next Action and the step
+        # strip. installation_confirmed_date is only ever set inside
+        # schedule_quote(), together with the flip to "scheduled" — so
+        # while ws=="accepted" it's always None; checked explicitly here
+        # anyway (not just "installation_date truthy") so this stays
+        # correct even if that ever changes. Does NOT flip
+        # workflow_status itself — only the explicit "Confirm
+        # Installation — Book" action (schedule_quote()) still does
+        # that, exactly as before (Test 4's own "must not auto-confirm").
+        if quote.installation_date and not quote.installation_confirmed_date:
+            next_action = f"Confirm installation — {quote.installation_date.strftime('%d %b')} proposed"
+            action_button, action_target = "CONFIRM BOOKING", "job_detail"
+            attention_priority, attention_label = "warning", "Confirm booking"
+        else:
+            next_action, action_button, action_target = "Book installation", "BOOK INSTALLATION", "job_detail"
+            attention_priority, attention_label = "critical", "Book installation"
     elif ws == "scheduled":
         # Three real states here, not two (confirmed directly): ordered
         # and physically received/on-hand are genuinely different events
@@ -5122,7 +5143,15 @@ def _job_steps(session: Session, quote: "Quote", tenant_id: str, materials_order
             "tiles": [{"id": s.id, "supplier": s.supplier, "sheet_type": s.sheet_type, "status": s.status} for s in order_sheets],
         })
 
-    steps.append({"id": "scheduling", "label": "Schedule Installation", "done": quote.workflow_status in ("scheduled", "completed")})
+    # Booking visibility fix (confirmed Aug 2026, Master Workflow
+    # proposal §06) — same tentative-date gap _job_workflow_info() above
+    # fixes, surfaced here too so the step strip isn't blind to it
+    # either; "note" is purely a display hint, never read back to decide
+    # "done" (that stays workflow_status-only, per Test 4).
+    scheduling_note = None
+    if quote.workflow_status == "accepted" and quote.installation_date and not quote.installation_confirmed_date:
+        scheduling_note = f"{quote.installation_date.strftime('%d %b')} proposed — not yet confirmed"
+    steps.append({"id": "scheduling", "label": "Schedule Installation", "done": quote.workflow_status in ("scheduled", "completed"), "note": scheduling_note})
     steps.append({"id": "installation", "label": "Installation", "done": quote.workflow_status == "completed"})
     steps.append({"id": "completion", "label": "Complete & Invoice", "done": bool(quote.invoice_sent_date) and bool(quote.final_payment_date)})
 
@@ -5726,19 +5755,39 @@ def accept_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
         return quote
 
 
+class DeclineQuoteRequest(BaseModel):
+    reason: str
+
+
 @app.post("/quotes/{quote_id}/decline")
-def decline_quote(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+def decline_quote(quote_id: int, body: DeclineQuoteRequest, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     """Deliberately NOT one of the 4 workflow values (confirmed Aug
     2026, Q2) — a declined quote never became a job, so it doesn't
     belong inside a job-workflow enum. Its own timestamp instead, same
     reasoning that already kept invoicing/payment out of the status
-    field too. Also what makes conversion-rate reporting possible."""
+    field too. Also what makes conversion-rate reporting possible.
+
+    Decline Quote reason (confirmed Aug 2026, Master Workflow proposal
+    §01/§02/§05) — REAL GAP FIXED: this used to take no reason at all
+    and write no AuditLog entry, marking a quote permanently lost with
+    zero record of why — the exact "marked done, zero evidence" shape
+    §02's Proof-of-Work principle was written to catch, found by
+    sweeping the existing system for that shape rather than only
+    checking Leads. Same one-field-plus-AuditLog treatment as On Hold
+    (hold_quote() above) — no new field on Quote itself, the reason
+    lives in AuditLog only (read back by get_quote() below)."""
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(400, "A reason is required to decline a quote.")
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if quote.workflow_status != "quoted":
             raise HTTPException(400, "Only a quote that hasn't been accepted yet can be declined.")
         quote.declined_at = datetime.utcnow()
         session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="declined", old_value=quote.workflow_status, new_value=body.reason.strip(),
+        ))
         session.commit()
         session.refresh(quote)
         return quote
@@ -7284,6 +7333,21 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             # today.
             "job_steps": _job_steps(session, quote, tenant_id, materials_ordered_flag, order_sheets_for_workflow),
         }
+
+        # Decline Quote reason (confirmed Aug 2026, Master Workflow
+        # proposal §05) — read back from AuditLog, never a field on
+        # Quote itself (decline_quote() above). None for a quote that
+        # was never declined, or one declined before this fix shipped
+        # (no matching row exists for those, and that's correct — there
+        # genuinely is no reason on record for them).
+        if quote.declined_at:
+            decline_entry = session.exec(
+                select(AuditLog).where(
+                    AuditLog.tenant_id == tenant_id, AuditLog.entity_type == "Quote",
+                    AuditLog.entity_id == quote.id, AuditLog.field == "declined",
+                ).order_by(AuditLog.timestamp.desc())
+            ).first()
+            response["decline_reason"] = decline_entry.new_value if decline_entry else None
 
         # "At a glance" job margin check (owner/admin only — never shown to
         # Sales) — total sell vs. total real cost (material + glue + labour

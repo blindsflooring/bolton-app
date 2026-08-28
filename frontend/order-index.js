@@ -751,7 +751,7 @@ function renderJobStepsHtml(jobSteps, quoteId) {
   return `
     <div style="margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border);">
       <div style="display:flex; align-items:center; gap:4px; margin-bottom:8px;">${dots}</div>
-      <p style="margin:0; font-weight:700; font-size:13.5px;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}</p>
+      <p style="margin:0; font-weight:700; font-size:13.5px;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}${activeStep && activeStep.note ? ` <span class="muted" style="font-weight:400;">(${activeStep.note})</span>` : ''}</p>
       ${procurementHtml}
     </div>`;
 }
@@ -765,7 +765,12 @@ function renderJobStepsHtml(jobSteps, quoteId) {
 // fired from the list.
 function renderWorkflowActionsHtml(q) {
   if (q.declined_at) {
-    return `<p class="muted" style="margin:0;">Declined ${new Date(q.declined_at).toLocaleDateString('en-ZA')} — no further workflow action.</p>`;
+    // decline_reason (confirmed Aug 2026, Master Workflow proposal §05)
+    // — read back from AuditLog by get_quote(), null for anything
+    // declined before this fix shipped (no reason was ever captured for
+    // those, correctly shown as such rather than guessed at).
+    const reasonHtml = q.decline_reason ? ` — ${(q.decline_reason||'').replace(/</g,'&lt;')}` : ' — no reason recorded';
+    return `<p class="muted" style="margin:0;">Declined ${new Date(q.declined_at).toLocaleDateString('en-ZA')}${reasonHtml}</p>`;
   }
   // On Hold (Job Workflow Design Proposal Phase 1, confirmed Aug 2026,
   // §7) -- replaces the whole panel, same pattern as declined_at above:
@@ -893,6 +898,10 @@ async function renderOrderDetail(el) {
   // ordered read below picks up the fresh derived value, never the
   // stale DB column the old manual checkbox used to write.
   q.materials_ordered = data.materials_ordered;
+  // Decline Quote reason (confirmed Aug 2026, Master Workflow proposal
+  // §05) — same sibling-of-`quote` pattern as materials_ordered just
+  // above; undefined (falsy) for a quote that was never declined.
+  q.decline_reason = data.decline_reason;
   // Page Title in Sticky Header brief -- mirrors this same screen's own
   // <h1> formula below exactly, so the two never say something different.
   setPageTitle(`${q.job_number || 'Quote #' + q.id}${q.description ? ' — ' + q.description : ''}`);
@@ -1194,9 +1203,17 @@ async function acceptQuoteAction(quoteId) {
   } catch (e) { /* best-effort -- the accept itself already succeeded above; this screen re-renders and shows the real archive status regardless */ }
   renderOrderDetail(document.getElementById('landing'));
 }
+// Decline Quote reason (confirmed Aug 2026, Master Workflow proposal
+// §01/§02/§05) — a plain confirm() used to be the entire mechanism, no
+// reason captured anywhere. Same prompt()-then-POST shape as
+// holdJobAction() just above, reusing the identical one-field pattern
+// rather than inventing a second.
 async function declineQuoteAction(quoteId) {
-  if (!confirm('Mark this quote as declined? This stops it counting as an open job.')) return;
-  const res = await fetch(`${API}/quotes/${quoteId}/decline`, {method: 'POST'});
+  const reason = prompt('Why is this quote being declined? (e.g. "Went with another supplier", "Price too high")');
+  if (!reason || !reason.trim()) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/decline`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ reason: reason.trim() }),
+  });
   if (!res.ok) { const e = await res.json().catch(()=>({})); alert(e.detail || 'Could not decline this quote.'); return; }
   renderOrderDetail(document.getElementById('landing'));
 }
