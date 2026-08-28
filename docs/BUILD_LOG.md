@@ -18,6 +18,31 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-08-29
+
+Direct continuation of the previous day's Vinyl Quoting UX Redesign work — one commit, just past midnight.
+
+### What shipped
+- **Vinyl Quoting UX Redesign, Phase 4: live price preview, via a real backend endpoint.** Approved proposal §01/§10, and a real design decision Burgert made explicitly rather than have it picked silently: build it consistent (a backend endpoint reusing the real calculation functions) rather than repeat Flooring's own `fjCalc()` pattern — a client-side JS reimplementation of the pricing formula, an accepted-but-real "shadow calculation" for that one category already bitten once before (a hardcoded VAT rate that drifted from Business Settings). New `GET /quotes/lines/preview` calls the exact same `calculate_blinds_line()`/`calculate_trim_line()`/a new `_compute_stairwell_calc()` the real add/edit endpoints already use — one formula per category in the whole codebase, whether previewing or actually saving. Never writes anything — no `QuoteLineItem`, no `AuditLog`, no `session.commit()`. No preview for Misc — amount minus cost is plain arithmetic, not a real formula to duplicate, already computed directly in the frontend wherever it's shown.
+- **`_compute_stairwell_calc()` extracted from `add_stairwell_line()`** — the preview endpoint would otherwise have been a third copy of the same product-lookup + `calculate_stairwell_line()` + landing-combining logic (add, edit, now preview). `edit_stairwell_line()` (Phase 1, previous day) refactored to call the same shared helper too.
+- **Frontend**: `#genericLinePreview` box added to the Add Line Item card, wired via one delegated `input`/`change` listener on the whole card (same technique as Keyboard Dismiss on Enter, 2026-08-25) rather than an attribute on every individual field — covers Blinds/Skirting/Trim/Stairwell today and anything added to those forms later with zero extra wiring. Debounced 300ms.
+
+### Why (root causes, decisions, rejected alternatives)
+- The backend-endpoint approach was Burgert's own explicit choice, offered as a real fork in the road rather than picked unilaterally mid-session — the proposal itself had flagged this as "a real design choice, not just implementation effort" once Flooring's own preview mechanism was actually read and understood to be a shadow calculation, not the shared-formula approach the rest of this project follows everywhere else.
+- No `quote_id` in the preview endpoint's URL, unlike every real add/edit endpoint — deliberately, since the computation genuinely doesn't need one: only the price book and Business Settings (both tenant-scoped) feed a preview, and requiring a quote_id would have implied a dependency that doesn't exist.
+- Same `strip_sensitive_fields()`/warning-gating discipline applied to the preview response as every real save endpoint, checked explicitly rather than assumed — including one thing `strip_sensitive_fields()` itself doesn't cover: the margin-warning TEXT embeds the real percentage in plain English (`"...is 32.1%, below..."`), which would have leaked exactly the number the strip list exists to hide. Cleared separately for Sales in the preview endpoint.
+- **Real bug caught before shipping, not after**: extracting `_compute_stairwell_calc()` left the `@app.post(".../stairwell")` decorator sitting above the wrong function — it would have registered the POST route on the internal helper instead of the real `add_stairwell_line()` endpoint, silently breaking that endpoint while crashing FastAPI's own startup route-registration for the whole app. `py_compile` (syntax only) didn't catch this — actually starting the app against a real database copy did, immediately, the same discipline that's caught several other real bugs across this project's history. Fixed, then re-verified `edit_stairwell_line()` reproduced the exact figure (4601.88) the Phase 1 test had already confirmed for the identical inputs, before trusting the refactor was behaviour-preserving.
+- Verified directly against real price-book data (throwaway database copy, never `bolton.db`, never production): blinds preview matched the documented, confirmed ~49.125% margin figure exactly; stairwell preview matched the Phase 1 edit test's figure exactly; Sales role correctly stripped of cost/margin fields; Misc correctly rejected with a clear message rather than a confusing 500 or a silent wrong answer.
+
+### Deferred / parked (and why)
+- Dynamic Flooring-tab label (reading the selected product's real `flooring_category` instead of a hardcoded "Vinyl") — the smaller remaining Phase 4 item, deliberately left for its own tiny pass. It's genuinely inert until a second flooring type (Carpet/Novilon/Broadloom/Carpet Tile) actually exists in the price book, which it doesn't yet.
+
+### Open going into next session
+- **The entire Vinyl Quoting UX Redesign (Phases 1–4) has not been seen live by Burgert at all** — every phase was built and verified via direct backend testing against real data plus careful manual tracing of the frontend logic, with no browser available in this session to click through any of it. This is the single biggest thing worth a real look next time: category tabs, the persistent summary panel (both desktop sticky sidebar and mobile bottom bar), stairwell editing, and the four new live previews.
+- Dynamic Flooring-tab label, per Deferred above — small, independent, no urgency until a second flooring type is added to the price book.
+
+---
+
 ## 2026-08-28
 
 ### What shipped
