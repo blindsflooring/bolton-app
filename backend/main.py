@@ -81,9 +81,17 @@ def get_version():
     automatically on every deploy (None outside Render, e.g. local dev
     — handled explicitly by the frontend, not guessed at), and
     _APP_STARTED_AT above, captured fresh every time this process
-    actually starts (i.e. every real deploy/restart). No auth — this is
-    harmless build metadata, same "no Depends() needed" precedent as
-    login() below."""
+    actually starts (i.e. every real deploy/restart).
+
+    Correction (checked, not assumed): this has no per-endpoint
+    Depends(), but that does NOT make it unauthenticated — the closed-
+    by-default require_auth middleware below still covers it, same as
+    every endpoint not explicitly in PUBLIC_PATHS. Confirmed directly:
+    an anonymous request to this path returns 401. That's the right
+    behaviour, not a bug — the only caller is showApp() (index.html),
+    which only ever runs after a real login, so the badge still loads
+    correctly for the one place it's actually shown; deliberately left
+    out of PUBLIC_PATHS rather than widened for no real benefit."""
     commit = os.environ.get("RENDER_GIT_COMMIT")
     return {"commit": commit[:7] if commit else None, "started_at": _APP_STARTED_AT.isoformat()}
 
