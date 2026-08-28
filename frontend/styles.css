@@ -27,80 +27,32 @@
     background: var(--bg); color: var(--navy);
   }
   h1, h2 { font-family: 'Poppins', system-ui, sans-serif; }
-  /* Sticky Header brief (confirmed Aug 2026) — header, the Owner Preview
-     banner, and nav are wrapped together in index.html as one sticky
-     unit (#appHeaderWrap) so they never scroll away, on every page:
-     Order Index, Client pages, Quote Builder, Job Detail, Builder
-     Portal admin view, Supplier Console, HR, all share this one shell.
-     A JS scroll listener (index.html boot sequence) toggles ".scrolled"
-     on the wrapper past a small scroll threshold — used below to
-     compact padding/sizing so more page fits above the fold on mobile,
-     WITHOUT hiding or disabling any control (nav links, the Owner
-     Preview "Viewing as" dropdown, Log out all stay full-opacity and
-     clickable in the compact state, just smaller). */
+  /* Sticky Header — STATIC, by explicit decision (confirmed Aug 2026,
+     after four separate scroll-linked fix attempts on the same
+     header: a shrink-transition flicker, a width-lock, a badge-width
+     fix, and finally a hide-on-scroll-down regression the third pass
+     itself introduced). Burgert's own call: stop patching individual
+     scroll-linked symptoms one at a time and remove the whole category
+     instead. #appHeaderWrap, the Owner Preview banner, and nav are
+     wrapped together in index.html as one sticky unit (never scrolls
+     away, on every page: Order Index, Client pages, Quote Builder, Job
+     Detail, Builder Portal admin view, Supplier Console, HR) — that
+     part stays. Everything else does NOT: no compact/shrink mode on
+     scroll, no class toggle, no scroll-position JS touching this
+     element at all any more (index.html's scroll listener now only
+     ever drives #backToTopBtn). One fixed size, always. Do not
+     reintroduce scroll-linked header sizing/visibility without a new,
+     explicit decision to do so — this file's own history is the
+     reason not to. */
   #appHeaderWrap {
     position: sticky; top: 0; z-index: 300;
-    /* Sticky Header Flicker, THIRD pass (confirmed Aug 2026) — the
-       hysteresis fix (previous pass, same file) was real and live-
-       verified in production (no more repeated toggling across a
-       shared threshold on fast direction-reversing scroll), but
-       Burgert confirmed the flicker still happens on a single, plain,
-       one-directional downward scroll — the exact moment the header
-       shrinks. That rules out repeated toggling as the cause of THIS
-       report; a single clean class toggle only ever runs its
-       transition once. The remaining, well-documented mechanism: a
-       CSS transition running on a `position: sticky` element (or
-       inside one) WHILE the page is actively being touch-scrolled
-       forces the browser to promote that element to its own GPU
-       compositing layer mid-scroll/mid-transition instead of upfront —
-       a known Mobile Safari/Chrome visual-flash/flicker source,
-       independent of how many times the toggle fires. will-change +
-       translateZ(0) forces that promotion to happen up front, before
-       any scroll or transition starts, so there's nothing left to
-       promote lazily mid-gesture. Honest limit, same as the previous
-       pass: no phone/browser was available in this session to visually
-       confirm the result — this targets a different, documented
-       mechanism than the hysteresis fix did, not a re-guess of the
-       same one, but still needs Burgert's own confirmation before
-       being marked resolved. */
-    will-change: transform;
-    transform: translateZ(0);
   }
   header {
     background: var(--navy); color: white; padding: 14px 20px;
     display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
-    transition: padding 0.15s ease;
   }
   header .logo-row { display: flex; align-items: center; gap: 14px; }
-  header .logo-row img { transition: height 0.15s ease; }
-  #appHeaderWrap.scrolled header { padding: 7px 20px; }
-  #appHeaderWrap.scrolled header .logo-row img { height: 24px; }
-  #appHeaderWrap.scrolled header h1 { font-size: 13px; }
-  #appHeaderWrap.scrolled header #versionBadge { display: none; }  /* decorative only, not a control — first to go to make room */
-  #appHeaderWrap.scrolled nav button { padding: 10px 16px; }
-  @media (max-width: 480px) {
-    #appHeaderWrap.scrolled header { padding: 6px 12px; gap: 8px; }
-    #appHeaderWrap.scrolled header .role-select { font-size: 12px; gap: 6px; }
-  }
-  /* Header Flicker: Real Cause Found on Video brief (confirmed Aug
-     2026) — REAL ROOT CAUSE FOUND, on video, not guessed: the header
-     TITLE TEXT was oscillating between fitting on one line and
-     wrapping to three, repeatedly, within about a second of scrolling
-     — a text-wrap width threshold flipping back and forth, not the
-     padding/compositing mechanism the two earlier passes targeted.
-     Traced directly: `width: auto` on this 340×70 logo meant its
-     rendered WIDTH changed continuously as a side effect of the
-     height 34px->24px scroll-compact transition (~165px -> ~117px,
-     confirmed by decoding the embedded PNG's own dimensions) — a
-     48px swing in the h1 title's available flex width, animating
-     smoothly over the SAME 150ms window, easily crossing a wrap
-     threshold sitting right at that boundary, possibly more than once
-     per transition. `width` fixed at the resting-state value (was
-     `auto`) removes that side effect entirely — the logo now only
-     ever gets visually smaller via object-fit within a footprint that
-     never changes, so nothing next to it has its available width
-     disturbed by this transition again. */
-  header .logo-row img { height: 34px; width: 165px; object-fit: contain; object-position: left center; display: block; background: white; border-radius: 6px; padding: 4px 8px; }
+  header .logo-row img { height: 34px; width: auto; display: block; background: white; border-radius: 6px; padding: 4px 8px; }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; color: #cfcfcf; }
   header .role-select { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   select, input, button {

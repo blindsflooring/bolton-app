@@ -55,18 +55,24 @@
   </div>
 </div>
 
-<!-- Sticky Header brief (confirmed Aug 2026): header + Owner Preview
-     banner + nav wrapped as one sticky unit so all three always stay
-     visible together while scrolling, on every page in the app (they
-     already live inside this single shared index.html shell, so this
-     one wrapper covers Order Index, Clients, Quote Builder, Job Detail,
+<!-- Sticky Header (confirmed Aug 2026): header + Owner Preview banner +
+     nav wrapped as one sticky unit so all three always stay visible
+     together while scrolling, on every page in the app (they already
+     live inside this single shared index.html shell, so this one
+     wrapper covers Order Index, Clients, Quote Builder, Job Detail,
      Builder Portal admin view, Supplier Console, HR, etc. — every
      landingView/section rendered inside <main> below). #appHeaderWrap
      itself has no visual style of its own — header/banner/nav each
      already paint their own opaque background — it only supplies the
-     sticky positioning and stacking order. JS in the boot sequence
-     toggles a "scrolled" class on scroll to compact header padding on
-     mobile (see styles.css) without hiding or shrinking any control. -->
+     sticky positioning and stacking order.
+
+     STATIC by explicit decision, not an oversight (Header Flicker:
+     Static By Design, confirmed Aug 2026) — after four separate scroll-
+     linked fix attempts on this header, nothing about its size or
+     visibility changes with scroll position/direction any more. No
+     "scrolled" class, no compact mode, no JS touching this element on
+     scroll at all. See styles.css's own header comment for the full
+     history/why. -->
 <div id="appHeaderWrap">
 <header style="display:none;">
   <div class="logo-row">
@@ -3894,100 +3900,29 @@ async function saveNewClientAndStartQuote() {
 // Floating back-to-top button — appears once you've scrolled down,
 // works on any page in the app, confirmed Aug 2026 (long lists like the
 // 79-item Flooring Quotes drill-down made manual scrolling annoying).
+// rAF-batched so a rapid scroll burst can't run this more than once per
+// paint frame, regardless of how many raw 'scroll' events fire.
 //
-// Same listener also toggles ".scrolled" on #appHeaderWrap (Sticky
-// Header brief, confirmed Aug 2026) — a small threshold (24px) rather
-// than 0, so the header doesn't visibly twitch on a 1-2px rubber-band
-// scroll; compacts spacing only, never hides/disables a control (see
-// the .scrolled rules in styles.css).
-//
-// Sticky Header Flicker/Shake on Fast Scroll brief (confirmed Aug
-// 2026) — real bug found and confirmed, not assumed: this handler ran
-// its full body on every single raw 'scroll' event with zero
-// throttling (a rapid up/down flick on a phone fires far more scroll
-// events than the browser can actually paint frames for), and every
-// one of those calls toggled a class whose CSS transitions padding/
-// height on the header — both layout-triggering properties, not
-// compositor-only ones. Confirmed directly: 40 dispatched scroll
-// events produced 42 handler executions before this fix (essentially
-// 1:1, no batching at all) — exactly the "unthrottled handler
-// recalculating on every scroll event" pattern the brief's own §3
-// hypothesis named. The sticky positioning itself was never the
-// issue — #appHeaderWrap already uses native CSS position:sticky
-// (styles.css), handled by the browser's own compositor; this
-// handler's job is only the separate "compact on scroll" class
-// toggle, and IT is what needed throttling.
-//
-// Fixed with the standard requestAnimationFrame-batching pattern: a
-// "ticking" flag ensures at most one pending update is scheduled at a
-// time, so the actual DOM read (window.scrollY) and writes
-// (classList.toggle, backToTopBtn.style.display) happen at most once
-// per paint frame (~60fps) no matter how many raw scroll events fire
-// in between — confirmed after this change that the same 40-event
-// burst produces a bounded, small number of executions instead of 42.
-//
-// Order Index Row Overflow & Sticky Header Flicker (Still Unresolved)
-// brief (confirmed Aug 2026) — re-diagnosed from scratch, per that
-// brief's own explicit instruction not to assume the fix above was
-// correct just because it was worked on earlier. It wasn't wrong, but
-// it was INCOMPLETE: it only ever reduced how many times this handler
-// RAN per scroll burst — it never changed WHAT the handler decided.
-// A single shared boundary (scrollY > 24, both directions) has no
-// hysteresis: real, fast, direction-reversing scrolling (exactly what
-// this brief reproduced) genuinely oscillates the actual scroll
-// position back and forth across that one pixel value across MANY
-// separate animation frames, not just within one — the rAF batching
-// above only collapses redundant work WITHIN a frame, so it does
-// nothing to stop a real, correctly-computed toggle from firing once
-// per frame for as long as scrollY keeps crossing 24. Each toggle
-// restarts header's own padding/logo-height CSS transitions
-// (styles.css, 0.15s ease) before the previous one finishes settling —
-// exactly the "shake/flicker/blur" reported: a layout-triggering
-// transition being continuously retriggered mid-animation, not a
-// single clean state change. Ruled out, not just skipped, the brief's
-// other named suspect: Chrome's mobile dynamic toolbar/100vh
-// interaction — confirmed by inspection that neither #appHeaderWrap
-// nor header uses any vh unit anywhere (the only 100vh usage in this
-// codebase is the login/reset-password screens and a photo lightbox,
-// none of which are visible while scrolled). Also checked whether
-// today's later Job Detail layout work contributed: a second,
-// independent position:sticky element was added today
-// (.job-detail-preview, styles.css) — reviewed and ruled out as a
-// contributor to THIS bug specifically: it's a separate sticky context
-// further down the page with no shared threshold logic or scroll
-// listener of its own, and the brief's own reproduction wasn't
-// Job-Detail-specific.
-//
-// Fix: real hysteresis, a genuine gap between the "compact" and
-// "expand" thresholds instead of one shared value — 40px to compact,
-// 10px to expand back. Scrolling anywhere within that 30px band no
-// longer toggles the class at all, so a real, fast, oscillating scroll
-// through that zone can no longer retrigger the transition repeatedly.
-// scrolledState persists across calls (module scope, same pattern as
-// scrollUpdateScheduled itself) since the whole point is remembering
-// which side of the band the header is currently on.
-//
-// Honest limit, stated per the brief's own explicit instruction not to
-// close this out on an automated pass alone: this removes the actual
-// mechanism traced above (confirmed by a real, quantitative test —
-// simulating a scroll position oscillating between 20-28px, the exact
-// band the old single threshold sat inside, produced 0 class toggles
-// after this fix vs. continuous re-toggling before it), but no
-// environment was available this session to visually confirm the
-// on-screen result in a real browser, and this has not yet been
-// confirmed live by Burgert. Do not mark this resolved without one of
-// those two.
+// This listener used to ALSO drive a "compact on scroll" class toggle
+// on #appHeaderWrap (Sticky Header brief) — removed entirely (confirmed
+// Aug 2026, Header Flicker: Static By Design) after four separate
+// scroll-linked fix attempts on that one mechanism (a shrink-transition
+// flicker, a width-lock, a badge-width fix, and finally a hide-on-
+// scroll-down regression the third pass itself introduced — most
+// likely `transform: translateZ(0)`, added by that pass directly onto
+// the same element `position: sticky` depends on, interfering with the
+// browser's own sticky positioning; removing it is very likely what
+// fixes that regression too, not just a coincidence of the cleanup).
+// Burgert's own explicit decision: stop patching individual scroll-
+// linked symptoms one at a time and remove the whole category instead
+// — nothing about the header ever changes with scroll position again,
+// full stop. See styles.css's own header comment for the CSS half.
 let scrollUpdateScheduled = false;
-let headerScrolledState = false;
 window.addEventListener('scroll', () => {
   if (scrollUpdateScheduled) return;
   scrollUpdateScheduled = true;
   requestAnimationFrame(() => {
-    const y = window.scrollY;
-    document.getElementById('backToTopBtn').style.display = y > 300 ? 'flex' : 'none';
-    if (!headerScrolledState && y > 40) headerScrolledState = true;
-    else if (headerScrolledState && y < 10) headerScrolledState = false;
-    document.getElementById('appHeaderWrap').classList.toggle('scrolled', headerScrolledState);
+    document.getElementById('backToTopBtn').style.display = window.scrollY > 300 ? 'flex' : 'none';
     scrollUpdateScheduled = false;
   });
 });
