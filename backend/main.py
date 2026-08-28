@@ -353,6 +353,17 @@ def _ensure_new_columns():
         # Job Workflow Design Proposal, Phase 1 (confirmed Aug 2026).
         ("quote", "on_hold_reason", "VARCHAR", "NULL"),
         ("quote", "on_hold_at", "TIMESTAMP", "NULL"),
+        # Lead: Visit Date, Address Fields & Printable Day List (confirmed
+        # Aug 2026) — real usage feedback from Burgert actually using the
+        # Lead feature the same day it shipped, not guessed at upfront.
+        # `lead` itself was a brand-new table earlier today, created by
+        # create_all() with no entry needed here — but it's now a live
+        # table in production, so these two ADDITIONAL columns need the
+        # same migration-list treatment as any other already-existing
+        # table (added to the model AND here together, same discipline
+        # learned from the documentarchive.is_accepted_version incident).
+        ("lead", "visit_date", "DATE", "NULL"),
+        ("lead", "site_address", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -5909,6 +5920,7 @@ def create_lead(lead: Lead, tenant_id: str = Depends(get_current_tenant), userna
     creation, same as Client."""
     if not lead.name or not lead.name.strip():
         raise HTTPException(400, "A name is required.")
+    coerce_date_fields(lead, "visit_date")
     lead.id = None
     lead.tenant_id = tenant_id
     lead.created_by = username
@@ -5951,6 +5963,65 @@ def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None, 
         return result
 
 
+def _leads_for_day(session: Session, tenant_id: str, day: date) -> list:
+    """Leads with a visit_date matching a given day (confirmed Aug 2026,
+    Lead: Visit Date, Address Fields & Printable Day List brief §3) —
+    a real usage-feedback gap: Burgert wants a simple, scannable,
+    printable list of what needs to happen on a given day. Written as a
+    standalone, reusable query rather than embedded ad hoc inside the
+    day-list endpoint below, per the brief's own explicit instruction —
+    it's an intentional stepping stone toward a future calendar feature,
+    where "leads with a visit date on day X" will very likely become one
+    view inside a proper calendar; this is the piece that must survive
+    unchanged even if today's printable screen itself gets fully
+    replaced. Deliberately does NOT filter by lead_status — a future
+    calendar view would want to show every visit on a day regardless of
+    outcome (including one that already converted), so status-based
+    filtering/styling stays a display-layer concern, not baked into the
+    data access itself."""
+    return session.exec(
+        select(Lead).where(Lead.tenant_id == tenant_id, Lead.visit_date == day)
+    ).all()
+
+
+@app.get("/leads/day-list")
+def leads_day_list(day: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+    """Printable 'Today's Leads' day list (confirmed Aug 2026, same
+    brief) — thin wrapper around _leads_for_day() above; defaults to
+    today when no day is given. Each lead carries the same computed
+    next_action as list_leads()/get_lead() (not a second, differently-
+    derived summary), so the printed list shows what's needed at a
+    glance without disagreeing with the Leads screen itself. Registered
+    BEFORE /leads/{lead_id} below — Starlette matches routes in
+    registration order, and "/leads/day-list" would otherwise match
+    {lead_id}'s path template first and 422 trying to parse "day-list"
+    as an int."""
+    target_day = date.fromisoformat(day) if day else date.today()
+    with Session(engine) as session:
+        leads = _leads_for_day(session, tenant_id, target_day)
+        today = date.today()
+        result = []
+        for lead in leads:
+            last_outcome_at = _lead_last_outcome_at(session, lead, tenant_id)
+            d = lead.dict()
+            d.update(_lead_next_action(lead, last_outcome_at, today))
+            # "any outcome notes already logged" (brief §3) — same
+            # AuditLog trail get_lead() already returns, so the printed
+            # list can never show something that disagrees with the
+            # lead's own Activity history. Day lists are short by
+            # nature (one day's worth of visits), so the full trail per
+            # lead stays cheap and genuinely scannable, not capped.
+            history = session.exec(
+                select(AuditLog)
+                .where(AuditLog.tenant_id == tenant_id, AuditLog.entity_type == "Lead", AuditLog.entity_id == lead.id)
+                .order_by(AuditLog.timestamp.desc())
+            ).all()
+            d["history"] = history
+            result.append(d)
+        result.sort(key=lambda d: d["name"].lower())
+        return {"day": target_day.isoformat(), "leads": result}
+
+
 @app.get("/leads/{lead_id}")
 def get_lead(lead_id: int, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
@@ -5977,6 +6048,7 @@ def update_lead(lead_id: int, updates: Lead, tenant_id: str = Depends(get_curren
     POST /leads/{id}/convert, never a silent field edit here, same
     "no bypassing the audited path" discipline as everywhere else in
     this codebase that gates a status change behind its own endpoint."""
+    coerce_date_fields(updates, "visit_date")
     with Session(engine) as session:
         lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
         data = updates.dict(exclude_unset=True, exclude={"id", "tenant_id", "lead_status", "converted_quote_id", "created_by", "created_at"})

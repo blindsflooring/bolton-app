@@ -81,7 +81,10 @@ function renderLeadsTable(searchTerm) {
       <p>New enquiries, from first contact through to a real quote — before a job exists at all.</p>
     </div>
     <div class="card">
-      <div class="field"><label>Search</label><input type="text" id="leadSearchInput" value="${searchTerm || ''}" placeholder="Name or contact..." oninput="renderLeads(document.getElementById('landing'), this.value)"></div>
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:200px;"><label>Search</label><input type="text" id="leadSearchInput" value="${searchTerm || ''}" placeholder="Name or contact..." oninput="renderLeads(document.getElementById('landing'), this.value)"></div>
+        <a href="#" onclick="openLeadsDayList(); return false;" style="margin-top:22px; font-size:12px; color:var(--teal); font-weight:600; white-space:nowrap;">📋 Today's Leads (printable)</a>
+      </div>
       <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
         ${tab('all', 'All', leads.length)}${tab('new', 'New', counts.new)}${tab('contacted', 'Contacted', counts.contacted)}${tab('potential', 'Potential', counts.potential)}${tab('converted', 'Converted', counts.converted)}${tab('lost', 'Lost', counts.lost)}
       </div>
@@ -107,6 +110,11 @@ function renderLeadsTable(searchTerm) {
             <option value="Other">Other</option>
           </select>
         </div>
+        <!-- Lead: Visit Date, Address Fields & Printable Day List (confirmed
+        Aug 2026) -- a scheduling detail, independent of lead_status; a lead
+        can have a visit proposed while sitting in any status. -->
+        <div class="field"><label>Site visit date <span class="adj">(optional)</span></label><input id="ld_visit_date" type="date"></div>
+        <div class="field"><label>Site address <span class="adj">(optional — where the visit would happen)</span></label><input id="ld_site_address" placeholder="Street address"></div>
         <div class="field" style="grid-column: span 2;"><label>Notes <span class="adj">(optional)</span></label><textarea id="ld_notes" rows="2" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;" placeholder="What are they after?"></textarea></div>
       </div>
       <br><button class="primary" id="addLeadBtn" onclick="addLead()">Add Lead</button>
@@ -122,6 +130,8 @@ async function addLead() {
     name: document.getElementById('ld_name').value,
     contact: document.getElementById('ld_contact').value,
     source: document.getElementById('ld_source').value,
+    visit_date: document.getElementById('ld_visit_date').value || null,
+    site_address: document.getElementById('ld_site_address').value,
     notes: document.getElementById('ld_notes').value,
   };
   if (!body.name.trim()) { alert('A name is required.'); return; }
@@ -189,6 +199,8 @@ async function renderLeadDetail(el) {
     <div class="card">
       <h2>${l.name} ${leadStatusBadge(l)}</h2>
       <p style="margin:4px 0;">${l.contact || '<span class="muted">No contact on file</span>'}${l.source ? ' · ' + l.source : ''}</p>
+      ${l.visit_date ? `<p style="margin:4px 0;">📅 Site visit: <b>${dateOrDash(l.visit_date)}</b></p>` : ''}
+      ${l.site_address ? `<p style="margin:4px 0;">📍 ${l.site_address.replace(/</g,'&lt;')}</p>` : ''}
       ${l.notes ? `<p class="muted" style="margin:4px 0;">${l.notes.replace(/</g,'&lt;')}</p>` : ''}
       ${nextActionHtml}
       ${convertedHtml}
@@ -235,6 +247,8 @@ function showEditLeadForm(leadId) {
       <div class="grid">
         <div class="field"><label>Name</label><input id="ld_edit_name" value="${(l?.name || '').replace(/"/g,'&quot;')}"></div>
         <div class="field"><label>Contact</label><input id="ld_edit_contact" value="${(l?.contact || '').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Site visit date</label><input id="ld_edit_visit_date" type="date" value="${l?.visit_date || ''}"></div>
+        <div class="field"><label>Site address</label><input id="ld_edit_site_address" value="${(l?.site_address || '').replace(/"/g,'&quot;')}"></div>
         <div class="field" style="grid-column: span 2;"><label>Notes</label><textarea id="ld_edit_notes" rows="2" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;">${(l?.notes || '').replace(/</g,'&lt;')}</textarea></div>
       </div>
       <br><button class="primary" onclick="saveLeadEdit(${leadId})">Save</button>
@@ -242,10 +256,84 @@ function showEditLeadForm(leadId) {
     </div>`;
 }
 
+// Printable "Today's Leads" day list (confirmed Aug 2026, Lead: Visit
+// Date, Address Fields & Printable Day List brief §3) — an explicit
+// stepping stone toward a future calendar visualizer per the brief's
+// own words: this screen is deliberately simple and fine to replace
+// later, but reuses the shared triggerPrint() mechanism (Document
+// Action Bar's own Print behaviour) rather than a new print mechanism,
+// and reads from the backend's own reusable _leads_for_day() query
+// (main.py) rather than filtering leadsCache client-side — the real
+// query needs to survive unchanged even when this screen doesn't.
+let leadsDayListDate = null;
+let leadsDayListCache = [];   // last-fetched day's leads — the Print button reads from here rather than re-serializing data into an onclick attribute (a name/note containing a quote or apostrophe would break that), same "cache the fetch, don't re-embed it in markup" convention as leadsCache/orderIndexQuotesCache elsewhere in this codebase
+function openLeadsDayList() {
+  leadsDayListDate = new Date().toISOString().slice(0, 10);   // today, local ISO date — matches the <input type="date"> value shape
+  landingView = 'leadsDayList';
+  renderLanding();
+}
+
+async function renderLeadsDayList(el) {
+  await renderWithRetry(el, "Today's Leads", async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='leads'; renderLanding();">← Back to Leads</span><div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/leads/day-list?day=${leadsDayListDate}`);
+  const data = await res.json();
+  const leads = data.leads;
+  leadsDayListCache = leads;
+
+  const rows = leads.length ? leads.map(l => `
+    <tr>
+      <td data-label="Name"><b>${l.name}</b>${l.contact ? `<br><span class="muted" style="font-size:11px;">${l.contact}</span>` : ''}</td>
+      <td data-label="Address">${l.site_address || '—'}</td>
+      <td data-label="What's needed">${(l.notes || '—').replace(/</g,'&lt;')}${l.next_action ? `<br><span style="font-weight:600; color:var(--coral);">→ ${l.next_action}</span>` : ''}</td>
+      <td data-label="Outcome notes logged">${(l.history || []).length ? l.history.map(h => `<div style="margin-bottom:4px;">${(h.new_value||'').replace(/</g,'&lt;')}</div>`).join('') : '<span class="muted">—</span>'}</td>
+    </tr>`).join('') : `<tr><td colspan="4" class="muted">No leads have a site visit on this day.</td></tr>`;
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='leads'; renderLanding();">← Back to Leads</span>
+    <div class="card">
+      <h2>Today's Leads</h2>
+      <p class="muted" style="margin-top:-8px;">Leads with a site visit on the chosen day — a scannable to-do list, not the full Leads table.</p>
+      <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px;">
+        <div class="field" style="margin:0;"><label>Day</label><input type="date" id="leadsDayListInput" value="${leadsDayListDate}" onchange="leadsDayListDate=this.value; renderLeadsDayList(document.getElementById('landing'));"></div>
+        <button onclick="printLeadsDayList('${data.day}')">🖨 Print</button>
+      </div>
+      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Address</th><th>What's needed</th><th>Outcome notes logged</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>
+  `;
+  });
+}
+
+function printLeadsDayList(day) {
+  const leads = leadsDayListCache;
+  const rows = leads.length ? leads.map(l => `
+    <tr>
+      <td><b>${l.name}</b>${l.contact ? `<br><span style="font-size:10px; color:#6b7280;">${l.contact}</span>` : ''}</td>
+      <td>${l.site_address || '—'}</td>
+      <td>${(l.notes || '—').replace(/</g,'&lt;')}${l.next_action ? `<br><b>→ ${l.next_action}</b>` : ''}</td>
+      <td>${(l.history || []).length ? l.history.map(h => `<div>${(h.new_value||'').replace(/</g,'&lt;')}</div>`).join('') : '—'}</td>
+    </tr>`).join('') : `<tr><td colspan="4">No leads have a site visit on this day.</td></tr>`;
+  triggerPrint(`
+    <div class="print-doc">
+      <div class="doc-header">
+        <img src="${document.querySelector('header .logo-row img').src}" style="height:36px;">
+        <div class="doc-title">TODAY'S LEADS — ${day}</div>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Address</th><th>What's needed</th><th>Outcome notes logged</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `);
+}
+
 async function saveLeadEdit(leadId) {
   const body = {
     name: document.getElementById('ld_edit_name').value,
     contact: document.getElementById('ld_edit_contact').value,
+    visit_date: document.getElementById('ld_edit_visit_date').value || null,
+    site_address: document.getElementById('ld_edit_site_address').value,
     notes: document.getElementById('ld_edit_notes').value,
   };
   if (!body.name.trim()) { alert('A name is required.'); return; }

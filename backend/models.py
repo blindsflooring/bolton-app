@@ -783,6 +783,20 @@ class Lead(SQLModel, table=True):
     converted_quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
     created_by: str = ""   # real authenticated username, same convention as Client.created_by (Trusted Tester Accounts brief)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Lead: Visit Date, Address Fields & Printable Day List (confirmed Aug
+    # 2026) — real usage feedback found the same day the base feature
+    # shipped: a site visit/meeting date is a scheduling detail, genuinely
+    # independent of lead_status (a lead can have a visit proposed while
+    # sitting in any non-terminal status) — not folded into lead_status
+    # as a value, same "no second status system" discipline as On Hold.
+    # site_address is the one additional field that actually makes the
+    # record plannable for someone heading out to see the client — the
+    # smallest real addition, not an exhaustive guess at every possible
+    # field; "what's needed" for the day list (§3 of that brief) is
+    # already covered by the existing `notes` field above, no new field
+    # needed for that.
+    visit_date: Optional[date] = None
+    site_address: str = ""
 
 
 class BusinessSettings(SQLModel, table=True):
