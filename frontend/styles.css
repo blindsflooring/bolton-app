@@ -273,6 +273,19 @@
     font-weight: 600; font-size: 13px; padding: 8px 16px; border-radius: 6px; cursor: pointer;
   }
   .hr-subnav button.active { background: var(--navy); color: white; border-color: var(--navy); }
+  /* Category tabs (Vinyl Quoting UX Redesign proposal §06, confirmed
+     Aug 2026, approved) — same pill-tab visual language as .hr-subnav
+     above, reused rather than inventing a second tab style. Always
+     visible, one fixed size — no scroll-linked or hover-only affordance,
+     same static-by-design discipline as the header (see its own comment,
+     above) applies here too: nothing about these tabs changes based on
+     scroll. flex-wrap + horizontal scroll fallback keeps all seven
+     genuinely reachable on a narrow phone without needing a dropdown. */
+  .line-category-tab {
+    background: white; border: 2px solid var(--border); color: var(--navy); font-family: 'Poppins', sans-serif;
+    font-weight: 600; font-size: 13px; padding: 7px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  }
+  .line-category-tab.active { background: var(--teal); color: white; border-color: var(--teal); }
   .status-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; }
   .status-badge.active-status { background: #dcf5e6; color: #1a7a3e; }
   .status-badge.inactive-status { background: #f0f0f0; color: #6b7280; }

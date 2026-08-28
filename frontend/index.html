@@ -338,31 +338,54 @@
       <div id="editLineBanner" style="display:none; background:var(--cream); border:2px solid var(--teal); border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
         <span></span> <button onclick="cancelLineEdit()" style="margin-left:10px; font-size:12px; padding:3px 10px;">Cancel</button>
       </div>
-      <div class="field"><label>Category</label>
+      <!-- Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign
+      proposal §06, approved) — REPLACES the plain <select> below with a
+      visible, always-on-screen row, per the proposal's own "discoverable
+      without already knowing where the calculators live" requirement.
+      Screed is a real, separate tab here for the first time — under the
+      hood it's still the same flooring/screed fields it always was
+      (category stays "flooring", flooring_pricing_type does the real
+      distinguishing, per the proposal's own explicit non-goal: no
+      calculation-engine change) — selectLineCategoryTab() (quote-
+      builder.js) just pre-configures the vinyl/screed include-checkboxes
+      so the Screed tab lands screed-only, without a checkbox detour.
+      The underlying <select> stays in the DOM, hidden, as the single
+      source of truth every existing call site already reads (pendingCategory
+      deep-links, editQuoteLine(), etc.) — this is a visual replacement,
+      not a second, parallel state to keep in sync. -->
+      <div class="field">
+        <label>Category</label>
+        <div class="line-category-tabs" style="display:flex; gap:4px; flex-wrap:wrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px;">
+          <button type="button" class="line-category-tab" data-tab="flooring" onclick="selectLineCategoryTab('flooring')">Flooring</button>
+          <button type="button" class="line-category-tab" data-tab="screed" onclick="selectLineCategoryTab('screed')">Screed</button>
+          <button type="button" class="line-category-tab" data-tab="blinds" onclick="selectLineCategoryTab('blinds')">Blinds</button>
+          <button type="button" class="line-category-tab" data-tab="skirting" onclick="selectLineCategoryTab('skirting')">Skirting</button>
+          <button type="button" class="line-category-tab" data-tab="trim" onclick="selectLineCategoryTab('trim')">Trim</button>
+          <button type="button" class="line-category-tab" data-tab="stairwell" onclick="selectLineCategoryTab('stairwell')">Stairwell</button>
+          <button type="button" class="line-category-tab" data-tab="misc" onclick="selectLineCategoryTab('misc')">Misc</button>
+        </div>
         <!-- URGENT: Adding a Line Destroys an Existing Line (confirmed
         Aug 2026) — root cause confirmed, not guessed: editQuoteLine()
         sets editingLineId to the line being edited, cleared only by
         cancelLineEdit() (the explicit Cancel button) or by a completed
-        Save. Switching this dropdown to a DIFFERENT category mid-edit —
-        instead of clicking Cancel — left editingLineId stale: the next
-        "Add Line"/"Add Floor Job" click still saw it set, and (back when
-        editing meant delete-then-re-add) silently deleted whatever line
-        was originally being edited (e.g. Vinyl or Screed) right before
-        posting the actually-intended new line (e.g. Trims) — exactly the
-        reported "existing line disappeared" data loss. Editing was
-        rebuilt Aug 2026 (Edit Quote Line In Place brief) to PUT in place
-        against editingLineId's own category-specific endpoint instead of
-        deleting anything, which removes that failure mode entirely — but
-        a stale editingLineId surviving a category switch would still be
-        wrong (it would try to save the NEW category's fields against the
-        OLD line's id/category and get rejected by the category check in
+        Save. Switching category mid-edit — instead of clicking Cancel —
+        left editingLineId stale: the next "Add Line"/"Add Floor Job"
+        click still saw it set, and (back when editing meant delete-
+        then-re-add) silently deleted whatever line was originally being
+        edited (e.g. Vinyl or Screed) right before posting the actually-
+        intended new line (e.g. Trims) — exactly the reported "existing
+        line disappeared" data loss. Editing was rebuilt Aug 2026 (Edit
+        Quote Line In Place brief) to PUT in place against editingLineId's
+        own category-specific endpoint instead of deleting anything,
+        which removes that failure mode entirely — but a stale
+        editingLineId surviving a category switch would still be wrong
+        (it would try to save the NEW category's fields against the OLD
+        line's id/category and get rejected by the category check in
         edit_flooring_line()/edit_blinds_line()/edit_trim_line()/
-        edit_misc_line(), main.py), so this guard stays. cancelLineEdit()
-        only runs here (a real user change) because editQuoteLine() sets
-        this field's .value directly, which never fires onchange — its
-        own explicit toggleLineFields() call right after is untouched,
-        and it re-sets editingLineId itself afterward regardless. -->
-        <select id="line_category" onchange="if (editingLineId) cancelLineEdit(); toggleLineFields();">
+        edit_stairwell_line()/edit_misc_line(), main.py), so this guard
+        stays — now inside selectLineCategoryTab() (quote-builder.js)
+        instead of an onchange handler, same guard, new trigger. -->
+        <select id="line_category" style="display:none;">
           <option value="flooring">Flooring</option>
           <option value="blinds">Blinds</option>
           <option value="skirting">Skirting</option>

@@ -41,6 +41,50 @@ function refreshLineProductOptions() {
     : list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
 }
 
+// Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal
+// §06, approved) — the visible tab row (index.html) is a front end onto
+// the SAME #line_category <select> every existing call site already
+// reads/writes; nothing downstream had to change. Screed isn't a real
+// line_category value at all (still "flooring" underneath, per the
+// proposal's own explicit non-goal — no calculation-engine change) — it
+// maps to flooring with the vinyl checkbox off, screed checkbox on, so
+// the tab lands screed-only without a checkbox detour.
+function selectLineCategoryTab(tab) {
+  // Same guard the old <select>'s onchange handler carried (see its own
+  // long-form comment, index.html) — a stale editingLineId surviving a
+  // category switch would try to save the NEW category's fields against
+  // the OLD line's id and get rejected server-side. New trigger, same
+  // protection.
+  if (editingLineId) cancelLineEdit();
+  document.getElementById('line_category').value = (tab === 'screed') ? 'flooring' : tab;
+  if (tab === 'flooring') {
+    document.getElementById('fj_include_vinyl').checked = true;
+    document.getElementById('fj_include_screed').checked = true;
+  } else if (tab === 'screed') {
+    document.getElementById('fj_include_vinyl').checked = false;
+    document.getElementById('fj_include_screed').checked = true;
+  }
+  toggleLineFields();
+}
+
+// Screed has no line_category value of its own (see above) — the active
+// tab is derived from the real state (category + include-checkboxes)
+// rather than tracked as separate parallel state that could drift out
+// of sync with it.
+function activeLineCategoryTab() {
+  const cat = document.getElementById('line_category').value;
+  if (cat !== 'flooring') return cat;
+  const includeVinyl = document.getElementById('fj_include_vinyl').checked;
+  const includeScreed = document.getElementById('fj_include_screed').checked;
+  return (includeScreed && !includeVinyl) ? 'screed' : 'flooring';
+}
+function syncActiveCategoryTab() {
+  const active = activeLineCategoryTab();
+  document.querySelectorAll('.line-category-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === active);
+  });
+}
+
 async function toggleLineFields() {
   const cat = document.getElementById('line_category').value;
   const isFlooring = cat === 'flooring';
@@ -84,6 +128,12 @@ async function toggleLineFields() {
   } else if (cat !== 'misc') {
     refreshLineProductOptions();
   }
+  // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §06, approved) — the flooring branch above syncs via
+  // fjOnIncludeChange() instead (needs the vinyl/screed checkboxes,
+  // not just the category), same reasoning as that call site's own
+  // comment.
+  syncActiveCategoryTab();
 }
 
 function populateFloorProductDropdowns() {
@@ -324,6 +374,11 @@ function fjOnIncludeChange() {
   const includeScreed = document.getElementById('fj_include_screed').checked;
   document.getElementById('vinylCard').style.display = includeVinyl ? '' : 'none';
   document.getElementById('screedCard').style.display = includeScreed ? '' : 'none';
+  // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §06, approved) — the Flooring/Screed tab highlight tracks
+  // these same two checkboxes (the real state), so a direct checkbox
+  // toggle (not just a tab click) keeps the visible tab honest too.
+  syncActiveCategoryTab();
   fjCalc();
 }
 
