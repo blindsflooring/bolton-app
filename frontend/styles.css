@@ -40,6 +40,31 @@
      clickable in the compact state, just smaller). */
   #appHeaderWrap {
     position: sticky; top: 0; z-index: 300;
+    /* Sticky Header Flicker, THIRD pass (confirmed Aug 2026) — the
+       hysteresis fix (previous pass, same file) was real and live-
+       verified in production (no more repeated toggling across a
+       shared threshold on fast direction-reversing scroll), but
+       Burgert confirmed the flicker still happens on a single, plain,
+       one-directional downward scroll — the exact moment the header
+       shrinks. That rules out repeated toggling as the cause of THIS
+       report; a single clean class toggle only ever runs its
+       transition once. The remaining, well-documented mechanism: a
+       CSS transition running on a `position: sticky` element (or
+       inside one) WHILE the page is actively being touch-scrolled
+       forces the browser to promote that element to its own GPU
+       compositing layer mid-scroll/mid-transition instead of upfront —
+       a known Mobile Safari/Chrome visual-flash/flicker source,
+       independent of how many times the toggle fires. will-change +
+       translateZ(0) forces that promotion to happen up front, before
+       any scroll or transition starts, so there's nothing left to
+       promote lazily mid-gesture. Honest limit, same as the previous
+       pass: no phone/browser was available in this session to visually
+       confirm the result — this targets a different, documented
+       mechanism than the hysteresis fix did, not a re-guess of the
+       same one, but still needs Burgert's own confirmation before
+       being marked resolved. */
+    will-change: transform;
+    transform: translateZ(0);
   }
   header {
     background: var(--navy); color: white; padding: 14px 20px;

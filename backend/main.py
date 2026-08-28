@@ -60,6 +60,33 @@ engine = create_engine(DATABASE_URL, echo=False, connect_args=connect_args)
 
 app = FastAPI(title="Blinds & Flooring Studio — Bolt-on API")
 
+# Captured once, at process import time — i.e. the moment THIS deploy
+# actually started running, not a manually-maintained number anyone has
+# to remember to bump. Backs the header version badge (index.html) below.
+_APP_STARTED_AT = datetime.utcnow()
+
+
+@app.get("/version")
+def get_version():
+    """Version badge fix (confirmed Aug 2026) — the badge had shown a
+    hardcoded "v65" since this repo's very first commit (f7dc67f,
+    2026-08-19), left over from the pre-repo CHANGELOG.md numbering
+    convention ("every version handed to Claude Code gets an entry")
+    that stopped once BUILD_LOG.md took over as the record of change —
+    nobody ported the bump-it-every-time discipline into the live UI,
+    so it silently went stale for 130+ commits / 9 days. Deliberately
+    NOT a manually-maintained counter again (that's exactly how it went
+    stale the first time) — derived from two things that are always
+    real and can't drift: RENDER_GIT_COMMIT, an env var Render sets
+    automatically on every deploy (None outside Render, e.g. local dev
+    — handled explicitly by the frontend, not guessed at), and
+    _APP_STARTED_AT above, captured fresh every time this process
+    actually starts (i.e. every real deploy/restart). No auth — this is
+    harmless build metadata, same "no Depends() needed" precedent as
+    login() below."""
+    commit = os.environ.get("RENDER_GIT_COMMIT")
+    return {"commit": commit[:7] if commit else None, "started_at": _APP_STARTED_AT.isoformat()}
+
 
 def coerce_date_fields(obj, *field_names):
     """BUG WORKAROUND (found Aug 2026, first time this codebase used a

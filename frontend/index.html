@@ -82,7 +82,7 @@
            handling needed here. -->
       <div id="pageTitleDisplay" style="font-size:12px; font-weight:600; color:#8FE0E3; margin-top:1px; font-family:'Poppins',sans-serif;"></div>
     </div>
-    <span id="versionBadge" style="background:var(--teal); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; margin-left:10px; font-family:'Poppins',sans-serif;">v65</span>
+    <span id="versionBadge" style="background:var(--teal); color:white; font-size:11px; font-weight:700; padding:3px 10px; border-radius:10px; margin-left:10px; font-family:'Poppins',sans-serif;"></span>
   </div>
   <div class="role-select">
     Logged in as: <b id="loggedInAsLabel"></b>
@@ -861,6 +861,16 @@ function showApp() {
   // first resetQuoteBuilderUI() call (e.g. the very first time Quote
   // Builder is opened this session).
   document.getElementById('q_branch').value = defaultBranchForCurrentUser();
+  // Version badge fix (confirmed Aug 2026) — used to be a hardcoded
+  // "v65" nobody had touched since this repo's first commit. Fetched
+  // fresh every login rather than baked into the page, so it can never
+  // go stale the same way again. Best-effort: a failure here is
+  // cosmetic only, never worth blocking login over.
+  fetch(`${API}/version`).then(r => r.json()).then(v => {
+    const badge = document.getElementById('versionBadge');
+    badge.textContent = v.commit ? `#${v.commit}` : 'dev';
+    badge.title = `Live since ${new Date(v.started_at + 'Z').toLocaleString('en-ZA')}`;
+  }).catch(() => {});
   loadFlooring();
   loadBlinds();
   loadTrims();
