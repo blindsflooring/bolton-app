@@ -612,6 +612,69 @@ function openOrderDetailScreen(quoteId) {
   renderLanding();
 }
 
+// Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) — the
+// numbered step strip + compact per-Order-Sheet procurement tiles.
+// Purely additive/visual: renders job_steps exactly as computed
+// server-side (_job_steps(), main.py — never re-derived here), and
+// every actual action (Accept/Schedule/Complete/Generate Order
+// Sheet(s)/Mark as Placed) stays the EXISTING button it already was,
+// right below this strip — this deliberately does NOT introduce a
+// second, competing "Next" mechanism. The existing Order Sheets list
+// card and Order Sheet Preview panel are UNCHANGED in this phase —
+// Phase 3 retires the redundant ones, once this is proven. Renders
+// nothing at all for a quote that isn't a job yet, or was declined
+// (job_steps is [] in both cases, from the server). While a job is on
+// hold, workflow_status/materials_ordered are untouched, so this
+// naturally shows the frozen step exactly where it was — no special
+// case needed here for that.
+function renderJobStepsHtml(jobSteps) {
+  if (!jobSteps || !jobSteps.length) return '';
+  const activeIndex = jobSteps.findIndex(st => st.active);
+  const activeStep = activeIndex >= 0 ? jobSteps[activeIndex] : jobSteps[jobSteps.length - 1];
+  const stepNum = activeIndex >= 0 ? activeIndex + 1 : jobSteps.length;
+
+  const dots = jobSteps.map((st, i) => {
+    const dotStyle = st.done
+      ? 'background:var(--teal); color:#fff;'
+      : st.active
+        ? 'background:var(--navy); color:var(--bg,#EDEDED); box-shadow:0 0 0 3px var(--bg,#EDEDED);'
+        : 'background:var(--border); color:var(--ink-faint,#8A93A0);';
+    const dot = `<div title="${st.label}" style="width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; flex-shrink:0; ${dotStyle}">${st.done ? '✓' : (i + 1)}</div>`;
+    const line = i < jobSteps.length - 1
+      ? `<div style="flex:1; height:2px; min-width:10px; background:${st.done ? 'var(--teal)' : 'var(--border)'};"></div>`
+      : '';
+    return dot + line;
+  }).join('');
+
+  let tilesHtml = '';
+  if (activeStep && activeStep.id === 'procurement') {
+    if (!activeStep.tiles.length) {
+      tilesHtml = `<p class="muted" style="font-size:12.5px; margin:8px 0 0;">No Order Sheet generated yet — use "Generate Order Sheet(s)" below.</p>`;
+    } else {
+      const tileHtml = activeStep.tiles.map(t => {
+        // Label reflects the merged sheet honestly (Phase 1) — a sheet
+        // covering both categories says so; a flooring-only sheet
+        // doesn't imply floor prep was included.
+        const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
+        const isPlaced = t.status === 'placed';
+        return `
+          <div onclick="openOrderSheetDetail(${t.id})" style="cursor:pointer; flex:1; min-width:150px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
+            <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
+            <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+          </div>`;
+      }).join('');
+      tilesHtml = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">${tileHtml}</div>`;
+    }
+  }
+
+  return `
+    <div style="margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; align-items:center; gap:4px; margin-bottom:8px;">${dots}</div>
+      <p style="margin:0; font-weight:700; font-size:13.5px;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}</p>
+      ${tilesHtml}
+    </div>`;
+}
+
 // Workflow action section — one clear primary action at a time, driven
 // entirely by workflow_status, per the addendum's "current step -> next
 // step -> next step" principle. Deliberately NOT the same as the Next
@@ -751,6 +814,7 @@ async function renderOrderDetail(el) {
       <div class="job-detail-main">
         <div class="card">
           <h2>Workflow</h2>
+          ${renderJobStepsHtml(data.job_steps)}
           ${renderWorkflowActionsHtml(q)}
           <details style="margin-top:16px;">
             <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>

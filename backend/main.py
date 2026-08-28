@@ -5028,7 +5028,7 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     }
 
 
-def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str) -> bool:
+def _all_sheets_placed(order_sheets: list) -> bool:
     """Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) — the
     real derivation Quote.materials_ordered used to fake with a manual
     checkbox. True once the job has generated at least one Order Sheet
@@ -5038,8 +5038,70 @@ def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str
     handles the post-merge case where 1 sheet now covers what used to
     be 2: one shared status for one real delivery, not two independently
     tracked flags that could disagree."""
+    return bool(order_sheets) and all(s.status == "placed" for s in order_sheets)
+
+
+def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str) -> bool:
+    """Convenience wrapper over _all_sheets_placed() for callers (e.g.
+    list_quotes()) that don't already have the job's Order Sheets
+    loaded — get_quote() fetches them once itself (Phase 2, job_steps)
+    and calls _all_sheets_placed() directly instead, to avoid querying
+    the same table twice in one request."""
     sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
-    return bool(sheets) and all(s.status == "placed" for s in sheets)
+    return _all_sheets_placed(sheets)
+
+
+def _job_steps(session: Session, quote: "Quote", tenant_id: str, materials_ordered: bool, order_sheets: list) -> list:
+    """Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) — the
+    adaptive step list §03 describes: Procurement -> Scheduling ->
+    Installation -> Complete & Invoice, computed fresh at read time,
+    never stored (same discipline _job_workflow_info() already follows
+    for Next Action). Deliberately a VIEW, not a second engine — every
+    "done" condition below reads a field _job_workflow_info() and the
+    existing Workflow panel already use, nothing new is introduced to
+    decide it.
+
+    Only returned for a job that's actually Accepted or later and not
+    Declined — a quote that hasn't become a job has no step sequence
+    to show, per the brief's own non-goal (nothing upstream of Accepted
+    changes). A job with no flooring/floor-prep lines skips the
+    Procurement step entirely — never an empty/irrelevant step. Exactly
+    one step is marked "active": the first one not yet done — everything
+    before it is "done", everything after is upcoming (rendered plain,
+    no special flag needed for that)."""
+    if quote.workflow_status == "quoted" or quote.declined_at:
+        return []
+
+    steps = []
+
+    has_procurable_lines = session.exec(
+        select(QuoteLineItem.id).where(
+            QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id,
+            QuoteLineItem.category == "flooring",
+        )
+    ).first() is not None
+
+    if has_procurable_lines:
+        steps.append({
+            "id": "procurement", "label": "Order Materials", "done": materials_ordered,
+            # Tiles carry one entry per resulting Order Sheet (post-merge,
+            # Phase 1) — never one per category. Empty list means
+            # flooring/floor-prep lines exist but Generate Order Sheet(s)
+            # hasn't been clicked yet, so the frontend can prompt for
+            # that specifically rather than showing a blank step.
+            "tiles": [{"id": s.id, "supplier": s.supplier, "sheet_type": s.sheet_type, "status": s.status} for s in order_sheets],
+        })
+
+    steps.append({"id": "scheduling", "label": "Schedule Installation", "done": quote.workflow_status in ("scheduled", "completed")})
+    steps.append({"id": "installation", "label": "Installation", "done": quote.workflow_status == "completed"})
+    steps.append({"id": "completion", "label": "Complete & Invoice", "done": bool(quote.invoice_sent_date) and bool(quote.final_payment_date)})
+
+    found_active = False
+    for step in steps:
+        step["active"] = (not step["done"]) and (not found_active)
+        found_active = found_active or step["active"]
+
+    return steps
 
 
 def _quote_line_sort_key(line: dict) -> int:
@@ -6841,7 +6903,11 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # Columns brief — see that function's own comment).
         VAT_PCT = get_settings(session, tenant_id).vat_pct
         totals = _quote_totals(subtotal_ex_vat, quote, VAT_PCT)
-        materials_ordered_flag = _materials_ordered_for_quote(session, quote_id, tenant_id)
+        # Fetched once here (Phase 2, confirmed Aug 2026) and reused for
+        # both materials_ordered and job_steps below, rather than
+        # querying OrderSheet twice in the same request.
+        order_sheets_for_workflow = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
+        materials_ordered_flag = _all_sheets_placed(order_sheets_for_workflow)
 
         response = {
             "quote": quote.dict(),
@@ -6859,6 +6925,12 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             # so the frontend can show a clean derived status line
             # instead of parsing a sentence.
             "materials_ordered": materials_ordered_flag,
+            # Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) —
+            # the adaptive step list, computed fresh, never stored. Empty
+            # list for a quote that isn't a job yet (or was declined) —
+            # the frontend renders nothing extra in that case, same as
+            # today.
+            "job_steps": _job_steps(session, quote, tenant_id, materials_ordered_flag, order_sheets_for_workflow),
         }
 
         # "At a glance" job margin check (owner/admin only — never shown to
