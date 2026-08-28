@@ -661,16 +661,39 @@ function renderJobStepsHtml(jobSteps, quoteId) {
   let procurementHtml = '';
   if (procurementStep) {
     const isCurrentStep = activeStep && activeStep.id === 'procurement';
+    // Real, printable, sendable Order Sheet previews (confirmed Aug
+    // 2026, Job Detail: Needs Attention Bug, Conditional Invoice
+    // Preview, Order Sheet Previews brief §3) — each tile is now a
+    // compact click-to-expand Document Preview + the standard 5-button
+    // Action Bar, the EXACT SAME documentPreviewTileHtml()/
+    // documentActionBarHtml() component Order Sheet Detail's own
+    // preview already uses (shared.js) — not a second, different
+    // preview mechanism, per the brief's own explicit instruction. A
+    // status line stays above each preview so the at-a-glance "✓
+    // Ordered / Needs ordering" scan this replaces isn't lost. Edit
+    // deliberately included (brief's own open question, resolved by
+    // reading the actual behaviour rather than guessing): for
+    // docType='ordersheet', documentActionBarHtml()'s Edit button
+    // already just calls openOrderSheetDetail(id) — the same
+    // navigation this tile's own click used to do directly — so
+    // there's no real "editing inline in a compact preview" risk to
+    // worry about, it's already just a shortcut to the full screen.
+    // Collapsed by default (.doc-preview-tile's own 210px frame, same
+    // as every other placement) so multiple sheets side by side stay
+    // compact, matching the existing Quote Preview's own click-to-
+    // expand pattern rather than reintroducing the stacked-full-panels
+    // clutter the original Job Detail redesign eliminated.
     const tileHtml = procurementStep.tiles.map(t => {
-      // Label reflects the merged sheet honestly (Phase 1) — a sheet
-      // covering both categories says so; a flooring-only sheet
-      // doesn't imply floor prep was included.
       const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
       const isPlaced = t.status === 'placed';
+      const previewId = 'dp_ordersheet_tile_' + t.id;
       return `
-        <div onclick="openOrderSheetDetail(${t.id})" style="cursor:pointer; flex:1; min-width:150px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
-          <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
-          <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+        <div style="flex:1 1 260px; min-width:220px; max-width:340px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+            <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
+            <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+          </div>
+          ${documentPreviewTileHtml(previewId, t.id, 'ordersheet')}
         </div>`;
     }).join('');
     procurementHtml = `
@@ -788,6 +811,27 @@ async function resumeJobAction(quoteId) {
   const res = await fetch(`${API}/quotes/${quoteId}/resume`, {method: 'POST'});
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not resume this job.'); return; }
   openOrderDetailScreen(quoteId);
+}
+
+// Compact payment-status strip (confirmed Aug 2026, JobDetail: Needs
+// Attention Bug, Conditional Invoice Preview, Order Sheet Previews
+// brief §2) — deposit amount, date paid, method if recorded, balance
+// due. Sits right alongside the Quote Preview so payment status is
+// visible at this stage without needing a second document preview to
+// convey it — reuses the exact same figures the Job Details card
+// (main column) already shows (data.deposit_amount/balance_amount from
+// _quote_totals(), main.py; q.deposit_paid_date/deposit_payment_method
+// straight off the quote), never a second, separately-computed copy.
+function paymentStatusStripHtml(q, data) {
+  const depositStatus = q.deposit_paid_date
+    ? `Paid ${new Date(q.deposit_paid_date).toLocaleDateString('en-ZA')}${q.deposit_payment_method ? ' via ' + q.deposit_payment_method : ''}`
+    : 'Not yet paid';
+  return `
+    <div style="background:var(--bg,#f5f6f8); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:12.5px;">
+      <div style="display:flex; justify-content:space-between; gap:10px;"><span class="muted">Deposit</span><b>R${data.deposit_amount.toFixed(2)}</b></div>
+      <div class="muted" style="font-size:11px; margin:2px 0 6px;">${depositStatus}</div>
+      <div style="display:flex; justify-content:space-between; gap:10px; padding-top:6px; border-top:1px solid var(--border);"><span class="muted">Balance due</span><b>R${data.balance_amount.toFixed(2)}</b></div>
+    </div>`;
 }
 
 async function renderOrderDetail(el) {
@@ -937,26 +981,34 @@ async function renderOrderDetail(el) {
       </div>
 
       <div class="job-detail-preview">
+        <!-- Conditional Quote/Invoice Preview (confirmed Aug 2026,
+        JobDetail: Needs Attention Bug, Conditional Invoice Preview,
+        Order Sheet Previews brief §2) — real usage finding: both
+        previews used to render regardless of stage, which was the
+        actual source of the redundancy/clutter feeling, not the mere
+        existence of two document types. Quote Preview (with a compact
+        payment-status strip covering what the Invoice Preview used to
+        be there for, at this stage) shows for every stage before the
+        job is actually invoiced; Invoice Preview only once there's
+        something genuine to preview — reads workflow_status directly
+        (not a new field), matching _job_workflow_info()'s own existing
+        "invoicing only becomes relevant once completed" rule (main.py)
+        exactly, so this can never disagree with what Next Action says.
+        Quote and Invoice deliberately stay two fully separate document
+        types underneath (buildPrintDocHtml() docType) — only WHICH
+        ONE renders here changes, never merged into one hybrid doc. -->
+        ${q.workflow_status !== 'completed' ? `
         <div class="card">
-          <h2>Document Preview</h2>
+          <h2>Quote Preview</h2>
+          ${paymentStatusStripHtml(q, data)}
           ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
-        </div>
+        </div>` : ''}
 
-        <!-- Invoice Preview (confirmed Aug 2026, Document Action Bar
-        brief) — same shared documentPreviewTileHtml() component,
-        docType='invoice' this time; "Invoice" isn't a separate entity
-        (buildPrintDocHtml() just relabels the same quote document), so
-        this is the SAME underlying data as the card above, only the
-        on-page labels/subject-line differ. Edit button here starts
-        enabled and gets disabled by applyInvoiceEditLock() below, once
-        it's confirmed (async, after this initial render) whether this
-        quote has ever had a real Invoice archived — "no editing after
-        an invoice has been sent," resolved with Burgert; use Duplicate
-        for a supplementary invoice instead once that happens. -->
+        ${q.workflow_status === 'completed' ? `
         <div class="card">
           <h2>Invoice Preview</h2>
           ${documentPreviewTileHtml('dp_invoice_jobdetail_' + q.id, q.id, 'invoice')}
-        </div>
+        </div>` : ''}
 
         <!-- Dropbox Document Archive brief (confirmed Aug 2026) — this
         card is the Quote's own archive history. Manual trigger only,
@@ -985,9 +1037,23 @@ async function renderOrderDetail(el) {
     </div>
   `;
   loadFollowUps();
-  loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
-  loadDocumentPreview('dp_invoice_jobdetail_' + q.id, q.id, 'invoice');
-  applyInvoiceEditLock(q.id);
+  // Only load whichever preview actually rendered above (conditional on
+  // workflow_status, §2 of the brief) — loadDocumentPreview() itself
+  // no-ops safely if the element isn't there, but calling it for a card
+  // that was never rendered means building a real print-doc HTML string
+  // just to throw it away, wasted work for every job before/after the
+  // stage where it's actually relevant.
+  if (q.workflow_status !== 'completed') {
+    loadDocumentPreview('dp_jobdetail_' + q.id, q.id);
+  } else {
+    loadDocumentPreview('dp_invoice_jobdetail_' + q.id, q.id, 'invoice');
+    applyInvoiceEditLock(q.id);
+  }
+  // Order Sheet previews (§3) — one per tile, same pattern
+  // renderOrderSheetDetail() already uses for its own single preview.
+  (data.job_steps || []).find(st => st.id === 'procurement')?.tiles.forEach(t => {
+    loadDocumentPreview('dp_ordersheet_tile_' + t.id, t.id, 'ordersheet');
+  });
   loadDocumentArchiveStatus('Quote', q.id, q.job_number || ('Q-' + q.id), q.id, 'quote');
   // Immediate, visible confirmation after Generate (confirmed Aug
   // 2026, brief §1+§4 -- "immediate, visible confirmation/preview...

@@ -5022,7 +5022,22 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
             attention_priority, attention_label = "warning", "Materials required"
         elif not quote.ready_for_installation:
             next_action, action_button, action_target = "Confirm materials received", "PREPARE JOB", "job_detail"
-            attention_priority, attention_label = "warning", "Materials required"
+            # Job Detail / Needs Attention disagreement (confirmed Aug
+            # 2026, JobDetail: Needs Attention Bug brief) — REAL BUG
+            # FIXED. Both screens already read this exact same function
+            # (there was never a second, older code path to unify — the
+            # brief's own hypothesis, checked and ruled out): the defect
+            # was that this branch reused the IDENTICAL "Materials
+            # required" label as the branch above (not materials_ordered
+            # at all), even though materials genuinely ARE ordered here
+            # — that's exactly why Job Detail's derived "Materials
+            # ordered" indicator correctly showed green (it only checks
+            # materials_ordered, per _job_steps()'s "procurement" step)
+            # while the Order Index still showed an orange dot captioned
+            # as if nothing had been ordered. Distinct label now, so a
+            # job in this genuinely different state can never look
+            # identical to one where materials haven't been ordered yet.
+            attention_priority, attention_label = "warning", "Confirm receipt"
         else:
             next_action, action_button, action_target = "Complete installation", "OPEN JOB", "job_detail"
     elif ws == "completed":
