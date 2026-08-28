@@ -945,6 +945,11 @@ function resetQuoteBuilderUI() {
   // param) are applied by the caller right after this returns, so they
   // still correctly win over this staff default.
   document.getElementById('q_branch').value = defaultBranchForCurrentUser();
+  // Sales Owner default (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §07, approved) — same real gap/fix shape as q_branch just
+  // above: resetQuoteBuilderUI() never reset q_owner either, so a new
+  // quote silently kept whatever Sales Owner the PREVIOUS quote had.
+  document.getElementById('q_owner').value = defaultSalesOwnerForCurrentUser();
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
@@ -1043,40 +1048,39 @@ async function addLine() {
   const role = currentRole();
   if (!confirmPostAcceptChange(editingLineId ? 'saving this change' : 'adding this line')) return;
 
+  // Stairwell params built once here — shared by both the edit (PUT) and
+  // create (POST) paths below, same "one param set, two possible verbs"
+  // shape every other category already uses.
+  let stairwellParams, stairwellLandingTotal;
   if (cat === 'stairwell') {
-    const vinylProductId = document.getElementById('line_stair_vinyl').value;
-    const ownStaff = document.getElementById('line_stair_own_staff').value;
     // Landing(s), summed — CHANGED Aug 2026: folded into this SAME
     // stairwell request/line instead of a separate POST to
     // /lines/flooring, so the quote shows one combined stair price, not
     // two lines. Still priced at the standard per-m² flat-flooring rate
     // (same vinyl product, no markup override) — only how it's posted
     // and displayed changed, not the rate or calculation.
-    const landingTotal = recomputeLandingTotal();
-    const params = new URLSearchParams({
-      vinyl_product_id: vinylProductId,
+    stairwellLandingTotal = recomputeLandingTotal();
+    stairwellParams = new URLSearchParams({
+      vinyl_product_id: document.getElementById('line_stair_vinyl').value,
       nosing_product_id: document.getElementById('line_nosing_product').value,
       num_stairs: document.getElementById('line_num_stairs').value,
       stair_area_m2: document.getElementById('line_stair_area').value || 0.45,
       stairwell_type: document.getElementById('line_stairwell_type').value,
-      own_staff: ownStaff,
-      landing_area_m2: landingTotal,
+      own_staff: document.getElementById('line_stair_own_staff').value,
+      landing_area_m2: stairwellLandingTotal,
       role,
     });
-    const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/stairwell?${params}`, {method:'POST'});
-    const line = await res.json();
-    if (line.warning) alert(line.warning);
-    if (landingTotal > 0) clearLandingRows();
-    loadQuote();
-    return;
   }
 
-  // Edit Quote Line In Place (confirmed Aug 2026) — saving an in-progress
-  // edit on a blinds/trim/misc line PUTs to that SAME line id instead of
-  // the old delete-then-re-add.
+  // Edit Quote Line In Place (confirmed Aug 2026, extended to Stairwell
+  // Aug 2026, Vinyl Quoting UX Redesign proposal §09, approved) — saving
+  // an in-progress edit on any category now PUTs to that SAME line id
+  // instead of the old delete-then-re-add.
   if (editingLineId) {
     let editUrl;
-    if (cat === 'blinds') {
+    if (cat === 'stairwell') {
+      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/stairwell?${stairwellParams}`;
+    } else if (cat === 'blinds') {
       const params = new URLSearchParams({
         product_id: productId, width_mm: document.getElementById('line_width').value,
         drop_mm: document.getElementById('line_drop').value, discount_pct: discount, role,
@@ -1102,7 +1106,17 @@ async function addLine() {
     const line = await res.json();
     if (line.warning) alert(line.warning);
     if (line.override_cleared) alert('This line had a Manual Override applied — because the product changed, the override was cleared and the price recalculated from the new figures. Reconfirm the override if one is still needed.');
+    if (cat === 'stairwell' && stairwellLandingTotal > 0) clearLandingRows();
     cancelLineEdit();
+    loadQuote();
+    return;
+  }
+
+  if (cat === 'stairwell') {
+    const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/stairwell?${stairwellParams}`, {method:'POST'});
+    const line = await res.json();
+    if (line.warning) alert(line.warning);
+    if (stairwellLandingTotal > 0) clearLandingRows();
     loadQuote();
     return;
   }
@@ -1188,10 +1202,20 @@ async function deleteQuoteLine(lineId) {
 // changes. Manual Override survival on an edited line is handled entirely
 // server-side (see _reapply_line_calc_respecting_override(), main.py) —
 // this file never has to reason about it beyond showing the
-// override_cleared flag the backend hands back. Stairwell lines are
-// excluded (landings/nosing make a faithful pre-fill materially more
-// complex) — flagged honestly rather than shipped half-working, matching
-// the brief's own non-goals.
+// override_cleared flag the backend hands back.
+//
+// Stairwell (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal §09,
+// approved) — the exclusion noted above is CLOSED, not still open.
+// edit_stairwell_line() (main.py) mirrors the others exactly. Two things
+// genuinely can't be recovered, same "prefill what's recoverable, default
+// the rest" honesty as flooring's own limitation just above — nosing
+// product isn't stored as its own id on QuoteLineItem at all (only baked
+// into product_name/cost totals), and stair_area_m2 isn't persisted
+// either (only its downstream billed_vinyl_area_m2 is) — both left at the
+// form's own current defaults rather than guessed at from the display
+// string. landing_area_m2 IS stored (as one aggregate figure, not
+// itemized rows) — prefilled as a single landing row carrying that total,
+// so saving without touching landings doesn't silently zero it out.
 let editingLineId = null;
 
 function editQuoteLine(lineId) {
@@ -1214,6 +1238,26 @@ function editQuoteLine(lineId) {
       document.getElementById('line_misc_desc').value = line.product_name || '';
       document.getElementById('line_misc_amount').value = line.unit_price || 0;
       document.getElementById('line_misc_cost').value = line.unit_cost || 0;
+    } else if (line.category === 'stairwell') {
+      // Editability — every category, in place (confirmed Aug 2026,
+      // Vinyl Quoting UX Redesign proposal §09, approved) — see this
+      // function's own doc comment above for exactly what can/can't be
+      // recovered and why.
+      document.getElementById('line_stair_vinyl').value = line.product_id;
+      document.getElementById('line_num_stairs').value = line.num_stairs || '';
+      document.getElementById('line_stairwell_type').value = line.stairwell_type || 'closed';
+      document.getElementById('line_stair_area').value = 0.45;   // not recoverable — see comment above
+      document.getElementById('line_stair_own_staff').value = line.own_staff === false ? 'false' : 'true';
+      // Nosing product not recoverable either — left at whatever the
+      // dropdown's own default/first option is; re-selecting it is a
+      // deliberate, visible part of confirming this edit, not silently
+      // guessed at from the formatted product_name string.
+      clearLandingRows();
+      if (line.landing_area_m2) {
+        addLandingRow();
+        document.querySelector('.landing-area-input').value = line.landing_area_m2;
+        recomputeLandingTotal();
+      }
     }
     editingLineId = lineId;
     const banner = document.getElementById('editLineBanner');
@@ -1559,7 +1603,13 @@ async function loadQuote() {
       <td class="card-title" data-label="Product">${l.product_name}${colourHtml}</td><td data-label="Detail">${detail}</td>
       <td data-label="Price">R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}</td>
       <td class="cost-col" data-label="Cost">${cost}</td><td class="cost-col" data-label="Margin">${margin}</td>
-      <td class="card-actions-cell" data-label="">${l.category === 'stairwell' ? '' : `<button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button>`}<button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
+      <!-- Editability — every category, in place (confirmed Aug 2026,
+      Vinyl Quoting UX Redesign proposal §09, approved) — REAL GAP
+      CLOSED: Edit used to be explicitly hidden for stairwell rows here
+      (the only category with no in-place edit path — deleting and
+      re-adding from scratch was the only option). Now offered for
+      every category, same as the other five. -->
+      <td class="card-actions-cell" data-label=""><button onclick="editQuoteLine(${l.id})" style="margin-right:6px;">Edit</button><button class="delete-btn" onclick="deleteQuoteLine(${l.id})">Delete</button></td>
     </tr>`;
   }).join('');
 

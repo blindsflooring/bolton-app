@@ -898,6 +898,9 @@ function showApp() {
   // first resetQuoteBuilderUI() call (e.g. the very first time Quote
   // Builder is opened this session).
   document.getElementById('q_branch').value = defaultBranchForCurrentUser();
+  // Sales Owner default (confirmed Aug 2026, Vinyl Quoting UX Redesign
+  // proposal §07, approved) — same pattern/placement as q_branch above.
+  document.getElementById('q_owner').value = defaultSalesOwnerForCurrentUser();
   // Version badge fix (confirmed Aug 2026) — used to be a hardcoded
   // "v65" nobody had touched since this repo's first commit. Fetched
   // fresh every login rather than baked into the page, so it can never

@@ -7242,6 +7242,117 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         return result
 
 
+@app.put("/quotes/{quote_id}/lines/{line_id}/stairwell")
+def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosing_product_id: int,
+                         num_stairs: int, stairwell_type: StairwellType,
+                         stair_area_m2: float = 0.45, own_staff: bool = True,
+                         landing_area_m2: float = 0.0,
+                         role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                         username: str = Depends(get_current_username)):
+    """Editability — every category, in place (confirmed Aug 2026,
+    Vinyl Quoting UX Redesign proposal §09, approved) — REAL GAP CLOSED.
+    Stairwell was the one category that couldn't be edited without
+    delete-then-re-add: no PUT endpoint existed at all, and the
+    frontend's own Quote Lines row template explicitly hid the Edit
+    button for stairwell rows. Same shape as every other edit_*_line()
+    above (params identical to add_stairwell_line(), which this mirrors
+    exactly) — calls the SAME calculate_stairwell_line()/
+    calculate_flooring_line() (landing) that add_stairwell_line() calls,
+    zero new calculation logic, per the brief's own explicit non-goal.
+    product_changed tracks the vinyl product only, same signal
+    edit_flooring_line() uses — the nosing product isn't stored as its
+    own id on QuoteLineItem (only baked into product_name/cost totals),
+    so there's nothing to compare it against on an edit."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "stairwell":
+            raise HTTPException(400, "This line is not a stairwell line.")
+        vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
+        nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
+        if not vinyl_product.tiles_per_pack:
+            raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
+        settings = get_settings(session, tenant_id)
+
+        product_changed = (line.product_id != vinyl_product_id)
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = f"Stairwell — {line.product_name}, {line.num_stairs} stairs"
+
+        stairwell_labour_by_type = {
+            StairwellType.closed: settings.stairwell_labour_closed,
+            StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
+            StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
+        }
+        effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)
+        calc = calculate_stairwell_line(
+            effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
+            glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
+            glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
+            labour_per_stair=stairwell_labour_by_type[stairwell_type],
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+        )
+
+        landing_calc = None
+        if landing_area_m2 > 0:
+            landing_calc = calculate_flooring_line(
+                effective_vinyl, landing_area_m2, JobType.smooth, own_staff=own_staff,
+                margin_warn_threshold=settings.flooring_margin_warn_threshold,
+                tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+                vat_pct=settings.vat_pct,
+            )
+
+        combined_line_total = calc["line_total"] + (landing_calc["line_total"] if landing_calc else 0.0)
+        combined_total_job_cost = calc["total_job_cost"] + (landing_calc["total_job_cost"] if landing_calc else 0.0)
+        combined_margin_pct = (combined_line_total - combined_total_job_cost) / combined_line_total if combined_line_total else 0.0
+        combined_labour_charged = calc["labour_charged_total"] + (landing_calc["labour_charged_total"] if landing_calc else 0.0)
+        combined_labour_cost = calc["labour_cost_total"] + (landing_calc["labour_cost_total"] if landing_calc else 0.0)
+        combined_warning = None
+        if combined_margin_pct < settings.flooring_margin_warn_threshold:
+            combined_warning = f"Overall margin on this stairwell line (incl. landing) is {combined_margin_pct:.1%}, below the {settings.flooring_margin_warn_threshold:.0%} warning threshold."
+
+        line.product_id = vinyl_product_id
+        line.product_name = f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)"
+        line.num_stairs = num_stairs
+        line.stairwell_type = stairwell_type
+        line.nosing_length_m = calc["nosing_length_m"]
+        line.boxes_needed = calc["boxes_needed"]
+        line.billed_vinyl_area_m2 = calc["billed_vinyl_area_m2"]
+        line.glue_area_m2 = calc["glue_area_m2"]
+        line.vinyl_sell_total = calc["vinyl_sell_total"]
+        line.vinyl_cost_total = calc["vinyl_cost_total"]
+        line.nosing_cost_total = calc["nosing_cost_total"]
+        line.nosing_sell_total = calc["nosing_sell_total"]
+        line.glue_cost_total = calc["glue_cost_total"]
+        line.glue_sell_total = calc["glue_sell_total"]
+        line.glue_units_needed = calc["glue_units_needed"]
+        line.labour_cost_total = combined_labour_cost
+        line.labour_charged_total = combined_labour_charged
+        line.own_staff = calc["own_staff"]
+        line.landing_area_m2 = landing_area_m2 if landing_calc else None
+        line.landing_sell_total = landing_calc["line_total"] if landing_calc else None
+        line.margin_pct = combined_margin_pct
+        line.total_job_cost = combined_total_job_cost
+        line.line_total = combined_line_total
+
+        override_result = _reapply_line_calc_respecting_override(line, combined_line_total, product_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total   # stays fixed, same rule as every other edit_*_line() above
+
+        new_desc = f"Stairwell — {line.product_name}, {line.num_stairs} stairs"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role)
+        if combined_warning and role != UserRole.sales:
+            result["warning"] = combined_warning
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
 @app.put("/quotes/{quote_id}/lines/{line_id}/misc")
 def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat: float, cost_ex_vat: float = 0.0,
                     role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),

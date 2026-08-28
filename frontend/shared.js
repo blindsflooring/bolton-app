@@ -252,6 +252,22 @@ function defaultBranchForCurrentUser() {
   return STAFF_DEFAULT_BRANCH[currentUser?.username] || 'gansbaai';
 }
 
+// Sales Owner default (confirmed Aug 2026, Vinyl Quoting UX Redesign
+// proposal §07 — approved) — REAL GAP CLOSED: q_owner had no default at
+// all, unlike q_branch above. sales_owner values already match staff
+// usernames one-to-one (confirmed against #q_owner's own <option>
+// values, index.html), so this is a map rather than currentUser.
+// username directly on purpose — a Trusted Tester account (or any
+// future username that isn't one of the three real Sales Owner
+// options) falls through to the explicit 'burgert' fallback instead of
+// silently setting an unmatched <select> value. Same "default, but
+// fully overridable, never forced on an already-saved record" rules as
+// defaultBranchForCurrentUser() above.
+const STAFF_DEFAULT_OWNER = { burgert: 'burgert', ryno: 'ryno', madri: 'madri' };
+function defaultSalesOwnerForCurrentUser() {
+  return STAFF_DEFAULT_OWNER[currentUser?.username] || 'burgert';
+}
+
 // Cross-feature state — read/written by more than one feature area:
 let currentQuoteId = null;
 let flooringProducts = [];   // price book cache — read by Price Book AND Quote Builder
