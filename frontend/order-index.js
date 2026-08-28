@@ -288,17 +288,20 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
       <td data-label="Install Date">${dateOrDash(q.installation_date)}</td>
       <td data-label="Next Action">${nextActionButton(q) || '<span class="muted">—</span>'}</td>
       <td class="card-actions-cell" data-label="">
-        <!-- Client Link Gap fix (confirmed Aug 2026, Order Index ->
-        Client Link Gap brief, Gap 1) — the Client Grouping addendum's
-        "Edit client" link only ever existed on a GROUPED row's header;
-        a client with just one quote had no equivalent, consistent way
-        to reach their own page from here (brief's own words: "a gap in
-        that spec, not something missed during implementation"). Same
-        link, same target (openClientDetail(id, true) — straight to the
-        edit form), on every standalone row now too. Child rows inside
-        an expanded group still don't repeat it — their own group
-        header, immediately above, already has it for that same client. -->
-        ${(!isChild && q.client_id) ? `<a href="#" onclick="event.stopPropagation(); openClientDetail(${q.client_id}, true); return false;" style="font-size:12px; margin-right:8px;" title="Edit this client's details">Edit client</a>` : ''}
+        <!-- Order Index Row Overflow (confirmed Aug 2026, Row Overflow
+        & Sticky Header Flicker brief §1) — real usage finding: this
+        cell had grown to 5 actions (Edit client, Quick View, Flag,
+        Duplicate, Delete) plus the 6 data columns before it, wide
+        enough to force a horizontal scrollbar with the rightmost
+        action cut off on a normal desktop width. Fixed per the
+        approved proposal: the two actions someone reaches for WHILE
+        actually scanning the list — Quick View (glance at the document
+        without leaving) and the Next Action button (its own column,
+        unchanged) — stay directly visible/one-tap; the four genuinely
+        occasional actions collapse into one ⋮ menu. Same fix on both
+        desktop and mobile (a single unified layout, not two different
+        treatments) — this also shortens the mobile card view, which
+        used to wrap all 5 links across multiple lines per card. -->
         <!-- Quick View (confirmed Aug 2026, third placement of the
         existing Document Preview) — reuses documentPreviewTileHtml()/
         loadDocumentPreview()/editDocumentPreview() exactly as already
@@ -306,12 +309,50 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
         for standalone rows and rows nested inside an expanded group —
         toggleQuickView() only needs this row's own quote id. -->
         <a href="#" onclick="event.stopPropagation(); toggleQuickView(${q.id}); return false;" style="font-size:12px; margin-right:8px;" title="Preview this quote/invoice without leaving the Order Index">Quick View</a>
-        <a href="#" onclick="event.stopPropagation(); flagRecord('Quote', ${q.id}, '${(q.job_number || 'Quote #' + q.id).replace(/'/g,"\\'")}'); return false;" style="font-size:12px; margin-right:8px;" title="Flag something that looks wrong or worth a look">🚩 Flag</a>
-        <button onclick="event.stopPropagation(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}', ${q.client_id || 'null'})">Duplicate</button>
-        ${isOwner ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteQuoteFromIndex(${q.id})">Delete</button>` : ''}
+        <span class="oi-actions-menu-wrap" style="position:relative; display:inline-block;" onclick="event.stopPropagation();">
+          <button onclick="toggleOiActionsMenu(${q.id})" title="More actions" style="padding:4px 9px; font-size:14px; line-height:1;" aria-label="More actions">⋮</button>
+          <div id="oi-actions-menu-${q.id}" class="oi-actions-menu" style="display:none; position:absolute; right:0; top:calc(100% + 4px); z-index:20; background:white; border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 10px rgba(0,0,0,0.15); min-width:140px; padding:4px 0;">
+            <!-- Client Link Gap fix (confirmed Aug 2026, Order Index ->
+            Client Link Gap brief, Gap 1) — the Client Grouping
+            addendum's "Edit client" link only ever existed on a
+            GROUPED row's header; a client with just one quote had no
+            equivalent way to reach their own page from here. Child
+            rows inside an expanded group still don't repeat it —
+            their own group header, immediately above, already has it. -->
+            ${(!isChild && q.client_id) ? `<a href="#" onclick="closeOiActionsMenu(); openClientDetail(${q.client_id}, true); return false;" class="oi-menu-item" title="Edit this client's details">Edit client</a>` : ''}
+            <a href="#" onclick="closeOiActionsMenu(); flagRecord('Quote', ${q.id}, '${(q.job_number || 'Quote #' + q.id).replace(/'/g,"\\'")}'); return false;" class="oi-menu-item">🚩 Flag</a>
+            <a href="#" onclick="closeOiActionsMenu(); duplicateQuoteFromIndex(${q.id}, '${(q.client_name||'').replace(/'/g,"\\'")}', ${q.client_id || 'null'}); return false;" class="oi-menu-item">Duplicate</a>
+            ${isOwner ? `<a href="#" onclick="closeOiActionsMenu(); deleteQuoteFromIndex(${q.id}); return false;" class="oi-menu-item" style="color:var(--coral);">Delete</a>` : ''}
+          </div>
+        </span>
       </td>
     </tr>`;
 }
+
+// Order Index Row Overflow ⋮ menu (confirmed Aug 2026) — at most one
+// open at a time, closed on an outside click or after any item inside
+// it is chosen. Module-scope state + a single document-level listener,
+// same pattern shared.js's own Enter-key-dismiss listener already
+// established for exactly this kind of "one listener, works for every
+// row, not registered per-row" mechanism.
+let openOiActionsMenuId = null;
+function toggleOiActionsMenu(quoteId) {
+  if (openOiActionsMenuId !== null && openOiActionsMenuId !== quoteId) closeOiActionsMenu();
+  const menu = document.getElementById(`oi-actions-menu-${quoteId}`);
+  if (!menu) return;
+  const opening = menu.style.display === 'none' || !menu.style.display;
+  menu.style.display = opening ? 'block' : 'none';
+  openOiActionsMenuId = opening ? quoteId : null;
+}
+function closeOiActionsMenu() {
+  if (openOiActionsMenuId === null) return;
+  const menu = document.getElementById(`oi-actions-menu-${openOiActionsMenuId}`);
+  if (menu) menu.style.display = 'none';
+  openOiActionsMenuId = null;
+}
+document.addEventListener('click', (e) => {
+  if (openOiActionsMenuId !== null && !e.target.closest('.oi-actions-menu-wrap')) closeOiActionsMenu();
+});
 
 // Quick View (confirmed Aug 2026, third placement of the existing
 // Document Preview feature — client page Order History and the Job

@@ -186,6 +186,15 @@
      the mobile override above can cleanly turn it off below the
      breakpoint instead of fighting an inline style with !important. */
   .card-actions-cell { white-space: nowrap; }
+  /* Order Index Row Overflow ⋮ menu (confirmed Aug 2026) — one small
+     component, used identically on both desktop and mobile (the
+     .oi-actions-menu-wrap it lives in is just an inline-block span, no
+     mobile-card-table override needed for it specifically). */
+  .oi-menu-item {
+    display: block; padding: 7px 14px; font-size: 12.5px; color: var(--navy);
+    text-decoration: none; white-space: nowrap;
+  }
+  .oi-menu-item:hover { background: var(--bg, #f5f6f8); }
   th { color: #6b7280; font-weight: 600; font-family: 'Poppins', sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
   .badge.flooring { background: #e0f6f7; color: var(--teal); }
