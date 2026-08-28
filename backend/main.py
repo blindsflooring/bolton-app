@@ -6852,14 +6852,22 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         return result
 
 
-@app.post("/quotes/{quote_id}/lines/stairwell")
-def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
-                        num_stairs: int, stairwell_type: StairwellType,
-                        stair_area_m2: float = 0.45, own_staff: bool = True,
-                        landing_area_m2: float = 0.0,
-                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
-                        username: str = Depends(get_current_username)):
-    """
+def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: int, nosing_product_id: int,
+                             num_stairs: int, stairwell_type: StairwellType,
+                             stair_area_m2: float = 0.45, own_staff: bool = True,
+                             landing_area_m2: float = 0.0) -> dict:
+    """Extracted (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal
+    §10, Phase 4, approved) from add_stairwell_line() — this was about
+    to become a THIRD copy of the exact same product-lookup +
+    calculate_stairwell_line() + landing-combining logic (add, edit,
+    now preview), so it's pulled out once instead. Returns everything a
+    caller could need: the two products (for building/updating a real
+    line), the raw per-part calcs, and the combined totals a stairwell
+    line always displays as one figure. Deliberately does NOT touch
+    the database or Quote/QuoteLineItem at all — callers that need to
+    persist something still do that themselves, same division of
+    responsibility calculate_stairwell_line() itself already has.
+
     stair_area_m2 defaults to 0.45 (confirmed: 900mm wide tread x (300mm
     going + 200mm riser) = 0.9 x 0.5). Override if your stairs differ.
     own_staff: True (default) = your own salaried guys, labour cost treated
@@ -6878,47 +6886,73 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
     tile/glue logic applied to it. Only how the result is combined and
     displayed changed, not the calculation itself — landing_calc below
     is computed identically to before, just added into the stairwell
-    line's fields instead of becoming its own QuoteLineItem row.
-    """
-    with Session(engine) as session:
-        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
-        vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
-        nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
-        if not vinyl_product.tiles_per_pack:
-            raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
-        settings = get_settings(session, tenant_id)
+    line's fields instead of becoming its own QuoteLineItem row."""
+    vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
+    nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
+    if not vinyl_product.tiles_per_pack:
+        raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
+    settings = get_settings(session, tenant_id)
 
-        stairwell_labour_by_type = {
-            StairwellType.closed: settings.stairwell_labour_closed,
-            StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
-            StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
-        }
-        effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)   # per-supplier zone pricing — see resolve_zone_price(); no-op for non-zone-priced suppliers
-        calc = calculate_stairwell_line(
-            effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
-            glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
-            glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
-            labour_per_stair=stairwell_labour_by_type[stairwell_type],
+    stairwell_labour_by_type = {
+        StairwellType.closed: settings.stairwell_labour_closed,
+        StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
+        StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
+    }
+    effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)   # per-supplier zone pricing — see resolve_zone_price(); no-op for non-zone-priced suppliers
+    calc = calculate_stairwell_line(
+        effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
+        glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
+        glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
+        labour_per_stair=stairwell_labour_by_type[stairwell_type],
+        margin_warn_threshold=settings.flooring_margin_warn_threshold,
+    )
+
+    landing_calc = None
+    if landing_area_m2 > 0:
+        landing_calc = calculate_flooring_line(
+            effective_vinyl, landing_area_m2, JobType.smooth, own_staff=own_staff,
             margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
         )
 
-        landing_calc = None
-        if landing_area_m2 > 0:
-            landing_calc = calculate_flooring_line(
-                effective_vinyl, landing_area_m2, JobType.smooth, own_staff=own_staff,
-                margin_warn_threshold=settings.flooring_margin_warn_threshold,
-                tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
-                vat_pct=settings.vat_pct,
-            )
+    combined_line_total = calc["line_total"] + (landing_calc["line_total"] if landing_calc else 0.0)
+    combined_total_job_cost = calc["total_job_cost"] + (landing_calc["total_job_cost"] if landing_calc else 0.0)
+    combined_margin_pct = (combined_line_total - combined_total_job_cost) / combined_line_total if combined_line_total else 0.0
+    combined_labour_charged = calc["labour_charged_total"] + (landing_calc["labour_charged_total"] if landing_calc else 0.0)
+    combined_labour_cost = calc["labour_cost_total"] + (landing_calc["labour_cost_total"] if landing_calc else 0.0)
+    combined_warning = None
+    if combined_margin_pct < settings.flooring_margin_warn_threshold:
+        combined_warning = f"Overall margin on this stairwell line (incl. landing) is {combined_margin_pct:.1%}, below the {settings.flooring_margin_warn_threshold:.0%} warning threshold."
 
-        combined_line_total = calc["line_total"] + (landing_calc["line_total"] if landing_calc else 0.0)
-        combined_total_job_cost = calc["total_job_cost"] + (landing_calc["total_job_cost"] if landing_calc else 0.0)
-        combined_margin_pct = (combined_line_total - combined_total_job_cost) / combined_line_total if combined_line_total else 0.0
-        combined_labour_charged = calc["labour_charged_total"] + (landing_calc["labour_charged_total"] if landing_calc else 0.0)
-        combined_labour_cost = calc["labour_cost_total"] + (landing_calc["labour_cost_total"] if landing_calc else 0.0)
-        combined_warning = None
-        if combined_margin_pct < settings.flooring_margin_warn_threshold:
-            combined_warning = f"Overall margin on this stairwell line (incl. landing) is {combined_margin_pct:.1%}, below the {settings.flooring_margin_warn_threshold:.0%} warning threshold."
+    return {
+        "vinyl_product": vinyl_product, "nosing_product": nosing_product,
+        "calc": calc, "landing_calc": landing_calc,
+        "combined_line_total": combined_line_total, "combined_total_job_cost": combined_total_job_cost,
+        "combined_margin_pct": combined_margin_pct, "combined_labour_charged": combined_labour_charged,
+        "combined_labour_cost": combined_labour_cost, "combined_warning": combined_warning,
+    }
+
+
+@app.post("/quotes/{quote_id}/lines/stairwell")
+def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
+                        num_stairs: int, stairwell_type: StairwellType,
+                        stair_area_m2: float = 0.45, own_staff: bool = True,
+                        landing_area_m2: float = 0.0,
+                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                        username: str = Depends(get_current_username)):
+    """See _compute_stairwell_calc() just above for the actual formula/
+    product-lookup logic, shared with edit_stairwell_line() and the
+    preview endpoint (preview_line() below) — this function's own job is
+    now just turning that computation into a real, persisted line."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        r = _compute_stairwell_calc(session, tenant_id, vinyl_product_id, nosing_product_id, num_stairs, stairwell_type,
+                                     stair_area_m2, own_staff, landing_area_m2)
+        vinyl_product, nosing_product, calc, landing_calc = r["vinyl_product"], r["nosing_product"], r["calc"], r["landing_calc"]
+        combined_line_total, combined_total_job_cost = r["combined_line_total"], r["combined_total_job_cost"]
+        combined_margin_pct, combined_labour_charged = r["combined_margin_pct"], r["combined_labour_charged"]
+        combined_labour_cost, combined_warning = r["combined_labour_cost"], r["combined_warning"]
 
         line = QuoteLineItem(
             quote_id=quote_id, category="stairwell", tenant_id=tenant_id,
@@ -7270,47 +7304,21 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
             raise HTTPException(404, "Quote line not found")
         if line.category != "stairwell":
             raise HTTPException(400, "This line is not a stairwell line.")
-        vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
-        nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
-        if not vinyl_product.tiles_per_pack:
-            raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
-        settings = get_settings(session, tenant_id)
 
         product_changed = (line.product_id != vinyl_product_id)
         existing_override_total = line.line_total if line.pre_override_line_total is not None else None
         old_desc = f"Stairwell — {line.product_name}, {line.num_stairs} stairs"
 
-        stairwell_labour_by_type = {
-            StairwellType.closed: settings.stairwell_labour_closed,
-            StairwellType.one_side_open: settings.stairwell_labour_one_side_open,
-            StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
-        }
-        effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)
-        calc = calculate_stairwell_line(
-            effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
-            glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
-            glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
-            labour_per_stair=stairwell_labour_by_type[stairwell_type],
-            margin_warn_threshold=settings.flooring_margin_warn_threshold,
-        )
-
-        landing_calc = None
-        if landing_area_m2 > 0:
-            landing_calc = calculate_flooring_line(
-                effective_vinyl, landing_area_m2, JobType.smooth, own_staff=own_staff,
-                margin_warn_threshold=settings.flooring_margin_warn_threshold,
-                tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
-                vat_pct=settings.vat_pct,
-            )
-
-        combined_line_total = calc["line_total"] + (landing_calc["line_total"] if landing_calc else 0.0)
-        combined_total_job_cost = calc["total_job_cost"] + (landing_calc["total_job_cost"] if landing_calc else 0.0)
-        combined_margin_pct = (combined_line_total - combined_total_job_cost) / combined_line_total if combined_line_total else 0.0
-        combined_labour_charged = calc["labour_charged_total"] + (landing_calc["labour_charged_total"] if landing_calc else 0.0)
-        combined_labour_cost = calc["labour_cost_total"] + (landing_calc["labour_cost_total"] if landing_calc else 0.0)
-        combined_warning = None
-        if combined_margin_pct < settings.flooring_margin_warn_threshold:
-            combined_warning = f"Overall margin on this stairwell line (incl. landing) is {combined_margin_pct:.1%}, below the {settings.flooring_margin_warn_threshold:.0%} warning threshold."
+        # Shared with add_stairwell_line() and the preview endpoint
+        # (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal §10,
+        # Phase 4, approved) — see _compute_stairwell_calc()'s own
+        # docstring; this used to duplicate that whole computation here.
+        r = _compute_stairwell_calc(session, tenant_id, vinyl_product_id, nosing_product_id, num_stairs, stairwell_type,
+                                     stair_area_m2, own_staff, landing_area_m2)
+        vinyl_product, nosing_product, calc, landing_calc = r["vinyl_product"], r["nosing_product"], r["calc"], r["landing_calc"]
+        combined_line_total, combined_total_job_cost = r["combined_line_total"], r["combined_total_job_cost"]
+        combined_margin_pct, combined_labour_charged = r["combined_margin_pct"], r["combined_labour_charged"]
+        combined_labour_cost, combined_warning = r["combined_labour_cost"], r["combined_warning"]
 
         line.product_id = vinyl_product_id
         line.product_name = f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)"
@@ -7389,6 +7397,79 @@ def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat:
         session.refresh(line)
         result = strip_sensitive_fields(line.dict(), role)
         result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
+@app.get("/quotes/lines/preview")
+def preview_line(category: str,
+                  product_id: int = None, width_mm: float = None, drop_mm: float = None,
+                  length_m: float = None, discount_pct: float = 0.0,
+                  vinyl_product_id: int = None, nosing_product_id: int = None,
+                  num_stairs: int = None, stairwell_type: StairwellType = None,
+                  stair_area_m2: float = 0.45, own_staff: bool = True, landing_area_m2: float = 0.0,
+                  role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    """Live price preview (confirmed Aug 2026, Vinyl Quoting UX Redesign
+    proposal §01/§10, Phase 4, approved) — "the core of what immediate
+    confirmation actually means" (Burgert's own words), extended to
+    Blinds/Skirting/Trim/Stairwell, the categories that had none before
+    this (Misc has no real formula to preview — amount minus cost is
+    plain arithmetic the frontend already does directly, no backend
+    round-trip needed for it).
+
+    Deliberately NOT the same approach Flooring's own live preview
+    (fjCalc(), quote-builder.js) uses — that one is a genuine client-
+    side JS reimplementation of the pricing formula, an accepted-but-
+    real "shadow calculation" for that one category, already bitten
+    once (a hardcoded VAT rate that silently drifted from Business
+    Settings, fixed separately). Rather than repeat that pattern three
+    more times, this calls the SAME calculate_blinds_line()/
+    calculate_trim_line()/_compute_stairwell_calc() the real add/edit
+    endpoints already use — there is exactly one formula per category
+    in this whole codebase, whether you're previewing or actually
+    saving. No quote_id in this URL on purpose: a preview doesn't touch
+    or need any specific quote, only the price book and Business
+    Settings, both tenant-scoped.
+
+    Never writes anything — no QuoteLineItem, no AuditLog, no
+    session.commit() at all. Same strip_sensitive_fields()/warning-
+    gating discipline as every real add/edit endpoint, so Sales sees
+    exactly as much (and as little) in the live preview as they would
+    after actually saving the line — never a preview that leaks more
+    than the real save would."""
+    with Session(engine) as session:
+        if category == "blinds":
+            if product_id is None or width_mm is None or drop_mm is None:
+                raise HTTPException(400, "product_id, width_mm, and drop_mm are required to preview a blinds line.")
+            product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
+            calc = calculate_blinds_line(product, width_mm, drop_mm, discount_pct)
+        elif category in ("trim", "skirting"):
+            if product_id is None or length_m is None:
+                raise HTTPException(400, "product_id and length_m are required to preview a trim/skirting line.")
+            product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
+            settings = get_settings(session, tenant_id)
+            calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
+        elif category == "stairwell":
+            if vinyl_product_id is None or nosing_product_id is None or num_stairs is None or stairwell_type is None:
+                raise HTTPException(400, "vinyl_product_id, nosing_product_id, num_stairs, and stairwell_type are required to preview a stairwell line.")
+            r = _compute_stairwell_calc(session, tenant_id, vinyl_product_id, nosing_product_id, num_stairs, stairwell_type,
+                                         stair_area_m2, own_staff, landing_area_m2)
+            # Reshaped into the same flat {unit_cost, unit_price, line_total,
+            # margin_pct, warning} shape calculate_blinds_line()/
+            # calculate_trim_line() already return, so the frontend has
+            # exactly one response shape to read regardless of category —
+            # never a category-specific parsing branch on the client side.
+            calc = {
+                "unit_cost": 0, "unit_price": 0,   # matches add_stairwell_line()'s own QuoteLineItem() call exactly — a stairwell line has no single meaningful per-unit figure, real saves store 0 too, not omitted
+                "line_total": round(r["combined_line_total"], 2),
+                "margin_pct": round(r["combined_margin_pct"], 4),
+                "warning": r["combined_warning"],
+            }
+        else:
+            raise HTTPException(400, f"No live preview available for category '{category}'.")
+
+        result = strip_sensitive_fields(calc, role)
+        if result.get("warning") and role == UserRole.sales:
+            result["warning"] = None   # the warning text itself embeds the real margin % — same leak class strip_sensitive_fields() already guards against for every other field
         return result
 
 

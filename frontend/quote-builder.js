@@ -197,6 +197,99 @@ function positionQuoteSummaryPanel() {
 }
 window.addEventListener('resize', positionQuoteSummaryPanel);
 
+// Live price preview for Blinds/Skirting/Trim/Stairwell (confirmed Aug
+// 2026, Vinyl Quoting UX Redesign proposal §01/§10, Phase 4, approved)
+// — "the core of what immediate confirmation actually means" (Burgert's
+// own words). Deliberately NOT the same approach Flooring's own
+// fjCalc() uses (a client-side JS reimplementation of the pricing
+// formula, an accepted-but-real "shadow calculation" for that one
+// category, already bitten once by a hardcoded VAT rate drifting from
+// Business Settings) — this calls the new backend preview endpoint
+// (main.py), the SAME calculate_blinds_line()/calculate_trim_line()/
+// _compute_stairwell_calc() the real add/edit endpoints use. No
+// preview for Misc — amount minus cost is plain arithmetic with no
+// real formula behind it, already shown wherever those two fields are
+// visible, no backend round-trip needed for it.
+let genericPreviewDebounceTimer = null;
+function scheduleGenericLinePreview() {
+  clearTimeout(genericPreviewDebounceTimer);
+  genericPreviewDebounceTimer = setTimeout(previewGenericLine, 300);
+}
+async function previewGenericLine() {
+  const box = document.getElementById('genericLinePreview');
+  if (!box) return;
+  const cat = document.getElementById('line_category').value;
+  const params = new URLSearchParams({ category: cat, role: currentRole() });
+  let ready = false;
+  if (cat === 'blinds') {
+    const productId = document.getElementById('line_product').value;
+    const width = document.getElementById('line_width').value;
+    const drop = document.getElementById('line_drop').value;
+    if (productId && width && drop) {
+      params.set('product_id', productId);
+      params.set('width_mm', width);
+      params.set('drop_mm', drop);
+      params.set('discount_pct', (parseFloat(document.getElementById('line_discount').value) || 0) / 100);
+      ready = true;
+    }
+  } else if (cat === 'trim' || cat === 'skirting') {
+    const productId = document.getElementById('line_product').value;
+    const length = document.getElementById('line_length').value;
+    if (productId && length) {
+      params.set('product_id', productId);
+      params.set('length_m', length);
+      params.set('discount_pct', (parseFloat(document.getElementById('line_discount').value) || 0) / 100);
+      ready = true;
+    }
+  } else if (cat === 'stairwell') {
+    const vinylId = document.getElementById('line_stair_vinyl').value;
+    const nosingId = document.getElementById('line_nosing_product').value;
+    const numStairs = document.getElementById('line_num_stairs').value;
+    if (vinylId && nosingId && numStairs) {
+      params.set('vinyl_product_id', vinylId);
+      params.set('nosing_product_id', nosingId);
+      params.set('num_stairs', numStairs);
+      params.set('stairwell_type', document.getElementById('line_stairwell_type').value);
+      params.set('stair_area_m2', document.getElementById('line_stair_area').value || 0.45);
+      params.set('own_staff', document.getElementById('line_stair_own_staff').value);
+      params.set('landing_area_m2', recomputeLandingTotal());
+      ready = true;
+    }
+  } else {
+    box.style.display = 'none';   // Misc, or nothing selected yet
+    return;
+  }
+  box.style.display = '';
+  if (!ready) { box.innerHTML = '<span class="muted">Fill in the fields above to see a live price.</span>'; return; }
+  box.innerHTML = '<span class="muted">Calculating…</span>';
+  try {
+    const res = await fetch(`${API}/quotes/lines/preview?${params}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      box.innerHTML = `<span class="muted">${(body.detail || 'Could not calculate a preview.').replace(/</g, '&lt;')}</span>`;
+      return;
+    }
+    const data = await res.json();
+    let html = `<div style="display:flex; justify-content:space-between; font-weight:700;"><span>Price (ex VAT)</span><span>R${data.line_total.toFixed(2)}</span></div>`;
+    if (data.margin_pct !== undefined) {
+      html += `<div class="muted" style="font-size:12px; margin-top:2px;">Margin: ${(data.margin_pct * 100).toFixed(1)}%</div>`;
+    }
+    if (data.warning) {
+      html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${data.warning.replace(/</g, '&lt;')}</div>`;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
+  }
+}
+// Delegated listener (same technique already established in this
+// codebase — Keyboard Dismiss on Enter, 2026-08-25) rather than an
+// oninput/onchange attribute on every individual field: genericLineCard
+// is a static, permanent element, never re-created, so one listener
+// attached once here covers every current AND future field inside it.
+document.getElementById('genericLineCard').addEventListener('input', scheduleGenericLinePreview);
+document.getElementById('genericLineCard').addEventListener('change', scheduleGenericLinePreview);
+
 async function toggleLineFields() {
   const cat = document.getElementById('line_category').value;
   const isFlooring = cat === 'flooring';
@@ -247,6 +340,7 @@ async function toggleLineFields() {
   // comment.
   syncActiveCategoryTab();
   renderQuoteSummaryPanel();   // refreshes the "→ in progress" row for whichever tab is now active — §03/§10, Phase 3
+  previewGenericLine();   // Phase 4 — resets/refreshes the live preview for whichever category is now selected
 }
 
 function populateFloorProductDropdowns() {
@@ -1453,6 +1547,15 @@ function editQuoteLine(lineId) {
         recomputeLandingTotal();
       }
     }
+    // Live preview (confirmed Aug 2026, Vinyl Quoting UX Redesign
+    // proposal §01/§10, Phase 4, approved) — toggleLineFields() above
+    // already called this once, but before any of the prefill values
+    // just above were set, so it only showed the empty-fields state.
+    // Re-run now that the real line's values are in place — no-op for
+    // flooring (its own live preview already runs via
+    // prefillFlooringEdit()'s fjOnIncludeChange()/fjCalc()) and misc
+    // (no preview box exists for it).
+    previewGenericLine();
     editingLineId = lineId;
     const banner = document.getElementById('editLineBanner');
     if (banner) {

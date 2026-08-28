@@ -659,7 +659,18 @@
         </div>
         <div class="field"><label>Discount %</label><input id="line_discount" type="number" step="1" value="0"></div>
       </div>
-      <br><button class="primary" onclick="addLine()">Add Line</button>
+      <!-- Live price preview (confirmed Aug 2026, Vinyl Quoting UX
+      Redesign proposal §01/§10, Phase 4, approved) — "the core of what
+      immediate confirmation actually means" (Burgert's own words).
+      Populated by previewGenericLine() (quote-builder.js), which calls
+      the new backend preview endpoint (main.py) — the real
+      calculate_blinds_line()/calculate_trim_line()/
+      _compute_stairwell_calc() formulas, never a client-side
+      reimplementation of any of them. Misc has no entry here — no real
+      formula to preview, the frontend already computes amount-minus-
+      cost directly wherever it's shown. -->
+      <div id="genericLinePreview" style="display:none; background:var(--bg,#f5f6f8); border-radius:8px; padding:10px 14px; margin:14px 0;"></div>
+      <button class="primary" onclick="addLine()">Add Line</button>
     </div>
     </div><!-- /.quote-builder-main -->
 
