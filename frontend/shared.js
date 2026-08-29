@@ -558,7 +558,12 @@ async function buildPrintDocHtml(quoteId, docType) {
     // now exists (main.py); without this, a skirting line's length
     // would silently vanish from the actual client-facing printed/PDF
     // document, not just an internal screen.
-    let detail = (l.category === 'flooring' && l.carpet_category) ? `${l.quantity_lm || ''} LM (${l.quantity_m2 || ''} m²)`
+    // NEXBAC 920 Tile is m²-only, never LM (Persistent Summary Panel /
+    // Carpet Tab integration gap, confirmed Aug 2026 — carpet_category
+    // is now set on a Tile line too, so it needs its own branch here or
+    // it prints a blank "LM (10 m²)" on the real client-facing document).
+    let detail = (l.category === 'flooring' && l.carpet_category === 'carpet_tile') ? `${l.quantity_m2 || ''} m²`
+      : (l.category === 'flooring' && l.carpet_category) ? `${l.quantity_lm || ''} LM (${l.quantity_m2 || ''} m²)`
       : l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
       : (l.category === 'trim' || l.category === 'skirting') ? `${l.length_m} lm`
       : l.category === 'stairwell' ? `${l.num_stairs} stairs${l.landing_area_m2 ? ` (incl. ${l.landing_area_m2}m² landing)` : ''}`

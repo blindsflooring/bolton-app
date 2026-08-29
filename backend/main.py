@@ -6968,6 +6968,29 @@ def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str =
         return {"quote": new_quote, "lines_copied": len(lines)}
 
 
+# Persistent Summary Panel / Carpet Tab integration gap (confirmed Aug
+# 2026, real bug found live testing the just-shipped Carpet Tab, Type
+# Split, and Product Filtering fix, not assumed) — NEXBAC 920 Tile
+# deliberately reuses this same, unmodified add_flooring_line()/
+# edit_flooring_line() pair (it's genuinely box/m²-shaped, same as
+# Vinyl — see the Carpet Tab card's own comment, index.html), but
+# neither endpoint ever set carpet_category on the line it created —
+# that param only ever existed on add_carpet_line()/edit_carpet_line()
+# (the other 3 types' own endpoint). Confirmed live: adding a NEXBAC
+# 920 Tile line from the Carpet tab landed the line correctly (right
+# total, right product) but the persistent summary panel bucketed it
+# under "Flooring" instead of "Carpet" (lineSummaryBucket(), quote-
+# builder.js, keys off carpet_category being truthy) — "Carpet" stayed
+# stuck showing only its other lines while a real Tile line sat
+# invisibly inside the Flooring bucket instead. Fixed at the single
+# source of truth — product.flooring_category — rather than requiring
+# every caller of these two endpoints to remember to pass it: any
+# flooring line built from one of the four Carpet Calculators product
+# categories is tagged here automatically, tile included, regardless of
+# which screen/entry point created it.
+CARPET_ONLY_CATEGORIES = ("carpet_tufted_broadloom", "carpet_needlepunch_broadloom", "carpet_tile", "cushion_vinyl")
+
+
 @app.post("/quotes/{quote_id}/lines/flooring")
 def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        job_type: JobType, discount_pct: float = 0.0,
@@ -7014,6 +7037,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
             quote_id=quote_id, category="flooring", product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, colour=product.colour, original_colour=product.colour,
             job_type=job_type, flooring_pricing_type=product.pricing_type,
+            carpet_category=product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None,
             quantity_m2=quantity_m2, discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
@@ -7568,6 +7592,7 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
         line.colour = product.colour   # original_colour is set once at creation, permanently — never touched by an edit, same rule change_line_colour() already follows
         line.job_type = job_type
         line.flooring_pricing_type = product.pricing_type
+        line.carpet_category = product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None
         line.quantity_m2 = quantity_m2
         line.discount_pct = discount_pct
         line.unit_cost = calc["unit_cost"]

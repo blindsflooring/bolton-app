@@ -2164,7 +2164,17 @@ async function loadQuote() {
   // 'trim' needs 'skirting' too, or a real skirting line's own length
   // silently goes missing from its own detail column.
   tbody.innerHTML = data.lines.map(l => {
-    let detail = (l.category === 'flooring' && l.carpet_category)
+    // Persistent Summary Panel / Carpet Tab integration gap (confirmed
+    // Aug 2026) — carpet_category is now set on a NEXBAC 920 Tile line
+    // too (add_flooring_line()/edit_flooring_line(), main.py — the fix
+    // for that bug), so it takes this branch like the other 3 carpet
+    // types now, but a Tile line is genuinely m²-only (the EXISTING
+    // Vinyl box endpoint's own shape, never had quantity_lm at all) —
+    // without this check it printed "null LM (10 m²)" the moment that
+    // fix shipped, a real regression caught live, not assumed away.
+    let detail = (l.category === 'flooring' && l.carpet_category === 'carpet_tile')
+      ? `${l.quantity_m2} m² — ${CARPET_TYPE_LABELS[l.carpet_category] || l.carpet_category}`
+      : (l.category === 'flooring' && l.carpet_category)
       ? `${l.quantity_lm} LM (${l.quantity_m2} m²) — ${CARPET_TYPE_LABELS[l.carpet_category] || l.carpet_category}`
       : l.category === 'flooring'
       ? `${l.quantity_m2} m² — ${l.job_type}`
