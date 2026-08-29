@@ -29,6 +29,25 @@
 //   in index.html, working purely by script-load timing luck, not by
 //   design.
 
+// Carpet Tab, Type Split, and Product Filtering (confirmed Aug 2026) —
+// fixes a real, confirmed pricing bug: the four Carpet Calculators
+// product types (their own real FlooringProduct rows, flooring_category
+// tagged, added same day) were reachable and selectable inside the
+// Vinyl-only panel (#fjMain's populateVinylRangeDropdown(), below),
+// which filtered only on pricing_type — never on flooring_category at
+// all — and ran them through Vinyl's box-based calculate_flooring_line()
+// path instead of their own already-confirmed LM-based
+// calculate_carpet_line(). A carpet product has no m2_per_pack (it uses
+// roll_width_m instead), so that box path silently produced wrong
+// numbers rather than erroring — confirmed on screen (screenshot
+// evidence in the brief): "Berber Point 920" priced with a stale/wrong
+// glue rate and box-based fields that don't apply to it at all. Used
+// everywhere a product list needs to genuinely exclude these four —
+// the Vinyl range/colour dropdowns below, AND the Carpet tab's own
+// per-type filtering (populateCarpetTypeProducts()) uses the SAME list
+// the other direction (INCLUDE only the one matching type).
+const CARPET_ONLY_CATEGORIES = ['carpet_tufted_broadloom', 'carpet_needlepunch_broadloom', 'carpet_tile', 'cushion_vinyl'];
+
 function refreshLineProductOptions() {
   const cat = document.getElementById('line_category').value;
   const sel = document.getElementById('line_product');
@@ -92,11 +111,21 @@ function syncActiveCategoryTab() {
 // line is still category "flooring" server-side — flooring_pricing_type
 // is what tells the two apart, exactly like the tabs already do).
 const QUOTE_SUMMARY_CATEGORIES = [
-  ['flooring', 'Flooring'], ['screed', 'Screed'], ['blinds', 'Blinds'],
+  ['flooring', 'Flooring'], ['screed', 'Screed'], ['carpet', 'Carpet'], ['blinds', 'Blinds'],
   ['skirting', 'Skirting'], ['trim', 'Trim'], ['stairwell', 'Stairwell'], ['misc', 'Misc'],
 ];
 function lineSummaryBucket(line) {
-  if (line.category === 'flooring') return line.flooring_pricing_type === 'screed' ? 'screed' : 'flooring';
+  // Carpet (confirmed Aug 2026, Carpet Calculators / Carpet Tab briefs)
+  // — a carpet line is category=="flooring" underneath (deliberately, so
+  // every existing category=="flooring" consumer needs no changes — see
+  // generate_order_sheets()'s own comment, main.py), but it needs its
+  // OWN summary bucket, not lumped into plain "Flooring", the same way
+  // Screed already gets pulled out below it. carpet_category is the
+  // real, stored tell — never re-derived from the product record.
+  if (line.category === 'flooring') {
+    if (line.carpet_category) return 'carpet';
+    return line.flooring_pricing_type === 'screed' ? 'screed' : 'flooring';
+  }
   return line.category;
 }
 
@@ -305,8 +334,21 @@ document.getElementById('genericLineCard').addEventListener('change', scheduleGe
 async function toggleLineFields() {
   const cat = document.getElementById('line_category').value;
   const isFlooring = cat === 'flooring';
+  const isCarpet = cat === 'carpet';
   document.getElementById('fjMain').style.display = isFlooring ? '' : 'none';
-  document.getElementById('genericLineCard').style.display = isFlooring ? 'none' : '';
+  document.getElementById('carpetLineCard').style.display = isCarpet ? '' : 'none';
+  document.getElementById('genericLineCard').style.display = (isFlooring || isCarpet) ? 'none' : '';
+  if (isCarpet) {
+    await loadFlooring();
+    // Default to the first type (Stretch) on a fresh arrival at this tab
+    // — selectCarpetType() itself is idempotent (safe to call again with
+    // the same type), so re-entering this tab never loses whatever was
+    // already chosen (activeCarpetType, module-level below).
+    selectCarpetType(activeCarpetType || 'carpet_tufted_broadloom');
+    syncActiveCategoryTab();
+    renderQuoteSummaryPanel();
+    return;
+  }
   // Hardened Aug 2026, extended after a live bug found via staff-testing
   // the deployed app: the original fix here only re-fetched
   // flooringProducts (isFlooring branch below), assuming
@@ -353,6 +395,211 @@ async function toggleLineFields() {
   syncActiveCategoryTab();
   renderQuoteSummaryPanel();   // refreshes the "→ in progress" row for whichever tab is now active — §03/§10, Phase 3
   previewGenericLine();   // Phase 4 — resets/refreshes the live preview for whichever category is now selected
+}
+
+// ===== CARPET (confirmed Aug 2026, Carpet Tab, Type Split, and Product
+// Filtering brief) — Tufted/Needlepunch Broadloom, Cushion Vinyl (all
+// three: LM input, calculate_carpet_line() on the backend) and NEXBAC
+// 920 Tiles (m² input, the EXISTING unmodified Vinyl box endpoint —
+// genuinely reuses that engine's shape, per the Carpet Calculators
+// proposal's own instruction, not a fourth copy of anything). Each
+// type's product dropdown is filtered to ONLY that type's real
+// flooring_category — the fix for the confirmed pricing bug this brief
+// exists for: a carpet product must never be reachable from any OTHER
+// type's dropdown, and never falls back to Vinyl's box-based path.
+let activeCarpetType = null;
+
+const CARPET_TYPE_LABELS = {
+  carpet_tufted_broadloom: 'Stretch (Tufted Broadloom)',
+  carpet_needlepunch_broadloom: 'Glued Down (Needlepunch Broadloom)',
+  cushion_vinyl: 'Cushion Vinyl',
+  carpet_tile: 'NEXBAC 920 Tile',
+};
+
+function selectCarpetType(type, preselectRange) {
+  activeCarpetType = type;
+  document.querySelectorAll('.carpet-type-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.carpetType === type));
+  const isTile = type === 'carpet_tile';
+  document.getElementById('carpet_lm_field').style.display = isTile ? 'none' : '';
+  document.getElementById('carpet_m2_field').style.display = isTile ? '' : 'none';
+
+  // Per-type extra fields — deliberately NOT a generic checkbox for
+  // every possible toggle: cutting fee/grippers/underfelt/glue are
+  // mandatory PARTS of what a type physically IS (Tufted always needs
+  // grippers+underfelt; Needlepunch/Cushion Vinyl are glued down BY
+  // DEFINITION, always needs adhesive) wherever the brief itself states
+  // them as a requirement, not an option — a checkbox only appears
+  // where the brief's own Final Build Brief left the rate genuinely
+  // unconfirmed (Cushion Vinyl's own cutting fee; whether NEXBAC tiles
+  // need adhesive at all), both defaulting OFF per that brief's explicit
+  // instruction not to assume either way.
+  const fieldsEl = document.getElementById('carpet_type_fields');
+  if (type === 'carpet_tufted_broadloom') {
+    fieldsEl.innerHTML = `<div class="field"><label>Gripper perimeter (m) <span class="adj">(room perimeter, NOT the same measurement as carpet LM above)</span></label><input id="carpet_gripper_perimeter" type="number" step="0.1" value="0" oninput="scheduleCarpetPreview()"></div>`;
+  } else if (type === 'carpet_needlepunch_broadloom') {
+    fieldsEl.innerHTML = `<p class="muted" style="margin:0;">Cutting fee and adhesive are applied automatically — both confirmed, always part of a glued-down Needlepunch job.</p>`;
+  } else if (type === 'cushion_vinyl') {
+    fieldsEl.innerHTML = `<div class="field"><label style="font-weight:600;"><input type="checkbox" id="carpet_apply_cutting_fee" style="width:auto; margin-right:6px;" onchange="scheduleCarpetPreview()"> Apply cutting fee <span class="adj">(unconfirmed for Cushion Vinyl — off by default; adhesive is applied automatically)</span></label></div>`;
+  } else if (type === 'carpet_tile') {
+    fieldsEl.innerHTML = `<div class="field"><label style="font-weight:600;"><input type="checkbox" id="carpet_apply_glue" style="width:auto; margin-right:6px;" onchange="scheduleCarpetPreview()"> Apply adhesive <span class="adj">(unconfirmed whether NEXBAC 920 needs it — off by default)</span></label></div>`;
+  }
+
+  populateCarpetTypeProducts(type, preselectRange);
+}
+
+function populateCarpetTypeProducts(type, preselectRange) {
+  const products = sortByPriority(flooringProducts.filter(p => p.flooring_category === type));
+  const sel = document.getElementById('carpet_product');
+  if (!products.length) {
+    sel.innerHTML = `<option value="">No ${CARPET_TYPE_LABELS[type]} products in price book</option>`;
+    return;
+  }
+  sel.innerHTML = products.map(p => `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
+  scheduleCarpetPreview();
+}
+
+let carpetPreviewDebounceTimer = null;
+function scheduleCarpetPreview() {
+  clearTimeout(carpetPreviewDebounceTimer);
+  carpetPreviewDebounceTimer = setTimeout(previewCarpetLine, 300);
+}
+
+function carpetApplyFlags(type) {
+  // Single source of truth for which extras apply to this type — read
+  // by both the live preview and the real Add Line call, so the two can
+  // never disagree about what a given type actually includes.
+  if (type === 'carpet_tufted_broadloom') {
+    return { cutting_fee: true, grippers: true, underfelt: true, glue: false };
+  } else if (type === 'carpet_needlepunch_broadloom') {
+    return { cutting_fee: true, grippers: false, underfelt: false, glue: true };
+  } else if (type === 'cushion_vinyl') {
+    const cb = document.getElementById('carpet_apply_cutting_fee');
+    return { cutting_fee: !!(cb && cb.checked), grippers: false, underfelt: false, glue: true };
+  }
+  return { cutting_fee: false, grippers: false, underfelt: false, glue: false };   // carpet_tile handled separately (existing Vinyl endpoint, its own glue toggle)
+}
+
+async function previewCarpetLine() {
+  const box = document.getElementById('carpetLinePreview');
+  const type = activeCarpetType;
+  const productId = document.getElementById('carpet_product').value;
+  if (!type || !productId) { box.style.display = 'none'; return; }
+  const discount = (parseFloat(document.getElementById('carpet_discount').value) || 0) / 100;
+  const role = currentRole();
+
+  if (type === 'carpet_tile') {
+    // No backend preview branch for plain Vinyl-shaped material lines —
+    // Flooring itself has never needed one (its own client-side fjCalc()
+    // covers that ground already) — kept consistent rather than adding
+    // a bespoke preview path for one product type. Add Line remains the
+    // way to see the real, saved number for a tile line.
+    box.style.display = 'none';
+    return;
+  }
+
+  const lm = parseFloat(document.getElementById('carpet_lm').value);
+  if (!lm || lm <= 0) { box.style.display = 'none'; return; }
+  const flags = carpetApplyFlags(type);
+  const params = new URLSearchParams({
+    category: 'carpet', product_id: productId, quantity_lm: lm, discount_pct: discount, role,
+    apply_cutting_fee: flags.cutting_fee, apply_glue: flags.glue,
+  });
+  if (flags.grippers) {
+    params.set('apply_grippers', true);
+    params.set('gripper_perimeter_m', parseFloat(document.getElementById('carpet_gripper_perimeter')?.value) || 0);
+  }
+  if (flags.underfelt) { params.set('apply_underfelt', true); }
+  try {
+    const res = await fetch(`${API}/quotes/lines/preview?${params}`);
+    if (!res.ok) { box.style.display = 'none'; return; }
+    const calc = await res.json();
+    box.style.display = '';
+    box.innerHTML = `
+      <div class="fj-line result"><span>Price (ex VAT)</span><span>R${calc.line_total.toFixed(2)}</span></div>
+      ${calc.margin_pct !== undefined ? `<div class="muted" style="font-size:12px;">Margin: ${(calc.margin_pct*100).toFixed(1)}%</div>` : ''}
+      ${calc.warning ? `<div class="muted" style="color:var(--coral); font-size:12px; margin-top:4px;">${calc.warning}</div>` : ''}
+    `;
+  } catch (e) { box.style.display = 'none'; }
+}
+
+async function addCarpetLine() {
+  const type = activeCarpetType;
+  const productId = document.getElementById('carpet_product').value;
+  if (!productId) { alert('Pick a product first.'); return; }
+  const discount = (parseFloat(document.getElementById('carpet_discount').value) || 0) / 100;
+  const role = currentRole();
+  // Edit Quote Line In Place (confirmed Aug 2026) — same "PUT to the
+  // same line id" pattern every other category's own add function
+  // already uses (addLine(), addFloorJob() above) — Carpet gets its own
+  // check here rather than routing through the shared addLine(), same
+  // reasoning addFloorJob() has its own dedicated card/flow instead of
+  // reusing #genericLineCard.
+  const editing = !!editingLineId;
+
+  if (type === 'carpet_tile') {
+    const m2 = parseFloat(document.getElementById('carpet_m2').value);
+    if (!m2 || m2 <= 0) { alert('Enter a real area in m² first.'); return; }
+    const applyGlueEl = document.getElementById('carpet_apply_glue');
+    const params = new URLSearchParams({ product_id: productId, quantity_m2: m2, job_type: 'smooth', discount_pct: discount, role });
+    if (applyGlueEl && applyGlueEl.checked) {
+      params.set('glue_cost_per_unit', businessSettings.carpet_glue_cost_per_20l_drum);
+      params.set('glue_coverage_m2', businessSettings.stairwell_default_glue_coverage_m2);
+    }
+    const url = editing
+      ? `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/flooring?${params}`
+      : `${API}/quotes/${currentQuoteId}/lines/flooring?${params}`;
+    const res = await fetch(url, { method: editing ? 'PUT' : 'POST' });
+    if (!res.ok) { alert('Could not save this line — check your connection and try again.'); return; }
+    document.getElementById('carpet_m2').value = '';
+    if (editing) cancelLineEdit();
+    loadQuote();
+    return;
+  }
+
+  const lm = parseFloat(document.getElementById('carpet_lm').value);
+  if (!lm || lm <= 0) { alert('Enter a real length in LM first.'); return; }
+  const flags = carpetApplyFlags(type);
+  const params = new URLSearchParams({
+    product_id: productId, quantity_lm: lm, carpet_category: type, discount_pct: discount, role,
+    apply_cutting_fee: flags.cutting_fee, apply_glue: flags.glue,
+  });
+  if (flags.grippers) {
+    params.set('apply_grippers', true);
+    params.set('gripper_perimeter_m', parseFloat(document.getElementById('carpet_gripper_perimeter')?.value) || 0);
+  }
+  if (flags.underfelt) { params.set('apply_underfelt', true); }
+  const url = editing
+    ? `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/carpet?${params}`
+    : `${API}/quotes/${currentQuoteId}/lines/carpet?${params}`;
+  const res = await fetch(url, { method: editing ? 'PUT' : 'POST' });
+  if (!res.ok) { alert('Could not save this line — check your connection and try again.'); return; }
+  document.getElementById('carpet_lm').value = '';
+  if (editing) cancelLineEdit();
+  loadQuote();
+}
+
+function prefillCarpetEdit(line) {
+  selectCarpetType(line.carpet_category);
+  document.getElementById('carpet_product').value = line.product_id;
+  if (line.carpet_category === 'carpet_tile') {
+    document.getElementById('carpet_m2').value = line.quantity_m2 || '';
+    const glueEl = document.getElementById('carpet_apply_glue');
+    if (glueEl) glueEl.checked = (line.glue_cost_total || 0) > 0;
+  } else {
+    document.getElementById('carpet_lm').value = line.quantity_lm || '';
+    if (line.carpet_category === 'carpet_tufted_broadloom') {
+      document.getElementById('carpet_gripper_perimeter').value = line.gripper_perimeter_m || 0;
+    } else if (line.carpet_category === 'cushion_vinyl') {
+      const cbEl = document.getElementById('carpet_apply_cutting_fee');
+      // cutting_fee_total is stripped for Sales — can't recover the
+      // toggle's real state for that role, same "not recoverable" class
+      // as Stairwell's own stair_area_m2 (see editQuoteLine()'s comment
+      // on that). Owner/Admin see the real figure and can tell.
+      if (cbEl && line.cutting_fee_total !== undefined) cbEl.checked = line.cutting_fee_total > 0;
+    }
+  }
+  document.getElementById('carpet_discount').value = ((line.discount_pct || 0) * 100);
+  scheduleCarpetPreview();
 }
 
 function populateFloorProductDropdowns() {
@@ -566,7 +813,7 @@ function toggleFloorPrepRoomCard(headerEl) {
 // Colour within it — the colour list depends on which range is chosen,
 // since each range has its own set of colour-specific price book entries.
 function populateVinylRangeDropdown(preselectRange) {
-  const vinylProducts = flooringProducts.filter(p => p.pricing_type === 'material');
+  const vinylProducts = flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category));
   const rangesByPriority = {};
   vinylProducts.forEach(p => { if (!(p.product_name in rangesByPriority)) rangesByPriority[p.product_name] = p.display_order ?? 100; });
   const ranges = Object.keys(rangesByPriority).sort((a, b) => rangesByPriority[a] - rangesByPriority[b] || a.localeCompare(b));
@@ -593,7 +840,7 @@ function populateVinylRangeDropdown(preselectRange) {
 
 function onVinylRangeChange() {
   const range = document.getElementById('fj_vinyl_range').value;
-  const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && p.product_name === range));
+  const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.product_name === range));
   const colourSelect = document.getElementById('fj_vinyl_colour');
   colourSelect.innerHTML = colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylColourChange();
@@ -1082,6 +1329,11 @@ async function createQuote() {
     populateVinylRangeDropdown(pendingVinylRange);
     pendingVinylRange = null;
   }
+  if (pendingCarpetType) {
+    selectCarpetType(pendingCarpetType, pendingCarpetRange);
+    pendingCarpetType = null;
+    pendingCarpetRange = null;
+  }
   pendingCategory = null;
 }
 
@@ -1128,6 +1380,7 @@ async function startPriceCheck() {
   if (pendingCategory) { document.getElementById('line_category').value = pendingCategory; }
   await toggleLineFields();
   if (pendingVinylRange) { populateVinylRangeDropdown(pendingVinylRange); pendingVinylRange = null; }
+  if (pendingCarpetType) { selectCarpetType(pendingCarpetType, pendingCarpetRange); pendingCarpetType = null; pendingCarpetRange = null; }
   pendingCategory = null;
   loadQuote();
 }
@@ -1549,9 +1802,18 @@ let editingLineId = null;
 function editQuoteLine(lineId) {
   const line = currentQuoteLinesCache.find(l => l.id === lineId);
   if (!line) return;
-  document.getElementById('line_category').value = line.category;
+  // Carpet (confirmed Aug 2026, Carpet Tab, Type Split, and Product
+  // Filtering brief) — checked BEFORE the generic category==='flooring'
+  // branch below: a carpet line IS category==='flooring' underneath
+  // (deliberately, see lineSummaryBucket()'s own comment above), but it
+  // must open the Carpet tab/card, never Vinyl's #fjMain — the exact
+  // routing mistake this whole brief exists to fix, now closed for the
+  // Edit path too, not just Add.
+  document.getElementById('line_category').value = line.carpet_category ? 'carpet' : line.category;
   toggleLineFields().then(() => {
-    if (line.category === 'flooring') {
+    if (line.carpet_category) {
+      prefillCarpetEdit(line);
+    } else if (line.category === 'flooring') {
       prefillFlooringEdit(line);
     } else if (line.category === 'blinds') {
       document.getElementById('line_product').value = line.product_id;
@@ -1902,7 +2164,9 @@ async function loadQuote() {
   // 'trim' needs 'skirting' too, or a real skirting line's own length
   // silently goes missing from its own detail column.
   tbody.innerHTML = data.lines.map(l => {
-    let detail = l.category === 'flooring'
+    let detail = (l.category === 'flooring' && l.carpet_category)
+      ? `${l.quantity_lm} LM (${l.quantity_m2} m²) — ${CARPET_TYPE_LABELS[l.carpet_category] || l.carpet_category}`
+      : l.category === 'flooring'
       ? `${l.quantity_m2} m² — ${l.job_type}`
       : (l.category === 'trim' || l.category === 'skirting')
       ? `${l.length_m} lm`
@@ -1913,6 +2177,21 @@ async function loadQuote() {
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : `<span class="hidden-note">measurements hidden</span>`);
     if (l.category === 'flooring' && l.glue_cost_total > 0) {
       detail += `<br><span class="muted">glue: R${l.glue_cost_total.toFixed(2)} (drawn from stock, ~${l.glue_units_needed} drum${l.glue_units_needed !== 1 ? 's' : ''} worth)${l.labour_cost_total > 0 ? ' — +labour R'+l.labour_cost_total.toFixed(2) : ''}</span>`;
+    }
+    // Carpet Calculators (confirmed Aug 2026) — gripper/underfelt/cutting-
+    // fee visibility, same "muted info line" pattern glue/labour above
+    // already use. All three are confirmed stock items (never on an
+    // Order Sheet, see generate_order_sheets()'s own comment, main.py) —
+    // shown here purely so whoever's building the quote can see what
+    // this line's own price is actually built from.
+    if (l.carpet_category && l.gripper_cost_total > 0) {
+      detail += `<br><span class="muted">grippers: R${l.gripper_cost_total.toFixed(2)} (drawn from stock, ${l.gripper_perimeter_m}m perimeter)</span>`;
+    }
+    if (l.carpet_category && l.underfelt_cost_total > 0) {
+      detail += `<br><span class="muted">underfelt: R${l.underfelt_cost_total.toFixed(2)} (drawn from stock, ${l.underfelt_area_m2}m²)</span>`;
+    }
+    if (l.carpet_category && l.cutting_fee_total > 0) {
+      detail += `<br><span class="muted">cutting fee: R${l.cutting_fee_total.toFixed(2)}</span>`;
     }
     if (l.category === 'stairwell' && l.glue_cost_total > 0) {
       detail += `<br><span class="muted">glue: R${l.glue_cost_total.toFixed(2)} (drawn from stock, ~${l.glue_units_needed} drum${l.glue_units_needed !== 1 ? 's' : ''} worth)</span>`;

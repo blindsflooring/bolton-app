@@ -282,6 +282,8 @@ let landingView = 'tiles';   // which landing sub-view is showing — the app sh
 let hrView = 'employees';
 let pendingVinylRange = null;    // handoff: Flooring Quotes tile -> Quote Builder
 let pendingCategory = null;
+let pendingCarpetType = null;    // handoff: Flooring Quotes tile -> Carpet tab (confirmed Aug 2026, Carpet Tab, Type Split, and Product Filtering brief) — same shape as pendingVinylRange above, one level more specific since Carpet needs a type AND a range
+let pendingCarpetRange = null;
 let pendingClientId = null;      // handoff: Client detail "+New Quote" -> Quote Builder
 let pendingClientName = null;
 let pendingBuilderEstimateId = null;   // handoff: Builder Portal "Start Quote" -> Quote Builder (confirmed Aug 2026) — createQuote() links this estimate to the new quote once it exists, then clears it
@@ -556,7 +558,8 @@ async function buildPrintDocHtml(quoteId, docType) {
     // now exists (main.py); without this, a skirting line's length
     // would silently vanish from the actual client-facing printed/PDF
     // document, not just an internal screen.
-    let detail = l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
+    let detail = (l.category === 'flooring' && l.carpet_category) ? `${l.quantity_lm || ''} LM (${l.quantity_m2 || ''} m²)`
+      : l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
       : (l.category === 'trim' || l.category === 'skirting') ? `${l.length_m} lm`
       : l.category === 'stairwell' ? `${l.num_stairs} stairs${l.landing_area_m2 ? ` (incl. ${l.landing_area_m2}m² landing)` : ''}`
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : '');

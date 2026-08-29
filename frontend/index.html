@@ -374,6 +374,7 @@
         <div class="line-category-tabs" style="display:flex; gap:4px; flex-wrap:wrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px;">
           <button type="button" class="line-category-tab" data-tab="flooring" onclick="selectLineCategoryTab('flooring')">Flooring</button>
           <button type="button" class="line-category-tab" data-tab="screed" onclick="selectLineCategoryTab('screed')">Screed</button>
+          <button type="button" class="line-category-tab" data-tab="carpet" onclick="selectLineCategoryTab('carpet')">Carpet</button>
           <button type="button" class="line-category-tab" data-tab="blinds" onclick="selectLineCategoryTab('blinds')">Blinds</button>
           <button type="button" class="line-category-tab" data-tab="skirting" onclick="selectLineCategoryTab('skirting')">Skirting</button>
           <button type="button" class="line-category-tab" data-tab="trim" onclick="selectLineCategoryTab('trim')">Trim</button>
@@ -403,6 +404,7 @@
         instead of an onchange handler, same guard, new trigger. -->
         <select id="line_category" style="display:none;">
           <option value="flooring">Flooring</option>
+          <option value="carpet">Carpet</option>
           <option value="blinds">Blinds</option>
           <option value="skirting">Skirting</option>
           <option value="trim">Trim</option>
@@ -647,6 +649,44 @@
           <div class="muted" style="margin-top:8px;">Labour (R<span id="fj_out_gp_labour_amount"></span>) is charged to the client but costs you nothing extra — you pay your guys a salary either way, so it flows straight into GP.</div>
         </div>
       </div>
+    </div>
+
+    <!-- ===== CARPET: Tufted/Needlepunch Broadloom, NEXBAC 920 Tiles,
+    Cushion Vinyl (confirmed Aug 2026, Carpet Tab, Type Split, and
+    Product Filtering brief — fixes a real, confirmed pricing bug: these
+    four categories' own FlooringProduct rows were reachable and
+    selectable inside the Vinyl-only panel above (#fjMain), which has no
+    concept of them at all, running them through Vinyl's box-based
+    formula instead of their own already-confirmed LM-based one). Its
+    own dedicated card, not the generic Blinds/Trim/Stairwell one below
+    — genuinely its own multi-field, type-dependent shape, same
+    reasoning #fjMain gets its own card instead of reusing
+    #genericLineCard. First choice is TYPE (Stretch/Glued Down/Cushion
+    Vinyl/Tile) — each type's product dropdown is filtered to ONLY that
+    type's real flooring_category, never the shared catalog, never
+    mixed with another type's list or Vinyl's own. -->
+    <div class="card" id="carpetLineCard" style="display:none;">
+      <h2>Add Carpet Line</h2>
+      <div class="field">
+        <label>Type</label>
+        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+          <button type="button" class="line-category-tab carpet-type-tab" data-carpet-type="carpet_tufted_broadloom" onclick="selectCarpetType('carpet_tufted_broadloom')">Stretch (Tufted Broadloom)</button>
+          <button type="button" class="line-category-tab carpet-type-tab" data-carpet-type="carpet_needlepunch_broadloom" onclick="selectCarpetType('carpet_needlepunch_broadloom')">Glued Down (Needlepunch Broadloom)</button>
+          <button type="button" class="line-category-tab carpet-type-tab" data-carpet-type="cushion_vinyl" onclick="selectCarpetType('cushion_vinyl')">Cushion Vinyl</button>
+          <button type="button" class="line-category-tab carpet-type-tab" data-carpet-type="carpet_tile" onclick="selectCarpetType('carpet_tile')">NEXBAC 920 Tile</button>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="field"><label>Product</label><select id="carpet_product" onchange="scheduleCarpetPreview()"></select></div>
+        <div class="field" id="carpet_lm_field"><label>Length (LM)</label><input id="carpet_lm" type="number" step="0.1" oninput="scheduleCarpetPreview()"></div>
+        <div class="field" id="carpet_m2_field" style="display:none;"><label>Area (m²)</label><input id="carpet_m2" type="number" step="0.1" oninput="scheduleCarpetPreview()"></div>
+        <div class="field"><label>Discount %</label><input id="carpet_discount" type="number" step="1" value="0" oninput="scheduleCarpetPreview()"></div>
+      </div>
+      <div class="grid" id="carpet_type_fields">
+        <!-- Populated per type by carpetFieldsForType() (quote-builder.js) — cutting fee / grippers+underfelt / glue toggles, only the ones that genuinely apply to whichever type is selected. -->
+      </div>
+      <div id="carpetLinePreview" style="display:none; background:var(--bg,#f5f6f8); border-radius:8px; padding:10px 14px; margin:14px 0;"></div>
+      <button class="primary" onclick="addCarpetLine()">Add Line</button>
     </div>
 
     <!-- ===== BLINDS / TRIM / STAIRWELL: existing simpler forms ===== -->
@@ -1275,7 +1315,7 @@ async function renderFlooringDrill(el) {
       const byRange = {};
       bySupplier[supplier].forEach(p => (byRange[p.product_name] = byRange[p.product_name] || []).push(p));
       const rangeHtml = Object.keys(byRange).sort().map(range => `
-        <div class="drill-product-row" onclick="startQuoteWithVinylRange('${range.replace(/'/g,"\\'")}')">
+        <div class="drill-product-row" onclick="startQuoteWithFlooringRange('${range.replace(/'/g,"\\'")}', '${cat}')">
           <span>${range}</span><span class="go">${byRange[range].length} colour${byRange[range].length!==1?'s':''} — Start quote →</span>
         </div>`).join('');
       return `<details class="tree-node supplier">
@@ -1298,6 +1338,36 @@ async function renderFlooringDrill(el) {
     </div>
   `;
   });
+}
+
+// Carpet Tab, Type Split, and Product Filtering (confirmed Aug 2026) —
+// the Flooring Quotes drill-down above used to route EVERY range,
+// regardless of category, straight into startQuoteWithVinylRange() —
+// the other real reachable path into the same confirmed pricing bug
+// (see CARPET_ONLY_CATEGORIES's own comment, quote-builder.js): a
+// carpet/cushion-vinyl range clicked here landed in the Vinyl-only
+// panel, which has no concept of it. Dispatches by category instead —
+// genuine Vinyl-family categories keep the exact same behaviour as
+// before, unchanged; the four carpet categories now correctly open the
+// Carpet tab with that type + range pre-selected.
+function startQuoteWithFlooringRange(range, category) {
+  if (CARPET_ONLY_CATEGORIES.includes(category)) {
+    if (!currentQuoteId) { resetQuoteBuilderUI(); }
+    pendingCarpetType = category;
+    pendingCarpetRange = range;
+    pendingCategory = 'carpet';
+    goToTab('quoteBuilder');
+    if (currentQuoteId) {
+      document.getElementById('line_category').value = 'carpet';
+      toggleLineFields();
+      selectCarpetType(category, range);
+      pendingCarpetType = null;
+      pendingCarpetRange = null;
+      pendingCategory = null;
+    }
+    return;
+  }
+  startQuoteWithVinylRange(range);
 }
 
 async function startQuoteWithVinylRange(range) {
