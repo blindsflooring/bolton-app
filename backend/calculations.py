@@ -482,9 +482,25 @@ def line_real_cost(line) -> float:
     (a divergence here is exactly the kind of bug found and fixed
     repeatedly earlier in this project — e.g. the screed cost bug, the
     stairwell missing-markup bug). Do not reimplement this inline
-    elsewhere; import and call this instead."""
+    elsewhere; import and call this instead.
+
+    REAL BUG FOUND AND FIXED (confirmed Aug 2026, caught by direct
+    instruction after the Skirting/Trim category fix, not found here
+    first): this only ever checked category == "trim" — the moment a
+    real skirting line started being stored as category == "skirting"
+    (main.py's _trim_line_category()), it silently fell through to the
+    blinds-shaped `return line.unit_cost` below instead, understating
+    every skirting line's real cost (unit_cost is a PER-LM rate, never
+    multiplied by the line's real length_m) — which overstates GP,
+    which overstates pure_sales commission on any quote containing
+    skirting. Exactly the class of divergence this function's own
+    docstring above already warns about, just not caught before
+    shipping the category fix itself. Confirmed: commission is paid on
+    the QUOTE'S TOTAL GP regardless of which categories make it up —
+    screed/skirting/trim-only quotes must cost out correctly same as
+    any other, not a special case."""
     if line.category in ("flooring", "stairwell"):
         return line.total_job_cost
-    if line.category == "trim":
+    if line.category in ("trim", "skirting"):
         return line.unit_cost * (line.length_m or 1)
     return line.unit_cost  # blinds — priced per unit, qty=1
