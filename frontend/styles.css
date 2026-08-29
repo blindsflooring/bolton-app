@@ -244,6 +244,14 @@
   .badge.flooring { background: #e0f6f7; color: var(--teal); }
   .badge.blinds { background: #fdece5; color: var(--coral); }
   .badge.trim { background: #f0ecf9; color: #6b4fa0; }
+  /* Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+     Real Usage Findings brief §1) — 'skirting' is now a real, distinct
+     QuoteLineItem.category value (main.py), not just a trim sub-type,
+     so the category pill needs its own style — a lighter tint of
+     .badge.trim's own colour, since they're conceptually related
+     product families, not the same generic "no style defined" look a
+     missing rule would otherwise fall back to. */
+  .badge.skirting { background: #e8e0f7; color: #5a3f96; }
   .badge.stairwell { background: var(--cream); color: #8a6d00; }
   .badge.misc { background: #e8e8e8; color: #444; }
   .toggle-row { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; }

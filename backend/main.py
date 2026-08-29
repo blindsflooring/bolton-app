@@ -1088,6 +1088,44 @@ def on_startup():
             session.rollback()
             print(f"Migration: trim_sub_category backfill failed ({e}) — existing trim lines keep the default sort bucket")
 
+        # Skirting/Trim category conflation (confirmed Aug 2026, Vinyl
+        # Redesign: Real Usage Findings brief §1) — REAL GAP, confirmed
+        # not just relabeled: add_trim_line()/edit_trim_line() hardcoded
+        # category="trim" for every line regardless of the product's own
+        # real sub-type, so a Skirting line has always been stored (and
+        # displayed, and rated for commission) as "trim". Checked the
+        # downstream impact the brief itself asked about before fixing
+        # anything: generate_order_sheets() never looks at trim/skirting
+        # lines at all either way (confirmed by reading it — "Burgert
+        # orders those separately in bulk direct from Supertrim"), so no
+        # Order Sheet impact. Real impact found instead: CommissionRate.
+        # category's own model comment already lists "skirting" as a
+        # real, intended, separately-configurable builder-rep commission
+        # category (models.py) — one that could never actually match,
+        # since no line was ever genuinely stored as "skirting". Fixed at
+        # the correct layer per the brief's own instruction: the STORED
+        # category itself, not a display-only patch — every downstream
+        # reader (the Quote Lines category pill, the persistent summary
+        # panel, commission lookup) becomes correct automatically once
+        # the source value is, with zero changes needed at any of them.
+        # Depends on trim_sub_category already being populated — placed
+        # right after that backfill on purpose.
+        try:
+            skirting_to_fix = session.exec(
+                select(QuoteLineItem).where(QuoteLineItem.category == "trim", QuoteLineItem.trim_sub_category.in_(("skirting", "quarter_round")))
+            ).all()
+            fixed = 0
+            for line in skirting_to_fix:
+                line.category = "skirting"
+                session.add(line)
+                fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: recategorized {fixed} existing line(s) from 'trim' to 'skirting' — real gap, not cosmetic (see this block's own comment)")
+        except Exception as e:
+            session.rollback()
+            print(f"Migration: skirting recategorization failed ({e}) — existing skirting lines keep reading as 'trim' until this is retried")
+
         # Job Workflow backfill (confirmed Aug 2026, Order Index / Job
         # Workflow Redesign brief) — one-time-per-row derivation of
         # workflow_status/job_number/accepted_at/declined_at/
@@ -3782,7 +3820,14 @@ ENTITY_TYPE_MODELS = {
 ENTITY_TYPE_LINE_CATEGORIES = {
     "FlooringProduct": ["flooring", "stairwell"],
     "BlindsProduct": ["blinds"],
-    "TrimProduct": ["trim"],
+    # Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+    # Real Usage Findings brief §1) — a real skirting line is now
+    # genuinely stored as category "skirting", not "trim" (see
+    # _trim_line_category()); this delete-reference-check would
+    # otherwise have silently stopped catching skirting products in
+    # active use the moment that fix shipped, the exact "Robust Owner
+    # Delete" failure mode this whole mechanism exists to prevent.
+    "TrimProduct": ["trim", "skirting"],
 }
 
 # Human-readable labels for the commit confirmation message and the
@@ -5219,8 +5264,17 @@ def _quote_line_sort_key(line: dict) -> int:
     category = line.get("category")
     if category == "flooring":
         return 2 if line.get("flooring_pricing_type") == "screed" else 1
+    # Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+    # Real Usage Findings brief §1) — category is now genuinely
+    # "skirting" for a real skirting line (add_trim_line()/
+    # edit_trim_line(), _trim_line_category()); the trim_sub_category
+    # check stays here too as a defensive fallback for any row the
+    # on_startup() recategorization migration hasn't reached yet, not
+    # because it's still the primary signal going forward.
+    if category == "skirting" or (category == "trim" and line.get("trim_sub_category") in ("skirting", "quarter_round")):
+        return 4
     if category == "trim":
-        return 4 if line.get("trim_sub_category") == "skirting" else 3
+        return 3
     return 5
 
 
@@ -6823,6 +6877,18 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
         return strip_sensitive_fields(line.dict(), role)
 
 
+def _trim_line_category(product: "TrimProduct") -> str:
+    """Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+    Real Usage Findings brief §1) — the ONE place that decides which
+    top-level QuoteLineItem.category a trim-book product actually gets,
+    shared by add_trim_line()/edit_trim_line() so this can never drift
+    between the two the way the hardcoded "trim" literal used to be
+    duplicated in both. Same skirting/quarter_round set already used
+    everywhere else this distinction is made (refreshLineProductOptions(),
+    quote-builder.js; the on_startup() backfill just above)."""
+    return "skirting" if product.category in ("skirting", "quarter_round") else "trim"
+
+
 @app.post("/quotes/{quote_id}/lines/trims")
 def add_trim_line(quote_id: int, product_id: int, length_m: float,
                    discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
@@ -6834,7 +6900,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
 
         calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
         line = QuoteLineItem(
-            quote_id=quote_id, category="trim", product_id=product_id, tenant_id=tenant_id,
+            quote_id=quote_id, category=_trim_line_category(product), product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, length_m=length_m,
             trim_sub_category=product.category,
             discount_pct=discount_pct,
@@ -7240,7 +7306,13 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         line = session.get(QuoteLineItem, line_id)
         if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
             raise HTTPException(404, "Quote line not found")
-        if line.category != "trim":
+        # Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+        # Real Usage Findings brief §1) — a real, existing skirting line
+        # is now genuinely stored as category "skirting", not "trim"
+        # (see _trim_line_category(), add_trim_line() above) — this
+        # check has to accept both, same PUT endpoint genuinely serves
+        # either.
+        if line.category not in ("trim", "skirting"):
             raise HTTPException(400, "This line is not a trim/skirting line.")
         product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
         settings = get_settings(session, tenant_id)
@@ -7253,6 +7325,7 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         line.product_id = product_id
         line.product_name = product.product_name
         line.length_m = length_m
+        line.category = _trim_line_category(product)   # a skirting line edited into a genuine trim product (or vice versa) must be able to move between the two, same as any other product-change edit
         line.trim_sub_category = product.category
         line.discount_pct = discount_pct
         line.unit_cost = calc["unit_cost"]

@@ -152,6 +152,17 @@ function renderQuoteSummaryPanel(totalInclVat) {
     ? `${lineCount} added · ${outstandingText} · R${totalInclVat.toFixed(2)}`
     : `No lines yet · R0.00`;
 
+  // Sticky Save (confirmed Aug 2026, Vinyl Redesign: Real Usage
+  // Findings brief §3) — "part of the summary panel, not a third
+  // separate sticky element," per the brief's own suggested resolution
+  // — calls the EXISTING saveQuote() directly, never a second save
+  // path. Only offered once there's at least one real line — nothing
+  // to usefully save before that. Real value named in the brief: a
+  // simple, single-product quote no longer needs a scroll to the very
+  // bottom just to finish.
+  const saveButtonHtml = lineCount
+    ? `<button class="primary" onclick="saveQuote()" style="width:100%; margin-top:10px;">Save Quote</button>`
+    : '';
   panel.innerHTML = `
     <div class="qsp-compact" onclick="toggleQuoteSummaryExpanded()">
       <span class="qsp-compact-text">${compactText}</span>
@@ -161,6 +172,7 @@ function renderQuoteSummaryPanel(totalInclVat) {
       <div class="qsp-title">This Quote</div>
       ${rows}
       <div class="qsp-row qsp-total"><span>Total incl. VAT</span><span>R${totalInclVat.toFixed(2)}</span></div>
+      ${saveButtonHtml}
     </div>`;
   positionQuoteSummaryPanel();
 }
@@ -412,6 +424,17 @@ function fpOnModeChange() {
 //   bonding L = area / coverage_rate (m2_per_L), conservative (lower) rate
 //   containers = ROUND UP(L / pack_size), shown per available pack size
 //     as alternatives (e.g. one row per size Bolton has for that product)
+// Extra Screed auto-pricing (confirmed Aug 2026, Vinyl Redesign: Real
+// Usage Findings brief §2) — REAL GAP CLOSED: "Amount charged"/"Real
+// cost" sat at 0 requiring manual entry even once Bags needed was
+// already known. Real cost is deliberately left alone — the brief only
+// gives a confirmed sell rate (R350 incl VAT/bag), not a real-cost
+// figure, so nothing is guessed at there. fpAmountManuallyEdited is
+// reset in addFloorPrepLine()'s own per-room reset block — a fresh
+// room always gets the real default again, same "default, not forced,
+// per room" pattern the Courier toggle already uses elsewhere in this
+// file.
+let fpAmountManuallyEdited = false;
 function fpCalc() {
   const area = parseFloat(document.getElementById('fp_area').value) || 0;
   const thickness = parseFloat(document.getElementById('fp_thickness').value) || 0;
@@ -420,6 +443,11 @@ function fpCalc() {
 
   const compoundKg = (compound && area && thickness) ? area * thickness * compound.coverage_rate : 0;
   const bags = (compound && compoundKg > 0) ? Math.ceil(compoundKg / compound.pack_size) : 0;
+  if (bags > 0 && !fpAmountManuallyEdited) {
+    const sellRateInclVat = 350;   // confirmed Aug 2026 — Burgert's own real sell rate for loose/extra screed bags
+    const vatPct = businessSettings?.vat_pct ?? 0.15;
+    document.getElementById('fp_amount').value = ((bags * sellRateInclVat) / (1 + vatPct)).toFixed(2);
+  }
   const bondingL = (bonding && area) ? area / bonding.coverage_rate : 0;
   // Every pack size Bolton has on file for this exact bonding agent NAME
   // (e.g. both "BONDiTe (5L)" and "BONDiTe (25L)" rows) is shown as its
@@ -490,6 +518,7 @@ async function addFloorPrepLine() {
   document.getElementById('fp_manual_desc').value = '';
   document.getElementById('fp_amount').value = 0;
   document.getElementById('fp_cost').value = 0;
+  fpAmountManuallyEdited = false;   // a fresh room gets the real R350/bag default again
   fpCalc();
   loadQuote();
 }
@@ -1830,10 +1859,16 @@ async function loadQuote() {
     if (levyFieldEl) levyFieldEl.style.display = levy > 0 ? '' : 'none';
   }
   const tbody = document.querySelector('#linesTable tbody');
+  // Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+  // Real Usage Findings brief §1) — l.category === 'skirting' now
+  // exists as a real, distinct stored value (see _trim_line_category(),
+  // main.py) — every category check below that used to only match
+  // 'trim' needs 'skirting' too, or a real skirting line's own length
+  // silently goes missing from its own detail column.
   tbody.innerHTML = data.lines.map(l => {
     let detail = l.category === 'flooring'
       ? `${l.quantity_m2} m² — ${l.job_type}`
-      : l.category === 'trim'
+      : (l.category === 'trim' || l.category === 'skirting')
       ? `${l.length_m} lm`
       : l.category === 'stairwell'
       ? `${l.num_stairs} stairs — ${l.stairwell_type}, ${l.nosing_length_m}m nosing, ${l.boxes_needed} boxes (${l.billed_vinyl_area_m2}m² vinyl billed, ${l.glue_area_m2}m² glue coverage)${l.landing_area_m2 ? ` — incl. ${l.landing_area_m2}m² landing (R${l.landing_sell_total.toFixed(2)})` : ''}`
@@ -1868,7 +1903,7 @@ async function loadQuote() {
     if (l.category === 'flooring' && l.delivery_fee_total > 0) {
       detail += `<br><span class="muted">delivery/courier: R${l.delivery_fee_total.toFixed(2)} (marked up with the rest of the line, not a separate charge)</span>`;
     }
-    const qty = l.category === 'flooring' ? (l.quantity_m2 || 1) : (l.category === 'trim' ? (l.length_m || 1) : 1);
+    const qty = l.category === 'flooring' ? (l.quantity_m2 || 1) : ((l.category === 'trim' || l.category === 'skirting') ? (l.length_m || 1) : 1);
     const totalCost = (l.category === 'flooring' || l.category === 'stairwell') && l.total_job_cost !== undefined
       ? l.total_job_cost
       : (l.unit_cost !== undefined ? l.unit_cost * qty : undefined);

@@ -453,33 +453,6 @@
           <p class="muted" id="materialOnlyNote" style="display:none;">Line price is box cost × markup only (VAT still applied once at the end, same as every other line).</p>
         </div>
 
-        <!-- Transport + Courier toggles (confirmed Aug 2026, Transport/
-        Courier Toggle Relocation brief) — Transport replaces the old
-        always-visible field that used to sit at the bottom of the Quote
-        Lines section. IMPORTANT: Transport is QUOTE-level, not per floor
-        job — there is only ONE #fj_transport_amount input in the whole
-        page (this card isn't re-created per room), so it always reads/
-        writes the SAME underlying Quote.transport_levy value no matter
-        how many floor job tiles get added to this quote. Courier is
-        genuinely per-job (Section 4) — it defaults from the selected
-        product's own delivery_fee_per_m2 (onVinylProductChange()) but is
-        independently overridable per room, submitted as apply_delivery_fee
-        on THIS line only; the product's/supplier's own stored rate is
-        never touched by toggling this. -->
-        <div class="card" id="transportCourierCard">
-          <h2>Transport &amp; Courier</h2>
-          <div class="field">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_transport_toggle" onchange="onTransportToggleChange()" style="width:auto; margin-right:6px;"> Transport levy <span class="adj">(whole quote, ex VAT, one-off — e.g. out-of-town site or awkward delivery. Same single amount regardless of how many rooms are on this quote)</span></label>
-          </div>
-          <div class="field" id="fj_transport_amount_field" style="display:none; margin-top:6px;">
-            <label>Amount (R, ex VAT)</label>
-            <input type="number" id="fj_transport_amount" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
-          </div>
-          <div class="field" style="margin-top:10px;">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_courier_toggle" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Courier/delivery fee for this room <span class="adj">(reflects the selected product's/supplier's own rate — defaults to that product's current setting when you pick a colour, editable per room without changing the supplier-wide default)</span></label>
-          </div>
-        </div>
-
         <div class="card" id="screedCard">
           <h2>Screed <span class="adj-badge">ADJUSTABLE</span></h2>
           <p class="muted" id="screedEmptyNote" style="display:none; color:var(--coral); font-weight:600;">No screed products in your price book yet — add one under Price Book first, or uncheck "Include screed" above.</p>
@@ -542,10 +515,54 @@
             </div>
 
             <div class="grid" style="margin-top:12px;">
-              <div class="field"><label>Amount charged (R, ex VAT)</label><input type="number" id="fp_amount" step="0.01" value="0"></div>
+              <!-- Extra Screed auto-pricing (confirmed Aug 2026, Vinyl
+              Redesign: Real Usage Findings brief §2) — auto-populated
+              by fpCalc() from Bags needed × R350 incl VAT (Burgert's
+              own confirmed real sell rate for loose/extra screed bags),
+              reconciled ex-VAT internally same as everywhere else in
+              this app. oninput here only marks the field as manually
+              touched, per the brief's own "default, not forced"
+              requirement — fpCalc() checks fpAmountManuallyEdited
+              before ever overwriting a value Burgert typed himself. -->
+              <div class="field"><label>Amount charged (R, ex VAT)</label><input type="number" id="fp_amount" step="0.01" value="0" oninput="fpAmountManuallyEdited=true;"></div>
               <div class="field"><label>Real cost (R, ex VAT, optional)</label><input type="number" id="fp_cost" step="0.01" value="0"></div>
             </div>
             <button class="primary" onclick="addFloorPrepLine()" style="margin-top:10px;">+ Add to Quote</button>
+          </div>
+        </div>
+
+        <!-- Transport + Courier toggles — REPOSITIONED (confirmed Aug
+        2026, Vinyl Redesign: Real Usage Findings brief §4) — moved from
+        just after Vinyl to here, just above Discount, grouping the
+        final quote-level adjustments together before the totals rather
+        than interspersed earlier among the per-room/per-category
+        sections. No field, id, or handler changed — same
+        #fj_transport_amount/#fj_courier_toggle elements the rest of
+        this file already reads, only their position in the page moved.
+        Original placement comment (Transport/Courier Toggle Relocation
+        brief, confirmed Aug 2026) preserved below since it's still
+        accurate about what these fields ARE, just not where they sit:
+        Transport is QUOTE-level, not per floor job — there is only ONE
+        #fj_transport_amount input in the whole page (this card isn't
+        re-created per room), so it always reads/writes the SAME
+        underlying Quote.transport_levy value no matter how many floor
+        job tiles get added to this quote. Courier is genuinely per-job
+        — it defaults from the selected product's own delivery_fee_per_m2
+        (onVinylProductChange()) but is independently overridable per
+        room, submitted as apply_delivery_fee on THIS line only; the
+        product's/supplier's own stored rate is never touched by
+        toggling this. -->
+        <div class="card" id="transportCourierCard">
+          <h2>Transport &amp; Courier</h2>
+          <div class="field">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_transport_toggle" onchange="onTransportToggleChange()" style="width:auto; margin-right:6px;"> Transport levy <span class="adj">(whole quote, ex VAT, one-off — e.g. out-of-town site or awkward delivery. Same single amount regardless of how many rooms are on this quote)</span></label>
+          </div>
+          <div class="field" id="fj_transport_amount_field" style="display:none; margin-top:6px;">
+            <label>Amount (R, ex VAT)</label>
+            <input type="number" id="fj_transport_amount" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_courier_toggle" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Courier/delivery fee for this room <span class="adj">(reflects the selected product's/supplier's own rate — defaults to that product's current setting when you pick a colour, editable per room without changing the supplier-wide default)</span></label>
           </div>
         </div>
 

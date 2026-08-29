@@ -563,8 +563,13 @@ async function buildPrintDocHtml(quoteId, docType) {
   const waLink = `https://wa.me/${waPhone}?text=${waText}`;
 
   const rows = data.lines.map(l => {
+    // Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
+    // Real Usage Findings brief §1) — real, stored 'skirting' category
+    // now exists (main.py); without this, a skirting line's length
+    // would silently vanish from the actual client-facing printed/PDF
+    // document, not just an internal screen.
     let detail = l.category === 'flooring' ? `${l.quantity_m2 || ''} m² — ${l.job_type || ''}`
-      : l.category === 'trim' ? `${l.length_m} lm`
+      : (l.category === 'trim' || l.category === 'skirting') ? `${l.length_m} lm`
       : l.category === 'stairwell' ? `${l.num_stairs} stairs${l.landing_area_m2 ? ` (incl. ${l.landing_area_m2}m² landing)` : ''}`
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : '');
     // Screed lines carry a bag allowance — bags_allowed is screed-specific
