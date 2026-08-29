@@ -433,16 +433,26 @@
     <!-- ===== FLOORING: two-column layout, identical structure to the confirmed calculator ===== -->
     <div class="fj-main" id="fjMain" style="display:none;">
       <div>
+        <!-- Bring Vinyl/Screed to Carpet's Add Line Flow (confirmed Aug
+        2026) — fj_include_vinyl/fj_include_screed used to be a pair of
+        user-facing checkboxes here, letting one click ("Add Floor Job to
+        Quote") submit a vinyl line AND a screed line together — the
+        exact "combined submission" this brief exists to retire, unlike
+        every other category (Carpet included), which only ever adds the
+        one thing currently selected. They're hidden inputs now, purely
+        internal state set by which tab is active (selectLineCategoryTab(),
+        quote-builder.js) — same ids, same .checked property every
+        existing reader (fjOnIncludeChange()/fjCalc()/addFloorJob()/
+        prefillFlooringEdit()) already relies on, so none of them needed
+        to change. The card title and Add Line button below now name
+        whichever ONE of Vinyl/Screed is actually active
+        (fjOnIncludeChange()), never "Floor Job" — that combined concept
+        no longer exists. -->
         <div class="card" style="border: 2px solid var(--teal);">
-          <h2 style="color:var(--teal);">Floor Job</h2>
+          <h2 style="color:var(--teal);" id="floorJobCardTitle">Vinyl</h2>
           <div class="field"><label>Floor size (m²)</label><input id="fj_floor_m2" type="number" step="0.1" placeholder="e.g. 100" oninput="fjCalc()"></div>
-          <div class="field" style="margin-top:14px;">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_include_vinyl" checked onchange="fjOnIncludeChange()" style="width:auto; margin-right:6px;"> Include vinyl flooring</label>
-          </div>
-          <div class="field">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_include_screed" checked onchange="fjOnIncludeChange()" style="width:auto; margin-right:6px;"> Include screed</label>
-          </div>
-          <p class="muted">Uncheck either for a vinyl-only or screed-only job — some clients only want one.</p>
+          <input type="checkbox" id="fj_include_vinyl" checked onchange="fjOnIncludeChange()" style="display:none;">
+          <input type="checkbox" id="fj_include_screed" onchange="fjOnIncludeChange()" style="display:none;">
         </div>
 
         <div class="card" id="vinylCard">
@@ -599,7 +609,7 @@
         all. -->
 
         <div class="card">
-          <button class="primary" onclick="addFloorJob()" style="width:100%; padding:12px;">+ Add Floor Job to Quote</button>
+          <button class="primary" onclick="addFloorJob()" id="fjAddLineBtn" style="width:100%; padding:12px;">+ Add Vinyl Line to Quote</button>
         </div>
       </div>
 

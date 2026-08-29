@@ -68,6 +68,23 @@ function refreshLineProductOptions() {
 // proposal's own explicit non-goal — no calculation-engine change) — it
 // maps to flooring with the vinyl checkbox off, screed checkbox on, so
 // the tab lands screed-only without a checkbox detour.
+//
+// Bring Vinyl/Screed to Carpet's Add Line Flow (confirmed Aug 2026) —
+// the Flooring tab used to set BOTH fj_include_vinyl AND
+// fj_include_screed true, the actual mechanism behind the "combined
+// Floor Job" submission this brief exists to retire: one click could add
+// a vinyl line AND a screed line together, unlike every other category
+// (Carpet included), which only ever adds the one thing currently
+// selected. Now mutually exclusive, same shape Screed's own branch
+// already had — Flooring tab means "I'm adding a vinyl line right now,"
+// Screed tab means "I'm adding a screed line right now," never both at
+// once. fj_include_vinyl/fj_include_screed are no longer user-facing
+// checkboxes (index.html) — hidden inputs now, purely internal state —
+// but every downstream reader of their .checked property
+// (fjOnIncludeChange(), fjCalc(), addFloorJob(), prefillFlooringEdit())
+// needed zero changes, since the values they read are still exactly
+// "which one is active," just set by tab selection instead of a
+// checkbox click.
 function selectLineCategoryTab(tab) {
   // Same guard the old <select>'s onchange handler carried (see its own
   // long-form comment, index.html) — a stale editingLineId surviving a
@@ -78,7 +95,7 @@ function selectLineCategoryTab(tab) {
   document.getElementById('line_category').value = (tab === 'screed') ? 'flooring' : tab;
   if (tab === 'flooring') {
     document.getElementById('fj_include_vinyl').checked = true;
-    document.getElementById('fj_include_screed').checked = true;
+    document.getElementById('fj_include_screed').checked = false;
   } else if (tab === 'screed') {
     document.getElementById('fj_include_vinyl').checked = false;
     document.getElementById('fj_include_screed').checked = true;
@@ -859,6 +876,17 @@ function fjOnIncludeChange() {
   const includeScreed = document.getElementById('fj_include_screed').checked;
   document.getElementById('vinylCard').style.display = includeVinyl ? '' : 'none';
   document.getElementById('screedCard').style.display = includeScreed ? '' : 'none';
+  // Bring Vinyl/Screed to Carpet's Add Line Flow (confirmed Aug 2026) —
+  // same "the button/heading names the one thing this step adds" clarity
+  // Carpet's own per-type card already has (CARPET_TYPE_LABELS) — since
+  // includeVinyl/includeScreed are mutually exclusive now (see
+  // selectLineCategoryTab()'s own comment), this always names exactly
+  // one real thing, never "Floor Job" (a combined submission that no
+  // longer exists).
+  const floorJobTitleEl = document.getElementById('floorJobCardTitle');
+  const addLineBtnEl = document.getElementById('fjAddLineBtn');
+  if (floorJobTitleEl) floorJobTitleEl.textContent = includeScreed ? 'Screed' : 'Vinyl';
+  if (addLineBtnEl) addLineBtnEl.textContent = includeScreed ? '+ Add Screed Line to Quote' : '+ Add Vinyl Line to Quote';
   // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign
   // proposal §06, approved) — the Flooring/Screed tab highlight tracks
   // these same two checkboxes (the real state), so a direct checkbox
