@@ -1546,6 +1546,65 @@ function clearStaleQuoteResidue() {
   // the PREVIOUS quote's discount %.
   const discountPctEl = document.getElementById('fj_discount_pct');
   if (discountPctEl) discountPctEl.value = 0;
+  // New Quote Starting Screen: Price Check Fix (confirmed Aug 2026) —
+  // real bug found, not just made-more-visible: this function already
+  // reset plenty of state (transport levy, discount %, floor prep
+  // scratch fields) but never touched the actual "Add Line" calculator
+  // inputs themselves — Price Check specifically only ever reset the
+  // OUTPUT (result panel), never the fields that produced it, since it
+  // calls this function directly without the fuller resetQuoteBuilderUI()
+  // (which would also wrongly clear q_client/disable Start Quote mid-
+  // Price-Check-flow). Confirmed via code reading, not guessed: floor
+  // size had NO reset path anywhere at all (not even indirectly, unlike
+  // Range/Colour which get refilled as a side effect of
+  // toggleLineFields()'s own product-dropdown-repopulation cascade
+  // right after this runs); glue rate had a real conditional gap too —
+  // onVinylProductChange() only overwrites it when the newly-selected
+  // product has its OWN glue_rate_per_m2 override set, so a product
+  // with none would silently inherit whatever rate the PREVIOUS
+  // calculation left behind. Blanking every raw "in progress" input
+  // here, once, closes the whole class of bug rather than chasing each
+  // field individually — the same onXChange cascades already fired by
+  // toggleLineFields() right after this function returns (both call
+  // sites: startPriceCheck() and resetQuoteBuilderUI()) then correctly
+  // refill whatever has a real per-product/business-setting default.
+  ['fj_floor_m2', 'fj_wastage', 'fj_m2_per_box', 'fj_box_price', 'fj_trade_discount',
+   'fj_markup', 'fj_labour_rate', 'fj_screed_rate',
+   'carpet_lm', 'carpet_m2', 'line_width', 'line_drop', 'line_length', 'line_num_stairs',
+   'line_misc_desc', 'line_misc_amount'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['line_discount', 'carpet_discount'].forEach(id => { const el = document.getElementById(id); if (el) el.value = 0; });
+  const miscCostEl = document.getElementById('line_misc_cost');
+  if (miscCostEl) miscCostEl.value = 0;
+  // Glue rate deliberately reset to its own real fallback (17.05, the
+  // same static default the input's own HTML attribute always carried),
+  // not blanked to '' like the rest of this block — real regression
+  // caught in the same pass, not shipped: onVinylProductChange() only
+  // overwrites this field when the newly-selected product has its OWN
+  // glue_rate_per_m2 override set, so blanking it here for a product
+  // with none would leave a genuinely empty field, which fjCalc() reads
+  // as a real 0 glue rate — silently pricing that vinyl line as if it
+  // needed no adhesive at all, not "reset to the confirmed universal
+  // fallback" like every other product without its own override
+  // already correctly gets.
+  const glueRateEl = document.getElementById('fj_glue_rate');
+  if (glueRateEl) glueRateEl.value = 17.05;
+  const bagCostEl = document.getElementById('fj_bag_cost');
+  if (bagCostEl) bagCostEl.value = 235;
+  const bagCoverageEl = document.getElementById('fj_bag_coverage');
+  if (bagCoverageEl) bagCoverageEl.value = 4;
+  const stairAreaEl = document.getElementById('line_stair_area');
+  if (stairAreaEl) stairAreaEl.value = 0.45;
+  const tileRemovalEl = document.getElementById('fj_tile_removal');
+  if (tileRemovalEl) tileRemovalEl.checked = false;
+  const materialOnlyEl = document.getElementById('fj_material_only');
+  if (materialOnlyEl) materialOnlyEl.checked = false;
+  const ownStaffEl = document.getElementById('fj_own_staff');
+  if (ownStaffEl) ownStaffEl.value = 'true';
+  const stairOwnStaffEl = document.getElementById('line_stair_own_staff');
+  if (stairOwnStaffEl) stairOwnStaffEl.value = 'true';
+  const stairwellTypeEl = document.getElementById('line_stairwell_type');
+  if (stairwellTypeEl) stairwellTypeEl.value = 'closed';
+  activeCarpetType = null;   // so re-entering the Carpet tab defaults fresh to Stretch, same as a genuinely first-ever visit
   const statusDisplayEl = document.getElementById('q_status_display');
   if (statusDisplayEl) statusDisplayEl.innerHTML = '<span class="muted">—</span>';
   const saveStatusEl = document.getElementById('saveStatus');
@@ -1610,6 +1669,7 @@ function resetQuoteBuilderUI() {
   // above: resetQuoteBuilderUI() never reset q_owner either, so a new
   // quote silently kept whatever Sales Owner the PREVIOUS quote had.
   document.getElementById('q_owner').value = defaultSalesOwnerForCurrentUser();
+  syncQuoteOwnerBranchControls();
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
@@ -1628,9 +1688,16 @@ function resetQuoteBuilderUI() {
   if (dupBtnHide) dupBtnHide.style.display = 'none';
   const revertBtnHide = document.getElementById('revertQuoteBtn');
   if (revertBtnHide) revertBtnHide.style.display = 'none';
-  const startBtn = document.getElementById('startQuoteBtn');
-  startBtn.disabled = false;
-  startBtn.textContent = 'Start Quote';
+  // New Quote Starting Screen: Clarity Pass (confirmed Aug 2026) —
+  // Start Quote is genuinely disabled again on a fresh reset, same as
+  // a real first-ever visit — q_client was just cleared above, and
+  // pendingClientId (a real, previously-selected client id) must not
+  // silently survive into this new, blank state either, or the button
+  // would wrongly stay enabled for a client name that's no longer even
+  // showing in the field.
+  pendingClientId = null;
+  document.getElementById('startQuoteBtn').textContent = 'Start Quote';
+  updateStartQuoteButtonState();
   document.getElementById('quoteStatus').textContent = '';
 }
 

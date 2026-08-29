@@ -291,30 +291,91 @@
     full width — this panel is an overview, not a replacement for it. -->
     <div class="quote-builder-layout">
     <div class="quote-builder-main">
+    <!-- New Quote Starting Screen: Clarity Pass (confirmed Aug 2026) —
+    real ambiguity investigation confirmed, not just theorized: Start
+    Quote was ALREADY a hard gate requiring a real selected client
+    (createQuote()'s own guard, quote-builder.js) — but that only ever
+    surfaced as a reactive alert AFTER a wrong click, never something
+    visible up front. "Already Open" was ALSO already just this same
+    button, relabelled+disabled once a quote exists — not a fourth
+    distinct action, despite reading like one in a flat row of three.
+    Restructured into two visually distinct groups instead of one grid
+    row + three same-weight buttons: (1) find-and-select an existing
+    client, with Start Quote right there, genuinely live-disabled
+    (updateStartQuoteButtonState()) until a real match is actually
+    selected — no more needing to click first to learn the rule; (2)
+    below a plain "or" divider, New Client and Price Check as their own
+    clearly-labelled, one-line-captioned pair — different goals
+    entirely (a person not yet in the system; a quick calculation with
+    no client at all), never confusable with the search field above. -->
     <div class="card">
       <h2>New Quote</h2>
+      <div class="field" style="position:relative;">
+        <label>Find an existing client</label>
+        <input id="q_client" placeholder="Type a name to search…" autocomplete="off"
+          oninput="onQClientInput(this.value)"
+          onkeydown="if(event.key==='Enter' && !document.getElementById('startQuoteBtn').disabled) createQuote();">
+        <div id="qClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+      </div>
+
+      <!-- Staff Account Defaults / New Quote Flow Clarity, reconciled
+      (confirmed Aug 2026) — the two briefs' own explicit instruction to
+      "describe one coherent behaviour, not two different ones for the
+      Owner's own account." Sales Owner is never shown as a picker for
+      ANYONE now, on ANY account — there's genuinely nothing to choose:
+      Ryno/Madri are always themselves when logged in as themselves;
+      Burgert's own quotes default to himself the same way; the one real
+      exception (Burgert doing a job as Ryno/Madri on their behalf) is
+      handled through the EXISTING "Viewing As" mechanism (header,
+      Owner-only) rather than a second control here — every place this
+      field's real value gets (re-)defaulted (showApp() login, just
+      below; resetQuoteBuilderUI(), quote-builder.js; applyPreviewRole(),
+      when no quote is currently open, further down) reads it from
+      defaultSalesOwnerForCurrentUser() (shared.js), fixed to resolve
+      previewRole first, so a quote started while Viewing As Ryno is
+      correctly attributed to Ryno, not silently left as Burgert. Same
+      field, same id, still submitted by createQuote()/startPriceCheck()
+      exactly as before — just never a visible dropdown, for anyone. -->
+      <select id="q_owner" style="display:none;"><option value="burgert">Burgert</option><option value="madri">Madri</option><option value="ryno">Ryno</option></select>
+
+      <!-- Branch: collapses to a single small toggle for whichever
+      branch is the LESS common one for the currently-effective account
+      (Ryno/Madri: Gansbaai is the real default, toggle reaches
+      Hermanus; Burgert: Hermanus is the real default, toggle reaches
+      Gansbaai — same "genuinely works across both, but one is rare"
+      shape for all three, per Burgert's own original framing of his
+      own account, reapplied symmetrically rather than left as a
+      special case). Toggle's own onchange (onQBranchToggleChange(),
+      shared.js) writes straight into the (now-hidden) #q_branch select
+      below — same single source of truth createQuote()/startPriceCheck()
+      already read, so nothing downstream needed to change.
+      syncQuoteOwnerBranchControls() (shared.js) sets the toggle's own
+      label/checked-state to agree with #q_branch's real current value
+      every time that value might have just changed for a reason other
+      than the toggle itself. -->
+      <select id="q_branch" style="display:none;"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+      <div class="field" id="qBranchToggleRow">
+        <label style="font-weight:600; cursor:pointer;"><input type="checkbox" id="q_branch_toggle" onchange="onQBranchToggleChange()" style="width:auto; margin-right:6px; vertical-align:middle;"> <span id="qBranchToggleLabel">Quoting for Hermanus?</span></label>
+      </div>
+
+      <button class="primary" id="startQuoteBtn" onclick="createQuote()" disabled>Start Quote</button>
+
+      <div style="text-align:center; color:#9aa0a6; font-size:12px; margin:14px 0; text-transform:uppercase; letter-spacing:0.05em;">— or —</div>
+
       <div class="grid">
-        <div class="field" style="position:relative;">
-          <label>Client name <span class="adj">(existing client only — search and select)</span></label>
-          <input id="q_client" placeholder="Start typing to search existing clients" autocomplete="off"
-            oninput="onQClientInput(this.value)"
-            onkeydown="if(event.key==='Enter' && !document.getElementById('startQuoteBtn').disabled) createQuote();">
-          <div id="qClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+        <div>
+          <button onclick="showNewClientMiniForm()" style="width:100%; background:none; border:2px solid var(--teal); color:var(--teal); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:10px 14px; cursor:pointer;">+ New Client</button>
+          <p class="muted" style="font-size:11.5px; margin:4px 0 0; text-align:center;">Not in the system yet</p>
         </div>
-        <div class="field"><label>Sales Owner</label>
-          <select id="q_owner"><option value="burgert">Burgert</option><option value="madri">Madri</option><option value="ryno">Ryno</option></select>
-        </div>
-        <div class="field"><label>Branch</label>
-          <select id="q_branch"><option value="gansbaai">Gansbaai</option><option value="hermanus">Hermanus</option></select>
+        <div>
+          <button onclick="startPriceCheck()" style="width:100%; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:10px 14px; cursor:pointer;">Price Check</button>
+          <p class="muted" style="font-size:11.5px; margin:4px 0 0; text-align:center;">Quick price, no client needed</p>
         </div>
       </div>
       <div class="toggle-row" style="display:none;">
         <input type="checkbox" id="q_measurements" checked>
         <label style="margin:0;" for="q_measurements">Show blind measurements to client on this quote</label>
       </div>
-      <br><button class="primary" id="startQuoteBtn" onclick="createQuote()">Start Quote</button>
-      <button onclick="showNewClientMiniForm()" style="margin-left:10px; background:none; border:2px solid var(--teal); color:var(--teal); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;">New Client</button>
-      <button onclick="startPriceCheck()" style="margin-left:10px; background:none; border:2px solid var(--coral); color:var(--coral); font-family:'Poppins',sans-serif; font-weight:600; border-radius:6px; padding:8px 14px; cursor:pointer;" title="Quick price for a walk-in — not saved as a real job unless you convert it">Price Check</button>
       <p class="muted" id="quoteStatus"></p>
 
       <!-- New Client mini-form (confirmed Aug 2026, brief §2) — full
@@ -1146,7 +1207,22 @@ async function applyPreviewRole(newRole) {
   }
   applyRoleVisibility();
   await loadBusinessSettings();
-  if (currentQuoteId) await loadQuote();
+  if (currentQuoteId) {
+    await loadQuote();
+  } else {
+    // New Quote Starting Screen: Sales Owner / Branch reconciliation
+    // (confirmed Aug 2026) — no quote open yet, so there's nothing of
+    // an EXISTING quote's own to preserve (loadQuote()'s own branch,
+    // just above, correctly leaves a real quote's real stored values
+    // alone) — safe to re-default q_owner/q_branch to whichever
+    // account is now effective, so a New Quote started right after
+    // switching Viewing As is attributed correctly from the first
+    // keystroke, not just after some other action happens to call
+    // resetQuoteBuilderUI() again.
+    document.getElementById('q_branch').value = defaultBranchForCurrentUser();
+    document.getElementById('q_owner').value = defaultSalesOwnerForCurrentUser();
+    syncQuoteOwnerBranchControls();
+  }
   renderLanding();
 }
 
@@ -1170,6 +1246,7 @@ function showApp() {
   // Sales Owner default (confirmed Aug 2026, Vinyl Quoting UX Redesign
   // proposal §07, approved) — same pattern/placement as q_branch above.
   document.getElementById('q_owner').value = defaultSalesOwnerForCurrentUser();
+  syncQuoteOwnerBranchControls();
   // Version badge fix (confirmed Aug 2026) — used to be a hardcoded
   // "v65" nobody had touched since this repo's first commit. Fetched
   // fresh every login rather than baked into the page, so it can never
@@ -3953,6 +4030,8 @@ function startQuoteForClient(clientId, clientName, preferredBranch) {
   goToTab('quoteBuilder');
   document.getElementById('q_client').value = clientName;
   if (preferredBranch) { document.getElementById('q_branch').value = preferredBranch; }
+  syncQuoteOwnerBranchControls();
+  updateStartQuoteButtonState();
 }
 
 // Confirmed Aug 2026 — one place for values used across the whole app
@@ -4139,6 +4218,12 @@ async function openQuoteFromIndex(quoteId) {
   document.getElementById('q_client').value = data.quote.client_name;
   document.getElementById('q_owner').value = data.quote.sales_owner;
   document.getElementById('q_branch').value = data.quote.branch;
+  // New Quote Starting Screen: Clarity Pass (confirmed Aug 2026) — this
+  // quote's OWN real, already-saved sales_owner/branch, never the
+  // currently-logged-in/previewed user's default — the toggle here just
+  // needs to visually agree with what was just set above, not recompute
+  // anything of its own.
+  syncQuoteOwnerBranchControls();
   const startBtn = document.getElementById('startQuoteBtn');
   startBtn.disabled = true;
   startBtn.textContent = 'Already open (see below)';
@@ -4148,9 +4233,26 @@ async function openQuoteFromIndex(quoteId) {
   loadQuote();
 }
 
+// New Quote Starting Screen: Clarity Pass (confirmed Aug 2026) — Start
+// Quote was ALREADY a hard gate (createQuote()'s own guard) requiring a
+// real selected client, but that rule only ever surfaced reactively, as
+// an alert AFTER a wrong click — never visible up front. Now genuinely
+// live-disabled until pendingClientId is actually set, so the button's
+// own state teaches the rule instead of an error message having to.
+// Deliberately does NOT disable while a quote is already open (Already
+// Open state, startBtn.textContent changed elsewhere) — this only ever
+// runs from onQClientInput()/selectQClient(), both scoped to the "no
+// quote open yet" starting screen already.
+function updateStartQuoteButtonState() {
+  const startBtn = document.getElementById('startQuoteBtn');
+  if (!startBtn || currentQuoteId) return;
+  startBtn.disabled = !pendingClientId;
+}
+
 let qClientSearchTimeout = null;
 function onQClientInput(value) {
   pendingClientId = null; // typing manually means it's no longer a confirmed existing-client match
+  updateStartQuoteButtonState();
   clearTimeout(qClientSearchTimeout);
   const box = document.getElementById('qClientSuggestions');
   if (!value || value.length < 2) { box.style.display = 'none'; return; }
@@ -4179,6 +4281,7 @@ function selectQClient(clientId, clientName) {
   pendingClientId = clientId;
   document.getElementById('q_client').value = clientName;
   document.getElementById('qClientSuggestions').style.display = 'none';
+  updateStartQuoteButtonState();
 }
 
 // New Client mini-form + Price Check (confirmed Aug 2026, New Quote

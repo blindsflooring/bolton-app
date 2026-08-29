@@ -278,8 +278,24 @@ function contactListToFields(values) {
 // client's real preferred_branch, untouched by this). Always fully
 // changeable per quote/client afterward, per the brief's own words.
 const STAFF_DEFAULT_BRANCH = { burgert: 'hermanus', ryno: 'gansbaai', madri: 'gansbaai' };
+// New Quote Starting Screen: Sales Owner / Branch reconciliation
+// (confirmed Aug 2026) — real gap found, not assumed: this used to read
+// currentUser?.username directly, ignoring Owner Preview Mode entirely.
+// The whole point of routing the rare "Burgert logs a job as Ryno/Madri"
+// case through Viewing As (New Quote Flow Clarity brief §3, reconciled
+// with Staff Account Defaults) depends on the resulting quote actually
+// being attributed to the previewed rep — this is the one function that
+// needed to change for that to be true. effectiveUsernameForQuoting()
+// is the same "which real person is this effectively acting as" logic
+// currentRole() already applies to role, just resolved down to a
+// username these two staff maps can key off.
+function effectiveUsernameForQuoting() {
+  if (previewRole === 'sales') return 'ryno';
+  if (previewRole === 'admin') return 'madri';
+  return currentUser?.username;
+}
 function defaultBranchForCurrentUser() {
-  return STAFF_DEFAULT_BRANCH[currentUser?.username] || 'gansbaai';
+  return STAFF_DEFAULT_BRANCH[effectiveUsernameForQuoting()] || 'gansbaai';
 }
 
 // Sales Owner default (confirmed Aug 2026, Vinyl Quoting UX Redesign
@@ -295,7 +311,34 @@ function defaultBranchForCurrentUser() {
 // defaultBranchForCurrentUser() above.
 const STAFF_DEFAULT_OWNER = { burgert: 'burgert', ryno: 'ryno', madri: 'madri' };
 function defaultSalesOwnerForCurrentUser() {
-  return STAFF_DEFAULT_OWNER[currentUser?.username] || 'burgert';
+  return STAFF_DEFAULT_OWNER[effectiveUsernameForQuoting()] || 'burgert';
+}
+
+// New Quote Starting Screen: Clarity Pass / Staff Account Defaults,
+// reconciled (confirmed Aug 2026) — Sales Owner is never shown as a
+// picker for anyone now (nothing to choose — see #q_owner's own
+// comment, index.html); Branch collapses to one small toggle for
+// whichever branch is the LESS common one for the currently-effective
+// account. Sets both the toggle's own label and its checked state from
+// the real underlying #q_branch value — called wherever that value
+// might have just changed for a reason OTHER than the toggle itself
+// (login, Viewing As switch, resetQuoteBuilderUI()'s own defaulting) so
+// the toggle never silently disagrees with what's actually about to be
+// submitted.
+function syncQuoteOwnerBranchControls() {
+  const branchEl = document.getElementById('q_branch');
+  const toggleEl = document.getElementById('q_branch_toggle');
+  const labelEl = document.getElementById('qBranchToggleLabel');
+  if (!branchEl || !toggleEl || !labelEl) return;
+  const defaultBranch = STAFF_DEFAULT_BRANCH[effectiveUsernameForQuoting()] || 'gansbaai';
+  const otherBranch = defaultBranch === 'hermanus' ? 'gansbaai' : 'hermanus';
+  labelEl.textContent = `Quoting for ${otherBranch.charAt(0).toUpperCase()}${otherBranch.slice(1)}?`;
+  toggleEl.checked = (branchEl.value === otherBranch);
+}
+function onQBranchToggleChange() {
+  const defaultBranch = STAFF_DEFAULT_BRANCH[effectiveUsernameForQuoting()] || 'gansbaai';
+  const otherBranch = defaultBranch === 'hermanus' ? 'gansbaai' : 'hermanus';
+  document.getElementById('q_branch').value = document.getElementById('q_branch_toggle').checked ? otherBranch : defaultBranch;
 }
 
 // Cross-feature state — read/written by more than one feature area:
