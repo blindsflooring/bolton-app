@@ -610,40 +610,6 @@
           </div>
         </div>
 
-        <!-- Transport + Courier toggles — REPOSITIONED (confirmed Aug
-        2026, Vinyl Redesign: Real Usage Findings brief §4) — moved from
-        just after Vinyl to here, just above Discount, grouping the
-        final quote-level adjustments together before the totals rather
-        than interspersed earlier among the per-room/per-category
-        sections. No field, id, or handler changed — same
-        #fj_transport_amount/#fj_courier_toggle elements the rest of
-        this file already reads, only their position in the page moved.
-        Original placement comment (Transport/Courier Toggle Relocation
-        brief, confirmed Aug 2026) preserved below since it's still
-        accurate about what these fields ARE, just not where they sit:
-        Transport is QUOTE-level, not per floor job — there is only ONE
-        #fj_transport_amount input in the whole page (this card isn't
-        re-created per room), so it always reads/writes the SAME
-        underlying Quote.transport_levy value no matter how many floor
-        job tiles get added to this quote. Courier is genuinely per-job
-        — it defaults from the selected product's own delivery_fee_per_m2
-        (onVinylProductChange()) but is independently overridable per
-        room, submitted as apply_delivery_fee on THIS line only; the
-        product's/supplier's own stored rate is never touched by
-        toggling this. -->
-        <div class="card" id="transportCourierCard">
-          <h2>Transport &amp; Courier</h2>
-          <div class="field">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_transport_toggle" onchange="onTransportToggleChange()" style="width:auto; margin-right:6px;"> Transport levy <span class="adj">(whole quote, ex VAT, one-off — e.g. out-of-town site or awkward delivery. Same single amount regardless of how many rooms are on this quote)</span></label>
-          </div>
-          <div class="field" id="fj_transport_amount_field" style="display:none; margin-top:6px;">
-            <label>Amount (R, ex VAT)</label>
-            <input type="number" id="fj_transport_amount" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
-          </div>
-          <div class="field" style="margin-top:10px;">
-            <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_courier_toggle" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Courier/delivery fee for this room <span class="adj">(reflects the selected product's/supplier's own rate — defaults to that product's current setting when you pick a colour, editable per room without changing the supplier-wide default)</span></label>
-          </div>
-        </div>
 
         <!-- Discount card MOVED OUT of here (confirmed Aug 2026, Full
         Real-Browser Walkthrough & Audit — real gap: this whole area
@@ -854,6 +820,43 @@
     <div id="quoteSummaryPanel" style="display:none;"></div>
     </div><!-- /.quote-builder-layout -->
 
+    <!-- Transport & Courier — moved into the whole-quote review area
+    (confirmed Aug 2026, Transport Relocation / Discount Sizing brief) —
+    genuinely quote-level, not tied to whichever category tab happens to
+    be active, so it shouldn't clutter Flooring/Screed/Carpet/etc.'s own
+    per-category screens. Same #fj_transport_amount/#fj_courier_toggle
+    ids and handlers as before — every reader (updateTransportLevy(),
+    fjCalc(), addFloorJob()'s apply_delivery_fee param) reads them by id
+    regardless of DOM position, so nothing about what these do or how
+    they're calculated changed, only where they're shown. One real
+    nuance kept, not glossed over: Transport levy is genuinely whole-
+    quote (one input, one Quote.transport_levy value) — moving it here
+    is a clean fit. Courier/delivery fee is genuinely PER-LINE (per the
+    brief that originally built it — "independently overridable per
+    room, submitted as apply_delivery_fee on THIS line only") — it still
+    works correctly from here (addFloorJob() reads its checked state at
+    the moment a Vinyl line is actually added, wherever the checkbox
+    physically sits on the page), but toggling it now means stepping
+    down to this review area before clicking Add Vinyl Line, rather than
+    setting it right alongside that room's own fields. Flagged in the
+    Build Log as a real, deliberate trade-off of following the brief's
+    own literal "move it as one unit" instruction, not something to fix
+    silently if it turns out clunky in practice. Hidden until a quote is
+    actually open, same as quoteDiscountCard/linesCard below. -->
+    <div class="card" id="transportCourierCard" style="display:none;">
+      <h2>Transport &amp; Courier</h2>
+      <div class="field">
+        <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_transport_toggle" onchange="onTransportToggleChange()" style="width:auto; margin-right:6px;"> Transport levy <span class="adj">(whole quote, ex VAT, one-off — e.g. out-of-town site or awkward delivery. Same single amount regardless of how many rooms are on this quote)</span></label>
+      </div>
+      <div class="field" id="fj_transport_amount_field" style="display:none; margin-top:6px;">
+        <label>Amount (R, ex VAT)</label>
+        <input type="number" id="fj_transport_amount" step="0.01" value="0" style="max-width:150px;" onchange="updateTransportLevy()">
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_courier_toggle" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Courier/delivery fee for this room <span class="adj">(reflects the selected product's/supplier's own rate — defaults to that product's current setting when you pick a colour, editable per room without changing the supplier-wide default. Vinyl-only — has no effect while adding a non-Flooring line.)</span></label>
+      </div>
+    </div>
+
     <!-- Quote-level Discount — standalone, always visible regardless of
     which category tab is active (confirmed Aug 2026, Full Real-Browser
     Walkthrough & Audit — real gap fixed: this used to live inside the
@@ -866,10 +869,12 @@
     Transport levy card already uses (updateTransportLevy()) — never
     silently dropped by Save Quote again, and reachable even on a quote
     with zero Flooring lines. Hidden until a quote is actually open, same
-    as linesCard/quoteSummaryPanel. -->
+    as linesCard/quoteSummaryPanel. Discount % input shrunk to a compact
+    size (confirmed Aug 2026, Transport Relocation / Discount Sizing
+    brief) — a plain percentage never needed to stretch full-width. -->
     <div class="card" id="quoteDiscountCard" style="display:none;">
       <h2>Discount</h2>
-      <div class="field"><label>Discount % <span class="adj">(applied ex VAT, whole quote, before VAT)</span></label><input type="number" id="fj_discount_pct" class="adjustable" value="0" step="0.1" oninput="fjCalc()" onchange="updateQuoteDiscount()"></div>
+      <div class="field"><label>Discount % <span class="adj">(applied ex VAT, whole quote, before VAT)</span></label><input type="number" id="fj_discount_pct" class="adjustable" value="0" step="0.1" style="max-width:100px;" oninput="fjCalc()" onchange="updateQuoteDiscount()"></div>
     </div>
 
     <div class="card" id="linesCard" style="display:none;">
@@ -4121,6 +4126,7 @@ async function openQuoteFromIndex(quoteId) {
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('quoteDiscountCard').style.display = 'block';
+  document.getElementById('transportCourierCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('duplicateQuoteBtn').style.display = '';
   document.getElementById('revertQuoteBtn').style.display = '';

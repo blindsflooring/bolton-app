@@ -1366,6 +1366,7 @@ async function createQuote() {
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('quoteDiscountCard').style.display = 'block';
+  document.getElementById('transportCourierCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   // Real gap found while building Duplicate Quote (confirmed Aug 2026):
   // quotePhotosCard was only ever shown inside loadQuote() (which this
@@ -1454,6 +1455,7 @@ async function startPriceCheck() {
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
   document.getElementById('quoteDiscountCard').style.display = 'block';
+  document.getElementById('transportCourierCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('quotePhotosCard').style.display = 'block';
   renderQuoteSummaryPanel(0);   // same reasoning as createQuote()'s own comment just above it — this entry point never calls loadQuote() either
@@ -1612,6 +1614,7 @@ function resetQuoteBuilderUI() {
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
   document.getElementById('quoteDiscountCard').style.display = 'none';
+  document.getElementById('transportCourierCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
   // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
   // Redesign proposal §03, approved, Phase 3) — currentQuoteId is
