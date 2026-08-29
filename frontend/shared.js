@@ -379,6 +379,13 @@ function applyRoleVisibility() {
   if (fjBreakdown) fjBreakdown.style.display = showBreakdown ? '' : 'none';
   const fjGpCard = document.getElementById('fjBreakdownGpCard');
   if (fjGpCard) fjGpCard.style.display = showBreakdown ? '' : 'none';
+  // Move Product Constants Off the Quoting Screen (confirmed Aug 2026) —
+  // Wastage %/m² per box/Price per m²/Trade discount %/Glue rate, same
+  // toggle-gated treatment as the rest of the breakdown — visible only
+  // to the Owner, only with the breakdown on, purely informational
+  // (readonly, index.html) since they're no longer quote-level inputs.
+  const vinylConstants = document.getElementById('vinylConstantsBreakdown');
+  if (vinylConstants) vinylConstants.style.display = showBreakdown ? '' : 'none';
   // Confirmed: Sales can see the resulting PRICE, but must not be able to
   // change the underlying pricing inputs (list price, discount, m²/box,
   // markup) — these directly control what a client gets charged. Locking

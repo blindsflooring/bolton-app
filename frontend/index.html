@@ -462,11 +462,37 @@
           <input type="hidden" id="fj_vinyl_product">
           <input type="hidden" id="fj_jobtype" value="smooth">
           <!-- confirmed: vinyl material pricing is flat regardless of job type — job type only genuinely affects screed (its multiplier). Removed the dropdown here since it never did anything for vinyl; kept as a hidden fixed "smooth" value since the submission endpoint still expects the param. -->
-          <div class="field"><label>Wastage %</label><input type="number" id="fj_wastage" oninput="fjCalc()"></div>
-          <div class="field"><label>m² per box</label><input type="number" id="fj_m2_per_box" step="0.001" oninput="fjCalc()"></div>
-          <div class="field"><label>Price per m² (ex VAT, before discount)</label><input type="number" id="fj_box_price" oninput="fjCalc()"></div>
-          <div class="field"><label>Trade discount %</label><input type="number" id="fj_trade_discount" oninput="fjCalc()"></div>
-          <div class="field"><label>Glue rate (R/m², on actual floor area)</label><input type="number" id="fj_glue_rate" step="0.01" value="17.05" oninput="fjCalc()"></div>
+          <!-- Move Product Constants Off the Quoting Screen (confirmed
+          Aug 2026) — Wastage %, m² per box, Price per m², Trade discount
+          %, and Glue rate are product-level constants, not quote
+          decisions ("set once and rarely touched") — confirmed by
+          investigation, not assumed: all five already live on
+          FlooringProduct and are already editable in the real back-
+          office area for product constants, the Supplier Console
+          (FLOORING_CONSOLE_FIELDS, this file, further down) — no new
+          settings surface was needed, only removing the illusion that
+          they're per-quote inputs here. Reuses the SAME Owner-only
+          breakdown toggle built earlier today (applyRoleVisibility(),
+          shared.js) rather than a second mechanism — off by default (and
+          always for Ryno/Madri), on to sanity-check what's actually
+          driving the number for this product. Now `readonly` (still
+          auto-filled from the selected product by onVinylProductChange(),
+          still exactly what fjCalc() reads by the same ids — zero
+          calculation-logic change) instead of freely editable — a stale
+          per-quote override sitting in these fields, invisible to
+          whoever built the quote, was itself a real footgun this closes
+          as a side effect: "Markup %"/"Labour rate" stay genuinely
+          editable per quote, per the brief's own explicit carve-out —
+          those two are business decisions that legitimately vary job to
+          job, unlike these five. -->
+          <div id="vinylConstantsBreakdown" style="display:none;">
+            <p class="muted" style="margin-top:-4px; margin-bottom:10px;">Set in the Price Book (Supplier Console) — read-only here, shown only for the Owner's own sanity check.</p>
+            <div class="field"><label>Wastage %</label><input type="number" id="fj_wastage" readonly tabindex="-1" oninput="fjCalc()"></div>
+            <div class="field"><label>m² per box</label><input type="number" id="fj_m2_per_box" step="0.001" readonly tabindex="-1" oninput="fjCalc()"></div>
+            <div class="field"><label>Price per m² (ex VAT, before discount)</label><input type="number" id="fj_box_price" readonly tabindex="-1" oninput="fjCalc()"></div>
+            <div class="field"><label>Trade discount %</label><input type="number" id="fj_trade_discount" readonly tabindex="-1" oninput="fjCalc()"></div>
+            <div class="field"><label>Glue rate (R/m², on actual floor area)</label><input type="number" id="fj_glue_rate" step="0.01" value="17.05" readonly tabindex="-1" oninput="fjCalc()"></div>
+          </div>
           <div class="field"><label>Markup % <span class="adj">(on boxes+glue subtotal)</span></label><input type="number" id="fj_markup" class="adjustable" oninput="fjCalc()"></div>
           <div class="field"><label>Labour rate (R/m²) <span class="adj">(added after markup)</span></label><input type="number" id="fj_labour_rate" class="adjustable" value="45" oninput="fjCalc()"></div>
           <div class="field"><label>Labour source</label>
