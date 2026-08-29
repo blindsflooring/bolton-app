@@ -877,16 +877,18 @@ function fjOnIncludeChange() {
   document.getElementById('vinylCard').style.display = includeVinyl ? '' : 'none';
   document.getElementById('screedCard').style.display = includeScreed ? '' : 'none';
   // Bring Vinyl/Screed to Carpet's Add Line Flow (confirmed Aug 2026) —
-  // same "the button/heading names the one thing this step adds" clarity
+  // same "the heading names the one thing this step adds" clarity
   // Carpet's own per-type card already has (CARPET_TYPE_LABELS) — since
   // includeVinyl/includeScreed are mutually exclusive now (see
   // selectLineCategoryTab()'s own comment), this always names exactly
   // one real thing, never "Floor Job" (a combined submission that no
-  // longer exists).
+  // longer exists). The single shared "Add Line" button this used to
+  // also relabel is gone (Auto-Add Screed for Vinyl / commit-boundary
+  // fix, confirmed Aug 2026) — vinylCard and screedCard each have their
+  // own dedicated, statically-labelled button right after their own
+  // fields now, so there's nothing left to relabel here.
   const floorJobTitleEl = document.getElementById('floorJobCardTitle');
-  const addLineBtnEl = document.getElementById('fjAddLineBtn');
   if (floorJobTitleEl) floorJobTitleEl.textContent = includeScreed ? 'Screed' : 'Vinyl';
-  if (addLineBtnEl) addLineBtnEl.textContent = includeScreed ? '+ Add Screed Line to Quote' : '+ Add Vinyl Line to Quote';
   // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign
   // proposal §06, approved) — the Flooring/Screed tab highlight tracks
   // these same two checkboxes (the real state), so a direct checkbox
@@ -1220,6 +1222,22 @@ async function addFloorJob() {
     const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${params}`, {method:'POST'});
     const result = await res.json();
     if (result.warning) alert(result.warning);
+    // Auto-Add Screed for Vinyl (confirmed Aug 2026) — "very few flooring
+    // jobs go in without needing screed": adding a fresh Vinyl line now
+    // automatically adds its own companion Screed line too, using
+    // whatever the Screed section's own fields are already defaulted to
+    // (Smooth job type is the dropdown's own first/default option; area
+    // = this same floorM2 — "the flooring's own floor size," per the
+    // brief's own wording) — genuinely the SAME code path/defaults a
+    // manual Screed add on the Screed tab would use, just fired
+    // automatically rather than requiring a second, separate step. Only
+    // on a fresh ADD, never on an edit (editingLineId already returned
+    // above before this point) — editing an existing Vinyl line's floor
+    // size shouldn't silently spawn an unrelated new Screed line. Scoped
+    // to Vinyl/Flooring only, per the brief's own explicit non-goal —
+    // Carpet's own screed decision (optional, manual) is completely
+    // untouched, this function has no Carpet code in it at all.
+    await autoAddScreedLine(floorM2, role);
   }
   if (includeScreed) {
     const productId = document.getElementById('fj_screed_product').value;
@@ -1241,6 +1259,33 @@ async function addFloorJob() {
     }
   }
   loadQuote();
+}
+
+// Auto-Add Screed for Vinyl (confirmed Aug 2026) — factored out of
+// addFloorJob()'s own manual includeScreed branch above rather than
+// duplicated, since the two need to behave identically except for one
+// thing: a manual Screed add (user is deliberately on the Screed tab)
+// alerts if there's no screed product configured yet — an auto-add
+// (user only asked to add a VINYL line) stays silent instead and just
+// skips it. Surfacing an alert about a missing SCREED product the
+// moment someone adds a VINYL line would be a confusing non-sequitur,
+// not a helpful prompt — the manual path already covers that case for
+// anyone who deliberately wants a screed line and hits it.
+async function autoAddScreedLine(floorM2, role) {
+  const productId = document.getElementById('fj_screed_product').value;
+  if (!productId) return;
+  const jobType = document.getElementById('fj_screed_jobtype').value;
+  const params = new URLSearchParams({
+    product_id: productId, quantity_m2: floorM2, job_type: jobType, discount_pct: 0,
+    labour_rate_per_m2: 0,
+    own_staff: document.getElementById('fj_own_staff').value,
+    bag_cost: document.getElementById('fj_bag_cost').value || 235,
+    include_tile_removal_fee: document.getElementById('fj_tile_removal').checked,
+    role,
+  });
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${params}`, {method:'POST'});
+  const result = await res.json();
+  if (result.warning) alert(result.warning);
 }
 
 async function createQuote() {

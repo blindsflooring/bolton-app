@@ -505,6 +505,15 @@
             <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_material_only" onchange="fjOnMaterialOnlyChange()" style="width:auto; margin-right:6px;"> Material only — client buys the vinyl alone, no glue or labour charged</label>
           </div>
           <p class="muted" id="materialOnlyNote" style="display:none;">Line price is box cost × markup only (VAT still applied once at the end, same as every other line).</p>
+          <!-- Auto-Add Screed for Vinyl (confirmed Aug 2026) — its own
+          dedicated Add Line button, right after Vinyl's own fields,
+          replacing the single shared button that used to sit all the way
+          down past Transport & Courier (dynamically relabelled by
+          fjOnIncludeChange() depending on which tab was active). Adding a
+          Vinyl line here also auto-adds its own companion Screed line
+          (addFloorJob(), quote-builder.js) using Screed's own current
+          defaults — see that function's own comment for why. -->
+          <button class="primary" onclick="addFloorJob()" style="width:100%; padding:12px; margin-top:14px;">+ Add Vinyl Line to Quote</button>
         </div>
 
         <div class="card" id="screedCard">
@@ -524,6 +533,22 @@
           <div class="field" style="margin-top:10px;">
             <label style="font-weight:600; color:var(--navy);"><input type="checkbox" id="fj_tile_removal" onchange="fjCalc()" style="width:auto; margin-right:6px;"> Add tile removal fee (R45/m² incl. VAT)</label>
           </div>
+
+          <!-- Auto-Add Screed for Vinyl / commit-boundary fix (confirmed
+          Aug 2026) — this button used to be a single shared one, far
+          below past the Extra Rooms sub-section AND Transport & Courier,
+          the actual "no clear separation" problem the brief reported:
+          the main Screed calculator's own commit action sat physically
+          past a whole OTHER section's own "+ Add to Quote" button,
+          making it genuinely ambiguous which button did what. Now sits
+          directly after this card's own fields, immediately BEFORE the
+          Extra Rooms sub-section below — its own action, right where it
+          belongs, with Extra Rooms' own separate button clearly
+          afterward, past its own dashed divider. Still the exact same
+          addFloorJob() call every other "Add Line" action on this page
+          already uses — nothing about what gets saved changed, only
+          where the button putting it there sits on screen. -->
+          <button class="primary" onclick="addFloorJob()" style="width:100%; padding:12px; margin-top:14px;">+ Add Screed Line to Quote</button>
 
           <!-- Extra Rooms / Floor Prep (confirmed Aug 2026, Screed
           Calculator: Extra Rooms brief; genuinely nested inside the
@@ -634,9 +659,6 @@
         is active, or whether a Flooring line exists on this quote at
         all. -->
 
-        <div class="card">
-          <button class="primary" onclick="addFloorJob()" id="fjAddLineBtn" style="width:100%; padding:12px;">+ Add Vinyl Line to Quote</button>
-        </div>
       </div>
 
       <div>
