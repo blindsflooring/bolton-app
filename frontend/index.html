@@ -351,6 +351,22 @@
 
     <div class="card" id="addLineCard" style="display:none;">
       <h2>Add Line Item</h2>
+      <!-- Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
+      ONE global control, Owner-only-visible (owner-breakdown-toggle-wrap
+      class, shown/hidden by applyRoleVisibility()), rather than a
+      separate toggle button on every category's own preview box — per
+      the brief's own "build this once... not per-category" instruction.
+      Off by default every new session (sessionStorage, not localStorage
+      — see ownerBreakdownVisible's own comment, shared.js); when on, it
+      reveals the full cost/calculation breakdown for whichever
+      calculated line is currently on screen, in-progress or already
+      added, in any category — never a permanent second mode. -->
+      <div class="owner-breakdown-toggle-wrap" style="display:none; margin-bottom:12px;">
+        <label style="font-size:13px; font-weight:600; cursor:pointer;">
+          <input type="checkbox" id="ownerBreakdownToggle" onchange="toggleOwnerBreakdown()" style="width:auto; margin-right:6px; vertical-align:middle;">
+          Show calculation breakdown <span class="muted" style="font-weight:400;">(Owner only — off by default; never shown to Ryno/Madri)</span>
+        </label>
+      </div>
       <div id="editLineBanner" style="display:none; background:var(--cream); border:2px solid var(--teal); border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
         <span></span> <button onclick="cancelLineEdit()" style="margin-left:10px; font-size:12px; padding:3px 10px;">Cancel</button>
       </div>
@@ -590,6 +606,17 @@
       <div>
         <div class="card">
           <h2>Result</h2>
+          <!-- Owner-Only Calculation Breakdown Toggle (confirmed Aug
+          2026, §0a "make the default view even more condensed") — this
+          card used to show its full working (box price, subtotal,
+          markup, GP breakdown, per-m² check) unconditionally, to
+          whoever was quoting, client watching or not. Default view is
+          now just these two lines, for every role, always — the rest of
+          this card (below) only renders when the Owner has the
+          breakdown toggle on. -->
+          <div class="fj-line result" style="font-weight:700;"><span>Price (ex VAT)</span><span id="fj_out_summary_price"></span></div>
+          <div class="muted" style="font-size:12px; margin-top:-6px; margin-bottom:10px;">Margin: <span id="fj_out_summary_margin"></span></div>
+
           <div class="fj-section-label">Job</div>
           <div class="fj-line result"><span>Floor size</span><span id="fj_out_floor"></span></div>
 
@@ -598,44 +625,54 @@
           <div class="fj-line result" id="fj_row_boxes"><span>Boxes to order</span><span id="fj_out_boxes"></span></div>
           <div class="fj-line result" id="fj_row_bags"><span>Bags of screed to order</span><span id="fj_out_bags"></span></div>
 
-          <div class="fj-section-label" id="fj_section_vinyl">Vinyl line</div>
-          <div id="fj_block_vinyl">
-            <div class="fj-line step"><span>Box list price (ex VAT, before discount)</span><span id="fj_out_list_box"></span></div>
-            <div class="fj-line step"><span>Net price/box (after trade discount)</span><span id="fj_out_net_box"></span></div>
-            <div class="fj-line step"><span>Box total</span><span id="fj_out_box_total"></span></div>
-            <div class="fj-line step"><span>Glue total</span><span id="fj_out_glue_total"></span></div>
-            <div class="fj-line step" id="fj_row_delivery_fee" style="display:none;"><span>Courier/delivery fee (marked up with the rest)</span><span id="fj_out_delivery_fee"></span></div>
-            <div class="fj-line step"><span>Subtotal (boxes + glue + courier)</span><span id="fj_out_subtotal"></span></div>
-            <div class="fj-line step"><span>After markup</span><span id="fj_out_marked_up"></span></div>
-            <div class="fj-line step"><span>+ Labour</span><span id="fj_out_labour"></span></div>
-            <div class="fj-line result"><span>Vinyl line, ex VAT</span><span id="fj_out_vinyl_ex"></span></div>
-            <div class="fj-line result"><span>Vinyl line, incl VAT</span><span id="fj_out_vinyl_incl"></span></div>
-          </div>
-
-          <div class="fj-section-label" id="fj_section_screed">Screed line</div>
-          <div id="fj_block_screed">
-            <div class="fj-line step" id="fj_row_tile_removal"><span>Tile removal fee</span><span id="fj_out_tile_removal"></span></div>
-            <div class="fj-line result"><span>Screed, ex VAT</span><span id="fj_out_screed_ex"></span></div>
-            <div class="fj-line result"><span>Screed, incl VAT</span><span id="fj_out_screed_incl"></span></div>
-          </div>
-
-          <div class="fj-section-label">Turnkey total</div>
-          <div class="fj-line step"><span>Subtotal (floor, ex VAT)</span><span id="fj_out_pre_discount"></span></div>
-          <div class="fj-line step"><span>Discount (<span id="fj_out_discount_pct_label"></span>%, ex VAT side)</span><span id="fj_out_discount_amount"></span></div>
-          <div class="fj-line grand"><span>Total ex VAT</span><span id="fj_out_total_ex"></span></div>
-          <div class="fj-line grand"><span>Total incl VAT</span><span id="fj_out_total_incl"></span></div>
-
-          <div class="per-m2-check">
-            <div class="per-m2-label" id="fj_out_per_m2_label">Total price per m² — check against your target</div>
-            <div class="per-m2-value-row">
-              <div><div class="per-m2-value ex">R<span id="fj_out_per_m2_ex"></span></div><div class="per-m2-sublabel">ex VAT</div></div>
-              <div><div class="per-m2-value incl">R<span id="fj_out_per_m2_incl"></span></div><div class="per-m2-sublabel">incl VAT</div></div>
+          <!-- Everything below is the "full working" — list/net box
+          price, subtotal, markup, labour, GP — genuinely financial
+          calculation detail, not physical/order quantities (which stay
+          above, always visible, since staff still need floor size/boxes/
+          bags to actually order and build the job regardless of role or
+          this toggle). Owner-only, toggle-gated (applyRoleVisibility(),
+          shared.js) — never shown to Ryno/Madri regardless of toggle
+          state, since the toggle itself is only ever visible to Owner. -->
+          <div id="fjBreakdownSection" style="display:none;">
+            <div class="fj-section-label" id="fj_section_vinyl">Vinyl line</div>
+            <div id="fj_block_vinyl">
+              <div class="fj-line step"><span>Box list price (ex VAT, before discount)</span><span id="fj_out_list_box"></span></div>
+              <div class="fj-line step"><span>Net price/box (after trade discount)</span><span id="fj_out_net_box"></span></div>
+              <div class="fj-line step"><span>Box total</span><span id="fj_out_box_total"></span></div>
+              <div class="fj-line step"><span>Glue total</span><span id="fj_out_glue_total"></span></div>
+              <div class="fj-line step" id="fj_row_delivery_fee" style="display:none;"><span>Courier/delivery fee (marked up with the rest)</span><span id="fj_out_delivery_fee"></span></div>
+              <div class="fj-line step"><span>Subtotal (boxes + glue + courier)</span><span id="fj_out_subtotal"></span></div>
+              <div class="fj-line step"><span>After markup</span><span id="fj_out_marked_up"></span></div>
+              <div class="fj-line step"><span>+ Labour</span><span id="fj_out_labour"></span></div>
+              <div class="fj-line result"><span>Vinyl line, ex VAT</span><span id="fj_out_vinyl_ex"></span></div>
+              <div class="fj-line result"><span>Vinyl line, incl VAT</span><span id="fj_out_vinyl_incl"></span></div>
             </div>
-            <div class="per-m2-split" id="fj_out_per_m2_split"></div>
+
+            <div class="fj-section-label" id="fj_section_screed">Screed line</div>
+            <div id="fj_block_screed">
+              <div class="fj-line step" id="fj_row_tile_removal"><span>Tile removal fee</span><span id="fj_out_tile_removal"></span></div>
+              <div class="fj-line result"><span>Screed, ex VAT</span><span id="fj_out_screed_ex"></span></div>
+              <div class="fj-line result"><span>Screed, incl VAT</span><span id="fj_out_screed_incl"></span></div>
+            </div>
+
+            <div class="fj-section-label">Turnkey total</div>
+            <div class="fj-line step"><span>Subtotal (floor, ex VAT)</span><span id="fj_out_pre_discount"></span></div>
+            <div class="fj-line step"><span>Discount (<span id="fj_out_discount_pct_label"></span>%, ex VAT side)</span><span id="fj_out_discount_amount"></span></div>
+            <div class="fj-line grand"><span>Total ex VAT</span><span id="fj_out_total_ex"></span></div>
+            <div class="fj-line grand"><span>Total incl VAT</span><span id="fj_out_total_incl"></span></div>
+
+            <div class="per-m2-check">
+              <div class="per-m2-label" id="fj_out_per_m2_label">Total price per m² — check against your target</div>
+              <div class="per-m2-value-row">
+                <div><div class="per-m2-value ex">R<span id="fj_out_per_m2_ex"></span></div><div class="per-m2-sublabel">ex VAT</div></div>
+                <div><div class="per-m2-value incl">R<span id="fj_out_per_m2_incl"></span></div><div class="per-m2-sublabel">incl VAT</div></div>
+              </div>
+              <div class="per-m2-split" id="fj_out_per_m2_split"></div>
+            </div>
           </div>
         </div>
 
-        <div class="card" style="border: 2px solid var(--coral);">
+        <div class="card" id="fjBreakdownGpCard" style="display:none; border: 2px solid var(--coral);">
           <h2 style="color:var(--coral);">Margin / GP Check</h2>
           <div class="fj-line step"><span>Box cost (real)</span><span id="fj_out_gp_box_cost"></span></div>
           <div class="fj-line step"><span>Glue cost (real)</span><span id="fj_out_gp_glue_cost"></span></div>
@@ -785,7 +822,14 @@
            Lines" explicitly named). Row markup lives in quote-builder.js
            (renderQuoteLines-equivalent block that populates this
            tbody), not here. -->
-      <table id="linesTable" class="mobile-card-table"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
+      <!-- Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026,
+      §0) — Margin split OUT of the cost-col class it used to share with
+      Cost: margin_pct is the one deliberate exception that stays visible
+      to every role by default (strip_sensitive_fields' own comment,
+      main.py), so its column is never hidden by applyRoleVisibility()
+      regardless of role or toggle state. Cost keeps the cost-col class —
+      now Owner-only + toggle-gated, not just Sales-hidden. -->
+      <table id="linesTable" class="mobile-card-table"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th>Margin</th><th></th></tr></thead><tbody></tbody></table>
       <div class="total-row" id="quoteTotal"></div>
       <div class="grid" style="margin-top:16px;">
         <!-- Workflow status REMOVED as a manual dropdown here (confirmed

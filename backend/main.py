@@ -1790,12 +1790,27 @@ def get_or_404(session: Session, model, obj_id: int, tenant_id: str, name: str =
 
 
 def strip_sensitive_fields(line_item: dict, role: str) -> dict:
-    """Sales role never sees cost or margin — enforced server-side, not just
-    hidden in the UI. Applies to quote line items wherever they're returned.
-    bags_allowed and tile_removal_fee_total stay visible — they're
-    operational/client-facing info, not cost data. Everything else that
-    reveals what a job actually costs (material, glue, labour, compound,
-    the total real cost) is stripped.
+    """Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — this
+    gate used to be Sales-only ("if role == UserRole.sales"); Admin (Madri)
+    saw every cost/breakdown field same as Owner. Tightened to Owner-only
+    ("if role != UserRole.owner") per that brief's own explicit framing —
+    the full cost/calculation breakdown is now something only the Owner
+    can see (behind a toggle, off by default — see the frontend's
+    ownerBreakdownVisible), not an Owner+Admin thing. Enforced here,
+    server-side, not just hidden in the UI — applies to quote line items
+    and live-preview calc dicts wherever either is returned. bags_allowed
+    and tile_removal_fee_total stay visible — they're operational/client-
+    facing info, not cost data.
+
+    margin_pct is the ONE deliberate exception, per that same brief's own
+    §0 — "a percentage alone doesn't reveal actual cost figures... safe to
+    leave visible... useful as everyone's own quick sanity check while
+    quoting." It used to be in the strip list (Sales never saw it); now it
+    stays on every line_item regardless of role, for every role including
+    Sales. Everything else that reveals what a job actually costs
+    (material, glue, labour, compound, the total real cost, and the new
+    Carpet breakdown fields below) is still stripped, just for a wider set
+    of roles than before.
 
     BUG FOUND AND FIXED Aug 2026 (caught during regression testing while
     building the Supplier Console, not something that brief asked for):
@@ -1808,10 +1823,10 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
     that gap everywhere this function is called, not just at creation
     time — the ad-hoc pop() calls that used to live in add_stairwell_line
     are removed as redundant now that this covers it."""
-    if role == UserRole.sales:
+    if role != UserRole.owner:
         line_item = dict(line_item)
         for field in (
-            "unit_cost", "margin_pct", "glue_cost_total",
+            "unit_cost", "glue_cost_total",
             "labour_cost_total", "compound_cost_total", "total_job_cost",
             "vinyl_cost_total", "nosing_cost_total",
             # BUG FOUND AND FIXED (Aug 2026, Courier Toggle brief — caught
@@ -1835,6 +1850,14 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
             # the client sees), so all three genuinely need stripping,
             # not just documenting a gap for later.
             "gripper_cost_total", "underfelt_cost_total", "cutting_fee_total",
+            # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026)
+            # — new fields added to calculate_carpet_line()'s own return
+            # dict specifically so a real breakdown (material cost,
+            # subtotal before markup, markup multiplier) could be shown
+            # to the Owner at all; same "full working" class as everything
+            # else in this list, so they need the exact same gate, not a
+            # separate one.
+            "material_cost_total", "subtotal", "markup_multiplier",
         ):
             line_item.pop(field, None)
     return line_item
@@ -7063,7 +7086,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         # Warning text itself contains the margin % — only show it to
         # roles that are allowed to see margin at all, or it defeats the
         # point of stripping margin_pct as a field above.
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         if "packs_needed" in calc:
             result["packs_needed"] = calc["packs_needed"]
@@ -7133,7 +7156,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         return result
 
@@ -7319,7 +7342,7 @@ def add_carpet_line(quote_id: int, product_id: int, quantity_lm: float, carpet_c
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         return result
 
@@ -7373,7 +7396,7 @@ def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: 
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         return result
 
@@ -7428,7 +7451,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if combined_warning and role != UserRole.sales:
+        if combined_warning:
             result["warning"] = combined_warning
         return result
 
@@ -7623,7 +7646,7 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         if "packs_needed" in calc:
             result["packs_needed"] = calc["packs_needed"]
@@ -7722,7 +7745,7 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         session.commit()
         session.refresh(line)
         result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"] and role != UserRole.sales:
+        if calc["warning"]:
             result["warning"] = calc["warning"]
         result["override_cleared"] = override_result["override_cleared"]
         return result
@@ -7807,7 +7830,7 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role)
-        if combined_warning and role != UserRole.sales:
+        if combined_warning:
             result["warning"] = combined_warning
         result["override_cleared"] = override_result["override_cleared"]
         return result
@@ -7929,8 +7952,16 @@ def preview_line(category: str,
             raise HTTPException(400, f"No live preview available for category '{category}'.")
 
         result = strip_sensitive_fields(calc, role)
-        if result.get("warning") and role == UserRole.sales:
-            result["warning"] = None   # the warning text itself embeds the real margin % — same leak class strip_sensitive_fields() already guards against for every other field
+        # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
+        # this used to clear the warning for Sales specifically, since its
+        # text embeds the real margin % ("...is 32.1%, below..."), the
+        # same leak class strip_sensitive_fields() guards every other
+        # field against. That reasoning no longer applies: margin_pct
+        # itself is now visible to every role (see strip_sensitive_fields'
+        # own comment) — a warning restating the same figure in prose,
+        # still hidden from Sales, would be an arbitrary leftover
+        # inconsistency, not a real protection. No role check needed here
+        # anymore.
         return result
 
 
@@ -8037,17 +8068,25 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             ).first()
             response["decline_reason"] = decline_entry.new_value if decline_entry else None
 
-        # "At a glance" job margin check (owner/admin only — never shown to
-        # Sales) — total sell vs. total real cost (material + glue + labour
-        # for flooring, cost for blinds) across the whole quote, so a
-        # mistake anywhere in the job shows up immediately, not line by line.
-        # Margin uses the POST-discount total, since that's the real revenue.
-        if role != UserRole.sales:
-            total_cost = sum(line_real_cost(l) for l in lines)
-            total_ex_vat = totals["total_ex_vat"]
-            overall_margin = (total_ex_vat - total_cost) / total_ex_vat if total_ex_vat else 0.0
+        # "At a glance" job margin check — total sell vs. total real cost
+        # (material + glue + labour for flooring, cost for blinds) across
+        # the whole quote, so a mistake anywhere in the job shows up
+        # immediately, not line by line. Margin uses the POST-discount
+        # total, since that's the real revenue.
+        # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
+        # this used to gate the WHOLE block behind "role != sales" (Owner
+        # + Admin both got it, Sales got neither figure). Split in two:
+        # overall_margin_pct is computed and returned for every role now,
+        # same "not part of the gated breakdown" exception as per-line
+        # margin_pct (strip_sensitive_fields' own comment) — but
+        # overall_cost_ex_vat is a real cost figure, so it's tightened to
+        # Owner-only, same policy as everything else in that list.
+        total_cost = sum(line_real_cost(l) for l in lines)
+        total_ex_vat = totals["total_ex_vat"]
+        overall_margin = (total_ex_vat - total_cost) / total_ex_vat if total_ex_vat else 0.0
+        response["overall_margin_pct"] = round(overall_margin, 4)
+        if role == UserRole.owner:
             response["overall_cost_ex_vat"] = round(total_cost, 2)
-            response["overall_margin_pct"] = round(overall_margin, 4)
 
         return response
 

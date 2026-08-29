@@ -57,6 +57,36 @@ function setSessionToken(token) {
 // fetch(`${API}/...`) call sites.
 let previewRole = null;   // null | 'sales' | 'admin'
 
+// Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — "a
+// toggle, not a permanent second mode... must never be on by default for
+// a new session without the Owner having chosen it," but also "should not
+// need to be re-enabled every session necessarily." sessionStorage is the
+// deliberate middle ground: survives a page reload/tab refresh within the
+// same browser session (so flipping it once covers the rest of a working
+// session), but is always gone on a genuinely new session (new tab/window,
+// browser restart) — unlike localStorage, which would persist it forever,
+// including into a DIFFERENT person's session on a shared machine.
+// Gating on WHETHER this is even shown/honoured is currentRole() ===
+// 'owner' everywhere it's read (same as every other role check in this
+// codebase) — so Owner Preview Mode (previewRole) correctly hides the
+// breakdown the instant Burgert previews as Ryno/Madri, without this
+// needing any preview-specific code of its own.
+let ownerBreakdownVisible = sessionStorage.getItem('bolton_owner_breakdown') === 'true';
+function toggleOwnerBreakdown() {
+  const cb = document.getElementById('ownerBreakdownToggle');
+  ownerBreakdownVisible = !!(cb && cb.checked);
+  sessionStorage.setItem('bolton_owner_breakdown', ownerBreakdownVisible ? 'true' : 'false');
+  applyRoleVisibility();
+  // Re-render whatever calculated line(s) are currently on screen so the
+  // breakdown appears/disappears immediately, not just on the next
+  // keystroke/reload — same "flip it and see it happen" expectation as
+  // every other live-preview control in the Quote Builder.
+  if (typeof fjCalc === 'function' && document.getElementById('fj_floor_m2')) fjCalc();
+  if (typeof previewCarpetLine === 'function') previewCarpetLine();
+  if (typeof previewGenericLine === 'function') previewGenericLine();
+  if (typeof currentQuoteId !== 'undefined' && currentQuoteId && typeof loadQuote === 'function') loadQuote();
+}
+
 // Timeout, confirmed Aug 2026 — real bug, mobile-specific: native
 // fetch() has no default timeout, so a stalled connection just hangs
 // forever, with the returned promise never resolving OR rejecting.
@@ -331,7 +361,24 @@ function currentRole() { return previewRole || realRole(); }
 
 function applyRoleVisibility() {
   const isSales = currentRole() === 'sales';
-  document.querySelectorAll('.cost-col').forEach(el => el.style.display = isSales ? 'none' : '');
+  const isOwner = currentRole() === 'owner';
+  // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
+  // .cost-col used to mean "hide from Sales" (isSales); it now means
+  // "only ever shown to the Owner, and only with the breakdown toggle
+  // on" — Admin (Madri) loses this too, per that brief's own explicit
+  // "Owner-only" framing. Margin is NOT in this class any more (see
+  // strip_sensitive_fields' own comment, main.py) — its own table
+  // column/display lines were given a plain, never-hidden class instead
+  // wherever this used to double up Cost+Margin together.
+  const showBreakdown = isOwner && ownerBreakdownVisible;
+  document.querySelectorAll('.cost-col').forEach(el => el.style.display = showBreakdown ? '' : 'none');
+  document.querySelectorAll('.owner-breakdown-toggle-wrap').forEach(el => el.style.display = isOwner ? '' : 'none');
+  const breakdownToggleEl = document.getElementById('ownerBreakdownToggle');
+  if (breakdownToggleEl) breakdownToggleEl.checked = ownerBreakdownVisible;
+  const fjBreakdown = document.getElementById('fjBreakdownSection');
+  if (fjBreakdown) fjBreakdown.style.display = showBreakdown ? '' : 'none';
+  const fjGpCard = document.getElementById('fjBreakdownGpCard');
+  if (fjGpCard) fjGpCard.style.display = showBreakdown ? '' : 'none';
   // Confirmed: Sales can see the resulting PRICE, but must not be able to
   // change the underlying pricing inputs (list price, discount, m²/box,
   // markup) — these directly control what a client gets charged. Locking
@@ -342,6 +389,64 @@ function applyRoleVisibility() {
     const el = document.getElementById(id);
     if (el) { el.disabled = isSales; el.title = isSales ? 'Locked for Sales role' : ''; }
   });
+}
+
+// Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — ONE
+// generic renderer, per the brief's own explicit "build this once...
+// not a separate implementation per category" instruction, used by
+// every live-preview box that isn't Vinyl's own fjCalc() (Vinyl keeps
+// its existing, already-detailed static Result panel — see
+// #fjBreakdownSection, index.html — since it's entirely client-side
+// already and has no equivalent calc-dict shape to iterate over).
+// Reads whichever of these keys are actually PRESENT on the calc/line
+// object passed in — a category that returns none of them (e.g. Misc)
+// simply renders nothing extra, and a future category's calculation
+// function only needs to return a field with one of these names (or a
+// new one added to this same lookup) for its own breakdown to appear
+// here for free, no new per-category branch required.
+const OWNER_BREAKDOWN_FIELD_LABELS = {
+  material_cost_total: 'Material cost',
+  unit_cost: 'Unit cost',
+  gripper_cost_total: 'Gripper cost',
+  underfelt_cost_total: 'Underfelt cost',
+  cutting_fee_total: 'Cutting fee',
+  glue_cost_total: 'Adhesive/glue cost',
+  compound_cost_total: 'Compound cost',
+  delivery_fee_total: 'Delivery/courier fee',
+  vinyl_cost_total: 'Vinyl cost (stairwell)',
+  nosing_cost_total: 'Nosing cost (stairwell)',
+  subtotal: 'Subtotal (before markup)',
+  markup_multiplier: 'Markup applied',
+  labour_cost_total: 'Labour cost (real)',
+  labour_charged_total: 'Labour charged to client',
+};
+const OWNER_BREAKDOWN_FIELD_ORDER = Object.keys(OWNER_BREAKDOWN_FIELD_LABELS);
+
+// Returns an HTML fragment (or '' when nothing should show) — the caller
+// appends it to whatever preview box it's already building. Never called
+// from anywhere that isn't already gated on currentRole()==='owner'
+// showing the box at all would be pointless for Sales/Admin, since the
+// server already stripped every one of these fields from `calc` for
+// them (strip_sensitive_fields, main.py) — this is a display nicety on
+// top of that real, server-side gate, never a substitute for it.
+function ownerBreakdownHtml(calc) {
+  if (!(currentRole() === 'owner' && ownerBreakdownVisible)) return '';
+  const rows = OWNER_BREAKDOWN_FIELD_ORDER
+    .filter(k => calc[k] !== undefined && calc[k] !== null)
+    .map(k => {
+      const label = OWNER_BREAKDOWN_FIELD_LABELS[k];
+      const display = (k === 'markup_multiplier') ? `×${calc[k].toFixed(2)}` : R(calc[k]);
+      return `<div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted-text,#666);"><span>${label}</span><span>${display}</span></div>`;
+    }).join('');
+  const vatPct = businessSettings?.vat_pct ?? 0.15;
+  const inclVatRow = calc.line_total !== undefined
+    ? `<div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted-text,#666); margin-top:2px;"><span>Line, incl VAT</span><span>${R(calc.line_total * (1 + vatPct))}</span></div>`
+    : '';
+  if (!rows && !inclVatRow) return '';
+  return `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--border,#ddd);">
+    <div style="font-size:11px; font-weight:700; color:var(--coral); margin-bottom:4px;">BREAKDOWN (Owner only)</div>
+    ${rows}${inclVatRow}
+  </div>`;
 }
 
 // Money formatting — confirmed Aug 2026: this exact formula previously

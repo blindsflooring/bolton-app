@@ -394,6 +394,17 @@ def calculate_carpet_line(
         "unit_price": round(unit_price, 2),
         "line_total": round(line_total, 2),
         "margin_pct": round(overall_margin_pct, 4),
+        # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
+        # these three didn't exist on this dict before; nothing previously
+        # read them, so adding them is purely additive, not a behaviour
+        # change to anything already relying on this return shape. Needed
+        # so the frontend's generic breakdown renderer has real "material
+        # cost / subtotal before markup / markup applied" figures to show
+        # the Owner for Carpet, the same way Vinyl's own fjCalc() already
+        # has them client-side. Gated Owner-only in strip_sensitive_fields.
+        "material_cost_total": round(material_cost_total, 2),
+        "subtotal": round(subtotal, 2),
+        "markup_multiplier": round(effective_markup, 4),
         "gripper_cost_total": round(gripper_cost_total, 2),
         "underfelt_area_m2": round(underfelt_area_m2, 4),
         "underfelt_cost_total": round(underfelt_cost_total, 2),

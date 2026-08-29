@@ -318,6 +318,7 @@ async function previewGenericLine() {
     if (data.warning) {
       html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${data.warning.replace(/</g, '&lt;')}</div>`;
     }
+    html += ownerBreakdownHtml(data);
     box.innerHTML = html;
   } catch (e) {
     box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
@@ -518,6 +519,7 @@ async function previewCarpetLine() {
       <div class="fj-line result"><span>Price (ex VAT)</span><span>R${calc.line_total.toFixed(2)}</span></div>
       ${calc.margin_pct !== undefined ? `<div class="muted" style="font-size:12px;">Margin: ${(calc.margin_pct*100).toFixed(1)}%</div>` : ''}
       ${calc.warning ? `<div class="muted" style="color:var(--coral); font-size:12px; margin-top:4px;">${calc.warning}</div>` : ''}
+      ${ownerBreakdownHtml(calc)}
     `;
   } catch (e) { box.style.display = 'none'; }
 }
@@ -1043,6 +1045,16 @@ function fjCalc() {
   const total_revenue = total_ex;
   const gp_rand = total_revenue - total_real_cost;
   const gp_pct = total_revenue ? (gp_rand / total_revenue) * 100 : 0;
+
+  // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026, §0a) —
+  // the only two figures shown by default now, for every role, always;
+  // everything from here down in this function still runs and populates
+  // #fjBreakdownSection's own elements exactly as before, that section
+  // (and the separate #fjBreakdownGpCard) is just hidden via CSS
+  // (applyRoleVisibility(), shared.js) unless the Owner has the
+  // breakdown toggle on.
+  document.getElementById('fj_out_summary_price').textContent = R(total_ex);
+  document.getElementById('fj_out_summary_margin').textContent = gp_pct.toFixed(1) + '%';
 
   document.getElementById('fj_out_floor').textContent = floor_m2.toFixed(2) + ' m²';
   document.getElementById('fj_out_m2_needed').textContent = m2_needed.toFixed(2) + ' m²';
@@ -2163,6 +2175,18 @@ async function loadQuote() {
   // main.py) — every category check below that used to only match
   // 'trim' needs 'skirting' too, or a real skirting line's own length
   // silently goes missing from its own detail column.
+  // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — the
+  // muted cost-reveal info lines below (glue/gripper/underfelt/cutting-
+  // fee/labour/delivery) used to render unconditionally whenever the
+  // underlying field was present — which, before today, meant "whenever
+  // role !== sales" (strip_sensitive_fields, main.py), since Admin got
+  // the real fields too. Admin now gets the same server-side strip Sales
+  // always had (that function's own comment), so these already stop
+  // appearing for Admin from data absence alone, no frontend change
+  // needed there — but Owner still receives the real fields always, so
+  // the frontend needs its own gate for Owner specifically: only when
+  // the breakdown toggle is actually on.
+  const showBreakdown = currentRole() === 'owner' && ownerBreakdownVisible;
   tbody.innerHTML = data.lines.map(l => {
     // Persistent Summary Panel / Carpet Tab integration gap (confirmed
     // Aug 2026) — carpet_category is now set on a NEXBAC 920 Tile line
@@ -2185,25 +2209,26 @@ async function loadQuote() {
       : l.category === 'misc'
       ? '—'
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : `<span class="hidden-note">measurements hidden</span>`);
-    if (l.category === 'flooring' && l.glue_cost_total > 0) {
+    if (showBreakdown && l.category === 'flooring' && l.glue_cost_total > 0) {
       detail += `<br><span class="muted">glue: R${l.glue_cost_total.toFixed(2)} (drawn from stock, ~${l.glue_units_needed} drum${l.glue_units_needed !== 1 ? 's' : ''} worth)${l.labour_cost_total > 0 ? ' — +labour R'+l.labour_cost_total.toFixed(2) : ''}</span>`;
     }
     // Carpet Calculators (confirmed Aug 2026) — gripper/underfelt/cutting-
     // fee visibility, same "muted info line" pattern glue/labour above
     // already use. All three are confirmed stock items (never on an
-    // Order Sheet, see generate_order_sheets()'s own comment, main.py) —
-    // shown here purely so whoever's building the quote can see what
-    // this line's own price is actually built from.
-    if (l.carpet_category && l.gripper_cost_total > 0) {
+    // Order Sheet, see generate_order_sheets()'s own comment, main.py).
+    // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — now
+    // gated behind showBreakdown too: these are real cost-composition
+    // figures, the same class as everything else this toggle governs.
+    if (showBreakdown && l.carpet_category && l.gripper_cost_total > 0) {
       detail += `<br><span class="muted">grippers: R${l.gripper_cost_total.toFixed(2)} (drawn from stock, ${l.gripper_perimeter_m}m perimeter)</span>`;
     }
-    if (l.carpet_category && l.underfelt_cost_total > 0) {
+    if (showBreakdown && l.carpet_category && l.underfelt_cost_total > 0) {
       detail += `<br><span class="muted">underfelt: R${l.underfelt_cost_total.toFixed(2)} (drawn from stock, ${l.underfelt_area_m2}m²)</span>`;
     }
-    if (l.carpet_category && l.cutting_fee_total > 0) {
+    if (showBreakdown && l.carpet_category && l.cutting_fee_total > 0) {
       detail += `<br><span class="muted">cutting fee: R${l.cutting_fee_total.toFixed(2)}</span>`;
     }
-    if (l.category === 'stairwell' && l.glue_cost_total > 0) {
+    if (showBreakdown && l.category === 'stairwell' && l.glue_cost_total > 0) {
       detail += `<br><span class="muted">glue: R${l.glue_cost_total.toFixed(2)} (drawn from stock, ~${l.glue_units_needed} drum${l.glue_units_needed !== 1 ? 's' : ''} worth)</span>`;
     }
     if (l.category === 'flooring' && l.bags_allowed > 0) {
@@ -2212,7 +2237,7 @@ async function loadQuote() {
         detail += `<br><span class="muted">+tile removal R${l.tile_removal_fee_total.toFixed(2)}</span>`;
       }
     }
-    if ((l.category === 'flooring' || l.category === 'stairwell') && l.labour_charged_total > 0) {
+    if (showBreakdown && (l.category === 'flooring' || l.category === 'stairwell') && l.labour_charged_total > 0) {
       detail += `<br><span class="muted">labour: R${l.labour_charged_total.toFixed(2)} charged (${l.own_staff ? 'own staff — pure margin' : 'outside — real cost'})</span>`;
     }
     // Courier/delivery fee visibility (confirmed Aug 2026, Courier
@@ -2224,8 +2249,9 @@ async function loadQuote() {
     // actually added to the strip list — fixed there first, so this
     // field genuinely won't be present here for the sales role now, no
     // extra role check needed on this side, same pattern glue/labour
-    // above already rely on.
-    if (l.category === 'flooring' && l.delivery_fee_total > 0) {
+    // above already rely on. Owner-Only Calculation Breakdown Toggle
+    // (confirmed Aug 2026) — same real-cost class, gated the same way.
+    if (showBreakdown && l.category === 'flooring' && l.delivery_fee_total > 0) {
       detail += `<br><span class="muted">delivery/courier: R${l.delivery_fee_total.toFixed(2)} (marked up with the rest of the line, not a separate charge)</span>`;
     }
     const qty = l.category === 'flooring' ? (l.quantity_m2 || 1) : ((l.category === 'trim' || l.category === 'skirting') ? (l.length_m || 1) : 1);
@@ -2302,10 +2328,20 @@ async function loadQuote() {
       ? `<br><a onclick="revertQuoteTotalOverride()" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Revert total to calculated value</a>`
       : `<br><a onclick="overrideQuoteTotal(${inclVat})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Override total</a>`;
   }
-  if (data.overall_margin_pct !== undefined && currentRole() !== 'sales') {
+  // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — this
+  // used to be one combined line, gated `!== 'sales'` (Owner+Admin both
+  // got cost AND margin). Split per the brief's own §0 exception:
+  // overall_margin_pct is now sent to every role (get_quote(), main.py)
+  // and shown to every role here, unconditionally; overall_cost_ex_vat
+  // is only ever sent to Owner at all (same endpoint), so it's only
+  // ever shown here too, and only with the breakdown toggle on.
+  if (data.overall_margin_pct !== undefined) {
     const pct = (data.overall_margin_pct * 100).toFixed(1);
     const flag = data.overall_margin_pct < 0.30 ? ' ⚠️' : ' ✓';
-    totalText += `<br><span style="font-size:14px; font-weight:600;">Overall cost: R${data.overall_cost_ex_vat.toFixed(2)} — Overall margin: ${pct}%${flag}</span>`;
+    totalText += `<br><span style="font-size:14px; font-weight:600;">Overall margin: ${pct}%${flag}</span>`;
+    if (data.overall_cost_ex_vat !== undefined && showBreakdown) {
+      totalText += ` <span class="muted" style="font-size:12px; font-weight:400;">(Overall cost: R${data.overall_cost_ex_vat.toFixed(2)})</span>`;
+    }
   }
   document.getElementById('quoteTotal').innerHTML = totalText;
   // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
