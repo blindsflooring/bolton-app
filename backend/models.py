@@ -281,7 +281,7 @@ class FlooringProduct(SQLModel, table=True):
     colour: str = ""            # confirmed Aug 2026: real structured field, not baked into product_name — so the exact colour ordered from the supplier stays locked and clearly visible on the actual quote. Same range at different colours = separate price book entries.
     supplier: str
     pricing_type: str = "material"   # "screed" | "material"
-    flooring_category: str = "vinyl"  # "vinyl" | "laminate" | "spc" | "novilon" | "carpet" | "engineered_wood" | "screed" — for dashboard grouping
+    flooring_category: str = "vinyl"  # "vinyl" | "laminate" | "spc" | "novilon" | "carpet" | "engineered_wood" | "screed" | "carpet_tufted_broadloom" | "carpet_needlepunch_broadloom" | "carpet_tile" | "cushion_vinyl" — for dashboard grouping. The last four (confirmed Aug 2026, Carpet Calculators brief) are real, distinct physical shapes, not just display labels — calculate_carpet_line() (calculations.py) branches on this for the three continuous-roll types (tufted/needlepunch broadloom, cushion vinyl); "carpet_tile" (NEXBAC 920) reuses calculate_flooring_line()'s existing box/material branch completely unchanged, same as ordinary Vinyl — see that function's own docstring.
     display_order: int = 100         # confirmed Aug 2026: lower number = shown first in dropdowns/price book — manual priority, not auto usage tracking (not enough real quote history to learn from yet). Set your best-sellers low, e.g. series 200 at 10.
     # Supplier Console Field Sequence Redesign (confirmed Aug 2026 —
     # root cause of the Como Flooring pricing bug, finally identified:
@@ -349,6 +349,18 @@ class FlooringProduct(SQLModel, table=True):
     removed_tiles_multiplier: float = 2.0  # SCREED only, editable per product — same as above
     m2_per_pack: Optional[float] = None  # for purchase-order pack-quantity calc (Phase 3, §13)
     tiles_per_pack: Optional[float] = None  # for stairwell calc (3 tiles/stair, confirmed Aug 2026 — 3 planks x standard plank width = tread width per stair). CHANGED Aug 2026 (Supplier Console brief): now auto-derived from tile_length_mm x tile_width_mm x m2_per_pack whenever the console commits an edit touching any of those three — see recompute_tiles_per_pack() in main.py. Still a plain editable field for products without full dimension data.
+    # roll_width_m (confirmed Aug 2026, Carpet Calculators brief) — Vinyl
+    # has no equivalent: box products convert quantity via m2_per_pack,
+    # never a physical roll width. Continuous-roll carpet/cushion-vinyl
+    # products (flooring_category "carpet_tufted_broadloom" /
+    # "carpet_needlepunch_broadloom" / "cushion_vinyl") are bought as LM
+    # cut from a fixed-width roll instead — this is that width, used by
+    # calculate_carpet_line() to convert the LM Burgert enters into m²
+    # (LM x roll_width_m), the same "supply the real-world unit directly,
+    # no room-layout guess" philosophy Vinyl's own m² input already
+    # follows. None for every other flooring_category — box/tile
+    # products keep using m2_per_pack exactly as before, untouched.
+    roll_width_m: Optional[float] = None
     unit: str = "m2"
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     source: str = "manual"           # "manual" | "pdf_import" | "legacy_import"
@@ -856,6 +868,25 @@ class BusinessSettings(SQLModel, table=True):
     default_bag_coverage_over_tiles_m2: float = 3.0     # was DEFAULT_BAG_COVERAGE_M2[over_tiles]
     default_bag_coverage_removed_tiles_m2: float = 2.0  # was DEFAULT_BAG_COVERAGE_M2[removed_tiles]
     tile_removal_fee_per_m2_incl_vat: float = 45.0  # was TILE_REMOVAL_FEE_PER_M2_INCL_VAT in calculations.py
+    # Carpet Calculators (confirmed Aug 2026, Carpet Calculators Final
+    # Build Brief) — real, confirmed rates from Burgert directly, same
+    # "editable business setting, not a hardcoded constant" discipline as
+    # everything else on this model. Labour rate deliberately reuses the
+    # EXISTING default_labour_rate_per_m2 above (45.0, same as Vinyl) —
+    # no separate carpet labour setting, per the brief's own explicit
+    # instruction not to hardcode a separate rate per category; Tufted
+    # Broadloom's own open labour-rate question (R35 vs R45, found in the
+    # Influence reference file) is resolved per-product instead, via the
+    # existing FlooringProduct.labour_rate_per_m2 override — set that
+    # field on a specific product if it genuinely needs to differ, same
+    # pre-fill-not-mandate pattern glue_rate_per_m2 already uses.
+    carpet_cutting_fee: float = 350.0                    # Broadloom (both types), confirmed current — found identically in two independent reference spreadsheets
+    carpet_cushion_vinyl_cutting_fee: float = 0.0         # UNCONFIRMED whether Cushion Vinyl carries one at all (the Amble reference file's own R543 figure is unexplained) — defaults to 0 (off) per the brief's explicit instruction not to assume R543 or R350, editable once confirmed
+    carpet_gripper_cost_per_box: float = 600.0            # Fotakis, ex VAT — PROVISIONAL, brief flags an updated price list expected soon; editable in place, no structural change needed when it arrives
+    carpet_gripper_lm_per_box: float = 122.0              # Fotakis, LM per box — same provisional caveat as above
+    carpet_underfelt_cost_per_m2: float = 42.0            # assumed same as the existing "Green" underlay in the Belgotex price list (4.00m wide, R42.00/m²) — confirmed assumption, not certainty, per the brief's own explicit flag
+    carpet_underfelt_roll_width_m: float = 4.0            # matches Tufted Broadloom's own 4m roll width exactly — resolves to a 1:1 LM ratio for this specific underfelt (see calculate_carpet_line()'s own comment for the general area-based formula this still runs through)
+    carpet_glue_cost_per_20l_drum: float = 1232.00        # Teckem TEC 008 Premium Floor Covering Adhesive, ex VAT, 1-9 drum tier (Burgert draws on consignment at single-drum pricing — the 10+ bulk rate does not apply)
     # Part 3 finding (confirmed Aug 2026): the printed quote's logo was a
     # base64 image hardcoded in frontend/index.html, not pulled from
     # here like every other letterhead detail. Empty by default so the
@@ -1165,6 +1196,31 @@ class QuoteLineItem(SQLModel, table=True):
     # not a cost figure, so it's not stripped for Sales.
     landing_area_m2: Optional[float] = None
     landing_sell_total: Optional[float] = None
+
+    # Carpet Calculators (confirmed Aug 2026) — category=="flooring" for
+    # ALL four new carpet/cushion-vinyl types, deliberately, so every
+    # existing category=="flooring" consumer (generate_order_sheets(),
+    # the Job Card, the printed quote, the Quote Lines detail column)
+    # picks these up automatically with no new category-based sweep —
+    # same reasoning flooring_pricing_type already uses to distinguish
+    # material from screed within this one category. carpet_category is
+    # the denormalized snapshot (same reasoning as flooring_pricing_type/
+    # trim_sub_category above) telling those consumers WHICH of the four
+    # shapes this specific line is, without re-deriving it from the price
+    # book entry, which could be edited/discontinued later. None for
+    # every ordinary Vinyl/laminate/screed line — those don't need it.
+    carpet_category: Optional[str] = None   # "carpet_tufted_broadloom" | "carpet_needlepunch_broadloom" | "carpet_tile" | "cushion_vinyl"
+    quantity_lm: Optional[float] = None      # the LM Burgert entered directly — continuous-roll types only (carpet_tile uses quantity_m2 exactly like Vinyl tiles, untouched)
+    gripper_perimeter_m: Optional[float] = None   # Tufted Broadloom only
+    gripper_cost_total: Optional[float] = None
+    underfelt_area_m2: Optional[float] = None     # Tufted Broadloom only
+    underfelt_cost_total: Optional[float] = None
+    cutting_fee_total: Optional[float] = None     # Broadloom (both types) + optionally Cushion Vinyl, per BusinessSettings' confirmed rate(s)
+    # Glue reuses glue_cost_total/glue_units_needed/glue_sell_total
+    # above verbatim — same fields Vinyl's own material lines already
+    # use, same Order-Sheet-exclusion behaviour (glue has never appeared
+    # on a generated Order Sheet, for any flooring line — "drawn from
+    # stock" was already the rule before carpet existed).
 
     # ---------- Manual Override, Owner-only (confirmed Aug 2026, Manual
     # Override brief) ----------

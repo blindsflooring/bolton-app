@@ -35,7 +35,7 @@ from models import (
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead,
 )
-from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, line_real_cost
+from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
@@ -403,6 +403,24 @@ def _ensure_new_columns():
         # AND here together, same discipline learned from the
         # documentarchive.is_accepted_version incident.
         ("quote", "installation_notes", "VARCHAR", "''"),
+        # Carpet Calculators (confirmed Aug 2026, Carpet Calculators Final
+        # Build Brief) — added to the model AND here together, same
+        # discipline as every migration above.
+        ("flooringproduct", "roll_width_m", "FLOAT", "NULL"),
+        ("quotelineitem", "carpet_category", "VARCHAR", "NULL"),
+        ("quotelineitem", "quantity_lm", "FLOAT", "NULL"),
+        ("quotelineitem", "gripper_perimeter_m", "FLOAT", "NULL"),
+        ("quotelineitem", "gripper_cost_total", "FLOAT", "NULL"),
+        ("quotelineitem", "underfelt_area_m2", "FLOAT", "NULL"),
+        ("quotelineitem", "underfelt_cost_total", "FLOAT", "NULL"),
+        ("quotelineitem", "cutting_fee_total", "FLOAT", "NULL"),
+        ("businesssettings", "carpet_cutting_fee", "FLOAT", "350.0"),
+        ("businesssettings", "carpet_cushion_vinyl_cutting_fee", "FLOAT", "0.0"),
+        ("businesssettings", "carpet_gripper_cost_per_box", "FLOAT", "600.0"),
+        ("businesssettings", "carpet_gripper_lm_per_box", "FLOAT", "122.0"),
+        ("businesssettings", "carpet_underfelt_cost_per_m2", "FLOAT", "42.0"),
+        ("businesssettings", "carpet_underfelt_roll_width_m", "FLOAT", "4.0"),
+        ("businesssettings", "carpet_glue_cost_per_20l_drum", "FLOAT", "1232.00"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1374,6 +1392,50 @@ def on_startup():
     except Exception as e:
         print(f"Audit (Add-Line Data-Loss brief): scan failed ({e})")
 
+    # Carpet Calculators (confirmed Aug 2026, Carpet Calculators Final
+    # Build Brief) — seeds the four new categories' own price-book rows,
+    # same "real business data confirmed directly by Burgert, added via a
+    # one-time idempotent startup migration" precedent as Aspen's R15/m²
+    # delivery fee. Gated per-product (not "table empty") since real
+    # Vinyl products already exist — each check is its own guard so
+    # re-running this after Burgert has edited/renamed one of these
+    # doesn't silently recreate a duplicate. All four: supplier="Belgotex"
+    # (confirmed, Cape Directs price list), sell_markup_multiplier=1.3
+    # (30%, confirmed matching Vinyl's own rate), trade_discount_pct=0.0
+    # (confirmed — every reference spreadsheet's own "Less 0%" cell).
+    try:
+        with Session(engine) as session:
+            seeds = [
+                dict(product_name="Influence", colour="", supplier="Belgotex", pricing_type="material",
+                     flooring_category="carpet_tufted_broadloom", base_cost_ex_vat=215.00, roll_width_m=4.00,
+                     sell_markup_multiplier=1.3, trade_discount_pct=0.0, tenant_id=DEFAULT_TENANT_ID),
+                dict(product_name="Berber Point 920", colour="", supplier="Belgotex", pricing_type="material",
+                     flooring_category="carpet_needlepunch_broadloom", base_cost_ex_vat=207.00, roll_width_m=4.20,
+                     sell_markup_multiplier=1.3, trade_discount_pct=0.0, tenant_id=DEFAULT_TENANT_ID),
+                dict(product_name="Berber Point 920 NEXBAC", colour="", supplier="Belgotex", pricing_type="material",
+                     flooring_category="carpet_tile", base_cost_ex_vat=380.00, m2_per_pack=5.0,
+                     sell_markup_multiplier=1.3, trade_discount_pct=0.0, tenant_id=DEFAULT_TENANT_ID),
+                dict(product_name="Amble", colour="", supplier="Belgotex", pricing_type="material",
+                     flooring_category="cushion_vinyl", base_cost_ex_vat=182.00, roll_width_m=3.00,
+                     sell_markup_multiplier=1.3, trade_discount_pct=0.0, tenant_id=DEFAULT_TENANT_ID),
+            ]
+            added = 0
+            for s in seeds:
+                exists = session.exec(select(FlooringProduct).where(
+                    FlooringProduct.tenant_id == s["tenant_id"], FlooringProduct.product_name == s["product_name"],
+                    FlooringProduct.supplier == s["supplier"], FlooringProduct.flooring_category == s["flooring_category"],
+                )).first()
+                if not exists:
+                    session.add(FlooringProduct(**s))
+                    added += 1
+            if added:
+                session.commit()
+                print(f"Carpet Calculators: seeded {added} new price-book product(s) (Influence/Berber Point 920/Berber Point 920 NEXBAC/Amble)")
+            else:
+                print("Carpet Calculators: all 4 price-book products already exist — nothing seeded")
+    except Exception as e:
+        print(f"Carpet Calculators: price-book seed FAILED ({e}) — needs manual review")
+
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render
     # Cron Job service: confirmed bolton-backend is on an always-on
@@ -1765,6 +1827,14 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
             # brief's new internal quote-line display) would have made
             # the existing leak worse, not better.
             "delivery_fee_total",
+            # Carpet Calculators (confirmed Aug 2026) — same class as
+            # glue_cost_total above: real internal cost-composition
+            # figures, never broken out as their own visible line to the
+            # client (all four — material/gripper/underfelt/cutting-fee/
+            # glue — get folded into ONE marked-up line_total/unit_price
+            # the client sees), so all three genuinely need stripping,
+            # not just documenting a gap for later.
+            "gripper_cost_total", "underfelt_cost_total", "cutting_fee_total",
         ):
             line_item.pop(field, None)
     return line_item
@@ -2335,8 +2405,22 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)).all()
 
-        material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed"]
+        # Carpet Calculators (confirmed Aug 2026) — the three continuous-
+        # roll carpet types (Tufted/Needlepunch Broadloom, Cushion Vinyl)
+        # are deliberately excluded from material_lines below and handled
+        # by their own carpet_roll_lines loop further down: they have no
+        # product.m2_per_pack at all (roll_width_m instead), so
+        # material_line_data()'s box-based fallback would technically run
+        # but show m² instead of the LM a supplier actually sells this by
+        # — kept out entirely rather than silently relying on a fallback
+        # path that wasn't written with this shape in mind. NEXBAC 920
+        # tiles (carpet_category=="carpet_tile") are NOT excluded — they
+        # genuinely do have m2_per_pack set and belong in the exact same
+        # box-based path as any Vinyl tile, unchanged.
+        CARPET_ROLL_CATEGORIES = ("carpet_tufted_broadloom", "carpet_needlepunch_broadloom", "cushion_vinyl")
+        material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed" and l.carpet_category not in CARPET_ROLL_CATEGORIES]
         screed_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type == "screed"]
+        carpet_roll_lines = [l for l in lines if l.carpet_category in CARPET_ROLL_CATEGORIES]
         # Stairwell vinyl (confirmed Aug 2026, Full Real-Browser Walkthrough
         # & Audit — real gap, not a deliberate exclusion like Blinds/Trim
         # above): a Stairwell line's own vinyl (category=="stairwell",
@@ -2429,6 +2513,28 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
                 "unit_cost": net_cost_per_box, "pre_discount_unit_cost": pre_discount_cost_per_box, "discount_pct": discount_pct,
             }
 
+        def carpet_roll_line_data(l):
+            # Carpet Calculators (confirmed Aug 2026) — the roll itself
+            # (Tufted/Needlepunch Broadloom, Cushion Vinyl) still needs a
+            # real Order Sheet line, per the brief's explicit instruction
+            # ("the carpet/broadloom roll itself still needs one") — shown
+            # in LM (l.quantity_lm, the exact figure Burgert entered),
+            # never m², since that's the unit a supplier actually sells
+            # this by. Grippers/underfelt/glue are deliberately absent
+            # from this — they're confirmed stock items, never ordered per
+            # job, same "drawn from stock" rule Vinyl's own glue has
+            # always followed (see calculate_carpet_line()'s own comment).
+            product = session.get(FlooringProduct, l.product_id)
+            if not product:
+                return {"product_name": l.product_name, "colour": l.colour, "quantity": float(l.quantity_lm or 0), "unit": "LM", "unit_cost": 0.0, "pre_discount_unit_cost": None, "discount_pct": None}
+            pre_discount_cost_per_lm = round(product.base_cost_ex_vat * (product.roll_width_m or 1.0), 2)
+            discount_pct = product.trade_discount_pct
+            net_cost_per_lm = round(pre_discount_cost_per_lm * (1 - discount_pct), 2)
+            return {
+                "product_name": product.product_name, "colour": l.colour, "quantity": float(l.quantity_lm or 0), "unit": "LM",
+                "unit_cost": net_cost_per_lm, "pre_discount_unit_cost": pre_discount_cost_per_lm, "discount_pct": discount_pct,
+            }
+
         created_sheets = []
         reused_sheets = []
 
@@ -2489,6 +2595,16 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             supplier = product.supplier if product else "Unknown supplier"
             entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
             entry["items"].append(stairwell_material_line_data(l))
+
+        # Carpet rolls (Tufted/Needlepunch Broadloom, Cushion Vinyl) —
+        # same supplier-merge grouping as everything else. NEXBAC 920
+        # tiles need no separate loop at all: they're already inside
+        # material_lines above, completely unchanged.
+        for l in carpet_roll_lines:
+            product = session.get(FlooringProduct, l.product_id)
+            supplier = product.supplier if product else "Unknown supplier"
+            entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
+            entry["items"].append(carpet_roll_line_data(l))
 
         floor_prep_merge_key = None
         if floor_prep_lines_data:
@@ -7080,6 +7196,164 @@ def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: 
     }
 
 
+def _compute_carpet_calc(session: Session, tenant_id: str, product_id: int, quantity_lm: float,
+                          discount_pct: float = 0.0, own_staff: bool = True, labour_rate_per_m2: float = None,
+                          apply_cutting_fee: bool = False, apply_grippers: bool = False, gripper_perimeter_m: float = 0.0,
+                          apply_underfelt: bool = False, apply_glue: bool = False, markup_override: float = None) -> dict:
+    """Carpet Calculators (confirmed Aug 2026, Carpet Calculators Final
+    Build Brief) — shared by add_carpet_line()/edit_carpet_line() below
+    and the live preview branch (preview_line()), same "exactly one
+    formula per category, whether previewing or actually saving" reasoning
+    _compute_stairwell_calc() above already established. Resolves every
+    confirmed real rate from BusinessSettings/the product record before
+    calling calculate_carpet_line() (calculations.py) — never touches
+    calculate_flooring_line() or its Vinyl callers at all.
+
+    labour_rate_per_m2 resolution (confirmed Aug 2026): per-line override
+    if given, else the product's own FlooringProduct.labour_rate_per_m2
+    (Tufted Broadloom's own still-open R35-vs-R45 question is resolved
+    THIS way — set it on the specific product if it genuinely needs to
+    differ), else BusinessSettings.default_labour_rate_per_m2 (45.0, the
+    same confirmed rate Vinyl itself uses) — deliberately no separate
+    "carpet labour rate" setting, per the brief's own explicit instruction
+    not to hardcode a second rate per category.
+
+    Cutting fee rate is category-specific: Cushion Vinyl uses its own
+    (still-unconfirmed, defaults to 0/off) BusinessSettings.
+    carpet_cushion_vinyl_cutting_fee — never assumed equal to Broadloom's
+    confirmed R350, per the brief's explicit "don't assume R543 or R350
+    either way" instruction. Every other carpet category uses
+    carpet_cutting_fee (R350, confirmed current, found identically in two
+    independent reference spreadsheets)."""
+    product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Carpet product")
+    settings = get_settings(session, tenant_id)
+    resolved_labour_rate = (
+        labour_rate_per_m2 if labour_rate_per_m2 is not None
+        else (product.labour_rate_per_m2 if product.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2)
+    )
+    cutting_fee_rate = settings.carpet_cushion_vinyl_cutting_fee if product.flooring_category == "cushion_vinyl" else settings.carpet_cutting_fee
+    gripper_cost_per_lm = (settings.carpet_gripper_cost_per_box / settings.carpet_gripper_lm_per_box) if settings.carpet_gripper_lm_per_box else 0.0
+    calc = calculate_carpet_line(
+        product, quantity_lm, discount_pct=discount_pct, markup_override=markup_override,
+        labour_rate_per_m2=resolved_labour_rate, own_staff=own_staff,
+        apply_cutting_fee=apply_cutting_fee, cutting_fee=cutting_fee_rate,
+        apply_grippers=apply_grippers, gripper_perimeter_m=gripper_perimeter_m, gripper_cost_per_lm=gripper_cost_per_lm,
+        apply_underfelt=apply_underfelt, underfelt_roll_width_m=settings.carpet_underfelt_roll_width_m,
+        underfelt_cost_per_m2=settings.carpet_underfelt_cost_per_m2,
+        # Glue coverage (confirmed Aug 2026): reuses the SAME confirmed
+        # 70m²/20L-drum coverage Vinyl's own glue calculation already
+        # uses everywhere (stairwell, Builder Portal) — the brief's own
+        # explicit instruction was "the coverage-per-litre figure must
+        # come from Vinyl's existing logic, not [the Teckem price list]",
+        # which states price only, no coverage rate.
+        apply_glue=apply_glue, glue_cost_per_unit=settings.carpet_glue_cost_per_20l_drum,
+        glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
+        margin_warn_threshold=settings.flooring_margin_warn_threshold,
+    )
+    return {"product": product, "calc": calc}
+
+
+@app.post("/quotes/{quote_id}/lines/carpet")
+def add_carpet_line(quote_id: int, product_id: int, quantity_lm: float, carpet_category: str,
+                     discount_pct: float = 0.0, own_staff: bool = True, labour_rate_per_m2: float = None,
+                     apply_cutting_fee: bool = False, apply_grippers: bool = False, gripper_perimeter_m: float = 0.0,
+                     apply_underfelt: bool = False, apply_glue: bool = False,
+                     role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                     username: str = Depends(get_current_username)):
+    """See _compute_carpet_calc() just above for the actual formula/rate-
+    resolution logic, shared with edit_carpet_line() and the preview
+    endpoint — this function's own job is turning that computation into a
+    real, persisted line. category="flooring" deliberately (not a new
+    QuoteLineItem category) — every existing category=="flooring"
+    consumer (generate_order_sheets(), the Job Card, the printed quote,
+    the Quote Lines detail column) already needs to handle this line
+    correctly with zero new category-based sweep; carpet_category is the
+    denormalized snapshot telling those consumers which of the four real
+    shapes this specific line is."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        r = _compute_carpet_calc(session, tenant_id, product_id, quantity_lm, discount_pct, own_staff, labour_rate_per_m2,
+                                  apply_cutting_fee, apply_grippers, gripper_perimeter_m, apply_underfelt, apply_glue)
+        product, calc = r["product"], r["calc"]
+
+        line = QuoteLineItem(
+            quote_id=quote_id, category="flooring", tenant_id=tenant_id,
+            product_id=product_id, product_name=product.product_name, colour=product.colour, original_colour=product.colour,
+            flooring_pricing_type=product.pricing_type, carpet_category=carpet_category,
+            quantity_lm=quantity_lm, quantity_m2=calc["quantity_m2"],
+            discount_pct=discount_pct, unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
+            line_total=calc["line_total"], margin_pct=calc["margin_pct"], total_job_cost=calc["total_job_cost"],
+            gripper_perimeter_m=gripper_perimeter_m if apply_grippers else None, gripper_cost_total=calc["gripper_cost_total"],
+            underfelt_area_m2=calc["underfelt_area_m2"] or None, underfelt_cost_total=calc["underfelt_cost_total"],
+            cutting_fee_total=calc["cutting_fee_total"],
+            glue_cost_total=calc["glue_cost_total"], glue_sell_total=calc["glue_sell_total"], glue_units_needed=calc["glue_units_needed"],
+            labour_cost_total=calc["labour_cost_total"], labour_charged_total=calc["labour_charged_total"], own_staff=own_staff,
+        )
+        session.add(line)
+        _log_quote_line_audit(session, quote, username, "added", f"Carpet ({carpet_category}) — {product.product_name}, {quantity_lm}LM")
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role)
+        if calc["warning"] and role != UserRole.sales:
+            result["warning"] = calc["warning"]
+        return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/carpet")
+def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: float, carpet_category: str,
+                      discount_pct: float = 0.0, own_staff: bool = True, labour_rate_per_m2: float = None,
+                      apply_cutting_fee: bool = False, apply_grippers: bool = False, gripper_perimeter_m: float = 0.0,
+                      apply_underfelt: bool = False, apply_glue: bool = False,
+                      role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                      username: str = Depends(get_current_username)):
+    """Edit-in-place (confirmed Aug 2026) — same PUT-to-the-same-line-id
+    pattern every other category's edit endpoint already uses, not the
+    old delete-then-re-add shape."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = get_or_404(session, QuoteLineItem, line_id, tenant_id, "Quote line")
+        if line.category != "flooring" or not line.carpet_category:
+            raise HTTPException(400, "This line isn't a carpet line.")
+        r = _compute_carpet_calc(session, tenant_id, product_id, quantity_lm, discount_pct, own_staff, labour_rate_per_m2,
+                                  apply_cutting_fee, apply_grippers, gripper_perimeter_m, apply_underfelt, apply_glue)
+        product, calc = r["product"], r["calc"]
+
+        line.product_id = product_id
+        line.product_name = product.product_name
+        line.colour = product.colour
+        line.flooring_pricing_type = product.pricing_type
+        line.carpet_category = carpet_category
+        line.quantity_lm = quantity_lm
+        line.quantity_m2 = calc["quantity_m2"]
+        line.discount_pct = discount_pct
+        line.unit_cost = calc["unit_cost"]
+        line.unit_price = calc["unit_price"]
+        line.line_total = calc["line_total"]
+        line.margin_pct = calc["margin_pct"]
+        line.total_job_cost = calc["total_job_cost"]
+        line.gripper_perimeter_m = gripper_perimeter_m if apply_grippers else None
+        line.gripper_cost_total = calc["gripper_cost_total"]
+        line.underfelt_area_m2 = calc["underfelt_area_m2"] or None
+        line.underfelt_cost_total = calc["underfelt_cost_total"]
+        line.cutting_fee_total = calc["cutting_fee_total"]
+        line.glue_cost_total = calc["glue_cost_total"]
+        line.glue_sell_total = calc["glue_sell_total"]
+        line.glue_units_needed = calc["glue_units_needed"]
+        line.labour_cost_total = calc["labour_cost_total"]
+        line.labour_charged_total = calc["labour_charged_total"]
+        line.own_staff = own_staff
+        session.add(line)
+        _log_quote_line_audit(session, quote, username, "edited", f"Carpet ({carpet_category}) — {product.product_name}, {quantity_lm}LM")
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role)
+        if calc["warning"] and role != UserRole.sales:
+            result["warning"] = calc["warning"]
+        return result
+
+
 @app.post("/quotes/{quote_id}/lines/stairwell")
 def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
                         num_stairs: int, stairwell_type: StairwellType,
@@ -7560,6 +7834,9 @@ def preview_line(category: str,
                   vinyl_product_id: int = None, nosing_product_id: int = None,
                   num_stairs: int = None, stairwell_type: StairwellType = None,
                   stair_area_m2: float = 0.45, own_staff: bool = True, landing_area_m2: float = 0.0,
+                  quantity_lm: float = None, labour_rate_per_m2: float = None,
+                  apply_cutting_fee: bool = False, apply_grippers: bool = False, gripper_perimeter_m: float = 0.0,
+                  apply_underfelt: bool = False, apply_glue: bool = False,
                   role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """Live price preview (confirmed Aug 2026, Vinyl Quoting UX Redesign
     proposal §01/§10, Phase 4, approved) — "the core of what immediate
@@ -7617,6 +7894,12 @@ def preview_line(category: str,
                 "margin_pct": round(r["combined_margin_pct"], 4),
                 "warning": r["combined_warning"],
             }
+        elif category == "carpet":
+            if product_id is None or quantity_lm is None:
+                raise HTTPException(400, "product_id and quantity_lm are required to preview a carpet line.")
+            r = _compute_carpet_calc(session, tenant_id, product_id, quantity_lm, discount_pct, own_staff, labour_rate_per_m2,
+                                      apply_cutting_fee, apply_grippers, gripper_perimeter_m, apply_underfelt, apply_glue)
+            calc = r["calc"]
         else:
             raise HTTPException(400, f"No live preview available for category '{category}'.")
 

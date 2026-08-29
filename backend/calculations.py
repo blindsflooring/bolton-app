@@ -258,6 +258,157 @@ def calculate_flooring_line(
     return result
 
 
+def calculate_carpet_line(
+    product: FlooringProduct,
+    quantity_lm: float,
+    discount_pct: float = 0.0,
+    markup_override: float = None,
+    labour_rate_per_m2: float = 45.0,
+    own_staff: bool = True,
+    apply_cutting_fee: bool = False,
+    cutting_fee: float = 0.0,
+    apply_grippers: bool = False,
+    gripper_perimeter_m: float = 0.0,
+    gripper_cost_per_lm: float = 0.0,
+    apply_underfelt: bool = False,
+    underfelt_roll_width_m: float = None,
+    underfelt_cost_per_m2: float = 0.0,
+    apply_glue: bool = False,
+    glue_cost_per_unit: float = 0.0,
+    glue_coverage_m2: float = 0.0,
+    margin_warn_threshold: float = FLOORING_MARGIN_WARN_THRESHOLD,
+) -> dict:
+    """
+    Carpet Calculators (confirmed Aug 2026, Full Real-Browser Walkthrough &
+    Audit -> Carpet Calculators Final Build Brief). Covers the THREE
+    continuous-roll carpet/cushion-vinyl types (Tufted Broadloom,
+    Needlepunch Broadloom, Cushion Vinyl) — genuinely different physical
+    shape from calculate_flooring_line()'s box-based material branch, so a
+    separate function, never a shared code path. NEXBAC 920 tiles (the
+    fourth carpet type) are NOT here — they're bought by the box exactly
+    like Vinyl tiles, so they call calculate_flooring_line() directly,
+    completely unmodified, with a new flooring_category product row and
+    (optionally) the same glue params below — zero new calc code for that
+    one, per the brief's own "reuse that engine's shape" instruction.
+
+    Zero effect on Vinyl (the brief's own non-negotiable constraint):
+    this function shares no code with calculate_flooring_line() above —
+    confirmed by construction, not just by testing, since that function is
+    completely untouched by this brief.
+
+    Sequencing (confirmed Aug 2026: MUST match Vinyl's real methodology,
+    not the reference spreadsheets Burgert supplied for physical inputs
+    only) — cost+extras -> markup -> +labour, all ex VAT; VAT is NEVER
+    applied here, only once, at the whole-quote total, exactly like Vinyl.
+    All three of Burgert's own reference spreadsheets (Berberpoint 920,
+    Influence, Amble) apply VAT BEFORE their 40% markup instead — a real,
+    confirmed commercial discrepancy, deliberately not reproduced here.
+
+    quantity_lm: Burgert supplies directly, same "no room-layout calc"
+    philosophy as Vinyl's own m² input — no floor-plan math attempted.
+    product.roll_width_m converts this to m² (LM x width) — the roll's
+    fixed width, a real per-product field since it varies (Cushion Vinyl:
+    2m/3m/4m; Broadloom: 4.00m or 4.20m), unlike Vinyl's box products,
+    which have no equivalent concept at all. No wastage_pct applied to
+    this conversion, deliberately — a cut-to-length roll (price list's own
+    "MINIMUM LENGTH OF CUT IS 1.00 LM" rule, no larger pack rounding)
+    doesn't waste material the way a box product's leftover partial box
+    does; wastage_pct stays a box-model-only concept, untouched.
+
+    Grippers/underfelt (Tufted Broadloom only) and adhesive (Needlepunch/
+    Cushion Vinyl, when glued down) are all confirmed STOCK ITEMS per the
+    brief — cost-tracked here exactly like any other job cost, but the
+    carpet/broadloom roll ITSELF still needs a real Order Sheet line
+    (generate_order_sheets(), main.py) while these three never do — same
+    "drawn from stock, never ordered per job" rule Vinyl's own glue has
+    always followed, extended to grippers/underfelt too.
+
+    Underfelt area needed is simply the carpet's own area (you're covering
+    the same floor regardless of what roll width the underfelt itself
+    ships in) — underfelt_roll_width_m only matters for how many LM of
+    underfelt's own roll get cut (informational, never surfaced on an
+    Order Sheet since it's a stock item), computed here as
+    underfelt_area_m2 / underfelt_roll_width_m for completeness. Confirmed
+    real case (Carpet Calculators Final Build Brief): the actual underfelt
+    product is also 4m wide, matching Tufted Broadloom's own roll width
+    exactly, so this general area-based formula correctly resolves to a
+    1:1 LM ratio for that specific pairing — not a special case, just what
+    the formula produces when both widths happen to match.
+    """
+    import math
+
+    quantity_m2 = quantity_lm * (product.roll_width_m or 1.0)
+    net_cost_per_m2 = product.base_cost_ex_vat * (1 - product.trade_discount_pct)
+    material_cost_total = quantity_m2 * net_cost_per_m2
+    # Settlement discount (confirmed Aug 2026, same principle as Vinyl's
+    # own box_total_true_cost above) — a further discount kept entirely as
+    # margin, never passed through to the client-facing price, so it's
+    # deliberately NOT folded into material_cost_total, only into the
+    # separate true-cost figure used for margin/cost reporting below.
+    true_net_cost_per_m2 = net_cost_per_m2 * (1 - product.settlement_discount_pct)
+    material_true_cost_total = quantity_m2 * true_net_cost_per_m2
+
+    gripper_cost_total = (gripper_perimeter_m * gripper_cost_per_lm) if apply_grippers else 0.0
+    underfelt_area_m2 = quantity_m2 if apply_underfelt else 0.0
+    underfelt_cost_total = (underfelt_area_m2 * underfelt_cost_per_m2) if apply_underfelt else 0.0
+    cutting_fee_total = cutting_fee if apply_cutting_fee else 0.0
+
+    glue_units_needed = 0
+    glue_cost_total = 0.0
+    glue_sell_total = 0.0
+    if apply_glue and glue_cost_per_unit and glue_coverage_m2:
+        # Identical shape to calculate_flooring_line()'s own glue block —
+        # drawn from stock, cost = charge, no drum-rounding in job costing,
+        # only in what actually gets bought (glue_units_needed, purely
+        # informational — glue is never on an Order Sheet either way).
+        glue_units_needed = math.ceil(quantity_m2 / glue_coverage_m2)
+        glue_rate_per_m2 = glue_cost_per_unit / glue_coverage_m2
+        glue_cost_total = quantity_m2 * glue_rate_per_m2
+        glue_sell_total = glue_cost_total
+
+    subtotal = material_cost_total + gripper_cost_total + underfelt_cost_total + cutting_fee_total + glue_cost_total
+    effective_markup = markup_override if markup_override is not None else product.sell_markup_multiplier
+    marked_up = subtotal * effective_markup
+
+    labour_charged_total = quantity_m2 * labour_rate_per_m2
+    labour_cost_total = 0.0 if own_staff else labour_charged_total
+
+    line_total = (marked_up * (1 - discount_pct)) + labour_charged_total
+    unit_price = marked_up / quantity_m2 if quantity_m2 else 0.0
+
+    material_cost_total_reporting = material_true_cost_total + gripper_cost_total + underfelt_cost_total + cutting_fee_total + glue_cost_total
+    total_job_cost = material_cost_total_reporting + labour_cost_total
+    unit_cost_display = material_cost_total_reporting / quantity_m2 if quantity_m2 else 0.0
+
+    overall_margin_pct = (line_total - total_job_cost) / line_total if line_total else 0.0
+    warning = None
+    if overall_margin_pct < margin_warn_threshold:
+        warning = (
+            f"Overall margin on this line is {overall_margin_pct:.1%}, below the "
+            f"{margin_warn_threshold:.0%} warning threshold."
+        )
+
+    return {
+        "quantity_m2": round(quantity_m2, 4),
+        "unit_cost": round(unit_cost_display, 2),
+        "unit_price": round(unit_price, 2),
+        "line_total": round(line_total, 2),
+        "margin_pct": round(overall_margin_pct, 4),
+        "gripper_cost_total": round(gripper_cost_total, 2),
+        "underfelt_area_m2": round(underfelt_area_m2, 4),
+        "underfelt_cost_total": round(underfelt_cost_total, 2),
+        "cutting_fee_total": round(cutting_fee_total, 2),
+        "glue_units_needed": glue_units_needed,
+        "glue_cost_total": round(glue_cost_total, 2),
+        "glue_sell_total": round(glue_sell_total, 2),
+        "labour_cost_total": round(labour_cost_total, 2),
+        "labour_charged_total": round(labour_charged_total, 2),
+        "own_staff": own_staff,
+        "total_job_cost": round(total_job_cost, 2),
+        "warning": warning,
+    }
+
+
 def calculate_stairwell_line(
     vinyl_product: FlooringProduct,
     nosing_product,  # TrimProduct
