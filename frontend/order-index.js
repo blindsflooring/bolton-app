@@ -76,6 +76,26 @@ let orderIndexExpandedClientIds = new Set();
 
 const WORKFLOW_TABS = ['all', 'quoted', 'accepted', 'scheduled', 'completed'];
 
+// Search debounce (confirmed Aug 2026, Full Real-Browser Walkthrough &
+// Audit — real bug: renderOrderIndex()'s own oninput handler fires on
+// EVERY keystroke, and does a full re-fetch + full innerHTML rebuild of
+// #landing, including the search <input> itself. There's a deliberate
+// focus-restore already in place for exactly this (see renderOrderIndex's
+// own comment below) but it doesn't reliably win the race against the
+// NEXT keystroke arriving before that re-render/re-fetch/refocus cycle
+// finishes — confirmed dropping characters even at a genuine ~1
+// keystroke/second human typing pace, not just rapid automated typing.
+// Same debounce pattern already used for the Quote Builder's live line
+// preview (scheduleGenericLinePreview(), quote-builder.js) — waiting
+// until typing actually pauses means the input's own DOM node is never
+// touched mid-word, so nothing can ever race it; the one re-render/
+// refocus that does happen afterwards only has to happen once.
+let orderIndexSearchDebounceTimer = null;
+function scheduleOrderIndexSearch(value) {
+  clearTimeout(orderIndexSearchDebounceTimer);
+  orderIndexSearchDebounceTimer = setTimeout(() => renderOrderIndex(document.getElementById('landing'), value), 300);
+}
+
 function setOrderIndexTab(tab) {
   orderIndexActiveTab = tab;
   renderOrderIndexTable();
@@ -111,8 +131,15 @@ async function renderOrderIndex(el, searchTerm) {
   // handler) — never on the initial one-argument dispatch call
   // (renderLanding() -> renderOrderIndex(el)). Still needed for typing
   // itself: this function replaces the whole innerHTML, including the
-  // input element, on every keystroke, so without this restore, typing
-  // a second character would drop focus entirely.
+  // input element, every time it runs, so without this restore, typing
+  // would drop focus entirely the moment this fires. Debounced now
+  // (scheduleOrderIndexSearch(), confirmed Aug 2026, Full Real-Browser
+  // Walkthrough & Audit) — this used to fire on every single keystroke,
+  // so this restore was racing the NEXT keystroke and confirmed losing
+  // that race even at normal human typing speed, dropping characters.
+  // Debouncing means the input's own DOM node is never touched mid-word
+  // — this restore now only ever has to win a race against a keystroke
+  // that's already 300ms in the past, not one still arriving.
   const input = document.getElementById('orderSearchInput');
   if (input && searchTerm !== undefined) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   });
@@ -216,7 +243,7 @@ function renderOrderIndexTable(searchTerm) {
       <div class="workflow-tabs" style="margin-top:12px;">
         ${tab('all', 'All', quotes.length)} ${tab('quoted', 'Quoted', counts.quoted)} ${tab('accepted', 'Accepted', counts.accepted)} ${tab('scheduled', 'Scheduled', counts.scheduled)} ${tab('completed', 'Completed', counts.completed)}
       </div>
-      <div class="field"><label>Search (customer, job number, or site)</label><input type="text" id="orderSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderOrderIndex(document.getElementById('landing'), this.value)"></div>
+      <div class="field"><label>Search (customer, job number, or site)</label><input type="text" id="orderSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="scheduleOrderIndexSearch(this.value)"></div>
       ${isOwner ? `<div style="margin-bottom:10px;"><button id="oiDeleteSelectedBtn" class="delete-btn" disabled onclick="bulkDeleteSelectedOrders()">Delete Selected (0)</button></div>` : ''}
       <div style="overflow-x:auto;">
       <!-- Mobile Rendering Audit brief (confirmed Aug 2026) -- same

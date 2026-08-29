@@ -754,7 +754,7 @@ def _fix_orphaned_quotes_remediation():
             fixed = 0
             for q in stuck:
                 try:
-                    client = _resolve_or_create_client(session, q.tenant_id, None, q.client_name)
+                    client = _resolve_or_create_client(session, q.tenant_id, None, q.client_name, branch=q.branch)
                     q.client_id = client.id
                     q.client_name = client.name
                     session.add(q)
@@ -2265,9 +2265,16 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
     with zero code change needed. Blinds is explicitly out of scope for
     this phase — flooring gets built and proven first.
 
-    Trims are explicitly out of scope (brief §1, Burgert orders those
-    separately in bulk direct from Supertrim) — category=="trim" lines
-    are never even looked at here.
+    Trims and Skirting are explicitly out of scope (brief §1, Burgert
+    orders those separately in bulk direct from Supertrim) —
+    category=="trim"/"skirting" lines are never even looked at here.
+
+    Stairwell vinyl (confirmed Aug 2026, Full Real-Browser Walkthrough &
+    Audit) is IN scope, unlike Blinds/Trim/Skirting above — it's real,
+    orderable material from the same FlooringProduct/supplier as a normal
+    Flooring line, and was only ever missing here because Stairwell
+    didn't exist as its own quote category when this function was first
+    written. See stairwell_material_line_data() below.
 
     Floor-prep sheet content — confirmed directly with Burgert:
     generated from each screed line's own already-calculated
@@ -2330,6 +2337,20 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
 
         material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed"]
         screed_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type == "screed"]
+        # Stairwell vinyl (confirmed Aug 2026, Full Real-Browser Walkthrough
+        # & Audit — real gap, not a deliberate exclusion like Blinds/Trim
+        # above): a Stairwell line's own vinyl (category=="stairwell",
+        # product_id is the vinyl product, same FlooringProduct table/
+        # same supplier as a normal Flooring line) was never looked at
+        # here at all — simply never added when Stairwell became its own
+        # quote category, well after this function was first written.
+        # Real, confirmed consequence: neither the generated Order Sheet
+        # nor the Job Card (jobCardMaterialsHtml(), order-index.js — reads
+        # order_sheets directly, no logic of its own) ever showed a
+        # stairwell job's vinyl requirement, so an installer could be sent
+        # out without it ever having been ordered or loaded, with nothing
+        # anywhere flagging that it was needed.
+        stairwell_lines = [l for l in lines if l.category == "stairwell"]
 
         floor_prep_lines_data = []
         for l in screed_lines:
@@ -2376,6 +2397,35 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             net_cost_per_box = round(pre_discount_cost_per_box * (1 - discount_pct), 2)
             return {
                 "product_name": l.product_name, "colour": l.colour, "quantity": float(boxes), "unit": "boxes",
+                "unit_cost": net_cost_per_box, "pre_discount_unit_cost": pre_discount_cost_per_box, "discount_pct": discount_pct,
+            }
+
+        def stairwell_material_line_data(l):
+            # Mirrors material_line_data() above — same box-rounding and
+            # discount-breakdown basis, applied to a stairwell line's own
+            # vinyl (product_id) instead of a normal Flooring line's.
+            # l.boxes_needed is the stair-tread vinyl only (calculated at
+            # add/edit time, calculate_stairwell_line() via
+            # _compute_stairwell_calc()); a landing (if any) is priced via
+            # a SEPARATE calculate_flooring_line() call folded into this
+            # same line's totals (models.py's own comment on
+            # landing_area_m2) but never got its own boxes_needed
+            # persisted anywhere, so it's recomputed here the same
+            # fallback way material_line_data() already does for an older
+            # flooring line missing boxes_needed — both draw from the same
+            # vinyl product, so one combined box count for the whole line
+            # (stairs + landing) is correct, not two separate rows.
+            product = session.get(FlooringProduct, l.product_id)
+            if not product or not product.m2_per_pack:
+                return {"product_name": l.product_name, "colour": l.colour, "quantity": float(l.boxes_needed or 0), "unit": "boxes", "unit_cost": 0.0, "pre_discount_unit_cost": None, "discount_pct": None}
+            boxes = l.boxes_needed or 0
+            if l.landing_area_m2:
+                boxes += math.ceil((l.landing_area_m2 * (1 + product.wastage_pct)) / product.m2_per_pack)
+            pre_discount_cost_per_box = round(product.base_cost_ex_vat * product.m2_per_pack, 2)
+            discount_pct = product.trade_discount_pct
+            net_cost_per_box = round(pre_discount_cost_per_box * (1 - discount_pct), 2)
+            return {
+                "product_name": f"{product.product_name} (stairwell vinyl)", "colour": l.colour, "quantity": float(boxes), "unit": "boxes",
                 "unit_cost": net_cost_per_box, "pre_discount_unit_cost": pre_discount_cost_per_box, "discount_pct": discount_pct,
             }
 
@@ -2430,6 +2480,16 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
             entry["items"].append(material_line_data(l))
 
+        # Stairwell vinyl merges into the same supplier grouping as any
+        # other flooring material — a stairwell job whose vinyl happens to
+        # come from the same supplier as the rest of the job (the common
+        # case) lands on the SAME combined sheet, not a separate one.
+        for l in stairwell_lines:
+            product = session.get(FlooringProduct, l.product_id)
+            supplier = product.supplier if product else "Unknown supplier"
+            entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
+            entry["items"].append(stairwell_material_line_data(l))
+
         floor_prep_merge_key = None
         if floor_prep_lines_data:
             floor_prep_supplier = _floor_prep_supplier(session, tenant_id)
@@ -2447,7 +2507,7 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
             make_sheet(entry["display_supplier"], sheet_type, entry["items"])
 
         if not created_sheets and not reused_sheets:
-            raise HTTPException(400, "This quote has no flooring or screed line items to generate an order sheet from.")
+            raise HTTPException(400, "This quote has no flooring, screed, or stairwell line items to generate an order sheet from.")
 
         # generated/reused split (confirmed Aug 2026, brief §1+§4) — the
         # frontend uses this to show an unambiguous result either way:
@@ -5507,7 +5567,7 @@ def update_business_settings(updates: BusinessSettings, role: str = Depends(get_
 
 # ---------- Quotes ----------
 
-def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optional[int], client_name: Optional[str]) -> Client:
+def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optional[int], client_name: Optional[str], branch: Optional[str] = None) -> Client:
     """Client-Link Audit (confirmed Aug 2026, "Third Occurrence of
     Orphaned/Unlinked Quotes" brief). The brief's own framing: two
     earlier fixes (Duplicate Quote's free-text client_name, and Start
@@ -5537,7 +5597,18 @@ def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optio
     - Neither given: rejected outright (400) — the brief's own words,
       "there must be NO remaining path where a quote can be saved with
       just a text name and no real client link" extends to no name and
-      no link at all."""
+      no link at all.
+
+    branch (confirmed Aug 2026, Full Real-Browser Walkthrough & Audit) —
+    real gap fixed: a brand-new Client created here used to always fall
+    back to the Client model's own hardcoded field default ("gansbaai",
+    models.py), regardless of which branch the quote actually being
+    created/edited is for. Every current call site now has a real branch
+    value in scope to pass (create_quote()'s own `branch` param;
+    convert_price_check_to_quote()/update_quote_details()/the orphaned-
+    quote migration's own `quote.branch`) — optional and defaulting to
+    None (leaving the model default untouched) only so this never breaks
+    for some future caller that genuinely has no branch to give."""
     if client_id:
         return get_or_404(session, Client, client_id, tenant_id, "Client")
     name = (client_name or "").strip()
@@ -5547,7 +5618,7 @@ def _resolve_or_create_client(session: Session, tenant_id: str, client_id: Optio
     match = next((c for c in existing if c.name.strip().lower() == name.lower()), None)
     if match:
         return match
-    new_client = Client(tenant_id=tenant_id, name=name)
+    new_client = Client(tenant_id=tenant_id, name=name, **({"preferred_branch": branch} if branch else {}))
     session.add(new_client)
     session.commit()
     session.refresh(new_client)
@@ -5581,7 +5652,7 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
         if is_price_check and not client_id and not client_name.strip():
             final_client_name, final_client_id, site_address = "Walk-in (Price Check)", None, ""
         else:
-            client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
+            client = _resolve_or_create_client(session, tenant_id, client_id, client_name, branch=branch)
             final_client_name, final_client_id, site_address = client.name, client.id, (client.address or "")
         quote = Quote(
             client_name=final_client_name,
@@ -5621,7 +5692,7 @@ def convert_price_check_to_quote(quote_id: int, client_id: int = None, client_na
         if not quote.is_price_check:
             raise HTTPException(400, "This quote is not a Price Check.")
         if client_id or (client_name and client_name.strip()):
-            client = _resolve_or_create_client(session, tenant_id, client_id, client_name)
+            client = _resolve_or_create_client(session, tenant_id, client_id, client_name, branch=quote.branch)
             quote.client_id = client.id
             quote.client_name = client.name
             if client.address:
@@ -5745,7 +5816,7 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
             # changes it again — this closes the gap for a quote that's
             # still unlinked and being saved with a typed name, without
             # ever touching one that's already correctly linked.
-            client = _resolve_or_create_client(session, tenant_id, None, client_name)
+            client = _resolve_or_create_client(session, tenant_id, None, client_name, branch=quote.branch)
             quote.client_id = client.id
             quote.client_name = client.name
             if client.address:
@@ -6289,7 +6360,16 @@ def convert_lead(lead_id: int, sales_owner: str, branch: str = "gansbaai", clien
             if match:
                 client = match
             else:
-                client = Client(tenant_id=tenant_id, name=lead.name, phone=lead.contact, marketing_source=lead.source, created_by=username)
+                # preferred_branch=branch (confirmed Aug 2026, Full Real-
+                # Browser Walkthrough & Audit — real gap): this used to be
+                # left unset, silently falling back to the Client model's
+                # own hardcoded field default ("gansbaai", models.py) no
+                # matter which branch this lead/quote actually belongs
+                # to. `branch` here is the same real branch the resulting
+                # Quote itself gets (just below) — a Hermanus lead now
+                # correctly produces a client record that says Hermanus
+                # too, not silently mislabeled Gansbaai every time.
+                client = Client(tenant_id=tenant_id, name=lead.name, phone=lead.contact, marketing_source=lead.source, created_by=username, preferred_branch=branch)
                 session.add(client)
                 session.commit()
                 session.refresh(client)

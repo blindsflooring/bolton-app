@@ -702,7 +702,7 @@ class Client(SQLModel, table=True):
     phone: str = ""
     email: str = ""
     address: str = ""
-    preferred_branch: str = "gansbaai"
+    preferred_branch: str = "gansbaai"   # this default is only a true fallback now (confirmed Aug 2026, Full Real-Browser Walkthrough & Audit) — every real code path that creates a Client (create_quote(), convert_lead(), _resolve_or_create_client()'s other callers) now explicitly passes the real branch the quote/lead is actually for, so this only still applies to a genuinely branch-less edge case, not silently to every new client the way it used to.
     notes: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # Trusted Tester Accounts brief (confirmed Aug 2026) — Client had no

@@ -861,12 +861,14 @@ async function addFloorJob() {
   const includeVinyl = document.getElementById('fj_include_vinyl').checked;
   const includeScreed = document.getElementById('fj_include_screed').checked;
   const role = currentRole();
-  const discountPct = parseFloat(document.getElementById('fj_discount_pct').value) / 100 || 0;
-
-  // Quote-level discount (confirmed Aug 2026: applied to the whole quote, not per line)
-  if (discountPct) {
-    await fetch(`${API}/quotes/${currentQuoteId}/discount?discount_pct=${discountPct}`, {method:'PUT'});
-  }
+  // Quote-level discount PUT REMOVED from here (confirmed Aug 2026, Full
+  // Real-Browser Walkthrough & Audit) — this was the actual bug: applying
+  // the discount only as a side effect of adding a floor job meant Save
+  // Quote silently dropped it, and a quote with no Flooring line had no
+  // way to apply one at all. #fj_discount_pct now fires its own PUT
+  // independently the moment it's changed (updateQuoteDiscount(), same
+  // pattern as Transport Levy's updateTransportLevy()) — nothing left to
+  // do here.
 
   // Edit Quote Line In Place (confirmed Aug 2026) — saving an in-progress
   // edit on a flooring/screed line now PUTs to that SAME line id instead
@@ -1031,6 +1033,7 @@ async function createQuote() {
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
+  document.getElementById('quoteDiscountCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   // Real gap found while building Duplicate Quote (confirmed Aug 2026):
   // quotePhotosCard was only ever shown inside loadQuote() (which this
@@ -1113,6 +1116,7 @@ async function startPriceCheck() {
     `<b style="color:var(--coral);">PRICE CHECK</b> #${quote.id} started${quote.client_id ? ' for ' + quote.client_name : ''} — not a saved job until you convert it below.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
+  document.getElementById('quoteDiscountCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('quotePhotosCard').style.display = 'block';
   renderQuoteSummaryPanel(0);   // same reasoning as createQuote()'s own comment just above it — this entry point never calls loadQuote() either
@@ -1196,6 +1200,12 @@ function clearStaleQuoteResidue() {
   if (levyFieldEl) levyFieldEl.style.display = 'none';
   const courierToggleEl = document.getElementById('fj_courier_toggle');
   if (courierToggleEl) courierToggleEl.checked = false;
+  // Quote-level Discount (confirmed Aug 2026, Full Real-Browser
+  // Walkthrough & Audit) — same stale-residue reasoning as the Transport
+  // levy fields just above: a brand-new quote must not silently inherit
+  // the PREVIOUS quote's discount %.
+  const discountPctEl = document.getElementById('fj_discount_pct');
+  if (discountPctEl) discountPctEl.value = 0;
   const statusDisplayEl = document.getElementById('q_status_display');
   if (statusDisplayEl) statusDisplayEl.innerHTML = '<span class="muted">—</span>';
   const saveStatusEl = document.getElementById('saveStatus');
@@ -1263,6 +1273,7 @@ function resetQuoteBuilderUI() {
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
   document.getElementById('linesCard').style.display = 'none';
+  document.getElementById('quoteDiscountCard').style.display = 'none';
   document.getElementById('floorPrepCard').style.display = 'none';
   // Persistent summary panel (confirmed Aug 2026, Vinyl Quoting UX
   // Redesign proposal §03, approved, Phase 3) — currentQuoteId is
@@ -1738,16 +1749,31 @@ async function viewColourHistory(lineId) {
 }
 
 // Transport Levy (confirmed Aug 2026, Courier Toggle brief Section 6) —
-// manual, job-level, one-off amount, deliberately its own field/endpoint
-// separate from the quote-level Discount % above (which is set via
-// addFloorJob() as part of building a floor job line) — this is set
-// independently, any time, not tied to adding a line. Same "set/change
-// after the fact" PUT pattern as the discount endpoint.
+// manual, job-level, one-off amount, its own field/endpoint, set
+// independently, any time, not tied to adding a line. Discount % (below)
+// now follows this exact same "set/change after the fact" PUT pattern —
+// it used to be the one exception, only ever applied via addFloorJob()
+// as a side effect of building a floor job line (real bug, fixed Aug
+// 2026, Full Real-Browser Walkthrough & Audit: silently dropped by Save
+// Quote, unreachable on a quote with no Flooring line at all).
 async function updateTransportLevy() {
   if (!currentQuoteId) return;   // toggle can be flicked before a quote even exists yet
   const value = parseFloat(document.getElementById('fj_transport_amount').value) || 0;
   await fetch(`${API}/quotes/${currentQuoteId}/transport-levy?transport_levy=${value}`, { method: 'PUT' });
   loadQuote();   // refresh the totals so the new levy is reflected immediately
+}
+
+// Quote-level Discount (confirmed Aug 2026, Full Real-Browser Walkthrough
+// & Audit) — same pattern as updateTransportLevy() just above, and the
+// exact same backend endpoint addFloorJob() used to call as a side
+// effect. Fires the moment the field is changed (onchange, index.html),
+// regardless of which category tab is active or whether this quote has
+// any Flooring line at all — no longer tied to "Add Floor Job to Quote".
+async function updateQuoteDiscount() {
+  if (!currentQuoteId) return;   // field can be typed into before a quote even exists yet
+  const value = parseFloat(document.getElementById('fj_discount_pct').value) / 100 || 0;
+  await fetch(`${API}/quotes/${currentQuoteId}/discount?discount_pct=${value}`, { method: 'PUT' });
+  loadQuote();   // refresh the totals so the new discount is reflected immediately
 }
 
 // Transport toggle (confirmed Aug 2026, Transport/Courier Toggle
@@ -1858,6 +1884,16 @@ async function loadQuote() {
     if (levyToggleEl) levyToggleEl.checked = levy > 0;
     if (levyFieldEl) levyFieldEl.style.display = levy > 0 ? '' : 'none';
   }
+  // Quote-level Discount (confirmed Aug 2026, Full Real-Browser
+  // Walkthrough & Audit — this used to be a write-only field, never
+  // populated from the real saved value at all, since it used to only
+  // ever get READ at the moment "Add Floor Job to Quote" was clicked,
+  // never displayed back). Same "reflect whatever's actually stored, on
+  // every loadQuote()" reasoning as Transport Levy just above — without
+  // this, reopening a quote with a real discount already applied would
+  // misleadingly show 0.
+  const discountPctEl = document.getElementById('fj_discount_pct');
+  if (discountPctEl && data.quote) { discountPctEl.value = ((data.quote.discount_pct || 0) * 100); }
   const tbody = document.querySelector('#linesTable tbody');
   // Skirting/Trim category fix (confirmed Aug 2026, Vinyl Redesign:
   // Real Usage Findings brief §1) — l.category === 'skirting' now

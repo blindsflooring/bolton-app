@@ -566,10 +566,19 @@
           </div>
         </div>
 
-        <div class="card">
-          <h2>Discount</h2>
-          <div class="field"><label>Discount % <span class="adj">(applied ex VAT, whole quote, before VAT)</span></label><input type="number" id="fj_discount_pct" class="adjustable" value="0" step="0.1" oninput="fjCalc()"></div>
-        </div>
+        <!-- Discount card MOVED OUT of here (confirmed Aug 2026, Full
+        Real-Browser Walkthrough & Audit — real gap: this whole area
+        (#fjMain) only renders while the Flooring tab is active, so the
+        quote-level discount could only ever be set/changed while adding
+        a Flooring line — set it, click "Save Quote" instead of "Add
+        Floor Job", and it was silently dropped — and a quote with no
+        Flooring line at all had no way to apply one whatsoever. The
+        #fj_discount_pct input (id unchanged, fjCalc()'s own live-preview
+        math still reads it by that id) now lives in its own standalone,
+        always-visible card further down the page, right before Quote
+        Lines — reachable and settable regardless of which category tab
+        is active, or whether a Flooring line exists on this quote at
+        all. -->
 
         <div class="card">
           <button class="primary" onclick="addFloorJob()" style="width:100%; padding:12px;">+ Add Floor Job to Quote</button>
@@ -709,6 +718,24 @@
     rediscovered the hard way a second time. -->
     <div id="quoteSummaryPanel" style="display:none;"></div>
     </div><!-- /.quote-builder-layout -->
+
+    <!-- Quote-level Discount — standalone, always visible regardless of
+    which category tab is active (confirmed Aug 2026, Full Real-Browser
+    Walkthrough & Audit — real gap fixed: this used to live inside the
+    Flooring-only #fjMain area, so it could only ever be reached/applied
+    while adding a Flooring line; see #fjMain's own comment above for the
+    full history). Same #fj_discount_pct id, same field, just relocated —
+    fjCalc()'s live-preview math (only relevant while the Flooring tab
+    happens to be active) still reads it fine by id. Same "fire
+    immediately, any time, not tied to adding a line" pattern the
+    Transport levy card already uses (updateTransportLevy()) — never
+    silently dropped by Save Quote again, and reachable even on a quote
+    with zero Flooring lines. Hidden until a quote is actually open, same
+    as linesCard/quoteSummaryPanel. -->
+    <div class="card" id="quoteDiscountCard" style="display:none;">
+      <h2>Discount</h2>
+      <div class="field"><label>Discount % <span class="adj">(applied ex VAT, whole quote, before VAT)</span></label><input type="number" id="fj_discount_pct" class="adjustable" value="0" step="0.1" oninput="fjCalc()" onchange="updateQuoteDiscount()"></div>
+    </div>
 
     <div class="card" id="linesCard" style="display:none;">
       <h2>Quote Lines</h2>
@@ -3921,6 +3948,7 @@ async function openQuoteFromIndex(quoteId) {
   goToTab('quoteBuilder');
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
+  document.getElementById('quoteDiscountCard').style.display = 'block';
   document.getElementById('floorPrepCard').style.display = 'block';
   document.getElementById('duplicateQuoteBtn').style.display = '';
   document.getElementById('revertQuoteBtn').style.display = '';
