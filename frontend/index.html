@@ -1193,7 +1193,27 @@ function onTileClick(tileId) {
   else if (tileId === 'accounts') { landingView = 'accounts'; renderLanding(); }
   else if (tileId === 'builderPortal') { landingView = 'builderPortal'; renderLanding(); }
   else if (tileId === 'flaggedItems') { landingView = 'flaggedItems'; renderLanding(); }
-  else if (tileId === 'blinds') { pendingCategory = 'blinds'; goToTab('quoteBuilder'); if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; } }
+  // New Quote Pre-Population bug (confirmed Aug 2026, real gap found,
+  // not just made-more-visible) — this was the one entry point missing
+  // the resetQuoteBuilderUI() guard its siblings (startQuoteForClient(),
+  // startQuoteFromBuilderEstimate(), startQuoteWithVinylRange() — all
+  // above) already have. The old version only ever did something when
+  // a quote was ALREADY open (toggleLineFields()); the "no quote open"
+  // case — the actual "start a genuinely new quote" case — silently
+  // did nothing at all, leaving whatever quote was last viewed/edited
+  // (its client, lines, currentQuoteId, the persistent summary panel)
+  // fully intact and displayed. Not merely cosmetic: currentQuoteId
+  // itself was never cleared, so adding a line here could write a real
+  // line onto a genuinely different, unrelated quote. Same guard shape
+  // as startQuoteWithVinylRange() — reset only when nothing is
+  // currently open, so real in-progress work on an already-open quote
+  // is never wiped by clicking this tile.
+  else if (tileId === 'blinds') {
+    if (!currentQuoteId) { resetQuoteBuilderUI(); }
+    pendingCategory = 'blinds';
+    goToTab('quoteBuilder');
+    if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; }
+  }
 }
 
 async function renderFlooringDrill(el) {
