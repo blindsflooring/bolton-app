@@ -366,36 +366,25 @@ function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : '�
 // differing. Consolidated the shared mechanics here; each caller still
 // builds its own content, since that part is genuinely different per
 // document type.
-// Simple send path (confirmed Aug 2026, Client-Side Commercial Workflow
-// brief, Sprint C) — a small floating panel, created once and reused,
-// appended straight to <body> so it works identically regardless of
-// which screen called renderPrintDoc() (Quote Builder's "Print / PDF"
-// button and the separate Print Invoice landing tile both reach this).
-// Genuinely on-screen (unlike anything placed inside #printArea, which
-// is invisible outside of an actual print render — see renderPrintDoc()'s
-// own comment) and has nothing to do with the print stylesheet at all,
-// so no @media print exclusion is needed — it simply isn't part of
-// #printArea's contents.
-function showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail) {
-  let panel = document.getElementById('sendActionsPanel');
-  if (!panel) {
-    panel = document.createElement('div');
-    panel.id = 'sendActionsPanel';
-    panel.style.cssText = 'position:fixed; bottom:16px; right:16px; z-index:1000; background:white; border:2px solid var(--teal); border-radius:10px; padding:14px 16px; box-shadow:0 6px 20px rgba(0,0,0,0.15); font-family:"Figtree",sans-serif; max-width:280px;';
-    document.body.appendChild(panel);
-  }
-  panel.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <b style="font-size:13px; color:var(--navy);">Send this ${docLabel.toLowerCase()}</b>
-      <span onclick="document.getElementById('sendActionsPanel').remove()" style="cursor:pointer; font-size:16px; color:#9aa0a6; line-height:1;">&times;</span>
-    </div>
-    <p class="muted" style="font-size:11px; margin:0 0 10px;">Use Print → "Save as PDF" to get a file, then attach it below.</p>
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <a href="${mailtoLink}" style="flex:1; text-align:center; background:var(--navy); color:white; text-decoration:none; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:600;">📧 Email${clientEmail ? '' : ' (no address)'}</a>
-      <a href="${waLink}" target="_blank" rel="noopener" style="flex:1; text-align:center; background:#25D366; color:white; text-decoration:none; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:600;">💬 WhatsApp</a>
-    </div>
-  `;
-}
+// showSendActionsPanel() REMOVED (confirmed Aug 2026, Full Real-Browser
+// Walkthrough & Audit brief — Document Preview Overlap bug). It was a
+// fixed-position panel (bottom:16px; right:16px) appended straight to
+// <body>, with no awareness of whatever content was scrolling underneath
+// it — on mobile this covered real Document Preview content (a line item
+// was fully hidden behind it in the reported recording), and its Email
+// button stayed clickable even with "(no address)" shown, i.e. a control
+// presented as available that couldn't actually succeed. It existed only
+// because #printArea is invisible outside an actual print render (see
+// buildPrintDocHtml()'s own comment below), so a clickable Email/WhatsApp
+// action needed a separate always-on-screen home — true when this shipped,
+// but the standardized Mail button (documentActionBarHtml() below,
+// sendDocumentEmail()) has since become that home instead: a normal
+// inline button, not an overlay, that already refuses cleanly when there's
+// no email on file rather than showing a dead-looking one. Confirmed this
+// panel is what renderPrintDoc() (the Print button/flow) still popped up
+// on top of the document — retired here rather than re-approved, since
+// the brief's own point is that the original agreed Send behaviour IS the
+// mailto-only one the Mail button already does. Print now just prints.
 
 function triggerPrint(html) {
   document.getElementById('printArea').innerHTML = html;
@@ -499,8 +488,7 @@ async function retryArchiveVersion(archiveId, entityType, entityId, reference, p
 }
 
 async function renderPrintDoc(quoteId, docType) {
-  const { html, docLabel, mailtoLink, waLink, clientEmail } = await buildPrintDocHtml(quoteId, docType);
-  showSendActionsPanel(docLabel, mailtoLink, waLink, clientEmail);
+  const { html } = await buildPrintDocHtml(quoteId, docType);
   triggerPrint(html);
 }
 
@@ -591,16 +579,16 @@ async function buildPrintDocHtml(quoteId, docType) {
   // display:none on screen ALWAYS, except during the browser's own
   // print rendering pass (styles.css's @media print rule) — anything
   // placed inside it is genuinely invisible/unclickable in the normal
-  // page, only "visible" in the print output itself, which is exactly
-  // backwards from what a clickable Email/WhatsApp action needs. Shown
-  // in a real, always-on-screen panel instead by renderPrintDoc() above
-  // (showSendActionsPanel()), separate from triggerPrint()'s own
-  // printArea/window.print() — deliberately NOT touching triggerPrint()
-  // itself, since hr.js also calls it for unrelated printable documents
-  // that have nothing to do with this brief. This function itself has
-  // no side effects at all now (confirmed Aug 2026) — the document
-  // preview tile (order-index.js) calls it directly and just wants the
-  // html back, never a send panel or a print dialog.
+  // page, only "visible" in the print output itself. That's exactly why
+  // a clickable Email action needed a home outside of it — originally a
+  // floating always-on-screen panel (showSendActionsPanel(), removed —
+  // see renderPrintDoc()'s own comment above), now the standardized Mail
+  // button (documentActionBarHtml()/sendDocumentEmail()) instead, a
+  // normal inline button in the regular page flow, not inside
+  // #printArea. This function itself has no side effects at all
+  // (confirmed Aug 2026) — the document preview tile (order-index.js)
+  // calls it directly and just wants the html back, never a print
+  // dialog.
   const html = `
     <div class="print-doc">
       <div class="doc-header">
