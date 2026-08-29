@@ -421,6 +421,15 @@ def _ensure_new_columns():
         ("businesssettings", "carpet_underfelt_cost_per_m2", "FLOAT", "42.0"),
         ("businesssettings", "carpet_underfelt_roll_width_m", "FLOAT", "4.0"),
         ("businesssettings", "carpet_glue_cost_per_20l_drum", "FLOAT", "1232.00"),
+        # Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+        # Aug 2026):
+        ("businesssettings", "margin_band_bright_threshold", "FLOAT", "0.40"),
+        ("quotelineitem", "low_margin_reason", "VARCHAR", "NULL"),
+        ("quotelineitem", "low_margin_reason_by", "VARCHAR", "NULL"),
+        ("quotelineitem", "low_margin_reason_at", "TIMESTAMP", "NULL"),
+        ("quote", "low_margin_reason", "VARCHAR", "NULL"),
+        ("quote", "low_margin_reason_by", "VARCHAR", "NULL"),
+        ("quote", "low_margin_reason_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1789,7 +1798,31 @@ def get_or_404(session: Session, model, obj_id: int, tenant_id: str, name: str =
     return obj
 
 
-def strip_sensitive_fields(line_item: dict, role: str) -> dict:
+def margin_band_for(margin_pct, settings) -> Optional[str]:
+    """Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+    Aug 2026) — a discrete, two-family band Ryno/Madri get INSTEAD of the
+    real number: "red" (below the confirmed 30% floor, same
+    flooring_margin_warn_threshold every other warning in this app
+    already uses — not a new number) or "green"/"green_bright" (at or
+    above it). Burgert's own explicit correction mid-build: 30-40% and
+    40%+ are BOTH good outcomes, never amber/alarming — only the shade
+    differs, distinguishing "acceptable" from "more than what is needed
+    or aimed" without ever implying the lower of the two is a problem.
+    Discrete bands, not a gradient — confirmed with Burgert directly,
+    "safer... a smooth gradient risks trying to reverse-engineer the
+    exact percentage from subtle shade differences." Computed here, once,
+    from whatever real margin_pct a category's own calc function already
+    produced — never a second, independent calculation of margin itself."""
+    if margin_pct is None:
+        return None
+    if margin_pct < settings.flooring_margin_warn_threshold:
+        return "red"
+    if margin_pct < settings.margin_band_bright_threshold:
+        return "green"
+    return "green_bright"
+
+
+def strip_sensitive_fields(line_item: dict, role: str, settings=None) -> dict:
     """Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — this
     gate used to be Sales-only ("if role == UserRole.sales"); Admin (Madri)
     saw every cost/breakdown field same as Owner. Tightened to Owner-only
@@ -1802,15 +1835,19 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
     and tile_removal_fee_total stay visible — they're operational/client-
     facing info, not cost data.
 
-    margin_pct is the ONE deliberate exception, per that same brief's own
-    §0 — "a percentage alone doesn't reveal actual cost figures... safe to
-    leave visible... useful as everyone's own quick sanity check while
-    quoting." It used to be in the strip list (Sales never saw it); now it
-    stays on every line_item regardless of role, for every role including
-    Sales. Everything else that reveals what a job actually costs
-    (material, glue, labour, compound, the total real cost, and the new
-    Carpet breakdown fields below) is still stripped, just for a wider set
-    of roles than before.
+    margin_pct: REVISED Aug 2026 (Margin Becomes Owner-Only; Price Gets a
+    Colour Signal brief) — explicitly walks back the Owner-Only Calculation
+    Breakdown Toggle brief's own earlier "safe to leave visible to
+    everyone" call on this one field. Ryno/Madri no longer receive the
+    real percentage anywhere, full stop — back in this strip list, gated
+    the same as every other cost/breakdown field. margin_band (computed
+    above, from margin_pct, BEFORE margin_pct itself gets stripped) is
+    the deliberate replacement — sent to every role always, including
+    Sales, so the colour signal still works without the real number ever
+    leaving the server for a non-Owner account. settings is optional only
+    so a caller that hasn't been threaded through yet fails soft (no
+    band computed, margin_pct still correctly stripped) rather than
+    crashing outright — every real call site below does pass it.
 
     BUG FOUND AND FIXED Aug 2026 (caught during regression testing while
     building the Supplier Console, not something that brief asked for):
@@ -1823,8 +1860,22 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
     that gap everywhere this function is called, not just at creation
     time — the ad-hoc pop() calls that used to live in add_stairwell_line
     are removed as redundant now that this covers it."""
+    line_item = dict(line_item)
+    if settings is not None:
+        band = margin_band_for(line_item.get("margin_pct"), settings)
+        line_item["margin_band"] = band
+        # Low Margin Accountability (confirmed Aug 2026, same brief) — a
+        # soft prompt, not a hard block (Burgert's own explicit choice):
+        # the line already saved either way, this just tells every role
+        # (sales staff are the ones actually entering the reason, most
+        # of the time) whether THIS line is currently red with no
+        # explanation on file yet, so the frontend knows to show the
+        # prompt. False for a live preview line missing the
+        # low_margin_reason key entirely (dict.get -> None), same as a
+        # real saved line that's never had one recorded — both correctly
+        # need prompting.
+        line_item["needs_low_margin_reason"] = bool(band == "red" and not line_item.get("low_margin_reason"))
     if role != UserRole.owner:
-        line_item = dict(line_item)
         for field in (
             "unit_cost", "glue_cost_total",
             "labour_cost_total", "compound_cost_total", "total_job_cost",
@@ -1858,6 +1909,9 @@ def strip_sensitive_fields(line_item: dict, role: str) -> dict:
             # else in this list, so they need the exact same gate, not a
             # separate one.
             "material_cost_total", "subtotal", "markup_multiplier",
+            # Margin Becomes Owner-Only (confirmed Aug 2026) — see this
+            # function's own docstring above for why this is back here.
+            "margin_pct",
         ):
             line_item.pop(field, None)
     return line_item
@@ -7082,11 +7136,12 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
+        result = strip_sensitive_fields(line.dict(), role, settings)
         # Warning text itself contains the margin % — only show it to
-        # roles that are allowed to see margin at all, or it defeats the
-        # point of stripping margin_pct as a field above.
-        if calc["warning"]:
+        # roles that are allowed to see margin at all (Owner), or it defeats
+        # the point of stripping margin_pct as a field above (Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal, confirmed Aug 2026).
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         if "packs_needed" in calc:
             result["packs_needed"] = calc["packs_needed"]
@@ -7103,6 +7158,7 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
+        settings = get_settings(session, tenant_id)
 
         calc = calculate_blinds_line(product, width_mm, drop_mm, discount_pct)
         line = QuoteLineItem(
@@ -7117,7 +7173,7 @@ def add_blinds_line(quote_id: int, product_id: int, width_mm: float, drop_mm: fl
         session.commit()
         session.refresh(line)
 
-        return strip_sensitive_fields(line.dict(), role)
+        return strip_sensitive_fields(line.dict(), role, settings)
 
 
 def _trim_line_category(product: "TrimProduct") -> str:
@@ -7155,8 +7211,8 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"]:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         return result
 
@@ -7319,6 +7375,7 @@ def add_carpet_line(quote_id: int, product_id: int, quantity_lm: float, carpet_c
     shapes this specific line is."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
         r = _compute_carpet_calc(session, tenant_id, product_id, quantity_lm, discount_pct, own_staff, labour_rate_per_m2,
                                   apply_cutting_fee, apply_grippers, gripper_perimeter_m, apply_underfelt, apply_glue)
         product, calc = r["product"], r["calc"]
@@ -7341,8 +7398,8 @@ def add_carpet_line(quote_id: int, product_id: int, quantity_lm: float, carpet_c
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"]:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         return result
 
@@ -7362,6 +7419,7 @@ def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: 
         line = get_or_404(session, QuoteLineItem, line_id, tenant_id, "Quote line")
         if line.category != "flooring" or not line.carpet_category:
             raise HTTPException(400, "This line isn't a carpet line.")
+        settings = get_settings(session, tenant_id)
         r = _compute_carpet_calc(session, tenant_id, product_id, quantity_lm, discount_pct, own_staff, labour_rate_per_m2,
                                   apply_cutting_fee, apply_grippers, gripper_perimeter_m, apply_underfelt, apply_glue)
         product, calc = r["product"], r["calc"]
@@ -7378,6 +7436,16 @@ def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: 
         line.unit_price = calc["unit_price"]
         line.line_total = calc["line_total"]
         line.margin_pct = calc["margin_pct"]
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
         line.total_job_cost = calc["total_job_cost"]
         line.gripper_perimeter_m = gripper_perimeter_m if apply_grippers else None
         line.gripper_cost_total = calc["gripper_cost_total"]
@@ -7395,8 +7463,8 @@ def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: 
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"]:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         return result
 
@@ -7414,6 +7482,7 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
     now just turning that computation into a real, persisted line."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
         r = _compute_stairwell_calc(session, tenant_id, vinyl_product_id, nosing_product_id, num_stairs, stairwell_type,
                                      stair_area_m2, own_staff, landing_area_m2)
         vinyl_product, nosing_product, calc, landing_calc = r["vinyl_product"], r["nosing_product"], r["calc"], r["landing_calc"]
@@ -7450,8 +7519,8 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if combined_warning:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if combined_warning and role == UserRole.owner:
             result["warning"] = combined_warning
         return result
 
@@ -7476,6 +7545,7 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
     lines back out for their own collapsible-card rendering."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
         margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
         line = QuoteLineItem(
             quote_id=quote_id, category="misc", product_id=0, tenant_id=tenant_id,
@@ -7491,7 +7561,7 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
         _log_quote_line_audit(session, quote, username, "added", f"{description} — R{amount_ex_vat:.2f}")
         session.commit()
         session.refresh(line)
-        return strip_sensitive_fields(line.dict(), role)
+        return strip_sensitive_fields(line.dict(), role, settings)
 
 
 # ---------- Edit Quote Line In Place (confirmed Aug 2026, Edit Quote Line
@@ -7622,6 +7692,16 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
         line.unit_price = calc["unit_price"]
         line.line_total = calc["line_total"]
         line.margin_pct = calc["margin_pct"]
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
         line.glue_cost_total = calc["glue_cost_total"]
         line.glue_sell_total = calc["glue_sell_total"]
         line.glue_units_needed = calc["glue_units_needed"]
@@ -7645,8 +7725,8 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"]:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         if "packs_needed" in calc:
             result["packs_needed"] = calc["packs_needed"]
@@ -7669,6 +7749,7 @@ def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: flo
         if line.category != "blinds":
             raise HTTPException(400, "This line is not a blinds line.")
         product = get_or_404(session, BlindsProduct, product_id, tenant_id, "Blinds product")
+        settings = get_settings(session, tenant_id)
 
         product_changed = (line.product_id != product_id)
         existing_override_total = line.line_total if line.pre_override_line_total is not None else None
@@ -7684,6 +7765,16 @@ def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: flo
         line.unit_price = calc["unit_price"]
         line.line_total = calc["line_total"]
         line.margin_pct = calc["margin_pct"]
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
 
         override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
@@ -7694,7 +7785,7 @@ def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: flo
         session.add(line)
         session.commit()
         session.refresh(line)
-        result = strip_sensitive_fields(line.dict(), role)
+        result = strip_sensitive_fields(line.dict(), role, settings)
         result["override_cleared"] = override_result["override_cleared"]
         return result
 
@@ -7734,6 +7825,16 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         line.unit_price = calc["unit_price"]
         line.line_total = calc["line_total"]
         line.margin_pct = calc["margin_pct"]
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
 
         override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
@@ -7744,8 +7845,8 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         session.add(line)
         session.commit()
         session.refresh(line)
-        result = strip_sensitive_fields(line.dict(), role)
-        if calc["warning"]:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         result["override_cleared"] = override_result["override_cleared"]
         return result
@@ -7779,6 +7880,7 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
             raise HTTPException(404, "Quote line not found")
         if line.category != "stairwell":
             raise HTTPException(400, "This line is not a stairwell line.")
+        settings = get_settings(session, tenant_id)
 
         product_changed = (line.product_id != vinyl_product_id)
         existing_override_total = line.line_total if line.pre_override_line_total is not None else None
@@ -7816,6 +7918,16 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
         line.landing_area_m2 = landing_area_m2 if landing_calc else None
         line.landing_sell_total = landing_calc["line_total"] if landing_calc else None
         line.margin_pct = combined_margin_pct
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
         line.total_job_cost = combined_total_job_cost
         line.line_total = combined_line_total
 
@@ -7829,8 +7941,8 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
         session.commit()
         session.refresh(line)
 
-        result = strip_sensitive_fields(line.dict(), role)
-        if combined_warning:
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if combined_warning and role == UserRole.owner:
             result["warning"] = combined_warning
         result["override_cleared"] = override_result["override_cleared"]
         return result
@@ -7853,6 +7965,7 @@ def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat:
             raise HTTPException(404, "Quote line not found")
         if line.category != "misc":
             raise HTTPException(400, "This line is not a freeform/extra line.")
+        settings = get_settings(session, tenant_id)
 
         old_desc = f"{line.product_name} — R{line.unit_price:.2f}"
         margin_pct = (amount_ex_vat - cost_ex_vat) / amount_ex_vat if amount_ex_vat else 0.0
@@ -7862,6 +7975,16 @@ def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat:
         line.unit_price = amount_ex_vat
         line.line_total = amount_ex_vat
         line.margin_pct = margin_pct
+        # Low Margin Accountability (confirmed Aug 2026, Margin
+        # Becomes Owner-Only; Price Gets a Colour Signal brief) — a
+        # fresh recalculation is a fresh pricing decision, so any
+        # reason recorded against the PREVIOUS number no longer
+        # applies; cleared here so a line that lands below threshold
+        # again (even back at the same number) asks for accountability
+        # again rather than silently reusing a stale explanation.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
 
         override_result = _reapply_line_calc_respecting_override(line, amount_ex_vat, True, session, tenant_id, username)
 
@@ -7870,9 +7993,75 @@ def edit_misc_line(quote_id: int, line_id: int, description: str, amount_ex_vat:
         session.add(line)
         session.commit()
         session.refresh(line)
-        result = strip_sensitive_fields(line.dict(), role)
+        result = strip_sensitive_fields(line.dict(), role, settings)
         result["override_cleared"] = override_result["override_cleared"]
         return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/low-margin-reason")
+def set_line_low_margin_reason(quote_id: int, line_id: int, reason: str,
+                                tenant_id: str = Depends(get_current_tenant),
+                                username: str = Depends(get_current_username)):
+    """Low Margin Accountability, per-line (confirmed Aug 2026, Margin
+    Becomes Owner-Only; Price Gets a Colour Signal brief §3, Burgert's
+    own clarification) — "the system won't allow going under [30%]
+    anyway except with a discount, but there should be accountability
+    for those types of decisions." A soft prompt, not a hard block: the
+    line already saved (add/edit endpoints above never wait on this) —
+    this is a separate, generic, always-available endpoint the frontend
+    calls right after, once it sees needs_low_margin_reason: true on a
+    line. One endpoint for every category rather than threading a
+    reason param through 10 different add/edit signatures, since
+    QuoteLineItem is the one shared model underneath all of them
+    regardless of category. Always logged to AuditLog, unconditionally
+    (unlike _log_quote_line_edit_audit's post-accept-only gating above)
+    — an accountability record is exactly the kind of thing worth
+    keeping even on a quote that's still in Draft."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        reason = reason.strip()
+        if not reason:
+            raise HTTPException(400, "A reason is required.")
+        line.low_margin_reason = reason
+        line.low_margin_reason_by = username
+        line.low_margin_reason_at = datetime.utcnow()
+        session.add(line)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="QuoteLineItem", entity_id=line.id,
+            field="low_margin_reason", old_value="(none)", new_value=reason,
+        ))
+        session.commit()
+        return {"low_margin_reason": reason, "low_margin_reason_by": username}
+
+
+@app.put("/quotes/{quote_id}/low-margin-reason")
+def set_quote_low_margin_reason(quote_id: int, reason: str,
+                                 tenant_id: str = Depends(get_current_tenant),
+                                 username: str = Depends(get_current_username)):
+    """Low Margin Accountability, whole-quote (confirmed Aug 2026, same
+    brief) — same soft-prompt shape as set_line_low_margin_reason()
+    above, checked and recorded separately since a real quote can have
+    every individual line clear the floor while the combined total
+    (transport levy, quote-level discount, etc. all folded in) still
+    doesn't."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        reason = reason.strip()
+        if not reason:
+            raise HTTPException(400, "A reason is required.")
+        quote.low_margin_reason = reason
+        quote.low_margin_reason_by = username
+        quote.low_margin_reason_at = datetime.utcnow()
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="low_margin_reason", old_value="(none)", new_value=reason,
+        ))
+        session.commit()
+        return {"low_margin_reason": reason, "low_margin_reason_by": username}
 
 
 @app.get("/quotes/lines/preview")
@@ -7915,6 +8104,7 @@ def preview_line(category: str,
     after actually saving the line — never a preview that leaks more
     than the real save would."""
     with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
         if category == "blinds":
             if product_id is None or width_mm is None or drop_mm is None:
                 raise HTTPException(400, "product_id, width_mm, and drop_mm are required to preview a blinds line.")
@@ -7924,7 +8114,6 @@ def preview_line(category: str,
             if product_id is None or length_m is None:
                 raise HTTPException(400, "product_id and length_m are required to preview a trim/skirting line.")
             product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
-            settings = get_settings(session, tenant_id)
             calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
         elif category == "stairwell":
             if vinyl_product_id is None or nosing_product_id is None or num_stairs is None or stairwell_type is None:
@@ -7951,17 +8140,17 @@ def preview_line(category: str,
         else:
             raise HTTPException(400, f"No live preview available for category '{category}'.")
 
-        result = strip_sensitive_fields(calc, role)
-        # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
-        # this used to clear the warning for Sales specifically, since its
-        # text embeds the real margin % ("...is 32.1%, below..."), the
+        result = strip_sensitive_fields(calc, role, settings)
+        # Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+        # Aug 2026, revises the comment this replaces) — margin_pct is
+        # Owner-only again, so the warning text (which embeds the real
+        # percentage in prose, e.g. "...is 32.1%, below...") is the exact
         # same leak class strip_sensitive_fields() guards every other
-        # field against. That reasoning no longer applies: margin_pct
-        # itself is now visible to every role (see strip_sensitive_fields'
-        # own comment) — a warning restating the same figure in prose,
-        # still hidden from Sales, would be an arbitrary leftover
-        # inconsistency, not a real protection. No role check needed here
-        # anymore.
+        # field against. Non-owners still get the colour signal via
+        # result["margin_band"] (set above); the prose warning itself is
+        # Owner-only.
+        if role != UserRole.owner:
+            result.pop("warning", None)
         return result
 
 
@@ -7969,10 +8158,11 @@ def preview_line(category: str,
 def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
         lines = session.exec(
             select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
         ).all()
-        lines_out = [strip_sensitive_fields(l.dict(), role) for l in lines]
+        lines_out = [strip_sensitive_fields(l.dict(), role, settings) for l in lines]
         # Fixed Display Order (confirmed Aug 2026, Add-Line Data-Loss
         # brief §4) — sorted here, once, so every consumer of this
         # response (Quote Builder's table, the printed/PDF document, the
@@ -8021,7 +8211,7 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # and now share the actual discount/VAT/deposit math too, via
         # _quote_totals() (confirmed Aug 2026, Client Order History
         # Columns brief — see that function's own comment).
-        VAT_PCT = get_settings(session, tenant_id).vat_pct
+        VAT_PCT = settings.vat_pct
         totals = _quote_totals(subtotal_ex_vat, quote, VAT_PCT)
         # Fetched once here (Phase 2, confirmed Aug 2026) and reused for
         # both materials_ordered and job_steps below, rather than
@@ -8073,19 +8263,31 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # the whole quote, so a mistake anywhere in the job shows up
         # immediately, not line by line. Margin uses the POST-discount
         # total, since that's the real revenue.
-        # Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) —
-        # this used to gate the WHOLE block behind "role != sales" (Owner
-        # + Admin both got it, Sales got neither figure). Split in two:
-        # overall_margin_pct is computed and returned for every role now,
-        # same "not part of the gated breakdown" exception as per-line
-        # margin_pct (strip_sensitive_fields' own comment) — but
-        # overall_cost_ex_vat is a real cost figure, so it's tightened to
-        # Owner-only, same policy as everything else in that list.
+        # Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+        # Aug 2026) — REVERSES the Owner-Only Calculation Breakdown
+        # Toggle brief's earlier call to send overall_margin_pct to every
+        # role. Ryno/Madri never receive the real percentage anywhere,
+        # full stop — that now includes this whole-quote figure, not just
+        # per-line margin_pct. overall_margin_band (same red/green/
+        # green_bright bands as margin_band_for(), computed from the SAME
+        # real number before it's withheld) is the replacement every role
+        # gets instead, so the Job Detail screen's "overall margin"
+        # indicator keeps working as a colour signal without the number
+        # ever leaving the server for a non-Owner account.
         total_cost = sum(line_real_cost(l) for l in lines)
         total_ex_vat = totals["total_ex_vat"]
         overall_margin = (total_ex_vat - total_cost) / total_ex_vat if total_ex_vat else 0.0
-        response["overall_margin_pct"] = round(overall_margin, 4)
+        overall_margin_band = margin_band_for(overall_margin, settings)
+        response["overall_margin_band"] = overall_margin_band
+        # Low Margin Accountability, whole-quote (confirmed Aug 2026,
+        # same brief) — separate flag/reason from any one line's own
+        # low_margin_reason (see QuoteLineItem's own trio) since a real
+        # quote can have every individual line clear the floor while the
+        # combined total (transport levy, quote-level discount, etc. all
+        # folded in) still doesn't.
+        response["quote_needs_low_margin_reason"] = bool(overall_margin_band == "red" and not quote.low_margin_reason)
         if role == UserRole.owner:
+            response["overall_margin_pct"] = round(overall_margin, 4)
             response["overall_cost_ex_vat"] = round(total_cost, 2)
 
         return response

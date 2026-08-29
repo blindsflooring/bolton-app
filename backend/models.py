@@ -858,6 +858,18 @@ class BusinessSettings(SQLModel, table=True):
     # further work; Azura's 30% trade discount is real per-product data,
     # not a code constant, so it's untouched too.
     flooring_margin_warn_threshold: float = 0.30   # was FLOORING_MARGIN_WARN_THRESHOLD in calculations.py
+    # Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+    # Aug 2026) — the SAME threshold above (0.30) is reused directly as
+    # the red/green boundary (Burgert's own words: "make the cutoff...
+    # the moment it goes past the 30% threshold" — not a new number to
+    # invent for that line). This is the ONLY new number this brief
+    # actually needed: the boundary BETWEEN the two green shades
+    # ("acceptable" vs. "more than what is needed or aimed"), confirmed
+    # via real data (today's real Vinyl quote margins: 33.0%-54.8%,
+    # median 39.6%) rather than guessed, then explicitly confirmed with
+    # Burgert before shipping. Both shades are still "good" — never red/
+    # amber/alarming — this purely distinguishes which of the two.
+    margin_band_bright_threshold: float = 0.40
     stairwell_labour_closed: float = 250.0         # was STAIRWELL_LABOUR_PER_STAIR[closed] in models.py
     stairwell_labour_one_side_open: float = 300.0  # was STAIRWELL_LABOUR_PER_STAIR[one_side_open]
     stairwell_labour_both_sides_open: float = 350.0  # was STAIRWELL_LABOUR_PER_STAIR[both_sides_open]
@@ -1063,6 +1075,18 @@ class Quote(SQLModel, table=True):
     override_total_by: Optional[str] = None
     override_total_at: Optional[datetime] = None
 
+    # ---------- Low Margin Accountability, whole-quote (confirmed Aug
+    # 2026, Margin Becomes Owner-Only; Price Gets a Colour Signal brief
+    # §3) ---------- Same soft-prompt shape as QuoteLineItem's own low_
+    # margin_reason trio — a real line combination can each individually
+    # clear the 30% floor while the OVERALL quote (after transport levy,
+    # quote-level discount, etc. all fold in) still lands below it, so
+    # this is checked and recorded separately from any one line's own
+    # reason, not derived from them.
+    low_margin_reason: Optional[str] = None
+    low_margin_reason_by: Optional[str] = None
+    low_margin_reason_at: Optional[datetime] = None
+
     # ---------- Deposit Amount (confirmed Aug 2026, Deposit Amount +
     # Save Confirmation + Default Branch brief) ----------
     # deposit_amount was purely calculated (total_incl_vat *
@@ -1240,6 +1264,23 @@ class QuoteLineItem(SQLModel, table=True):
     override_reason: Optional[str] = None
     override_by: Optional[str] = None
     override_at: Optional[datetime] = None
+
+    # ---------- Low Margin Accountability (confirmed Aug 2026, Margin
+    # Becomes Owner-Only; Price Gets a Colour Signal brief §3, Burgert's
+    # own clarification) ---------- "The system won't allow going under
+    # [30%] anyway except with a discount, but there should be
+    # accountability for those types of decisions." A soft prompt, not a
+    # hard block (Burgert's own explicit choice) — the line still saves
+    # immediately either way; this just gives whoever's building the
+    # quote a place to record WHY a specific line landed below the
+    # confirmed margin floor, same "captured, by whom, when" shape as
+    # Manual Override just above, deliberately a separate field trio
+    # rather than reusing override_reason — a price override and a low-
+    # margin justification are two different real-world events that can
+    # both happen on the same line, independently.
+    low_margin_reason: Optional[str] = None
+    low_margin_reason_by: Optional[str] = None
+    low_margin_reason_at: Optional[datetime] = None
 
 
 class ColourChangeLog(SQLModel, table=True):

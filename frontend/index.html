@@ -698,9 +698,26 @@
           whoever was quoting, client watching or not. Default view is
           now just these two lines, for every role, always — the rest of
           this card (below) only renders when the Owner has the
-          breakdown toggle on. -->
+          breakdown toggle on.
+          Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+          Aug 2026) — REVISES the above: this is Flooring's own entirely
+          client-side shadow calc (fjCalc(), quote-builder.js — no
+          server round-trip, so strip_sensitive_fields' server-side gate
+          can't touch it), and it was rendering the real margin % as
+          plain text here for every role, unconditionally — the exact
+          leak this brief closes everywhere else. fj_out_summary_margin
+          is now Owner-only (the row hides via fj_out_summary_margin_row
+          when currentRole() !== 'owner'); fj_out_summary_price gets the
+          same red/green/green_bright colour signal every other
+          category's price now carries, computed client-side from the
+          same gp_pct fjCalc() already had, against the same two real
+          BusinessSettings thresholds (flooring_margin_warn_threshold,
+          margin_band_bright_threshold) every role already receives from
+          GET /business-settings (unrestricted — thresholds are business
+          config, never a specific quote's real number). -->
           <div class="fj-line result" style="font-weight:700;"><span>Price (ex VAT)</span><span id="fj_out_summary_price"></span></div>
-          <div class="muted" style="font-size:12px; margin-top:-6px; margin-bottom:10px;">Margin: <span id="fj_out_summary_margin"></span></div>
+          <div class="muted" style="font-size:12px; margin-top:-6px; margin-bottom:10px;" id="fj_out_summary_margin_row">Margin: <span id="fj_out_summary_margin"></span></div>
+          <div class="muted" style="font-size:12px; margin-top:-6px; margin-bottom:10px; color:var(--coral); font-weight:600; display:none;" id="fj_out_summary_low_margin_note">Below the confirmed margin floor — a reason will be requested once this line is saved.</div>
 
           <div class="fj-section-label">Job</div>
           <div class="fj-line result"><span>Floor size</span><span id="fj_out_floor"></span></div>
@@ -946,14 +963,19 @@
            Lines" explicitly named). Row markup lives in quote-builder.js
            (renderQuoteLines-equivalent block that populates this
            tbody), not here. -->
-      <!-- Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026,
-      §0) — Margin split OUT of the cost-col class it used to share with
-      Cost: margin_pct is the one deliberate exception that stays visible
-      to every role by default (strip_sensitive_fields' own comment,
-      main.py), so its column is never hidden by applyRoleVisibility()
-      regardless of role or toggle state. Cost keeps the cost-col class —
-      now Owner-only + toggle-gated, not just Sales-hidden. -->
-      <table id="linesTable" class="mobile-card-table"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th>Margin</th><th></th></tr></thead><tbody></tbody></table>
+      <!-- Margin Becomes Owner-Only; Price Gets a Colour Signal
+      (confirmed Aug 2026) — REVERSES the Owner-Only Calculation
+      Breakdown Toggle brief's earlier "Margin split OUT of cost-col"
+      call: margin_pct is back to Owner-only, gated exactly like Cost
+      (strip_sensitive_fields' own comment, main.py), so this <th> gets
+      the cost-col class back too — the whole column (header + cells)
+      now appears/disappears together for Cost and Margin alike, rather
+      than leaving an empty "Margin" header with hidden cells underneath
+      it the way the brief's own reversal would otherwise have produced.
+      The colour signal every role always sees now lives on the Price
+      column instead (l.margin_band, quote-builder.js), never on this
+      Owner-only one. -->
+      <table id="linesTable" class="mobile-card-table"><thead><tr><th>Category</th><th>Product</th><th>Detail</th><th>Price</th><th class="cost-col">Cost</th><th class="cost-col">Margin</th><th></th></tr></thead><tbody></tbody></table>
       <div class="total-row" id="quoteTotal"></div>
       <div class="grid" style="margin-top:16px;">
         <!-- Workflow status REMOVED as a manual dropdown here (confirmed

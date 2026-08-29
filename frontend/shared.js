@@ -409,10 +409,15 @@ function applyRoleVisibility() {
   // .cost-col used to mean "hide from Sales" (isSales); it now means
   // "only ever shown to the Owner, and only with the breakdown toggle
   // on" — Admin (Madri) loses this too, per that brief's own explicit
-  // "Owner-only" framing. Margin is NOT in this class any more (see
-  // strip_sensitive_fields' own comment, main.py) — its own table
-  // column/display lines were given a plain, never-hidden class instead
-  // wherever this used to double up Cost+Margin together.
+  // "Owner-only" framing.
+  // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+  // Aug 2026) — REVERSES this comment's own next sentence from earlier
+  // today: margin_pct is back in this same Owner-only/toggle-gated
+  // class (strip_sensitive_fields' own comment, main.py) — the Quote
+  // Lines table's Margin column has the cost-col class back too
+  // (index.html), so it hides/shows together with Cost again. The
+  // colour signal every role always sees regardless of this toggle
+  // lives on the Price column instead (l.margin_band).
   const showBreakdown = isOwner && ownerBreakdownVisible;
   document.querySelectorAll('.cost-col').forEach(el => el.style.display = showBreakdown ? '' : 'none');
   document.querySelectorAll('.owner-breakdown-toggle-wrap').forEach(el => el.style.display = isOwner ? '' : 'none');
@@ -471,6 +476,27 @@ const OWNER_BREAKDOWN_FIELD_LABELS = {
   labour_charged_total: 'Labour charged to client',
 };
 const OWNER_BREAKDOWN_FIELD_ORDER = Object.keys(OWNER_BREAKDOWN_FIELD_LABELS);
+
+// Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed Aug
+// 2026) — one shared helper so every price/margin display in the app
+// (Quote Builder's lines table, every category's live preview, the
+// overall-margin line) reads the same discrete, two-family colour
+// language the same way, never a one-off computed locally. Red is the
+// ONLY alarming shade (below the confirmed 30% floor) — reuses
+// var(--coral), the same colour this app already uses everywhere else
+// for a warning/alarming state, per Burgert's own "angry colour"
+// framing. Both greens are "acceptable or better" (his own words:
+// "green should always be acceptable, different shades of green
+// though"), distinguished from each other only. margin_band is computed
+// server-side (margin_band_for(), main.py) from the real margin_pct
+// BEFORE that number is stripped for non-Owner roles — this function
+// never sees or needs the real percentage, only the band name.
+function marginBandColor(band) {
+  if (band === 'red') return 'var(--coral)';
+  if (band === 'green_bright') return 'var(--margin-green-bright)';
+  if (band === 'green') return 'var(--margin-green)';
+  return '';   // no band computed (e.g. a category the server hasn't threaded settings through for) — no colour, never a guess
+}
 
 // Returns an HTML fragment (or '' when nothing should show) — the caller
 // appends it to whatever preview box it's already building. Never called

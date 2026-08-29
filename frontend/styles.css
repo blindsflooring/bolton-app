@@ -6,6 +6,16 @@
     --bg: #EDEDED;
     --card: #ffffff;
     --border: #dcdcdc;
+    /* Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+       Aug 2026) — two shades of "acceptable or better" (Burgert's own
+       words: "green should always be acceptable, different shades of
+       green though"), distinguished from each other only, never from
+       red/alarming. Red itself deliberately has no new variable here —
+       var(--coral) above is reused directly, the same colour this app
+       already uses everywhere else for a warning/alarming state, per
+       Burgert's own "angry colour" framing. */
+    --margin-green: #3C9D5C;
+    --margin-green-bright: #0F9D58;
   }
   * { box-sizing: border-box; }
   /* Confirmed Aug 2026 — real UX gap: the AI price sheet import status

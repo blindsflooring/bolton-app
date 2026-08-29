@@ -328,12 +328,21 @@ async function previewGenericLine() {
       return;
     }
     const data = await res.json();
-    let html = `<div style="display:flex; justify-content:space-between; font-weight:700;"><span>Price (ex VAT)</span><span>R${data.line_total.toFixed(2)}</span></div>`;
+    // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+    // Aug 2026) — the price itself carries the colour signal for every
+    // role, including roles that never receive data.margin_pct at all
+    // (see strip_sensitive_fields, main.py).
+    const priceColor = marginBandColor(data.margin_band);
+    let html = `<div style="display:flex; justify-content:space-between; font-weight:700;"><span>Price (ex VAT)</span><span${priceColor ? ` style="color:${priceColor};"` : ''}>R${data.line_total.toFixed(2)}</span></div>`;
     if (data.margin_pct !== undefined) {
       html += `<div class="muted" style="font-size:12px; margin-top:2px;">Margin: ${(data.margin_pct * 100).toFixed(1)}%</div>`;
     }
     if (data.warning) {
       html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${data.warning.replace(/</g, '&lt;')}</div>`;
+    } else if (data.needs_low_margin_reason) {
+      // Same "angry colour" cutoff, worded without the real percentage
+      // for roles that never received data.warning above (Owner-only).
+      html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">Below the confirmed margin floor — a reason will be requested once this line is saved.</div>`;
     }
     html += ownerBreakdownHtml(data);
     box.innerHTML = html;
@@ -532,10 +541,15 @@ async function previewCarpetLine() {
     if (!res.ok) { box.style.display = 'none'; return; }
     const calc = await res.json();
     box.style.display = '';
+    // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+    // Aug 2026) — same colour helper, same "warning if Owner, plain
+    // needs_low_margin_reason notice otherwise" fallback as the generic
+    // preview above.
+    const priceColor = marginBandColor(calc.margin_band);
     box.innerHTML = `
-      <div class="fj-line result"><span>Price (ex VAT)</span><span>R${calc.line_total.toFixed(2)}</span></div>
+      <div class="fj-line result"><span>Price (ex VAT)</span><span${priceColor ? ` style="color:${priceColor};"` : ''}>R${calc.line_total.toFixed(2)}</span></div>
       ${calc.margin_pct !== undefined ? `<div class="muted" style="font-size:12px;">Margin: ${(calc.margin_pct*100).toFixed(1)}%</div>` : ''}
-      ${calc.warning ? `<div class="muted" style="color:var(--coral); font-size:12px; margin-top:4px;">${calc.warning}</div>` : ''}
+      ${calc.warning ? `<div class="muted" style="color:var(--coral); font-size:12px; margin-top:4px;">${calc.warning}</div>` : (calc.needs_low_margin_reason ? `<div class="muted" style="color:var(--coral); font-size:12px; margin-top:4px;">Below the confirmed margin floor — a reason will be requested once this line is saved.</div>` : '')}
       ${ownerBreakdownHtml(calc)}
     `;
   } catch (e) { box.style.display = 'none'; }
@@ -1083,8 +1097,25 @@ function fjCalc() {
   // (and the separate #fjBreakdownGpCard) is just hidden via CSS
   // (applyRoleVisibility(), shared.js) unless the Owner has the
   // breakdown toggle on.
-  document.getElementById('fj_out_summary_price').textContent = R(total_ex);
+  // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed Aug
+  // 2026) — gp_pct itself never gets rendered as text for non-Owner
+  // roles any more (see index.html's own comment on this block for why
+  // this client-side calc needed its own fix, separate from every
+  // server-side one). The band is computed the same way
+  // margin_band_for() (main.py) computes it server-side, against the
+  // same two real, confirmed BusinessSettings thresholds — never a
+  // second, independently-chosen cutoff.
+  const fjMarginFrac = total_revenue ? gp_rand / total_revenue : 0;
+  const fjWarnT = businessSettings?.flooring_margin_warn_threshold ?? 0.30;
+  const fjBrightT = businessSettings?.margin_band_bright_threshold ?? 0.40;
+  const fjBand = fjMarginFrac < fjWarnT ? 'red' : (fjMarginFrac < fjBrightT ? 'green' : 'green_bright');
+  const fjIsOwner = currentRole() === 'owner';
+  const fjSummaryPriceEl = document.getElementById('fj_out_summary_price');
+  fjSummaryPriceEl.textContent = R(total_ex);
+  fjSummaryPriceEl.style.color = marginBandColor(fjBand);
   document.getElementById('fj_out_summary_margin').textContent = gp_pct.toFixed(1) + '%';
+  document.getElementById('fj_out_summary_margin_row').style.display = fjIsOwner ? '' : 'none';
+  document.getElementById('fj_out_summary_low_margin_note').style.display = (fjBand === 'red') ? '' : 'none';
 
   document.getElementById('fj_out_floor').textContent = floor_m2.toFixed(2) + ' m²';
   document.getElementById('fj_out_m2_needed').textContent = m2_needed.toFixed(2) + ' m²';
@@ -2148,6 +2179,36 @@ async function overrideQuoteTotal(currentValue) {
   loadQuote();
 }
 
+// Low Margin Accountability, per-line (confirmed Aug 2026, Margin
+// Becomes Owner-Only; Price Gets a Colour Signal brief §3, Burgert's own
+// clarification) — a soft prompt: the line already saved (see
+// needs_low_margin_reason, main.py's strip_sensitive_fields) before this
+// is ever called. Same prompt()-based pattern as overrideLinePrice()
+// above, one plain required reason, no separate modal needed for a
+// single free-text field.
+async function explainLowMarginLine(lineId) {
+  const reason = prompt('This line is below the confirmed margin floor. Why? (e.g. "Repeat client discount approved by Burgert", "Matching competitor quote")');
+  if (!reason || !reason.trim()) return;
+  const params = new URLSearchParams({ reason: reason.trim() });
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/${lineId}/low-margin-reason?${params}`, {method: 'PUT'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not save the reason.'); return; }
+  loadQuote();
+}
+
+// Low Margin Accountability, whole-quote (confirmed Aug 2026, same
+// brief) — same soft-prompt shape as explainLowMarginLine() above,
+// checked and recorded separately since the combined total (transport
+// levy, quote-level discount, etc.) can land below the floor even when
+// every individual line cleared it on its own.
+async function explainLowMarginQuote() {
+  const reason = prompt("This quote's overall margin is below the confirmed floor. Why? (e.g. \"Whole-job discount approved for a repeat client\")");
+  if (!reason || !reason.trim()) return;
+  const params = new URLSearchParams({ reason: reason.trim() });
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/low-margin-reason?${params}`, {method: 'PUT'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not save the reason.'); return; }
+  loadQuote();
+}
+
 async function revertQuoteTotalOverride() {
   if (!confirm("Revert this quote's total back to the calculated value?")) return;
   const res = await fetch(`${API}/quotes/${currentQuoteId}/revert-total-override`, {method: 'POST'});
@@ -2403,6 +2464,27 @@ async function loadQuote() {
       : (l.unit_cost !== undefined ? l.unit_cost * qty : undefined);
     const cost = totalCost !== undefined ? `R${totalCost.toFixed(2)}` : '—';
     const margin = l.margin_pct !== undefined ? `${(l.margin_pct*100).toFixed(1)}%` : '—';
+    // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
+    // Aug 2026) — the Price cell gets the colour signal for every role,
+    // Owner included ("no reason to remove a useful visual cue from his
+    // own view," Burgert's own words) — the Margin cell above stays
+    // Owner-only/toggle-gated exactly like Cost (cost-col class,
+    // index.html), so this is the one place non-Owner roles get any
+    // margin signal at all on a saved line.
+    const priceColor = marginBandColor(l.margin_band);
+    // Low Margin Accountability (confirmed Aug 2026, same brief) — a
+    // soft prompt: the line already saved either way. Whoever's
+    // building the quote (often Sales/Admin themselves, the ones
+    // actually applying the discount) sees the same prompt/badge the
+    // Owner would, since they're usually the ones who owe the
+    // explanation. low_margin_reason itself, once given, stays visible
+    // to every role too — it's freeform accountability text, not a
+    // cost/margin figure, same as override_reason above it.
+    const lowMarginHtml = l.low_margin_reason
+      ? `<br><span class="muted" style="font-size:10.5px; color:var(--navy); font-weight:600;" title="by ${l.low_margin_reason_by || ''}${l.low_margin_reason_at ? ' on ' + new Date(l.low_margin_reason_at).toLocaleDateString('en-ZA') : ''}">📋 ${l.low_margin_reason.replace(/</g, '&lt;')}</span>`
+      : (l.needs_low_margin_reason
+          ? `<br><a onclick="explainLowMarginLine(${l.id})" style="font-size:10.5px; color:var(--coral); cursor:pointer; font-weight:700;">⚠️ Explain low margin</a>`
+          : '');
     const wasChanged = l.colour && l.original_colour && l.colour !== l.original_colour;
     const colourHtml = l.colour
       ? `<br><b style="color:var(--teal); font-size:12px;">${l.colour}</b>${wasChanged ? `<br><span class="muted" style="font-size:11px; color:var(--coral);" title="Click to see full change history">⚠️ changed from: ${l.original_colour}</span>` : ''}
@@ -2427,7 +2509,7 @@ async function loadQuote() {
     return `<tr>
       <td data-label="Category"><span class="badge ${l.category}">${l.category}</span></td>
       <td class="card-title" data-label="Product">${l.product_name}${colourHtml}</td><td data-label="Detail">${detail}</td>
-      <td data-label="Price">R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}</td>
+      <td data-label="Price"${priceColor ? ` style="color:${priceColor}; font-weight:700;"` : ''}>R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}${lowMarginHtml}</td>
       <td class="cost-col" data-label="Cost">${cost}</td><td class="cost-col" data-label="Margin">${margin}</td>
       <!-- Editability — every category, in place (confirmed Aug 2026,
       Vinyl Quoting UX Redesign proposal §09, approved) — REAL GAP
@@ -2471,19 +2553,34 @@ async function loadQuote() {
       ? `<br><a onclick="revertQuoteTotalOverride()" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Revert total to calculated value</a>`
       : `<br><a onclick="overrideQuoteTotal(${inclVat})" style="font-size:11px; color:var(--teal); cursor:pointer; font-weight:600;">Override total</a>`;
   }
-  // Owner-Only Calculation Breakdown Toggle (confirmed Aug 2026) — this
-  // used to be one combined line, gated `!== 'sales'` (Owner+Admin both
-  // got cost AND margin). Split per the brief's own §0 exception:
-  // overall_margin_pct is now sent to every role (get_quote(), main.py)
-  // and shown to every role here, unconditionally; overall_cost_ex_vat
-  // is only ever sent to Owner at all (same endpoint), so it's only
-  // ever shown here too, and only with the breakdown toggle on.
-  if (data.overall_margin_pct !== undefined) {
-    const pct = (data.overall_margin_pct * 100).toFixed(1);
-    const flag = data.overall_margin_pct < 0.30 ? ' ⚠️' : ' ✓';
-    totalText += `<br><span style="font-size:14px; font-weight:600;">Overall margin: ${pct}%${flag}</span>`;
+  // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed Aug
+  // 2026) — REVERSES the Owner-Only Calculation Breakdown Toggle
+  // brief's earlier §0 exception: overall_margin_pct is Owner-only
+  // again (get_quote(), main.py), same policy as everything else this
+  // toggle governs. overall_margin_band (every role, always) is the
+  // colour-only replacement — the "Overall margin" line itself is now
+  // just a coloured dot/label for non-Owner, the real % + ⚠️/✓ flag only
+  // for Owner. overall_cost_ex_vat stays Owner-only + toggle-gated, same
+  // as before.
+  if (data.overall_margin_band !== undefined) {
+    const bandColor = marginBandColor(data.overall_margin_band);
+    const isOwner = currentRole() === 'owner';
+    const label = isOwner && data.overall_margin_pct !== undefined
+      ? `Overall margin: ${(data.overall_margin_pct * 100).toFixed(1)}%${data.overall_margin_band === 'red' ? ' ⚠️' : ' ✓'}`
+      : `Overall margin: ${data.overall_margin_band === 'red' ? '⚠️ below target' : '✓ healthy'}`;
+    totalText += `<br><span style="font-size:14px; font-weight:600;${bandColor ? ` color:${bandColor};` : ''}">${label}</span>`;
     if (data.overall_cost_ex_vat !== undefined && showBreakdown) {
       totalText += ` <span class="muted" style="font-size:12px; font-weight:400;">(Overall cost: R${data.overall_cost_ex_vat.toFixed(2)})</span>`;
+    }
+    // Low Margin Accountability, whole-quote (confirmed Aug 2026, same
+    // brief) — separate from any one line's own prompt (l.id-scoped,
+    // above): this is the combined-total check (transport levy,
+    // quote-level discount, etc. all folded in), so a quote can need
+    // this even when every individual line cleared the floor on its own.
+    if (data.quote.low_margin_reason) {
+      totalText += `<br><span class="muted" style="font-size:11px; color:var(--navy); font-weight:600;" title="by ${data.quote.low_margin_reason_by || ''}${data.quote.low_margin_reason_at ? ' on ' + new Date(data.quote.low_margin_reason_at).toLocaleDateString('en-ZA') : ''}">📋 ${data.quote.low_margin_reason.replace(/</g, '&lt;')}</span>`;
+    } else if (data.quote_needs_low_margin_reason) {
+      totalText += `<br><a onclick="explainLowMarginQuote()" style="font-size:11px; color:var(--coral); cursor:pointer; font-weight:700;">⚠️ Explain low overall margin</a>`;
     }
   }
   document.getElementById('quoteTotal').innerHTML = totalText;
