@@ -1961,6 +1961,18 @@ let stagedChanges = {};   // key: "entityType:entityId:field" -> {entity_type, e
 const FLOORING_CONSOLE_FIELDS = [
   ['product_name', 'Range', 'text'],
   ['colour', 'Colour', 'text'],
+  // Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug
+  // 2026) — the actual "explicitly activate" action the brief's own
+  // §4 describes: reuses the EXISTING edit/stage/Commit Changes
+  // mechanism this whole screen already has, rather than a bespoke new
+  // "Activate" button/workflow — Burgert flips this to Active and
+  // clicks Commit Changes, same as correcting any other imported
+  // field. flooring_category/roll_width_m sit right after it so he can
+  // actually SEE what he's reviewing (which calculator category, if
+  // any, and the real roll width) without opening each row separately.
+  ['pending_review', 'Import status', 'bool_pending'],
+  ['flooring_category', 'Category (carpet/blank=Vinyl)', 'text'],
+  ['roll_width_m', 'Roll width (m, carpet only)', 'number', '0.01'],
   ['discontinued', 'Status', 'bool_discontinued'],
   ['available_to_builder_portal', 'Builder Portal', 'bool_builder_portal'],
   ['sku', 'Product code', 'text'],
@@ -2136,6 +2148,17 @@ function supplierConsoleRow(entityType, fields, product) {
       // every other non-generic type here.
       const discAttrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="bool" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
       return `<td><select style="${stagedHighlight} ${val ? 'background:var(--coral); color:white; font-weight:700;' : ''}" ${discAttrs}><option value="false" ${!val ? 'selected' : ''}>Active</option><option value="true" ${val ? 'selected' : ''}>Discontinued</option></select></td>`;
+    }
+    if (type === 'bool_pending') {
+      // Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug
+      // 2026) — same data-input-type="bool" override trick as
+      // bool_discontinued above. Coral for "Pending review" (needs
+      // Burgert's attention, same semantic coral already carries for
+      // Discontinued), blank/default for "Active". The REAL guard is
+      // server-side (_require_active_flooring_product(), main.py) —
+      // this select just stages the same field that guard reads.
+      const pendAttrs = `data-entity-type="${entityType}" data-entity-id="${product.id}" data-field="${field}" data-input-type="bool" data-orig="${trueOrig === null || trueOrig === undefined ? '' : trueOrig}" onchange="stageChange(this)"`;
+      return `<td><select style="${stagedHighlight} ${val ? 'background:var(--coral); color:white; font-weight:700;' : ''}" ${pendAttrs}><option value="true" ${val ? 'selected' : ''}>Pending review</option><option value="false" ${!val ? 'selected' : ''}>Active</option></select></td>`;
     }
     if (type === 'bool_builder_portal') {
       // Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) —

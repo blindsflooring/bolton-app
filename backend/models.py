@@ -315,6 +315,23 @@ class FlooringProduct(SQLModel, table=True):
     # not an automatic removal. See import_master_spreadsheet() (main.py)
     # for where this gets staged during a re-import.
     discontinued: bool = False
+    # Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug
+    # 2026) — genuinely different from discontinued above: discontinued
+    # means "was live, supplier dropped it, still fully usable while
+    # Burgert decides"; pending_review means "never been reviewed at
+    # all, must NOT be usable by anyone yet." A bulk/automated import
+    # (as opposed to the existing one-row-at-a-time Supplier Console
+    # flow, or an AI-import that already lands in a staging area
+    # requiring a manual "Commit Changes" click) has no equivalent
+    # human-review gate of its own — this field IS that gate, enforced
+    # server-side everywhere a product is resolved for pricing
+    # (_require_active_flooring_product(), main.py — add/edit
+    # Flooring/Carpet/Stairwell-vinyl all call it), not just left off
+    # the Quote Builder's own dropdowns. False for every product created
+    # any other way (single Console add, AI-import commit, the earlier
+    # Carpet Calculators seed) — this is an opt-IN restriction, never a
+    # retroactive one.
+    pending_review: bool = False
     # Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) — "a
     # simple 'available to builder portal' flag on a product, capped at
     # 2 active at a time" per the brief's own hard constraint. The cap

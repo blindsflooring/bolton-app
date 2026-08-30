@@ -430,6 +430,8 @@ def _ensure_new_columns():
         ("quote", "low_margin_reason", "VARCHAR", "NULL"),
         ("quote", "low_margin_reason_by", "VARCHAR", "NULL"),
         ("quote", "low_margin_reason_at", "TIMESTAMP", "NULL"),
+        # Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026):
+        ("flooringproduct", "pending_review", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1796,6 +1798,26 @@ def get_or_404(session: Session, model, obj_id: int, tenant_id: str, name: str =
     if not obj or obj.tenant_id != tenant_id:
         raise HTTPException(404, f"{name} not found")
     return obj
+
+
+def _require_active_flooring_product(product: "FlooringProduct") -> "FlooringProduct":
+    """Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug
+    2026) — "NOT selectable in the live quote builder by any account
+    (Owner included) until explicitly activated," enforced at the one
+    real choke point every pricing path already goes through: right
+    after resolving a FlooringProduct for a quote line (add/edit
+    Flooring, Carpet, Stairwell vinyl). Deliberately NOT applied to the
+    Supplier Console's own CRUD endpoints (update_flooring/
+    delete_flooring) — a pending product must stay fully editable/
+    deletable there, since reviewing and correcting it is the whole
+    point of this state. A frontend dropdown filter alone (the ONLY
+    thing that existed for the equivalent Carpet-vs-Vinyl routing gap
+    found in the Category Contracts investigation) would satisfy
+    "not selectable" for a normal click-through but not a direct API
+    call — this is the real, structural version."""
+    if product.pending_review:
+        raise HTTPException(400, f"'{product.product_name}' is still pending review and can't be used on a quote yet.")
+    return product
 
 
 def margin_band_for(margin_pct, settings) -> Optional[str]:
@@ -7116,7 +7138,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
     """
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
-        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        product = _require_active_flooring_product(get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product"))
         settings = get_settings(session, tenant_id)
 
         calc = calculate_flooring_line(
@@ -7271,7 +7293,7 @@ def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: 
     displayed changed, not the calculation itself — landing_calc below
     is computed identically to before, just added into the stairwell
     line's fields instead of becoming its own QuoteLineItem row."""
-    vinyl_product = get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product")
+    vinyl_product = _require_active_flooring_product(get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product"))
     nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
     if not vinyl_product.tiles_per_pack:
         raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
@@ -7347,7 +7369,7 @@ def _compute_carpet_calc(session: Session, tenant_id: str, product_id: int, quan
     either way" instruction. Every other carpet category uses
     carpet_cutting_fee (R350, confirmed current, found identically in two
     independent reference spreadsheets)."""
-    product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Carpet product")
+    product = _require_active_flooring_product(get_or_404(session, FlooringProduct, product_id, tenant_id, "Carpet product"))
     settings = get_settings(session, tenant_id)
     resolved_labour_rate = (
         labour_rate_per_m2 if labour_rate_per_m2 is not None
@@ -7682,7 +7704,7 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
             raise HTTPException(404, "Quote line not found")
         if line.category != "flooring":
             raise HTTPException(400, "This line is not a flooring/screed line.")
-        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        product = _require_active_flooring_product(get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product"))
         settings = get_settings(session, tenant_id)
 
         product_changed = (line.product_id != product_id)

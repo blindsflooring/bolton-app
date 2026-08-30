@@ -408,7 +408,7 @@ async function toggleLineFields() {
   document.querySelectorAll('.misc-field').forEach(el => el.style.display = cat === 'misc' ? '' : 'none');
   document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
   if (cat === 'stairwell') {
-    const stairVinyl = flooringProducts.filter(p => p.pricing_type === 'material' && p.tiles_per_pack);
+    const stairVinyl = flooringProducts.filter(p => p.pricing_type === 'material' && p.tiles_per_pack && !p.pending_review);
     document.getElementById('line_stair_vinyl').innerHTML = stairVinyl.map(p => `<option value="${p.id}">${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
     document.getElementById('line_nosing_product').innerHTML = trimProducts.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
   } else if (cat !== 'misc') {
@@ -475,7 +475,13 @@ function selectCarpetType(type, preselectRange) {
 }
 
 function populateCarpetTypeProducts(type, preselectRange) {
-  const products = sortByPriority(flooringProducts.filter(p => p.flooring_category === type));
+  // Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026)
+  // — a pending product is never offered here at all, so there's
+  // nothing to accidentally click; the real, server-side rule
+  // (_require_active_flooring_product(), main.py) is what actually
+  // prevents it being priced, this is just the matching "don't even
+  // show it" UX half of that.
+  const products = sortByPriority(flooringProducts.filter(p => p.flooring_category === type && !p.pending_review));
   const sel = document.getElementById('carpet_product');
   if (!products.length) {
     sel.innerHTML = `<option value="">No ${CARPET_TYPE_LABELS[type]} products in price book</option>`;
@@ -846,7 +852,10 @@ function toggleFloorPrepRoomCard(headerEl) {
 // Colour within it — the colour list depends on which range is chosen,
 // since each range has its own set of colour-specific price book entries.
 function populateVinylRangeDropdown(preselectRange) {
-  const vinylProducts = flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category));
+  // Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026)
+  // — same "don't even show it" treatment as populateCarpetTypeProducts()
+  // below.
+  const vinylProducts = flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.flooring_category !== 'uncategorized_pending' && !p.pending_review);
   const rangesByPriority = {};
   vinylProducts.forEach(p => { if (!(p.product_name in rangesByPriority)) rangesByPriority[p.product_name] = p.display_order ?? 100; });
   const ranges = Object.keys(rangesByPriority).sort((a, b) => rangesByPriority[a] - rangesByPriority[b] || a.localeCompare(b));
@@ -873,7 +882,7 @@ function populateVinylRangeDropdown(preselectRange) {
 
 function onVinylRangeChange() {
   const range = document.getElementById('fj_vinyl_range').value;
-  const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.product_name === range));
+  const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.flooring_category !== 'uncategorized_pending' && !p.pending_review && p.product_name === range));
   const colourSelect = document.getElementById('fj_vinyl_colour');
   colourSelect.innerHTML = colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylColourChange();
