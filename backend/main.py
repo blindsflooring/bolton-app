@@ -1472,8 +1472,15 @@ def on_startup():
         # scheduler, a different hour (02:00 UTC / 04:00 SAST) so it
         # never runs at the exact same moment as the snapshot job above.
         scheduler.add_job(run_database_backup_job, CronTrigger(hour=2, minute=0), id="database_backup", misfire_grace_time=3600, replace_existing=True)
+        # Live Consistency Monitor (confirmed Aug 2026) — same scheduler,
+        # a third distinct hour (03:00 UTC / 05:00 SAST) so it never runs
+        # at the exact same moment as either job above. "Reuse the
+        # existing in-process scheduler already built... no new
+        # scheduling infrastructure needed" — this brief's own explicit
+        # instruction, not a new mechanism.
+        scheduler.add_job(run_consistency_monitor_job, CronTrigger(hour=3, minute=0), id="consistency_monitor", misfire_grace_time=3600, replace_existing=True)
         scheduler.start()
-        print("Scheduler started: Order Index Snapshot next at 23:00 UTC (01:00 SAST); Database Backup next at 02:00 UTC (04:00 SAST)")
+        print("Scheduler started: Order Index Snapshot next at 23:00 UTC (01:00 SAST); Database Backup next at 02:00 UTC (04:00 SAST); Consistency Monitor next at 03:00 UTC (05:00 SAST)")
     except Exception as e:
         print(f"Scheduler FAILED to start ({e}) — nightly snapshots/backups will not run until this is fixed")
 
@@ -2516,7 +2523,13 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         # tiles (carpet_category=="carpet_tile") are NOT excluded — they
         # genuinely do have m2_per_pack set and belong in the exact same
         # box-based path as any Vinyl tile, unchanged.
-        CARPET_ROLL_CATEGORIES = ("carpet_tufted_broadloom", "carpet_needlepunch_broadloom", "cushion_vinyl")
+        # Category-Aware Contracts, Fix #1 (confirmed Aug 2026, Live
+        # Consistency Monitor brief — "sequence directly alongside") —
+        # CARPET_ROLL_CATEGORIES is now the one module-level constant
+        # (derived from CARPET_ONLY_CATEGORIES, defined further down
+        # this file — a real module-level name by the time any request
+        # actually reaches this function) — no longer a second,
+        # independently hand-typed tuple living only in this function.
         material_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type != "screed" and l.carpet_category not in CARPET_ROLL_CATEGORIES]
         screed_lines = [l for l in lines if l.category == "flooring" and l.flooring_pricing_type == "screed"]
         carpet_roll_lines = [l for l in lines if l.carpet_category in CARPET_ROLL_CATEGORIES]
@@ -3132,6 +3145,118 @@ def _order_index_snapshot_csv(session: Session, tenant_id: str) -> bytes:
             f"{totals['balance_amount']:.2f}", q.created_at.isoformat(),
         ])
     return buf.getvalue().encode("utf-8")
+
+
+def _run_consistency_checks(session: Session, tenant_id: str) -> list:
+    """Live Consistency Monitor (confirmed Aug 2026) — "reuse the exact
+    same category-consistency checks already proposed in the Category-
+    Aware Contracts brief... do not invent a second set of rules." The
+    two checks below ARE that investigation's own two named findings,
+    turned into real queries against live data instead of arguments in
+    a proposal document — nothing here corrects, writes, or touches a
+    single row; it only reads and reports. Returns a plain list of
+    {entity_type, entity_id, note} dicts, the exact shape
+    FlaggedRecord/flag_record() already expect — the one existing
+    "surface something for the Owner to review" mechanism this reuses
+    rather than building a second one (see run_consistency_monitor_job()
+    below for where these actually get written)."""
+    findings = []
+    lines = session.exec(select(QuoteLineItem).where(
+        QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.category == "flooring",
+    )).all()
+    products = {p.id: p for p in session.exec(
+        select(FlooringProduct).where(FlooringProduct.tenant_id == tenant_id)
+    ).all()}
+
+    for line in lines:
+        product = products.get(line.product_id)
+        # Check 1 — category tag drift (Category-Aware Contracts
+        # investigation, "a line's category tag remains correct and
+        # consistent across every stage"): re-derives what
+        # carpet_category SHOULD be from the line's own real product
+        # record, the same way add_flooring_line()/edit_flooring_line()
+        # themselves compute it — a real quote line's stored value
+        # should never disagree with that unless something along the
+        # way went wrong (a bug, or an old row from before a fix
+        # shipped) — the one legitimate way these could genuinely
+        # differ later (a product's own category edited after this
+        # line was saved) is rare enough that a flagged, human-reviewed
+        # false positive is a fair trade for catching a real bug.
+        if product is not None:
+            expected_carpet_category = product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None
+            if line.carpet_category != expected_carpet_category:
+                findings.append({
+                    "entity_type": "QuoteLineItem", "entity_id": line.id,
+                    "note": f"Category mismatch on Quote #{line.quote_id}: line has carpet_category={line.carpet_category!r}, but its product ({product.product_name!r}) currently says {expected_carpet_category!r}.",
+                })
+        # Check 2 — wrong formula used (Category-Aware Contracts
+        # investigation, "the correct category-specific pricing
+        # calculation was used for each line, never a different
+        # category's formula" — Finding 2, the real Conqueror
+        # demonstration during the Belgotex import): a genuine
+        # roll-shaped carpet category (Tufted/Needlepunch Broadloom,
+        # Cushion Vinyl) NEVER has boxes_needed set and ALWAYS has
+        # quantity_lm set — calculate_carpet_line()'s own real output
+        # shape. Either one being wrong means this line was priced
+        # through the box-based Flooring formula instead of Carpet's.
+        if line.carpet_category in CARPET_ROLL_CATEGORIES:
+            if line.quantity_lm is None or line.boxes_needed is not None:
+                findings.append({
+                    "entity_type": "QuoteLineItem", "entity_id": line.id,
+                    "note": f"Wrong formula suspected on Quote #{line.quote_id}: {line.carpet_category} line has quantity_lm={line.quantity_lm!r}, boxes_needed={line.boxes_needed!r} — looks priced as a box product, not a roll.",
+                })
+    return findings
+
+
+# Live Consistency Monitor (confirmed Aug 2026) — the literal string
+# every system-raised flag is stamped with, so the frontend's own
+# "impossible to miss" banner (index.html) can tell a system finding
+# apart from a real person's own Flag for Review note without a new
+# column — same generic FlaggedRecord shape, one recognizable value.
+CONSISTENCY_MONITOR_FLAGGED_BY = "system (consistency monitor)"
+
+
+def run_consistency_monitor_job():
+    """The scheduled job itself (APScheduler, see on_startup() below).
+    "Detect and alert only... never attempt to automatically correct,
+    modify, or fix any data itself" — this function's only write of any
+    kind is a new FlaggedRecord row; it never touches a Quote,
+    QuoteLineItem, or FlooringProduct. Runs per-tenant, same pattern as
+    the Order Index snapshot/backup jobs already on this scheduler.
+    De-duplicated against the SAME open finding re-appearing every
+    single day it stays unfixed: an identical, still-unresolved flag
+    (same entity_type/entity_id/note) is never re-raised — Burgert
+    would otherwise see the exact same Conqueror-shaped complaint
+    accumulate one new row per day for however long it sits open."""
+    with Session(engine) as session:
+        tenant_ids = session.exec(select(Quote.tenant_id).distinct()).all() or [DEFAULT_TENANT_ID]
+        for tenant_id in tenant_ids:
+            try:
+                findings = _run_consistency_checks(session, tenant_id)
+                existing_open = session.exec(select(FlaggedRecord).where(
+                    FlaggedRecord.tenant_id == tenant_id,
+                    FlaggedRecord.flagged_by == CONSISTENCY_MONITOR_FLAGGED_BY,
+                    FlaggedRecord.resolved == False,  # noqa: E712
+                )).all()
+                already_flagged = {(f.entity_type, f.entity_id, f.note) for f in existing_open}
+                new_count = 0
+                for finding in findings:
+                    key = (finding["entity_type"], finding["entity_id"], finding["note"])
+                    if key in already_flagged:
+                        continue
+                    session.add(FlaggedRecord(
+                        tenant_id=tenant_id, entity_type=finding["entity_type"], entity_id=finding["entity_id"],
+                        note=finding["note"], flagged_by=CONSISTENCY_MONITOR_FLAGGED_BY,
+                    ))
+                    new_count += 1
+                if new_count:
+                    session.commit()
+                print(f"Consistency monitor ({tenant_id}): {len(findings)} issue(s) found, {new_count} newly flagged ({len(findings) - new_count} already open)")
+            except Exception as e:
+                # Same "background job failing must never crash the
+                # scheduler thread or take the web service down with
+                # it" discipline as every other job on this scheduler.
+                print(f"Consistency monitor ({tenant_id}) FAILED ({e}) — needs manual review")
 
 
 def run_order_index_snapshot_job():
@@ -4797,6 +4922,43 @@ def resolve_flag(flag_id: int, body: ResolveFlagRequest, role: str = Depends(req
         session.commit()
         session.refresh(flag)
         return flag
+
+
+@app.post("/admin/consistency-monitor/run-now")
+def run_consistency_monitor_now(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Live Consistency Monitor (confirmed Aug 2026) — on-demand trigger
+    for the SAME job the nightly scheduler runs (run_consistency_monitor_job()
+    calls _run_consistency_checks() for every tenant; this calls the
+    identical check for just the current one and returns the real
+    findings directly, not just a "started" acknowledgement) — needed
+    to actually verify this without waiting for 03:00 UTC, and useful
+    for Burgert afterward if he wants a fresh check on demand rather
+    than only once a day. Still detect-only: reuses the exact same
+    de-duplication against already-open flags as the scheduled job, so
+    running this manually can never create duplicate flags for the
+    same still-unresolved issue."""
+    with Session(engine) as session:
+        findings = _run_consistency_checks(session, tenant_id)
+        existing_open = session.exec(select(FlaggedRecord).where(
+            FlaggedRecord.tenant_id == tenant_id,
+            FlaggedRecord.flagged_by == CONSISTENCY_MONITOR_FLAGGED_BY,
+            FlaggedRecord.resolved == False,  # noqa: E712
+        )).all()
+        already_flagged = {(f.entity_type, f.entity_id, f.note) for f in existing_open}
+        new_flags = []
+        for finding in findings:
+            key = (finding["entity_type"], finding["entity_id"], finding["note"])
+            if key in already_flagged:
+                continue
+            flag = FlaggedRecord(
+                tenant_id=tenant_id, entity_type=finding["entity_type"], entity_id=finding["entity_id"],
+                note=finding["note"], flagged_by=CONSISTENCY_MONITOR_FLAGGED_BY,
+            )
+            session.add(flag)
+            new_flags.append(finding)
+        if new_flags:
+            session.commit()
+        return {"checked_lines_found_issues": len(findings), "newly_flagged": len(new_flags), "already_open": len(findings) - len(new_flags)}
 
 
 def _parse_audit_value(raw: str):
@@ -7107,6 +7269,15 @@ def duplicate_quote(quote_id: int, body: DuplicateQuoteRequest, tenant_id: str =
 # categories is tagged here automatically, tile included, regardless of
 # which screen/entry point created it.
 CARPET_ONLY_CATEGORIES = ("carpet_tufted_broadloom", "carpet_needlepunch_broadloom", "carpet_tile", "cushion_vinyl")
+# Category-Aware Contracts, Fix #1 (confirmed Aug 2026, Live Consistency
+# Monitor brief — "sequence directly alongside") — ONE authoritative
+# registry, not the three independently hand-typed tuples the
+# investigation found (this one, a second copy of this one, and a
+# same-but-different "roll types only" one inside generate_order_sheets()
+# further up this file). Derived here, once, rather than hand-typed a
+# second time — carpet_tile is the one category that genuinely belongs
+# in the box-based path, never the roll-based one.
+CARPET_ROLL_CATEGORIES = tuple(c for c in CARPET_ONLY_CATEGORIES if c != "carpet_tile")
 
 
 @app.post("/quotes/{quote_id}/lines/flooring")

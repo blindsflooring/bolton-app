@@ -149,6 +149,22 @@
   <button onclick="applyPreviewRole('')" style="margin-left:12px; background:white; color:var(--coral); border:none; padding:3px 10px; border-radius:4px; font-weight:700; cursor:pointer;">Exit preview</button>
 </div>
 
+<!-- Live Consistency Monitor (confirmed Aug 2026) — "an alert must be
+impossible to miss... verified by triggering a real alert and
+confirming it's seen." Same sticky top-banner pattern #previewBanner
+above already establishes, not a second alerting mechanism — checked
+once per login/reload (checkConsistencyAlerts(), called from showApp())
+against the EXISTING /admin/flags?resolved=false list, filtered to
+just this monitor's own CONSISTENCY_MONITOR_FLAGGED_BY marker so a
+staff member's own unrelated Flag for Review note never triggers it.
+Real Owner only (realRole(), never the previewed role — this must
+never be fooled by Owner Preview Mode any more than the preview toggle
+itself is). -->
+<div id="consistencyAlertBanner" style="display:none; background:var(--coral); color:white; text-align:center; padding:8px 12px; font-weight:600; font-size:13px;">
+  <span id="consistencyAlertBannerText"></span>
+  <button onclick="landingView='flaggedItems'; renderLanding();" style="margin-left:12px; background:white; color:var(--coral); border:none; padding:3px 10px; border-radius:4px; font-weight:700; cursor:pointer;">Review now</button>
+</div>
+
 <nav style="display:none;">
   <button class="tab-btn active" data-tab="landing">Home</button>
 </nav>
@@ -1298,7 +1314,34 @@ function showApp() {
   // pushNavState()/nextNavIsBaseline for how this flag is consumed.
   nextNavIsBaseline = true;
   document.getElementById('mobileBackBtn').style.display = '';
+  checkConsistencyAlerts();
   renderLanding();
+}
+
+// Live Consistency Monitor (confirmed Aug 2026) — checked once here,
+// on login/reload, per the brief's own "narrowly scoped... not a
+// general check-everything system" framing — not a polling loop.
+// Reuses the EXISTING /admin/flags list (Owner-only endpoint) rather
+// than a new one; only ever counts flags this monitor itself raised
+// (CONSISTENCY_MONITOR_FLAGGED_BY, main.py) so a real person's own
+// Flag for Review note never triggers this banner.
+async function checkConsistencyAlerts() {
+  const banner = document.getElementById('consistencyAlertBanner');
+  if (!banner) return;
+  if (realRole() !== 'owner') { banner.style.display = 'none'; return; }
+  try {
+    const res = await fetch(`${API}/admin/flags?resolved=false`);
+    if (!res.ok) { banner.style.display = 'none'; return; }
+    const flags = await res.json();
+    const systemFlags = flags.filter(f => f.flagged_by === 'system (consistency monitor)');
+    if (systemFlags.length) {
+      document.getElementById('consistencyAlertBannerText').textContent =
+        `⚠️ ${systemFlags.length} data-consistency issue${systemFlags.length !== 1 ? 's' : ''} found automatically — needs your review.`;
+      banner.style.display = '';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) { banner.style.display = 'none'; }
 }
 
 function showLogin() {
@@ -1307,6 +1350,7 @@ function showLogin() {
   document.querySelector('nav').style.display = 'none';
   document.querySelector('main').style.display = 'none';
   document.getElementById('previewBanner').style.display = 'none';
+  document.getElementById('consistencyAlertBanner').style.display = 'none';
   document.getElementById('mobileBackBtn').style.display = 'none';
   document.getElementById('login_username').value = '';
   document.getElementById('login_error').textContent = '';
