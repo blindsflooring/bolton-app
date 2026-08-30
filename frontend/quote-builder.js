@@ -909,7 +909,19 @@ function onVinylRangeChange() {
   const range = document.getElementById('fj_vinyl_range').value;
   const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.flooring_category !== 'uncategorized_pending' && !p.pending_review && p.product_name === range));
   const colourSelect = document.getElementById('fj_vinyl_colour');
-  colourSelect.innerHTML = colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
+  // Colour Default Risk (confirmed Aug 2026) — real risk, not a
+  // convenience: unlike Branch/Sales Owner, there is no "usually
+  // correct" colour, it's different for every client, and a native
+  // <select> auto-selects its first option the instant it's populated
+  // with none of its own <option>s marked selected — this silently
+  // pre-picked whichever colour happened to sort first for this range,
+  // with nothing on screen looking wrong. A real, explicit "— Choose a
+  // colour (TBC) —" placeholder, selected by default, replaces that
+  // silent pick — addFloorJob() (below) now hard-blocks Add/Save while
+  // this is still selected, so a TBC-coloured line can never actually
+  // be saved in the first place, not just flagged after the fact.
+  colourSelect.innerHTML = `<option value="">— Choose a colour (TBC) —</option>` +
+    colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylColourChange();
 }
 
@@ -1244,6 +1256,10 @@ async function addFloorJob() {
       });
     } else {
       const productId = document.getElementById('fj_vinyl_product').value;
+      // Colour Default Risk (confirmed Aug 2026) — same hard block as
+      // the fresh-add path below: a line can never be saved with
+      // colour still left as TBC, not just flagged after the fact.
+      if (!productId) { alert('Choose a colour first.'); return; }
       const materialOnly = document.getElementById('fj_material_only').checked;
       const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
       params = new URLSearchParams({
@@ -1267,6 +1283,13 @@ async function addFloorJob() {
 
   if (includeVinyl) {
     const productId = document.getElementById('fj_vinyl_product').value;
+    // Colour Default Risk (confirmed Aug 2026) — "confirm a quote
+    // cannot be finalized/sent with colour still left as TBC": enforced
+    // here, at the moment a line is actually added, not just flagged
+    // afterward — a TBC-coloured line can never be saved in the first
+    // place, matching the exact "Pick a screed product first" guard
+    // Screed's own equivalent branch already has.
+    if (!productId) { alert('Choose a colour first.'); return; }
     const jobType = document.getElementById('fj_jobtype').value;
     const materialOnly = document.getElementById('fj_material_only').checked;
     const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
@@ -1427,6 +1450,7 @@ async function createQuote() {
   // too, regardless of how this was reached.
   clearStaleQuoteResidue();
   currentQuoteClientId = quote.client_id || null;   // set AFTER clearStaleQuoteResidue(), which resets it to null — this is the new quote's own real client, straight from the just-created record
+  currentQuoteIsPriceCheck = false;   // createQuote() only ever makes a real quote, never a Price Check (startPriceCheck() below is the separate entry point for that)
   document.getElementById('quoteStatus').textContent = `Quote #${quote.id} started for ${quote.client_name}.`;
   document.getElementById('addLineCard').style.display = 'block';
   document.getElementById('linesCard').style.display = 'block';
@@ -1515,6 +1539,7 @@ async function startPriceCheck() {
   fetch(`${API}/quotes/${quote.id}/snapshot`, {method:'POST'});
   clearStaleQuoteResidue();
   currentQuoteClientId = quote.client_id || null;
+  currentQuoteIsPriceCheck = true;
   document.getElementById('quoteStatus').innerHTML =
     `<b style="color:var(--coral);">PRICE CHECK</b> #${quote.id} started${quote.client_id ? ' for ' + quote.client_name : ''} — not a saved job until you convert it below.`;
   document.getElementById('addLineCard').style.display = 'block';
@@ -1579,6 +1604,7 @@ async function convertPriceCheckToQuote() {
 function clearStaleQuoteResidue() {
   currentQuoteStatus = 'quoted';   // a brand-new quote's workflow_status is always 'quoted' — must not inherit the PREVIOUS quote's status and wrongly trigger (or skip) the post-accept confirmation below
   currentQuoteClientId = null;   // must not leak the PREVIOUS quote's real client into a new one — createQuote() sets this fresh via loadQuote() once the new quote is actually saved
+  currentQuoteIsPriceCheck = false;   // same reasoning — createQuote()/startPriceCheck() each set this fresh right after calling this function
   // Real, pre-existing gap this function's own stated purpose already
   // covers, closed while building the persistent summary panel
   // (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal §03,
@@ -1772,6 +1798,44 @@ function startFreshQuote() {
 
 async function saveQuote() {
   if (!currentQuoteId) return;
+  // Save Quote Dead End From Price Check (confirmed Aug 2026) — real
+  // root cause, confirmed by reading this function and
+  // convertPriceCheckToQuote() side by side rather than assumed: this
+  // function's own PUT below succeeds fine even on a still-open Price
+  // Check (client_name just saves as plain text, no error) — but the
+  // quote stays is_price_check=True, and list_quotes() deliberately
+  // excludes Price Checks from the Order Index this function redirects
+  // to. Nothing ever looked broken: the screen just changed to a list
+  // that correctly doesn't contain what was "saved," reading exactly
+  // like Save Quote silently did nothing. The already-built "Convert to
+  // real quote" button (convertPriceCheckToQuote(), same file) does
+  // this correctly today — but nothing stops the far more obvious Save
+  // Quote button from being clicked instead on exactly this screen.
+  // Fixed by having Save Quote itself trigger the SAME conversion step
+  // first, reusing that endpoint directly, whenever there's no real
+  // client attached yet — never a second, parallel client-creation path.
+  if (currentQuoteIsPriceCheck) {
+    // Still a Price Check either way, per list_quotes()'s own exclusion
+    // rule — even one that already has a real client_id (e.g. started
+    // from that client's own page) must still be explicitly converted,
+    // or it stays invisible on the Order Index regardless of a client
+    // being on file. Same two-branch shape convertPriceCheckToQuote()
+    // already uses: prompt for a name only when genuinely no client is
+    // attached yet.
+    let convRes;
+    if (currentQuoteClientId) {
+      convRes = await fetch(`${API}/quotes/${currentQuoteId}/convert-to-quote?client_id=${currentQuoteClientId}`, {method: 'POST'});
+    } else {
+      const name = prompt('This Price Check has no client on file yet. Enter the client\'s name to save this as a real, tracked quote:');
+      if (!name || !name.trim()) return;
+      convRes = await fetch(`${API}/quotes/${currentQuoteId}/convert-to-quote?client_name=${encodeURIComponent(name.trim())}`, {method: 'POST'});
+    }
+    if (!convRes.ok) { const body = await convRes.json().catch(() => ({})); alert(body.detail || 'Could not save this Price Check as a real quote.'); return; }
+    const converted = await convRes.json();
+    currentQuoteClientId = converted.client_id;
+    currentQuoteIsPriceCheck = false;
+    document.getElementById('q_client').value = converted.client_name;
+  }
   // Workflow status deliberately NOT sent from here (confirmed Aug
   // 2026, Order Index / Job Workflow Redesign brief) — it only ever
   // changes via a specific action (Accept/Decline/Schedule/Complete) on
@@ -2323,6 +2387,15 @@ let currentQuoteStatus = 'draft';
 // always a real, validated client_id, never re-derived from whatever
 // text happens to be sitting in the q_client field.
 let currentQuoteClientId = null;
+// Save Quote Dead End From Price Check (confirmed Aug 2026) — mirrors
+// currentQuoteClientId's own exact pattern (set in the same three
+// places: loadQuote(), createQuote(), startPriceCheck()) so saveQuote()
+// can tell a still-open Price Check apart from a real quote without an
+// extra round trip. Needed because a Price Check's OWN "no client yet"
+// state is completely normal/expected right up until Save Quote is
+// actually clicked — only saveQuote() itself needs to know when that
+// changes.
+let currentQuoteIsPriceCheck = false;
 // Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) —
 // object URLs created per thumbnail (see loadQuotePhotos()) so they
 // can be revoked on the next load instead of quietly leaking memory
@@ -2340,6 +2413,7 @@ async function loadQuote() {
   loadQuotePhotos();
   if (data.quote && data.quote.workflow_status) { currentQuoteStatus = data.quote.workflow_status; }
   currentQuoteClientId = data.quote ? (data.quote.client_id || null) : null;
+  currentQuoteIsPriceCheck = !!(data.quote && data.quote.is_price_check);
   // Page Title in Sticky Header brief (confirmed Aug 2026) -- upgrades
   // the generic "New Quote" title once a real quote/Price Check is
   // actually loaded.
