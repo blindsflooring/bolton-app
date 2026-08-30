@@ -680,33 +680,19 @@ function openOrderDetailScreen(quoteId) {
   renderLanding();
 }
 
-// Job Workflow Design Proposal Phase 2+3 (confirmed Aug 2026) — the
-// numbered step strip + compact per-Order-Sheet procurement tiles.
-// Renders job_steps exactly as computed server-side (_job_steps(),
-// main.py — never re-derived here), and every actual action (Accept/
-// Schedule/Complete/Generate Order Sheet(s)/Mark as Placed) stays the
-// EXISTING button it already was — this deliberately does NOT
-// introduce a second, competing "Next" mechanism. Renders nothing at
-// all for a quote that isn't a job yet, or was declined (job_steps is
-// [] in both cases, from the server). While a job is on hold,
-// workflow_status/materials_ordered are untouched, so this naturally
-// shows the frozen step exactly where it was — no special case needed
-// here for that.
-//
-// Phase 3: the procurement tiles are now shown WHENEVER this job has
-// a Procurement step at all — not only while it's the active step.
-// Real gap caught before shipping: Order Sheets must stay reachable
-// for the life of the job (re-ordering more materials while
-// Scheduled, checking what was ordered during Installation), not
-// disappear the moment the job moves past that step. This is now the
-// ONLY place Order Sheets are surfaced on Job Detail — the old compact
-// "Order Sheets" list card and the old full editable "Order Sheet
-// Preview" panel are both retired here: every real action (edit
-// quantities, Mark as Placed, Delete, View/Edit/Print/Save/Mail) now
-// lives solely on the standalone Order Sheet Detail screen, reached by
-// clicking a tile — exactly "compact tiles replace all three surfaces
-// with one," per the proposal.
-function renderJobStepsHtml(jobSteps, quoteId) {
+// Job Control Panel (confirmed Aug 2026, approved proposal — supersedes
+// "same feel as quoting") — the step strip is now a DEMOTED secondary
+// map only: dots + one summary line, nothing else. The procurement
+// tiles that used to live inline here moved into their own Materials
+// section (renderMaterialsSectionHtml() below), and the actual Order
+// Sheet previews moved into the Documents section
+// (renderOrderSheetPreviewsHtml()) — per the proposal's own field map,
+// §6. Renders job_steps exactly as computed server-side (_job_steps(),
+// main.py, including its own st.active — the "first not-done step"
+// loop right before it returns — never re-derived here). Renders
+// nothing at all for a quote that isn't a job yet, or was declined
+// (job_steps is [] in both cases, from the server).
+function renderStepMapHtml(jobSteps) {
   if (!jobSteps || !jobSteps.length) return '';
   const activeIndex = jobSteps.findIndex(st => st.active);
   const activeStep = activeIndex >= 0 ? jobSteps[activeIndex] : jobSteps[jobSteps.length - 1];
@@ -718,69 +704,139 @@ function renderJobStepsHtml(jobSteps, quoteId) {
       : st.active
         ? 'background:var(--navy); color:var(--bg,#EDEDED); box-shadow:0 0 0 3px var(--bg,#EDEDED);'
         : 'background:var(--border); color:var(--ink-faint,#8A93A0);';
-    const dot = `<div title="${st.label}" style="width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; flex-shrink:0; ${dotStyle}">${st.done ? '✓' : (i + 1)}</div>`;
+    const dot = `<div title="${st.label}" style="width:18px; height:18px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:9.5px; font-weight:800; flex-shrink:0; ${dotStyle}">${st.done ? '✓' : (i + 1)}</div>`;
     const line = i < jobSteps.length - 1
-      ? `<div style="flex:1; height:2px; min-width:10px; background:${st.done ? 'var(--teal)' : 'var(--border)'};"></div>`
+      ? `<div style="flex:1; height:2px; min-width:8px; background:${st.done ? 'var(--teal)' : 'var(--border)'};"></div>`
       : '';
     return dot + line;
   }).join('');
 
-  const procurementStep = jobSteps.find(st => st.id === 'procurement');
-  let procurementHtml = '';
-  if (procurementStep) {
-    const isCurrentStep = activeStep && activeStep.id === 'procurement';
-    // Real, printable, sendable Order Sheet previews (confirmed Aug
-    // 2026, Job Detail: Needs Attention Bug, Conditional Invoice
-    // Preview, Order Sheet Previews brief §3) — each tile is now a
-    // compact click-to-expand Document Preview + the standard 5-button
-    // Action Bar, the EXACT SAME documentPreviewTileHtml()/
-    // documentActionBarHtml() component Order Sheet Detail's own
-    // preview already uses (shared.js) — not a second, different
-    // preview mechanism, per the brief's own explicit instruction. A
-    // status line stays above each preview so the at-a-glance "✓
-    // Ordered / Needs ordering" scan this replaces isn't lost. Edit
-    // deliberately included (brief's own open question, resolved by
-    // reading the actual behaviour rather than guessing): for
-    // docType='ordersheet', documentActionBarHtml()'s Edit button
-    // already just calls openOrderSheetDetail(id) — the same
-    // navigation this tile's own click used to do directly — so
-    // there's no real "editing inline in a compact preview" risk to
-    // worry about, it's already just a shortcut to the full screen.
-    // Collapsed by default (.doc-preview-tile's own 210px frame, same
-    // as every other placement) so multiple sheets side by side stay
-    // compact, matching the existing Quote Preview's own click-to-
-    // expand pattern rather than reintroducing the stacked-full-panels
-    // clutter the original Job Detail redesign eliminated.
-    const tileHtml = procurementStep.tiles.map(t => {
-      const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
-      const isPlaced = t.status === 'placed';
-      const previewId = 'dp_ordersheet_tile_' + t.id;
-      return `
-        <div style="flex:1 1 260px; min-width:220px; max-width:340px; border:1px solid var(--border); border-radius:8px; padding:9px 12px; background:${isPlaced ? 'var(--teal-bg,#E3F6F7)' : 'var(--coral-bg,#FDECE7)'};">
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
-            <span style="font-size:12.5px; font-weight:600;">${label} <span style="color:var(--ink-faint,#8A93A0); font-weight:400;">(${t.supplier})</span></span>
-            <span style="font-size:11.5px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
-          </div>
-          ${documentPreviewTileHtml(previewId, t.id, 'ordersheet')}
-        </div>`;
-    }).join('');
-    procurementHtml = `
-      <div id="procurementTilesBlock" style="margin-top:10px;">
-        ${!isCurrentStep ? `<p class="muted" style="font-size:11px; margin:0 0 6px; font-weight:700; text-transform:uppercase; letter-spacing:.03em;">Materials</p>` : ''}
-        <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-weight:700; font-size:13.5px;"></div>
-        ${tileHtml
-          ? `<div style="display:flex; gap:8px; flex-wrap:wrap;">${tileHtml}</div>`
-          : `<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>`}
-        <button onclick="generateOrderSheetsForQuote(${quoteId})" style="margin-top:8px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
-      </div>`;
-  }
-
   return `
-    <div style="margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid var(--border);">
-      <div style="display:flex; align-items:center; gap:4px; margin-bottom:8px;">${dots}</div>
-      <p style="margin:0; font-weight:700; font-size:13.5px;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}${activeStep && activeStep.note ? ` <span class="muted" style="font-weight:400;">(${activeStep.note})</span>` : ''}</p>
-      ${procurementHtml}
+    <div style="display:flex; align-items:center; gap:3px; margin-bottom:6px; opacity:.85;">${dots}</div>
+    <p class="muted" style="margin:0; font-size:11.5px; text-transform:uppercase; letter-spacing:.03em;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}${activeStep && activeStep.note ? ` (${activeStep.note})` : ''}</p>`;
+}
+
+// Materials section (Job Control Panel, approved proposal §6) — a
+// compact, skimmable status line per Order Sheet this job has actually
+// produced, plus the Generate action. Deliberately text-only, no
+// embedded preview here any more — the real, printable/sendable
+// preview + action bar for each sheet now lives in the Documents
+// section below (renderOrderSheetPreviewsHtml()), alongside the Quote/
+// Invoice preview and the Document Archive, so every document preview
+// on this page lives in one place. Same underlying data
+// (data.job_steps' own procurement step/tiles, _job_steps() main.py)
+// as before — nothing re-derived, nothing new fetched.
+function renderMaterialsSectionHtml(jobSteps, quoteId) {
+  const procurementStep = (jobSteps || []).find(st => st.id === 'procurement');
+  if (!procurementStep) return `<p class="muted" style="margin:0;">No flooring/floor-prep lines on this job — nothing to order.</p>`;
+  const tileHtml = procurementStep.tiles.map(t => {
+    const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
+    const isPlaced = t.status === 'placed';
+    return `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 0; border-bottom:1px solid var(--border);">
+        <span style="font-size:13px;">${label} <span class="muted">(${t.supplier})</span></span>
+        <span style="font-size:12px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div id="procurementTilesBlock">
+      <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-weight:700; font-size:13.5px;"></div>
+      ${tileHtml || '<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>'}
+      <button onclick="generateOrderSheetsForQuote(${quoteId})" style="margin-top:10px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
+      ${tileHtml ? `<p class="muted" style="font-size:11px; margin-top:8px;">Full previews, editing, and Mark as Placed are under Documents below.</p>` : ''}
     </div>`;
+}
+
+// Order Sheet previews (Job Control Panel, approved proposal §6) — the
+// real, printable/sendable preview this job's own procurement tiles
+// used to render inline (Job Detail: Needs Attention Bug, Conditional
+// Invoice Preview, Order Sheet Previews brief §3) now lives in
+// Documents instead of Materials, grouped with every other document
+// this job has. Exact same documentPreviewTileHtml()/
+// documentActionBarHtml() component as before (shared.js) — not a
+// second, different preview mechanism.
+function renderOrderSheetPreviewsHtml(jobSteps) {
+  const procurementStep = (jobSteps || []).find(st => st.id === 'procurement');
+  if (!procurementStep || !procurementStep.tiles.length) return '';
+  const tiles = procurementStep.tiles.map(t => {
+    const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
+    const previewId = 'dp_ordersheet_tile_' + t.id;
+    return `
+      <div style="flex:1 1 260px; min-width:220px; max-width:340px; border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+        <p style="margin:0 0 6px; font-size:12.5px; font-weight:600;">${label} <span class="muted" style="font-weight:400;">(${t.supplier})</span></p>
+        ${documentPreviewTileHtml(previewId, t.id, 'ordersheet')}
+      </div>`;
+  }).join('');
+  return `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">${tiles}</div>`;
+}
+
+// Primary status strip (Job Control Panel, approved proposal §5) — the
+// one 🟢/🟡/🔴 line meant to be the very first thing read on this
+// page, ahead of the (now-demoted) step map and every collapsed
+// section below it. Reads ONLY fields this page already receives —
+// q.attention_priority/attention_label/next_action, the exact same
+// _job_workflow_info() engine (main.py) that already drives the Order
+// Index's own Needs Attention list — plus q.materials_ordered/
+// ready_for_installation/invoice_sent_date/final_payment_date for the
+// two genuinely new 🟢 cases. Declined/On Hold are left to
+// renderWorkflowActionsHtml()'s own existing panel, which already says
+// everything needed for those two and is about to render directly
+// below this.
+//
+// The two 🟢 branches are presentation-only, per Decision Q2 of the
+// approved proposal: _job_workflow_info() itself is untouched, and the
+// Order Index's Needs Attention list keeps sorting/showing exactly
+// what it always has — a job in either of these states was already
+// invisible to that list before today, simply with no colour of its
+// own here yet. No supplier-promised delivery date exists anywhere in
+// Bolton's data (checked directly against models.py — only
+// OrderSheet.placed_at, which this endpoint doesn't currently return),
+// so per Decision Q1 the "awaiting delivery" message stays honest
+// about what Bolton actually knows rather than naming a date — no
+// endpoint change needed to add one.
+// workflow is data.workflow from GET /quotes/{id} — get_quote() nests
+// _job_workflow_info()'s own dict there (main.py, "workflow": ...),
+// a genuinely different shape from list_quotes() (Order Index), which
+// flattens the identical dict directly onto each row instead. Real gap
+// caught during disposable verification, not assumed from the Order
+// Index's own q.attention_priority reads: this screen has to read
+// data.workflow.attention_priority, not q.attention_priority.
+function jobControlPanelStatusHtml(q, workflow) {
+  if (q.declined_at || q.on_hold_reason) return '';
+  const DOT = { critical: '🔴', warning: '🟡', notice: '🟡' };
+  const CLASS = { critical: 'crit', warning: 'warn', notice: 'warn' };
+  const strip = (cls, dot, text, sub) => `
+    <div class="control-panel-status ${cls}">
+      <span class="cp-dot">${dot}</span>
+      <div><div class="cp-text">${text}</div><div class="cp-sub">${sub}</div></div>
+    </div>`;
+  if (workflow && workflow.attention_priority) {
+    return strip(CLASS[workflow.attention_priority], DOT[workflow.attention_priority], workflow.next_action, workflow.attention_label);
+  }
+  // No attention_priority set — _job_workflow_info() only omits it for
+  // a genuinely healthy wait; decide which honest sentence applies from
+  // the same fields already on this page.
+  //
+  // Real correction made here, caught by testing against the actual
+  // running engine rather than trusting the approved proposal's own
+  // §5 table: that table listed "scheduled, materials ordered, not yet
+  // received" as a second silent/blank case needing a new 🟢 — checked
+  // directly against a real job moved through this exact state and
+  // _job_workflow_info() already returns attention_priority="warning"
+  // ("Confirm receipt") for it, not blank. Arguably the more correct
+  // read anyway (confirming receipt is a genuine, if unhurried, click
+  // Burgert still owes), so no override is added for it — only the
+  // one case actually confirmed blank below.
+  if (q.workflow_status === 'completed' && q.invoice_sent_date && !q.final_payment_date) {
+    return strip('ok', '🟢', `Invoiced ${new Date(q.invoice_sent_date).toLocaleDateString('en-ZA')} — awaiting payment`, 'Normal — nothing to do until it comes in.');
+  }
+  if (q.workflow_status === 'completed' && q.final_payment_date) {
+    return strip('ok', '🟢', 'Job closed out', 'Invoiced and paid.');
+  }
+  if (q.workflow_status === 'quoted') {
+    return strip('ok', '🟢', 'Waiting on customer decision', 'Sent — no response needed from you yet.');
+  }
+  return '';
 }
 
 // Workflow action section — one clear primary action at a time, driven
@@ -863,6 +919,21 @@ function renderWorkflowActionsHtml(q) {
     return `<p style="margin:0; color:var(--teal); font-weight:700;">✓ Job fully closed out — invoiced and paid.</p>`;
   }
   return '';
+}
+
+// Which of the six Job Control Panel sections opens by default
+// (approved proposal mockup — "available, not competing for attention
+// by default," but the one section actually relevant to the current
+// stage stays a helpful exception, same reasoning the mockup itself
+// showed Materials open for a job mid-delivery). Purely a display
+// default — every section stays independently openable regardless.
+function defaultOpenSection(q) {
+  if (q.declined_at || q.on_hold_reason) return null;
+  if (q.workflow_status === 'quoted') return 'quote';
+  if (q.workflow_status === 'accepted') return 'installation';
+  if (q.workflow_status === 'scheduled') return q.ready_for_installation ? 'installation' : 'materials';
+  if (q.workflow_status === 'completed') return q.invoice_sent_date ? 'financial' : 'quote';
+  return null;
 }
 
 function holdButtonHtml(quoteId) {
@@ -949,80 +1020,77 @@ async function renderOrderDetail(el) {
       <p>${q.client_name} &nbsp; ${workflowStatusBadge(q)}</p>
     </div>
 
-    <div class="job-detail-layout">
-      <div class="job-detail-main">
-        <div class="card">
-          <h2>Workflow</h2>
-          ${renderJobStepsHtml(data.job_steps, q.id)}
-          ${renderWorkflowActionsHtml(q)}
-          <details style="margin-top:16px;">
-            <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>
-            <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
-              <select id="wf_override_status">
-                ${['quoted','accepted','scheduled','completed'].map(s => `<option value="${s}" ${q.workflow_status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
-              </select>
-              <button onclick="overrideWorkflowStatus(${q.id})">Override</button>
-            </div>
-          </details>
+    <!-- Job Control Panel (confirmed Aug 2026, approved proposal) —
+    single-column, top-to-bottom: primary status + action first, the
+    step map demoted right under it, then every detail field grouped
+    into named, collapsed sections (Customer/Quote/Materials/
+    Installation/Financial/Documents) rather than one long always-open
+    "Job Details" card. Deliberately NOT the two-column
+    .job-detail-layout grid this screen used before — that layout gave
+    the (now-collapsed) document previews equal, permanent billing
+    alongside the primary actions, which is exactly the "everything
+    competing for attention" problem the brief named. Every field/ID/
+    handler below is unchanged from before this brief; only the
+    grouping and ordering moved. -->
+    <div class="card">
+      ${jobControlPanelStatusHtml(q, data.workflow)}
+      ${renderWorkflowActionsHtml(q)}
+      <details style="margin-top:16px;">
+        <summary class="muted" style="cursor:pointer; font-size:12.5px;">Correct workflow status manually (exception path — use Accept/Schedule/Complete above normally)</summary>
+        <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+          <select id="wf_override_status">
+            ${['quoted','accepted','scheduled','completed'].map(s => `<option value="${s}" ${q.workflow_status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+          </select>
+          <button onclick="overrideWorkflowStatus(${q.id})">Override</button>
         </div>
+      </details>
 
-        <div class="card">
-          <h2>Job Details</h2>
-          <!-- Save confirmation (confirmed Aug 2026, Deposit Amount +
-          Save Confirmation + Default Branch brief §2) — replaces the
-          old small grey "Saved ✓ 13:05:17" note (easy to miss) with a
-          real, temporary success banner right at the top of this card.
-          Deliberately NOT a navigate-away-on-save, unlike Quote
-          Builder's own Save (Save Redirect brief) — this page hosts
-          several related actions in one visit (Job Details, Document
-          Preview, Follow-Ups), so auto-navigating away would interrupt
-          someone doing more than one of those. showJobDetailsSaveBanner()
-          (below) shows this and fades it after a few seconds; leaving
-          the page is always the user's own choice. -->
-          <div id="jobDetailsSaveBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
-          <p class="muted" style="margin-top:-8px;">Site/installation and payment tracking for this job — shown at a glance on the Order Index once saved.</p>
+      <!-- Follow-Ups (Decision Q4, approved proposal) — kept visible
+      and uncollapsed right alongside the primary status/action, not
+      folded into any of the six named sections below: not a clean fit
+      for any one of them (a follow-up can be about payment, a delivery
+      delay, or just a check-in call), and it's closer in spirit to
+      "what's already happened"/"what needs me" than a buried detail
+      field. Same fields/handlers as before (fu_date/fu_notes/
+      followUpList, logFollowUp()/loadFollowUps()), just relocated. -->
+      <h2 style="margin-top:20px; font-size:14px;">Follow-Ups</h2>
+      <div id="followUpList" style="margin-bottom:10px;"></div>
+      <div class="grid">
+        <div class="field"><label>Date</label><input id="fu_date" type="date"></div>
+        <div class="field" style="grid-column: span 2;"><label>Notes</label><input id="fu_notes" placeholder="e.g. Called about outstanding balance"></div>
+      </div>
+      <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
+    </div>
 
-          <!-- Manual Override total display (confirmed Aug 2026, Manual
-          Override brief) — Job Detail doesn't show individual line
-          items (that's Quote Builder's job, via "Open in Quote Builder"
-          below), so this is the TOTAL only, right alongside the
-          deposit/payment fields it actually affects (deposit_amount/
-          balance_amount are derived FROM the override server-side —
-          _quote_totals(), main.py — so what's recorded here always
-          matches the real agreed figure). Badge visible to every
-          internal role; Override/Revert action Owner-only, same split
-          as Quote Builder's own line/total controls. -->
-          <p style="margin:0 0 4px;">
-            <b>Total (incl VAT):</b> R${data.total_incl_vat.toFixed(2)}
-            ${q.manual_override_total_incl_vat != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="${(q.override_total_reason || '').replace(/"/g,'&quot;')} — by ${q.override_total_by || ''}${q.override_total_at ? ' on ' + new Date(q.override_total_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Manually adjusted</span>` : ''}
-            ${currentRole() === 'owner' ? (q.manual_override_total_incl_vat != null
-              ? ` <a href="#" onclick="revertJobDetailTotalOverride(); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Revert to calculated</a>`
-              : ` <a href="#" onclick="overrideJobDetailTotal(${data.total_incl_vat}); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Override total</a>`) : ''}
-          </p>
-          <!-- Deposit Amount (confirmed Aug 2026, brief §1) — same
-          precedence/flagging pattern as the Manual Override total just
-          above, without a mandatory reason: this isn't a price
-          correction needing justification, just what was actually
-          paid. balance_amount below is already computed FROM this
-          figure server-side (_quote_totals()), never a second,
-          separate calculation here. -->
-          <p style="margin:0 0 4px;">
-            <b>Deposit:</b> R${data.deposit_amount.toFixed(2)}
-            ${q.actual_deposit_amount != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="Entered by ${q.actual_deposit_amount_by || ''}${q.actual_deposit_amount_at ? ' on ' + new Date(q.actual_deposit_amount_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Actual (manually entered)</span>` : ` <span class="muted" style="font-size:11px;">(${(q.deposit_pct*100).toFixed(0)}% calculated)</span>`}
-          </p>
-          <p style="margin:0 0 12px;"><b>Balance due:</b> R${data.balance_amount.toFixed(2)}</p>
+    <!-- The step map — demoted (renderStepMapHtml()), a secondary
+    "where am I" reference, never the primary surface above it. -->
+    <div class="card" style="padding:12px 18px;">
+      ${renderStepMapHtml(data.job_steps)}
+    </div>
 
+    <!-- Six named, collapsed-by-default sections (approved proposal
+    §6) — every field below already existed on this screen; this is a
+    regrouping into named categories, not new content. Collapsed by
+    default, per the brief's own mockup ("available, not competing for
+    attention by default") — except whichever one is actually relevant
+    to this job's current stage (defaultOpenSection() above), same
+    exception the mockup's own Materials-open example already showed.
+    Every section stays independently openable regardless. -->
+    <div class="card">
+      <!-- Save confirmation (confirmed Aug 2026, Deposit Amount + Save
+      Confirmation + Default Branch brief §2) — one shared banner for
+      all three "Save Job Details" buttons below (Customer/Installation/
+      Financial all write the same fields via the same saveOrderDetails()
+      call), same real, temporary success banner as before this brief,
+      just relocated to sit above whichever section it was clicked from. -->
+      <div id="jobDetailsSaveBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
+      <details class="cp-section" ${defaultOpenSection(q) === 'customer' ? 'open' : ''}>
+        <summary>Customer</summary>
+        <div class="cp-section-body">
           <!-- Client link (confirmed Aug 2026, Order Index -> Client
           Link Gap brief, Gap 2 fix) — real gap closed: there was
           previously no way to link an existing quote to a real Client
-          record after the fact. A quote typed as a plain name in Quote
-          Builder without clicking the matching autocomplete suggestion
-          becomes a permanently disconnected walk-in (client_id=None) —
-          it shows correctly on the Order Index (which lists every
-          quote regardless), but never appears in that real client's
-          own Order History (which filters strictly by client_id).
-          This is exactly that self-service fix, right where the
-          problem is actually noticed. -->
+          record after the fact. -->
           <div class="field" style="grid-column: span 2; position:relative; margin-bottom:14px;">
             <label>Client</label>
             ${q.client_id
@@ -1033,10 +1101,76 @@ async function renderOrderDetail(el) {
               <div id="jdClientSuggestions" style="display:none; position:absolute; z-index:10; background:white; border:1px solid var(--border); border-radius:6px; width:100%; max-height:160px; overflow-y:auto; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
             </div>
           </div>
-
           <div class="grid">
             <div class="field" style="grid-column: span 2;"><label>Site address</label><input id="od_site_address" value="${q.site_address || ''}" placeholder="Install/delivery site, if different from the client's own address"></div>
+          </div>
+          <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
+        </div>
+      </details>
+
+      <details class="cp-section" ${defaultOpenSection(q) === 'quote' ? 'open' : ''}>
+        <summary>Quote</summary>
+        <div class="cp-section-body">
+          <!-- Manual Override total display (confirmed Aug 2026, Manual
+          Override brief) — Job Detail doesn't show individual line
+          items (that's Quote Builder's job, via "Open in Quote Builder"
+          below), so this is the TOTAL only. -->
+          <p style="margin:0 0 12px;">
+            <b>Total (incl VAT):</b> R${data.total_incl_vat.toFixed(2)}
+            ${q.manual_override_total_incl_vat != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="${(q.override_total_reason || '').replace(/"/g,'&quot;')} — by ${q.override_total_by || ''}${q.override_total_at ? ' on ' + new Date(q.override_total_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Manually adjusted</span>` : ''}
+            ${currentRole() === 'owner' ? (q.manual_override_total_incl_vat != null
+              ? ` <a href="#" onclick="revertJobDetailTotalOverride(); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Revert to calculated</a>`
+              : ` <a href="#" onclick="overrideJobDetailTotal(${data.total_incl_vat}); return false;" style="font-size:11px; color:var(--teal); font-weight:600;">Override total</a>`) : ''}
+          </p>
+          <!-- Conditional Quote/Invoice Preview (confirmed Aug 2026,
+          JobDetail: Needs Attention Bug, Conditional Invoice Preview,
+          Order Sheet Previews brief §2) — Quote Preview (with its
+          compact payment-status strip) shows for every stage before
+          the job is actually invoiced; Invoice Preview only once
+          there's something genuine to preview. -->
+          ${q.workflow_status !== 'completed' ? `
+          <h3 style="font-size:13px; margin:0 0 8px;">Quote Preview</h3>
+          ${paymentStatusStripHtml(q, data)}
+          ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
+          ` : ''}
+          ${q.workflow_status === 'completed' ? `
+          <h3 style="font-size:13px; margin:0 0 8px;">Invoice Preview</h3>
+          ${documentPreviewTileHtml('dp_invoice_jobdetail_' + q.id, q.id, 'invoice')}
+          ` : ''}
+          <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:12px;">Open in Quote Builder (line items)</button>
+        </div>
+      </details>
+
+      <details class="cp-section" ${defaultOpenSection(q) === 'materials' ? 'open' : ''}>
+        <summary>Materials</summary>
+        <div class="cp-section-body">
+          ${renderMaterialsSectionHtml(data.job_steps, q.id)}
+        </div>
+      </details>
+
+      <details class="cp-section" ${defaultOpenSection(q) === 'installation' ? 'open' : ''}>
+        <summary>Installation</summary>
+        <div class="cp-section-body">
+          <div class="grid">
             <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
+          </div>
+          <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
+        </div>
+      </details>
+
+      <details class="cp-section" ${defaultOpenSection(q) === 'financial' ? 'open' : ''}>
+        <summary>Financial</summary>
+        <div class="cp-section-body">
+          <!-- Deposit Amount (confirmed Aug 2026, brief §1) — same
+          precedence/flagging pattern as the Manual Override total,
+          without a mandatory reason. balance_amount is already
+          computed FROM this figure server-side (_quote_totals()). -->
+          <p style="margin:0 0 4px;">
+            <b>Deposit:</b> R${data.deposit_amount.toFixed(2)}
+            ${q.actual_deposit_amount != null ? `<span class="muted" style="font-size:11px; color:var(--coral); font-weight:700;" title="Entered by ${q.actual_deposit_amount_by || ''}${q.actual_deposit_amount_at ? ' on ' + new Date(q.actual_deposit_amount_at).toLocaleDateString('en-ZA') : ''}"> ✏️ Actual (manually entered)</span>` : ` <span class="muted" style="font-size:11px;">(${(q.deposit_pct*100).toFixed(0)}% calculated)</span>`}
+          </p>
+          <p style="margin:0 0 14px;"><b>Balance due:</b> R${data.balance_amount.toFixed(2)}</p>
+          <div class="grid">
             <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
             <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
             <div class="field"><label>Deposit amount (R) <span class="adj">(actual amount paid — overrides the ${(q.deposit_pct*100).toFixed(0)}% calculated figure once entered; leave blank to use the percentage)</span></label><input id="od_actual_deposit_amount" type="number" step="0.01" value="${q.actual_deposit_amount != null ? q.actual_deposit_amount : ''}" placeholder="e.g. ${(data.total_incl_vat * q.deposit_pct).toFixed(2)} (calculated)"></div>
@@ -1045,79 +1179,29 @@ async function renderOrderDetail(el) {
             <div class="field"><label>Final payment method</label><input id="od_final_payment_method" value="${q.final_payment_method || ''}" placeholder="EFT / Cash / Card / Yoco..."></div>
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
-          <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:10px;">Open in Quote Builder (line items)</button>
+        </div>
+      </details>
+
+      <details class="cp-section" ${defaultOpenSection(q) === 'documents' ? 'open' : ''}>
+        <summary>Documents</summary>
+        <div class="cp-section-body">
+          ${renderOrderSheetPreviewsHtml(data.job_steps)}
+          <!-- Dropbox Document Archive brief (confirmed Aug 2026) —
+          this card is the Quote's own archive history. Manual trigger
+          only. No Dropbox token is configured yet (confirmed with
+          Burgert) — every version still renders and stores a real PDF
+          and shows honestly as "Pending" until one is set. -->
+          <div id="documentArchiveCard">
+            <h3 style="font-size:13px; margin:0 0 4px;">Document Archive</h3>
+            <p class="muted" style="margin-top:0; font-size:12px;">Backup copy in Dropbox, separate from Bolton's own database — every archived version is kept, never overwritten.</p>
+            <div id="documentArchiveContent" class="muted">Loading...</div>
+          </div>
           <!-- Job Card (confirmed Aug 2026, Job Card Content Spec) --
           only once a job genuinely exists (job_number assigned at
-          Accept, same "not a job until accepted" precedent _job_steps()
-          already follows) -- no separate Next Action/workflow-state
-          gating added here, that's a later build-order item, not this
-          spec's own scope. -->
-          ${q.job_number ? `<button onclick="openJobCardScreen(${q.id})" style="margin-top:10px;">Job Card</button>` : ''}
-
-          <h2 style="margin-top:20px;">Follow-Ups</h2>
-          <div id="followUpList" style="margin-bottom:10px;"></div>
-          <div class="grid">
-            <div class="field"><label>Date</label><input id="fu_date" type="date"></div>
-            <div class="field" style="grid-column: span 2;"><label>Notes</label><input id="fu_notes" placeholder="e.g. Called about outstanding balance"></div>
-          </div>
-          <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
+          Accept). -->
+          ${q.job_number ? `<button onclick="openJobCardScreen(${q.id})" style="margin-top:14px;">Job Card</button>` : ''}
         </div>
-      </div>
-
-      <div class="job-detail-preview">
-        <!-- Conditional Quote/Invoice Preview (confirmed Aug 2026,
-        JobDetail: Needs Attention Bug, Conditional Invoice Preview,
-        Order Sheet Previews brief §2) — real usage finding: both
-        previews used to render regardless of stage, which was the
-        actual source of the redundancy/clutter feeling, not the mere
-        existence of two document types. Quote Preview (with a compact
-        payment-status strip covering what the Invoice Preview used to
-        be there for, at this stage) shows for every stage before the
-        job is actually invoiced; Invoice Preview only once there's
-        something genuine to preview — reads workflow_status directly
-        (not a new field), matching _job_workflow_info()'s own existing
-        "invoicing only becomes relevant once completed" rule (main.py)
-        exactly, so this can never disagree with what Next Action says.
-        Quote and Invoice deliberately stay two fully separate document
-        types underneath (buildPrintDocHtml() docType) — only WHICH
-        ONE renders here changes, never merged into one hybrid doc. -->
-        ${q.workflow_status !== 'completed' ? `
-        <div class="card">
-          <h2>Quote Preview</h2>
-          ${paymentStatusStripHtml(q, data)}
-          ${documentPreviewTileHtml('dp_jobdetail_' + q.id, q.id)}
-        </div>` : ''}
-
-        ${q.workflow_status === 'completed' ? `
-        <div class="card">
-          <h2>Invoice Preview</h2>
-          ${documentPreviewTileHtml('dp_invoice_jobdetail_' + q.id, q.id, 'invoice')}
-        </div>` : ''}
-
-        <!-- Dropbox Document Archive brief (confirmed Aug 2026) — this
-        card is the Quote's own archive history. Manual trigger only,
-        same "explicit action, not silent autosave" philosophy already
-        established for Order Sheets generation — archives whatever the
-        Document Preview above is ACTUALLY showing right now
-        (buildPrintDocHtml(), shared.js — the exact same function,
-        unchanged), so there is exactly one source for what this
-        quote's document looks like. Order Sheets get their OWN archive
-        history now too (v2 pass, confirmed Aug 2026) — triggered on
-        finalizeOrderSheet() via a separate buildOrderSheetPrintHtml()
-        (this same file), not shown in a second card here to avoid
-        clutter; inspect via GET /documents/archive?entity_type=
-        OrderSheet&entity_id={id} or the download endpoint directly.
-        No Dropbox token is configured yet (confirmed with Burgert) —
-        every version still renders and stores a real PDF and shows
-        honestly as "Pending" until one is set; nothing here is faked
-        or skipped. -->
-        <div class="card" id="documentArchiveCard">
-          <h2>Document Archive</h2>
-          <p class="muted" style="margin-top:-8px;">Backup copy in Dropbox, separate from Bolton's own database — every archived version is kept, never overwritten.</p>
-          <div id="documentArchiveContent" class="muted">Loading...</div>
-        </div>
-
-      </div>
+      </details>
     </div>
   `;
   loadFollowUps();

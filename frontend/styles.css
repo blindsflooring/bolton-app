@@ -510,6 +510,33 @@
   @media (max-width: 900px) { .job-detail-layout { grid-template-columns: 1fr; } }
   .job-detail-preview { position: sticky; top: 16px; }
 
+  /* Job Control Panel (confirmed Aug 2026, approved proposal) — the
+     primary 🟢/🟡/🔴 status strip, meant to be the very first thing
+     read on Job Detail. Reuses the app's own existing status colours
+     (coral = critical, cream = warning, the same green the "Completed"
+     workflow badge and Order Sheets result banner already use = on
+     track) rather than inventing a fourth palette. */
+  .control-panel-status { display: flex; align-items: center; gap: 14px; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .control-panel-status.crit { background: var(--coral-bg, #fdece7); border: 1px solid var(--coral); }
+  .control-panel-status.warn { background: var(--cream); border: 1px solid #e0d190; }
+  .control-panel-status.ok { background: #dcf5e6; border: 1px solid #9fd9b6; }
+  .cp-dot { font-size: 20px; line-height: 1; flex-shrink: 0; }
+  .cp-text { font-weight: 700; font-size: 15px; color: var(--navy); }
+  .cp-sub { font-size: 12px; color: var(--ink-faint, #6b7280); margin-top: 2px; }
+
+  /* Job Control Panel's six named detail sections — collapsed by
+     default (approved proposal §6/§2), a plain <details> per section
+     rather than a second accordion component, matching the existing
+     "Correct workflow status manually" exception-path pattern already
+     on this same screen. */
+  .cp-section { border-top: 1px solid var(--border); padding: 12px 0; }
+  .cp-section:first-of-type { border-top: none; }
+  .cp-section summary { cursor: pointer; font-weight: 700; font-size: 14px; color: var(--navy); list-style: none; display: flex; align-items: center; gap: 8px; }
+  .cp-section summary::-webkit-details-marker { display: none; }
+  .cp-section summary::before { content: '▸'; color: var(--teal); font-size: 11px; }
+  .cp-section[open] summary::before { content: '▾'; }
+  .cp-section-body { padding: 12px 4px 4px 20px; }
+
   /* Client Picker (confirmed Aug 2026, Save Redirect + Client Link
      Missing brief) — a real search-and-select overlay, replacing the
      free-text prompt() that was the confirmed root cause of duplicated
