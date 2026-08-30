@@ -3086,8 +3086,19 @@ function handleConsoleSearch(value) {
 }
 
 function scrollTable(wrapperId, direction) {
+  // Pending Review Screen: Can't Scroll, Button Hidden Behind Back
+  // (confirmed Aug 2026) — real finding while verifying the position
+  // fix above: `behavior: 'smooth'` produced NO movement at all here
+  // (not even a delayed jump), reproduced identically on a throwaway,
+  // completely unrelated scrollable div — inconclusive whether this is
+  // a genuine cross-browser scrollBy quirk or specific to the tooling
+  // used to verify it, but 'instant' is a strictly safer choice either
+  // way (it has already been confirmed to work, and there's no real
+  // functional loss versus an animation that might silently never
+  // fire) — never leave the ONE mechanism meant to reach these columns
+  // resting on an animation mode that isn't confirmed reliable.
   const wrap = document.getElementById(wrapperId);
-  if (wrap) wrap.scrollBy({ left: direction * 320, behavior: 'smooth' });
+  if (wrap) wrap.scrollBy({ left: direction * 320, behavior: 'instant' });
 }
 
 // Floating scroll arrows (confirmed Aug 2026): genuinely position:fixed
@@ -3344,7 +3355,22 @@ function renderSupplierConsoleTable() {
     </div>
     ${supplierSections}
     ${noResults}
-    <div id="floatingScrollArrows" style="display:none; position:fixed; bottom:24px; right:24px; z-index:100; gap:10px;">
+    <!-- Pending Review Screen: Can't Scroll, Button Hidden Behind Back
+    (confirmed Aug 2026) — REAL BUG, same category as the earlier
+    Document Preview action-bar overlap: this shares #mobileBackBtn's
+    exact bottom:24px/right:24px/z-index:100 spot, and since
+    #mobileBackBtn shows on every screen the moment you're logged in
+    (showApp(), index.html) while these arrows show whenever any
+    Supplier Console table is in view — i.e. almost the entire time
+    this screen is actually being used — the two collided every time,
+    not as an edge case. Confirmed via source: nothing safety-critical
+    was hidden — these two buttons only ever scroll the active table
+    left/right, no approve/reject or other consequential action lives
+    here. Fixed by stacking, not removing either control (both are
+    genuinely needed at once): bottom raised to clear #mobileBackBtn's
+    own ~44px height plus a real gap, same fixed 24px right edge for
+    both, so neither ever visually sits on top of the other again. -->
+    <div id="floatingScrollArrows" style="display:none; position:fixed; bottom:80px; right:24px; z-index:100; gap:10px;">
       <button onclick="scrollActiveTable(-1)" title="Scroll table left" style="width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:18px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; display:flex;">◄</button>
       <button onclick="scrollActiveTable(1)" title="Scroll table right" style="width:46px; height:46px; border-radius:50%; background:var(--teal); color:white; border:none; font-size:18px; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); align-items:center; justify-content:center; display:flex;">►</button>
     </div>
