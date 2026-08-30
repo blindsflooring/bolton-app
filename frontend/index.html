@@ -448,15 +448,21 @@
       not a second, parallel state to keep in sync. -->
       <div class="field">
         <label>Category</label>
+        <!-- Tab-Level Status Affirmation (confirmed Aug 2026) — one
+        <span class="tab-line-indicator"> per tab, toggled by
+        syncTabLineIndicators() (quote-builder.js) to "✓" the instant
+        that category has a real saved line, empty otherwise. Reuses
+        the exact ✓ the persistent summary panel already shows for the
+        same category — never a second, independently-drawn symbol. -->
         <div class="line-category-tabs" style="display:flex; gap:4px; flex-wrap:wrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px;">
-          <button type="button" class="line-category-tab" data-tab="flooring" onclick="selectLineCategoryTab('flooring')">Flooring</button>
-          <button type="button" class="line-category-tab" data-tab="screed" onclick="selectLineCategoryTab('screed')">Screed</button>
-          <button type="button" class="line-category-tab" data-tab="carpet" onclick="selectLineCategoryTab('carpet')">Carpet</button>
-          <button type="button" class="line-category-tab" data-tab="blinds" onclick="selectLineCategoryTab('blinds')">Blinds</button>
-          <button type="button" class="line-category-tab" data-tab="skirting" onclick="selectLineCategoryTab('skirting')">Skirting</button>
-          <button type="button" class="line-category-tab" data-tab="trim" onclick="selectLineCategoryTab('trim')">Trim</button>
-          <button type="button" class="line-category-tab" data-tab="stairwell" onclick="selectLineCategoryTab('stairwell')">Stairwell</button>
-          <button type="button" class="line-category-tab" data-tab="misc" onclick="selectLineCategoryTab('misc')">Misc</button>
+          <button type="button" class="line-category-tab" data-tab="flooring" onclick="selectLineCategoryTab('flooring')">Flooring<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="screed" onclick="selectLineCategoryTab('screed')">Screed<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="carpet" onclick="selectLineCategoryTab('carpet')">Carpet<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="blinds" onclick="selectLineCategoryTab('blinds')">Blinds<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="skirting" onclick="selectLineCategoryTab('skirting')">Skirting<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="trim" onclick="selectLineCategoryTab('trim')">Trim<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="stairwell" onclick="selectLineCategoryTab('stairwell')">Stairwell<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="misc" onclick="selectLineCategoryTab('misc')">Misc<span class="tab-line-indicator"></span></button>
         </div>
         <!-- URGENT: Adding a Line Destroys an Existing Line (confirmed
         Aug 2026) — root cause confirmed, not guessed: editQuoteLine()

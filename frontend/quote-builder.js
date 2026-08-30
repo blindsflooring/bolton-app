@@ -160,10 +160,34 @@ function lineSummaryBucket(line) {
 // quote — always overwritten with the real, backend-computed figure
 // every time loadQuote() runs, never independently calculated.
 let lastKnownQuoteTotalInclVat = 0;
+// Tab-Level Status Affirmation (confirmed Aug 2026) — "apply the same
+// ✓/○ signal directly to the category tab buttons... using the exact
+// same visual language already established in the summary panel, not
+// a new one." Reuses the SAME `buckets` object renderQuoteSummaryPanel()
+// already computes below (from lineSummaryBucket(), the one shared
+// bucketing function both this and the summary panel are built on) —
+// never a second, independent tally that could drift from what the
+// panel itself shows. Only the ✓ half of the pair is actually drawn
+// on a tab (an empty indicator span otherwise) — per the brief's own
+// "genuinely subtle... not a loud alert," printing a ○ on all eight
+// buttons at once (most of which are legitimately empty on any given
+// quote) would be exactly the clutter it warns against; a tab's own
+// plain label already reads as "nothing here yet" without one.
+// No colour override on the ✓ itself — inherits the button's own
+// current text colour (white on the active/teal tab, navy otherwise),
+// so contrast is automatically correct in both states with zero extra
+// rules to keep in sync.
+function syncTabLineIndicators(buckets) {
+  document.querySelectorAll('.line-category-tab[data-tab] .tab-line-indicator').forEach(span => {
+    const tab = span.closest('.line-category-tab').dataset.tab;
+    span.textContent = (buckets && buckets[tab]) ? ' ✓' : '';
+  });
+}
+
 function renderQuoteSummaryPanel(totalInclVat) {
   const panel = document.getElementById('quoteSummaryPanel');
   if (!panel) return;
-  if (!currentQuoteId) { panel.style.display = 'none'; return; }
+  if (!currentQuoteId) { panel.style.display = 'none'; syncTabLineIndicators(null); return; }
   if (totalInclVat === undefined) { totalInclVat = lastKnownQuoteTotalInclVat; }
   else { lastKnownQuoteTotalInclVat = totalInclVat; }
   panel.style.display = '';
@@ -175,6 +199,7 @@ function renderQuoteSummaryPanel(totalInclVat) {
     buckets[b].count += 1;
     buckets[b].subtotal += l.line_total;
   });
+  syncTabLineIndicators(buckets);
   const addLineCardVisible = document.getElementById('addLineCard').style.display !== 'none';
   const active = addLineCardVisible ? activeLineCategoryTab() : null;
 
