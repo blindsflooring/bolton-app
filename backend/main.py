@@ -3577,10 +3577,27 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
     included, WITHOUT relabeling any stored data — this only changes
     what the read endpoint reports, never what's written (satisfies the
     brief's own "do not retroactively relabel... historical rows" by
-    construction, since nothing is being rewritten)."""
+    construction, since nothing is being rewritten).
+
+    Trusted Tester login labeling (confirmed Aug 2026, Trusted Tester
+    Accounts: Check Login Activity Visibility & Labelling brief) — real
+    gap found and closed: this query already joins on every User
+    regardless of role, so a Trusted Tester account's real logins were
+    NEVER actually filtered out or missing here — but the returned rows
+    carried no role/label information at all, so a Trusted Tester login
+    looked completely indistinguishable from Ryno/Madri's own. Fixed the
+    same "one structural place decides is this a test account" way
+    every other consumer already does (`_trusted_tester_usernames()`,
+    its own docstring — "used identically everywhere that decision
+    matters") — `is_test_data`/`test_data_label` follow the EXACT same
+    shape `list_quotes()`/`list_clients()`/`get_order_sheets_for_quote()`
+    already use, so the frontend badge convention (🧪, coral, "TEST —
+    [name]") is reused verbatim rather than inventing a second one for
+    this one screen."""
     with Session(engine) as session:
         stmt = select(UserSession, User).join(User, UserSession.user_id == User.id).where(User.tenant_id == tenant_id)
         rows = session.exec(stmt).all()
+        tt_usernames = _trusted_tester_usernames(session, tenant_id)
 
         now = datetime.utcnow()
         result = []
@@ -3617,6 +3634,8 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
                 "still_active": still_active,
                 "ended_reason": ended_reason,
                 "duration_minutes": duration_minutes,
+                "is_test_data": user.username in tt_usernames,
+                "test_data_label": f"TEST — {tt_usernames[user.username]}" if user.username in tt_usernames else None,
             })
         result.sort(key=lambda r: r["login_time"], reverse=True)
         return result

@@ -18,6 +18,19 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-08-30
+
+### What shipped
+- **Trusted Tester Accounts: Login Activity Visibility & Labelling — real gap found and closed, verified same day** (`Bolton-Brief-Login-Activity-Tester-Check.docx`, folding into the already-shipped Trusted Tester Accounts feature per the brief's own instruction — confirmed via code, not memory, that the feature already exists (`UserRole.trusted_tester`, `_trusted_tester_usernames()`), so this was a direct fix, not something to fold into an in-progress build).
+  - **Confirmed first, not assumed: Trusted Tester logins were never actually missing from the Login Activity screen.** `session_log()`'s own query joins on every `User` regardless of role — there was no filtering to find. The real gap was the other half of the brief's question: the returned rows carried no role or label information at all, so a Trusted Tester login rendered completely indistinguishable from Ryno/Madri's own — exactly the "blend in with real staff" failure mode the brief asks to check for.
+  - **Fixed with the exact existing convention, not a new one** — `_trusted_tester_usernames()` is already "the one structural place this app decides is this record test data," used identically by `list_quotes()`/`list_clients()`/`get_order_sheets_for_quote()`. `session_log()` now calls it too, adding the same `is_test_data`/`test_data_label` pair every other consumer already returns; the frontend renders the same 🧪 coral `"TEST — [name]"` badge `clients.js`/`order-index.js` already use, verbatim, rather than inventing a second labeling style for this one screen.
+  - **Verified end-to-end on the disposable local backend/frontend, not a success message:** created a real `trusted_tester`-role test account, confirmed via a real browser session that its login shows the 🧪 `TEST — Test Wife Account` badge on the Login Activity screen while Burgert/Ryno/Madri's own real logins render with no badge, clearly distinct. Confirmed via direct API inspection (`GET /admin/session-log`) that every row carries the correct `is_test_data`/`test_data_label` pair regardless of role.
+
+### Open going into next session
+- **Real production verification still needed, not yet done — the browser session used all of Aug 29 had expired by the start of this brief** (a genuine session timeout, not a bug), and this session never touches a real password to re-authenticate, so the fix could only be verified on the disposable environment, not against real production Trusted Tester accounts. Burgert (or the actual Trusted Tester accounts themselves) should log in for real once this deploys and confirm the Login Activity screen shows the 🧪 badge correctly — the brief's own explicit testing requirement.
+
+---
+
 ## 2026-08-29
 
 Direct continuation of the previous day's Vinyl Quoting UX Redesign work — one commit, just past midnight.

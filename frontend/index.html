@@ -1891,7 +1891,7 @@ function renderSessionLogTable() {
 
   const tableRows = rows.map(r => `
     <tr>
-      <td>${r.display_name} <span class="muted">(${r.username})</span></td>
+      <td>${r.display_name} <span class="muted">(${r.username})</span>${r.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Trusted Tester account — excluded from Business Overview figures">🧪 ${r.test_data_label}</span>` : ''}</td>
       <td>${fmt(r.login_time)}</td>
       <td>${r.still_active ? '<b style="color:var(--teal);">Still active</b>' : `${fmt(r.logout_time)}<br><span class="muted" style="font-size:11px;">${
         r.ended_reason === 'expired' ? '⏱ Expired (24h) — no explicit logout'
