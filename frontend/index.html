@@ -541,7 +541,25 @@ itself is). -->
         <div class="card" id="vinylCard">
           <h2>Vinyl</h2>
           <div class="field"><label>Range</label><select id="fj_vinyl_range" onchange="onVinylRangeChange()"></select></div>
-          <div class="field"><label>Colour</label><select id="fj_vinyl_colour" onchange="onVinylColourChange()"></select></div>
+          <!-- "Colour" Field Showing Products Instead of Real Colours
+          (confirmed Aug 2026) — a genuinely missing hierarchy level for
+          the confirmed-affected ranges (Luxury Vinyl Planks, Vinyl
+          Composite Tiles): Range -> Product -> Colour, not the two
+          levels below trying to do the job of three. Hidden by default
+          (onVinylRangeChange(), quote-builder.js) — shown ONLY when the
+          selected range actually has more than one real product under
+          it (product_variant set on at least one of its price-book
+          rows); every other, genuinely 2-level range (deZIGN series
+          200 confirmed among them) never shows this at all, unchanged
+          from before this fix. -->
+          <div class="field" id="fj_vinyl_variant_field" style="display:none;"><label>Product</label><select id="fj_vinyl_variant" onchange="onVinylVariantChange()"></select></div>
+          <div class="field" id="fj_vinyl_colour_field"><label>Colour</label><select id="fj_vinyl_colour" onchange="onVinylColourChange()"></select></div>
+          <!-- Shown INSTEAD of the colour dropdown above when the
+          selected Range/Product genuinely has no real colour data yet
+          — "surface that clearly... rather than silently showing
+          something incorrect in its place" (the brief's own fix
+          requirement), not a guess or a fabricated colour list. -->
+          <p class="muted" id="fj_vinyl_no_colours_note" style="display:none; margin-top:-6px;">No colour options loaded for this product yet — the price book has no colour breakdown for it. You can still add this line; a colour can be recorded once real colour data is added.</p>
           <input type="hidden" id="fj_vinyl_product">
           <input type="hidden" id="fj_jobtype" value="smooth">
           <!-- confirmed: vinyl material pricing is flat regardless of job type — job type only genuinely affects screed (its multiplier). Removed the dropdown here since it never did anything for vinyl; kept as a hidden fixed "smooth" value since the submission endpoint still expects the param. -->

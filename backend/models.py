@@ -279,6 +279,27 @@ class FlooringProduct(SQLModel, table=True):
     tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     product_name: str          # the range/product name, e.g. "Aspen Premium Range 2.5mm" — NOT the colour, see colour field below
     colour: str = ""            # confirmed Aug 2026: real structured field, not baked into product_name — so the exact colour ordered from the supplier stays locked and clearly visible on the actual quote. Same range at different colours = separate price book entries.
+    # "Colour" Field Showing Products Instead of Real Colours (confirmed
+    # Aug 2026) — real, missing hierarchy level found, not a relabel:
+    # some ranges (e.g. Belgotex "Luxury Vinyl Planks") are actually a
+    # RANGE containing several distinct named PRODUCTS (Select Plus,
+    # Hilton, Portland...), each with its own real cost/pack size/tile
+    # dimensions — genuinely different products, not colourways of one
+    # product, confirmed by their base_cost_ex_vat/m2_per_pack/tile
+    # dimensions all differing (a real colour of the same product never
+    # changes the cost; these did, for nearly every "colour" value under
+    # the affected ranges). None for every genuinely 2-level range
+    # (Range -> Colour directly, e.g. deZIGN series 200, confirmed by
+    # the OPPOSITE signal — identical cost across every one of its real
+    # colours) — this field being None is exactly what tells the Vinyl
+    # picker (quote-builder.js) to keep behaving exactly as it always
+    # has for those, unchanged. See on_startup()'s own migration
+    # (main.py) for the one-time move of the misplaced product name out
+    # of `colour` and into this new field for the confirmed-affected
+    # ranges — `colour` itself is deliberately left blank afterward
+    # rather than guessed, since no real colour data exists anywhere in
+    # the price book for any of them yet.
+    product_variant: Optional[str] = None
     supplier: str
     pricing_type: str = "material"   # "screed" | "material"
     flooring_category: str = "vinyl"  # "vinyl" | "laminate" | "spc" | "novilon" | "carpet" | "engineered_wood" | "screed" | "carpet_tufted_broadloom" | "carpet_needlepunch_broadloom" | "carpet_tile" | "cushion_vinyl" — for dashboard grouping. The last four (confirmed Aug 2026, Carpet Calculators brief) are real, distinct physical shapes, not just display labels — calculate_carpet_line() (calculations.py) branches on this for the three continuous-roll types (tufted/needlepunch broadloom, cushion vinyl); "carpet_tile" (NEXBAC 920) reuses calculate_flooring_line()'s existing box/material branch completely unchanged, same as ordinary Vinyl — see that function's own docstring.

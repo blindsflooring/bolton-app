@@ -432,6 +432,8 @@ def _ensure_new_columns():
         ("quote", "low_margin_reason_at", "TIMESTAMP", "NULL"),
         # Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026):
         ("flooringproduct", "pending_review", "BOOLEAN", "FALSE"),
+        # "Colour" Field Showing Products Instead of Real Colours (confirmed Aug 2026):
+        ("flooringproduct", "product_variant", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1446,6 +1448,44 @@ def on_startup():
                 print("Carpet Calculators: all 4 price-book products already exist — nothing seeded")
     except Exception as e:
         print(f"Carpet Calculators: price-book seed FAILED ({e}) — needs manual review")
+
+    # "Colour" Field Showing Products Instead of Real Colours (confirmed
+    # Aug 2026) — one-time move of a genuinely misplaced value, not a
+    # relabel: these two ranges are the only ones confirmed (not
+    # assumed — checked every multi-row range in the price book for
+    # whether its "colours" share an identical cost/pack-size/tile-
+    # dimension, the real tell that they're colourways of ONE product
+    # rather than several different real products; deZIGN series
+    # 200/120/250/XL, every Como/Aspen/Numi range, etc. all passed that
+    # check and are correctly left untouched) to have a distinct real
+    # product's name sitting in `colour` instead of an actual colour.
+    # Idempotent via its own WHERE clause (product_variant IS NULL) —
+    # once moved, a row never matches again on a later restart.
+    # `colour` is deliberately left blank afterward, never guessed —
+    # confirmed via the Belgotex Cape Directs price list itself that no
+    # real per-product colour breakdown exists anywhere for either range
+    # yet (see quote-builder.js's own "no colours loaded yet" handling
+    # for what this blank state actually shows staff).
+    try:
+        with Session(engine) as session:
+            rows_to_fix = session.exec(
+                select(FlooringProduct).where(
+                    FlooringProduct.product_name.in_(("Luxury Vinyl Planks", "Vinyl Composite Tiles")),
+                    FlooringProduct.product_variant.is_(None),
+                    FlooringProduct.colour != "",
+                )
+            ).all()
+            fixed = 0
+            for product in rows_to_fix:
+                product.product_variant = product.colour
+                product.colour = ""
+                session.add(product)
+                fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: moved {fixed} misplaced product name(s) out of 'colour' and into the new 'product_variant' field (Luxury Vinyl Planks / Vinyl Composite Tiles) — see this block's own comment")
+    except Exception as e:
+        print(f"Migration: product_variant backfill failed ({e}) — Luxury Vinyl Planks/Vinyl Composite Tiles keep showing the old, mislabeled 'colour' values until this is retried")
 
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render

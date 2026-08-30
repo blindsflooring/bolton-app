@@ -890,6 +890,8 @@ function populateVinylRangeDropdown(preselectRange) {
     // it's a real data problem (no vinyl products loaded), not a hidden bug.
     rangeSelect.innerHTML = '<option value="">No vinyl products in price book</option>';
     document.getElementById('fj_vinyl_colour').innerHTML = '';
+    document.getElementById('fj_vinyl_variant_field').style.display = 'none';
+    document.getElementById('fj_vinyl_no_colours_note').style.display = 'none';
     return;
   }
   // Discontinued (confirmed Aug 2026, Master Sheet System of Record
@@ -907,22 +909,100 @@ function populateVinylRangeDropdown(preselectRange) {
 
 function onVinylRangeChange() {
   const range = document.getElementById('fj_vinyl_range').value;
-  const colours = sortByPriority(flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.flooring_category !== 'uncategorized_pending' && !p.pending_review && p.product_name === range));
+  const rangeProducts = flooringProducts.filter(p => p.pricing_type === 'material' && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category) && p.flooring_category !== 'uncategorized_pending' && !p.pending_review && p.product_name === range);
+  // "Colour" Field Showing Products Instead of Real Colours (confirmed
+  // Aug 2026) — real, missing hierarchy level, confirmed via real price
+  // book data (base_cost_ex_vat/m2_per_pack/tile dimensions genuinely
+  // differing across "colours" — the actual tell, not assumed), not
+  // applied here as a live heuristic: product_variant is only ever set
+  // by the one-time migration (main.py) for the two ranges that check
+  // actually confirmed affected. Every other range's rows all have
+  // product_variant === null/undefined, so `hasVariants` is false and
+  // this function's ORIGINAL two-level behaviour runs completely
+  // unchanged below — confirmed deZIGN series 200 among them.
+  const hasVariants = rangeProducts.some(p => p.product_variant);
+  const variantField = document.getElementById('fj_vinyl_variant_field');
+  if (hasVariants) {
+    variantField.style.display = '';
+    const variantSelect = document.getElementById('fj_vinyl_variant');
+    const variantsByPriority = {};
+    rangeProducts.forEach(p => { if (p.product_variant && !(p.product_variant in variantsByPriority)) variantsByPriority[p.product_variant] = p.display_order ?? 100; });
+    const variants = Object.keys(variantsByPriority).sort((a, b) => variantsByPriority[a] - variantsByPriority[b] || a.localeCompare(b));
+    // Same TBC-style placeholder as the colour dropdown below, same
+    // reasoning: nothing about which specific product within this
+    // range is "usually correct" either — never silently pick the
+    // first one.
+    variantSelect.innerHTML = `<option value="">— Choose a product —</option>` +
+      variants.map(v => `<option value="${v}">${v}</option>`).join('');
+    onVinylVariantChange();
+  } else {
+    variantField.style.display = 'none';
+    document.getElementById('fj_vinyl_no_colours_note').style.display = 'none';
+    document.getElementById('fj_vinyl_colour_field').style.display = '';
+    populateVinylColourOptions(rangeProducts);
+  }
+}
+
+// Colour Default Risk (confirmed Aug 2026) — real risk, not a
+// convenience: unlike Branch/Sales Owner, there is no "usually
+// correct" colour, it's different for every client, and a native
+// <select> auto-selects its first option the instant it's populated
+// with none of its own <option>s marked selected — this silently
+// pre-picked whichever colour happened to sort first for this range,
+// with nothing on screen looking wrong. A real, explicit "— Choose a
+// colour (TBC) —" placeholder, selected by default, replaces that
+// silent pick — addFloorJob() hard-blocks Add/Save while this is still
+// selected, so a TBC-coloured line can never actually be saved in the
+// first place, not just flagged after the fact. Factored out of
+// onVinylRangeChange() so onVinylVariantChange() below (the genuine
+// 3-level case) can reuse the exact same placeholder/behaviour rather
+// than a second, slightly-different colour list built inline.
+function populateVinylColourOptions(products) {
+  const colours = sortByPriority(products);
   const colourSelect = document.getElementById('fj_vinyl_colour');
-  // Colour Default Risk (confirmed Aug 2026) — real risk, not a
-  // convenience: unlike Branch/Sales Owner, there is no "usually
-  // correct" colour, it's different for every client, and a native
-  // <select> auto-selects its first option the instant it's populated
-  // with none of its own <option>s marked selected — this silently
-  // pre-picked whichever colour happened to sort first for this range,
-  // with nothing on screen looking wrong. A real, explicit "— Choose a
-  // colour (TBC) —" placeholder, selected by default, replaces that
-  // silent pick — addFloorJob() (below) now hard-blocks Add/Save while
-  // this is still selected, so a TBC-coloured line can never actually
-  // be saved in the first place, not just flagged after the fact.
   colourSelect.innerHTML = `<option value="">— Choose a colour (TBC) —</option>` +
     colours.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylColourChange();
+}
+
+// "Colour" Field Showing Products Instead of Real Colours (confirmed
+// Aug 2026) — the genuine 3rd level: once a specific product (e.g.
+// "Select Plus") is chosen, its own real colour options (if any exist
+// in the price book) populate the Colour dropdown exactly like a
+// normal 2-level range. Confirmed via the real Belgotex Cape Directs
+// price list that NEITHER affected range has any per-product colour
+// breakdown at all yet — "surface that clearly... rather than
+// silently showing something incorrect in its place" (the brief's own
+// fix requirement): the Colour dropdown is hidden entirely and a plain
+// muted note explains why, rather than a fabricated single-option
+// "colour" list. The one real underlying price-book row for this
+// product is still selected automatically either way, so the line
+// remains fully addable — this is a missing COLOUR breakdown, not a
+// missing PRICE.
+function onVinylVariantChange() {
+  const range = document.getElementById('fj_vinyl_range').value;
+  const variant = document.getElementById('fj_vinyl_variant').value;
+  const matches = flooringProducts.filter(p => p.pricing_type === 'material' && p.product_name === range && p.product_variant === variant);
+  if (!variant || !matches.length) {
+    document.getElementById('fj_vinyl_colour_field').style.display = 'none';
+    document.getElementById('fj_vinyl_no_colours_note').style.display = 'none';
+    document.getElementById('fj_vinyl_colour').innerHTML = '';
+    onVinylColourChange();
+    return;
+  }
+  const realColours = matches.filter(p => p.colour && p.colour.trim());
+  if (realColours.length) {
+    document.getElementById('fj_vinyl_colour_field').style.display = '';
+    document.getElementById('fj_vinyl_no_colours_note').style.display = 'none';
+    populateVinylColourOptions(realColours);
+  } else {
+    document.getElementById('fj_vinyl_colour_field').style.display = 'none';
+    document.getElementById('fj_vinyl_no_colours_note').style.display = '';
+    const colourSelect = document.getElementById('fj_vinyl_colour');
+    colourSelect.innerHTML = matches.map(p => `<option value="${p.id}">(no colour loaded)</option>`).join('');
+    colourSelect.value = matches[0].id;
+    onVinylColourChange();
+  }
 }
 
 function onVinylColourChange() {
@@ -2180,6 +2260,20 @@ function prefillFlooringEdit(line) {
     }
   } else if (product) {
     populateVinylRangeDropdown(product.product_name);
+    // "Colour" Field Showing Products Instead of Real Colours (confirmed
+    // Aug 2026) — populateVinylRangeDropdown() above already cascades
+    // into onVinylRangeChange(), which shows/populates the Product
+    // dropdown for a genuinely 3-level range — but it has no way to
+    // know WHICH product this specific line actually used, only that
+    // one exists. Select it explicitly before falling through to the
+    // colour value below, exactly the same way that line already picks
+    // the real product/colour rather than whatever the cascade's own
+    // default would be. A no-op for every genuinely 2-level range
+    // (product.product_variant is undefined there), unchanged.
+    if (product.product_variant) {
+      document.getElementById('fj_vinyl_variant').value = product.product_variant;
+      onVinylVariantChange();
+    }
     document.getElementById('fj_vinyl_colour').value = product.id;
     onVinylColourChange();   // sets fj_vinyl_product + pre-fills wastage/box price/trade discount/markup/labour/courier from this product's CURRENT price book entry (see this function's own doc comment for why the ORIGINAL inputs can't be recovered instead)
   } else {
