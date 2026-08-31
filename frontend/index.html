@@ -881,6 +881,19 @@ itself is). -->
         <div class="field blinds-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number"></div>
         <div class="field blinds-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number"></div>
         <div class="field trim-field" style="display:none;"><label>Length (m)</label><input id="line_length" type="number" step="0.1"></div>
+        <!-- Trim Colours (confirmed Aug 2026) — Trim only, not Skirting;
+        exactly two real options per Burgert's own instruction. Same
+        plain-select pattern already used everywhere else on this card
+        (e.g. Stairwell type below), not the Vinyl range's own dynamic
+        Range->Colour mechanism, which doesn't fit here — every Trim
+        product has the same two finishes, nothing to derive from a
+        per-product colour list. -->
+        <div class="field trim-colour-field" style="display:none;"><label>Colour</label>
+          <select id="line_trim_colour">
+            <option value="Champagne">Champagne</option>
+            <option value="Silver">Silver</option>
+          </select>
+        </div>
         <div class="field stairwell-field" style="display:none;"><label>Number of stairs</label><input id="line_num_stairs" type="number" step="1"></div>
         <div class="field stairwell-field" style="display:none;"><label>Area per stair (m²)</label><input id="line_stair_area" type="number" step="0.01" value="0.45"></div>
         <div class="field stairwell-field" style="display:none;"><label>Stairwell type</label>

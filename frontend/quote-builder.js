@@ -429,6 +429,10 @@ async function toggleLineFields() {
   }
   document.querySelectorAll('.blinds-field').forEach(el => el.style.display = cat === 'blinds' ? '' : 'none');
   document.querySelectorAll('.trim-field').forEach(el => el.style.display = (cat === 'trim' || cat === 'skirting') ? '' : 'none');
+  // Trim Colours (confirmed Aug 2026) — Trim only, not Skirting, per
+  // the brief's own explicit scope; a separate class from .trim-field
+  // above (shared by both) so Skirting never shows a colour choice.
+  document.querySelectorAll('.trim-colour-field').forEach(el => el.style.display = cat === 'trim' ? '' : 'none');
   document.querySelectorAll('.stairwell-field').forEach(el => el.style.display = cat === 'stairwell' ? '' : 'none');
   document.querySelectorAll('.misc-field').forEach(el => el.style.display = cat === 'misc' ? '' : 'none');
   document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
@@ -1935,6 +1939,31 @@ async function saveQuote() {
     document.getElementById('saveStatus').textContent = '❌ Could not save — check your connection and try again.';
     return;
   }
+  // New Quote Data Bleed (URGENT, confirmed Aug 2026) — the real root
+  // cause, confirmed by reproducing the exact reported sequence against
+  // a real saved database record before this fix: saveQuote() has never
+  // cleared currentQuoteId (or the rest of the quote-builder state) once
+  // a save succeeds. Three entry points (the Blinds tile, and the
+  // Flooring Quotes drill-down for both Vinyl and Carpet ranges) guard
+  // their own reset with `if (!currentQuoteId) { resetQuoteBuilderUI(); }`
+  // — correct while a quote is still genuinely open/unsaved (protects
+  // real in-progress work from being wiped), but with currentQuoteId
+  // never cleared here, that guard stayed permanently false the moment
+  // ANY quote was ever saved this session — every later click on one of
+  // those three entry points silently reopened the already-saved quote
+  // instead of starting a new one. A user who then picked a different
+  // client and saved was, in reality, still editing and re-saving the
+  // exact same row: reproduced directly — the saved record ended up with
+  // the NEW client's name but the OLD client's real line item still on
+  // it, and client_id still pointing at the OLD client's real CRM
+  // record. Fixing this one function fixes all three vulnerable entry
+  // points at once, at the root, since they all depend on this same
+  // variable — no need to patch each guard individually. Reuses the
+  // exact same resetQuoteBuilderUI() every other "start a new quote"
+  // entry point already calls, rather than a second, parallel clearing
+  // mechanism; safe here since nothing below reads quote-builder state
+  // again before navigating away.
+  resetQuoteBuilderUI();
   // Confirmed Aug 2026, Save Redirect + Client Link Missing brief —
   // "taken back to the Order Index automatically... so he can
   // immediately see the saved quote sitting in the list — confirmation
@@ -2036,6 +2065,8 @@ async function addLine() {
         product_id: productId, length_m: document.getElementById('line_length').value,
         discount_pct: discount, role,
       });
+      // Trim Colours (confirmed Aug 2026) — only Trim sends a colour; Skirting has none to send.
+      if (cat === 'trim') { params.set('colour', document.getElementById('line_trim_colour').value); }
       editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/trims?${params}`;
     } else if (cat === 'misc') {
       if (!document.getElementById('line_misc_desc').value) { alert('Enter a description first.'); return; }
@@ -2078,6 +2109,8 @@ async function addLine() {
       product_id: productId, length_m: document.getElementById('line_length').value,
       discount_pct: discount, role,
     });
+    // Trim Colours (confirmed Aug 2026) — only Trim sends a colour; Skirting has none to send.
+    if (cat === 'trim') { params.set('colour', document.getElementById('line_trim_colour').value); }
     url = `${API}/quotes/${currentQuoteId}/lines/trims?${params}`;
   } else if (cat === 'misc') {
     const params = new URLSearchParams({
@@ -2188,6 +2221,11 @@ function editQuoteLine(lineId) {
       document.getElementById('line_product').value = line.product_id;
       document.getElementById('line_length').value = line.length_m || '';
       document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+      // Trim Colours (confirmed Aug 2026) — re-select the real saved
+      // colour on reopen, same as every other field on this line;
+      // toggleLineFields() (already awaited above) has the .trim-colour-
+      // field visible by now if this line is genuinely 'trim'.
+      if (line.category === 'trim' && line.colour) { document.getElementById('line_trim_colour').value = line.colour; }
     } else if (line.category === 'misc') {
       document.getElementById('line_misc_desc').value = line.product_name || '';
       document.getElementById('line_misc_amount').value = line.unit_price || 0;

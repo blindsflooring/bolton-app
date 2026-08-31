@@ -7494,8 +7494,15 @@ def _trim_line_category(product: "TrimProduct") -> str:
 
 @app.post("/quotes/{quote_id}/lines/trims")
 def add_trim_line(quote_id: int, product_id: int, length_m: float,
-                   discount_pct: float = 0.0, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                   discount_pct: float = 0.0, colour: str = "", role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
                    username: str = Depends(get_current_username)):
+    """colour (Trim Colours brief, confirmed Aug 2026) — Trim gets exactly
+    two real choices, Champagne and Silver, per Burgert's own explicit
+    instruction; reuses QuoteLineItem.colour, the SAME field Flooring/
+    Vinyl lines already use, rather than a new one-off column —
+    "reuse the existing colour-selection mechanism," per the brief's own
+    words. Skirting lines never send this (no colour choice for
+    skirting was asked for), so it stays blank there, same as before."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
@@ -7505,7 +7512,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         line = QuoteLineItem(
             quote_id=quote_id, category=_trim_line_category(product), product_id=product_id, tenant_id=tenant_id,
             product_name=product.product_name, length_m=length_m,
-            trim_sub_category=product.category,
+            trim_sub_category=product.category, colour=colour,
             discount_pct=discount_pct,
             unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
             line_total=calc["line_total"], margin_pct=calc["margin_pct"],
@@ -8096,7 +8103,7 @@ def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: flo
 
 @app.put("/quotes/{quote_id}/lines/{line_id}/trims")
 def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float,
-                    discount_pct: float = 0.0, role: str = Depends(get_current_role),
+                    discount_pct: float = 0.0, colour: str = "", role: str = Depends(get_current_role),
                     tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
@@ -8124,6 +8131,7 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
         line.length_m = length_m
         line.category = _trim_line_category(product)   # a skirting line edited into a genuine trim product (or vice versa) must be able to move between the two, same as any other product-change edit
         line.trim_sub_category = product.category
+        line.colour = colour   # Trim Colours brief (confirmed Aug 2026) — blank for skirting, same as add_trim_line() above
         line.discount_pct = discount_pct
         line.unit_cost = calc["unit_cost"]
         line.unit_price = calc["unit_price"]
