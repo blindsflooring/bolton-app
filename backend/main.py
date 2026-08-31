@@ -434,6 +434,8 @@ def _ensure_new_columns():
         ("flooringproduct", "pending_review", "BOOLEAN", "FALSE"),
         # "Colour" Field Showing Products Instead of Real Colours (confirmed Aug 2026):
         ("flooringproduct", "product_variant", "VARCHAR", "NULL"),
+        # Independent Status Tiles, Decision Q2 (confirmed Aug 2026):
+        ("quote", "materials_not_needed", "BOOLEAN", "FALSE"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -5615,13 +5617,21 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
         # been delivered and are on hand, confirmed manually via "Mark
         # Materials Received" (Bolton doesn't track physical stock-on-
         # hand automatically, so this can't be inferred).
+        # materials_not_needed (Independent Status Tiles, Decision Q2,
+        # confirmed Aug 2026) — a job built from stock already on hand
+        # never produces a real OrderSheet, so materials_ordered would
+        # otherwise stay False forever and this would say "Materials
+        # required" indefinitely, indistinguishable from a job genuinely
+        # forgotten. Short-circuits BOTH the ordered and received checks
+        # below — using stock on hand means there's nothing left to wait
+        # on for materials at all, same as if it had already arrived.
         if quote.installation_date and quote.installation_date == today + timedelta(days=1):
             next_action, action_button, action_target = "Prepare job", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Upcoming"
-        elif not materials_ordered:
+        elif not materials_ordered and not quote.materials_not_needed:
             next_action, action_button, action_target = "Prepare / order materials", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Materials required"
-        elif not quote.ready_for_installation:
+        elif not quote.ready_for_installation and not quote.materials_not_needed:
             next_action, action_button, action_target = "Confirm materials received", "PREPARE JOB", "job_detail"
             # Job Detail / Needs Attention disagreement (confirmed Aug
             # 2026, JobDetail: Needs Attention Bug brief) — REAL BUG
@@ -5710,7 +5720,13 @@ def _job_steps(session: Session, quote: "Quote", tenant_id: str, materials_order
 
     if has_procurable_lines:
         steps.append({
-            "id": "procurement", "label": "Order Materials", "done": materials_ordered,
+            # materials_not_needed (Independent Status Tiles, Decision
+            # Q2, confirmed Aug 2026) — same short-circuit as
+            # _job_workflow_info() above, kept consistent here too even
+            # though the step-strip's own visual (dots) is retired by
+            # this same brief — job_steps is still a real, documented
+            # response field other consumers could read.
+            "id": "procurement", "label": "Order Materials", "done": materials_ordered or quote.materials_not_needed,
             # Tiles carry one entry per resulting Order Sheet (post-merge,
             # Phase 1) — never one per category. Empty list means
             # flooring/floor-prep lines exist but Generate Order Sheet(s)
@@ -6181,6 +6197,7 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
                           final_payment_method: str = None, installer_team: str = None,
                           workflow_status: str = None, actual_deposit_amount: float = None,
                           clear_actual_deposit_amount: bool = False, installation_notes: str = None,
+                          deposit_pct: float = None,
                           tenant_id: str = Depends(get_current_tenant),
                           username: str = Depends(get_current_username)):
     """Update a quote's own details — client name, sales owner, branch,
@@ -6230,7 +6247,22 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
 
     Date params are accepted as strings and explicitly coerced — same
     fix as v38's coerce_date_fields(), applied here from the start this
-    time rather than being rediscovered as a bug later."""
+    time rather than being rediscovered as a bug later.
+
+    deposit_pct (Independent Status Tiles, Decision Q3, confirmed Aug
+    2026) — real gap closed: this field already existed on Quote but
+    was only ever written once, at create_quote() time, from Business
+    Settings' own global default_deposit_pct — there was no way to
+    change what ONE job requires without changing (and reverting) the
+    workspace-wide setting. Genuine per-job override now, same
+    precedent as actual_deposit_amount just below (a real field already
+    lets one job's ACTUAL deposit differ from the calculated one; this
+    lets one job's REQUIRED deposit differ from the global default) —
+    0.0 is exactly how "no deposit required for this job" (Money tile)
+    is represented, already tolerated cleanly by _quote_totals() with
+    no special-casing needed there."""
+    if deposit_pct is not None and not (0 <= deposit_pct <= 1):
+        raise HTTPException(400, "Deposit % must be between 0 and 100.")
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if client_id is not None:
@@ -6316,6 +6348,17 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
                 tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
                 field="actual_deposit_amount_cleared", old_value=f"R{old:.2f}",
                 new_value="(reverted to % calculated)",
+            ))
+        # Per-job deposit override (Independent Status Tiles, Decision
+        # Q3, confirmed Aug 2026) — logged the same way actual_deposit_
+        # amount is above; this changes what's REQUIRED, not just what
+        # was actually paid, so it's worth the same permanent trail.
+        if deposit_pct is not None and deposit_pct != quote.deposit_pct:
+            old_pct = quote.deposit_pct
+            quote.deposit_pct = deposit_pct
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote_id,
+                field="deposit_pct", old_value=f"{old_pct*100:.0f}%", new_value=f"{deposit_pct*100:.0f}%",
             ))
         session.add(quote)
         session.commit()
@@ -6411,7 +6454,8 @@ def schedule_quote(quote_id: int, installation_date: str, tenant_id: str = Depen
 
 @app.put("/quotes/{quote_id}/materials")
 def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_for_installation: bool = None,
-                            installer_team: str = None, tenant_id: str = Depends(get_current_tenant)):
+                            installer_team: str = None, materials_not_needed: bool = None,
+                            tenant_id: str = Depends(get_current_tenant)):
     """Operational fields, never statuses (confirmed Aug 2026) —
     materials_ordered and ready_for_installation are deliberately two
     INDEPENDENT booleans (Q6): ordering materials and them actually
@@ -6424,7 +6468,13 @@ def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_
     along — not gated to Scheduled only, since materials are often
     ordered before an installation date is even confirmed. Each field
     is set independently by the caller (one param per click in the UI),
-    but all three can be sent together too."""
+    but all three can be sent together too.
+
+    materials_not_needed (Independent Status Tiles, Decision Q2,
+    confirmed Aug 2026) — same "one manual click, never inferred"
+    pattern as ready_for_installation, added here rather than a new
+    endpoint since it's the same real-world object (this job's
+    Materials state) as the other two fields on this route."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if materials_ordered is not None:
@@ -6433,6 +6483,8 @@ def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_
             quote.ready_for_installation = ready_for_installation
         if installer_team is not None:
             quote.installer_team = installer_team
+        if materials_not_needed is not None:
+            quote.materials_not_needed = materials_not_needed
         session.add(quote)
         session.commit()
         session.refresh(quote)

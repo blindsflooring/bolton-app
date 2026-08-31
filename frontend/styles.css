@@ -537,6 +537,22 @@
   .cp-section[open] summary::before { content: '▾'; }
   .cp-section-body { padding: 12px 4px 4px 20px; }
 
+  /* Independent Status Tiles (confirmed Aug 2026, approved proposal —
+     refines the Job Control Panel) — replaces the old sequential
+     step-strip dots with three independent, at-a-glance tiles
+     (Materials/Booking/Money). Same "done" green / "not there yet"
+     amber the primary status strip above already established
+     (.control-panel-status), reused here at a smaller, secondary
+     scale rather than a third colour language. */
+  .status-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .status-tile { border-radius: 6px; padding: 8px 10px; border: 1px solid var(--border); }
+  .status-tile.done { background: #dcf5e6; border-color: #9fd9b6; }
+  .status-tile.progress { background: var(--cream); border-color: #e0d190; }
+  .status-tile.na { background: var(--bg, #f5f6f8); color: var(--ink-faint, #8A93A0); }
+  .status-tile-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--ink-faint, #8A93A0); margin-bottom: 3px; }
+  .status-tile-state { font-size: 13px; font-weight: 700; color: var(--navy); }
+  .status-tile.na .status-tile-state { color: var(--ink-faint, #8A93A0); font-weight: 600; }
+
   /* Client Picker (confirmed Aug 2026, Save Redirect + Client Link
      Missing brief) — a real search-and-select overlay, replacing the
      free-text prompt() that was the confirmed root cause of duplicated

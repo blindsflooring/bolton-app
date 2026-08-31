@@ -680,40 +680,77 @@ function openOrderDetailScreen(quoteId) {
   renderLanding();
 }
 
-// Job Control Panel (confirmed Aug 2026, approved proposal — supersedes
-// "same feel as quoting") — the step strip is now a DEMOTED secondary
-// map only: dots + one summary line, nothing else. The procurement
-// tiles that used to live inline here moved into their own Materials
-// section (renderMaterialsSectionHtml() below), and the actual Order
-// Sheet previews moved into the Documents section
-// (renderOrderSheetPreviewsHtml()) — per the proposal's own field map,
-// §6. Renders job_steps exactly as computed server-side (_job_steps(),
-// main.py, including its own st.active — the "first not-done step"
-// loop right before it returns — never re-derived here). Renders
-// nothing at all for a quote that isn't a job yet, or was declined
-// (job_steps is [] in both cases, from the server).
-function renderStepMapHtml(jobSteps) {
+// Independent Status Tiles (confirmed Aug 2026, approved proposal —
+// refines the just-shipped Job Control Panel) — replaces the sequential
+// step-strip map (renderStepMapHtml(), retired) with three independent
+// tiles: Materials, Booking, Money. Real problem this fixes: the old
+// map was a locked sequence, but real jobs don't respect one — a job
+// can be paid in full before installation, or built from stock on hand
+// and never generate a real Order Sheet at all. Each tile below reads
+// its own state independently; none is gated behind another being done
+// first. Sign-off was proposed as a 4th tile and explicitly deferred
+// (Decision Q1, approved 31 Aug 2026) — only these three ship here.
+//
+// Every state below is read from a field that already existed before
+// this brief, except materials_not_needed and the deposit_pct check
+// (Decisions Q2/Q3, both newly real, per-job fields as of this brief —
+// see models.py/main.py). Renders nothing for a quote that isn't a job
+// yet, or was declined (job_steps is [] in both cases, from the
+// server) — same gate the old step map used.
+function renderStatusTilesHtml(q, jobSteps) {
   if (!jobSteps || !jobSteps.length) return '';
-  const activeIndex = jobSteps.findIndex(st => st.active);
-  const activeStep = activeIndex >= 0 ? jobSteps[activeIndex] : jobSteps[jobSteps.length - 1];
-  const stepNum = activeIndex >= 0 ? activeIndex + 1 : jobSteps.length;
 
-  const dots = jobSteps.map((st, i) => {
-    const dotStyle = st.done
-      ? 'background:var(--teal); color:#fff;'
-      : st.active
-        ? 'background:var(--navy); color:var(--bg,#EDEDED); box-shadow:0 0 0 3px var(--bg,#EDEDED);'
-        : 'background:var(--border); color:var(--ink-faint,#8A93A0);';
-    const dot = `<div title="${st.label}" style="width:18px; height:18px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:9.5px; font-weight:800; flex-shrink:0; ${dotStyle}">${st.done ? '✓' : (i + 1)}</div>`;
-    const line = i < jobSteps.length - 1
-      ? `<div style="flex:1; height:2px; min-width:8px; background:${st.done ? 'var(--teal)' : 'var(--border)'};"></div>`
-      : '';
-    return dot + line;
-  }).join('');
+  // Materials — reuses the exact same "does this job have a
+  // procurement step at all" signal renderMaterialsSectionHtml()
+  // already uses, so the two can never disagree about "not applicable".
+  const procurementStep = jobSteps.find(st => st.id === 'procurement');
+  let materialsTile;
+  if (!procurementStep) {
+    materialsTile = { cls: 'na', text: '— Not applicable' };
+  } else if (q.materials_not_needed) {
+    materialsTile = { cls: 'done', text: '✓ Not needed (stock on hand)' };
+  } else if (q.ready_for_installation) {
+    materialsTile = { cls: 'done', text: '✓ Received' };
+  } else if (q.materials_ordered) {
+    materialsTile = { cls: 'progress', text: '🟡 Ordered' };
+  } else {
+    materialsTile = { cls: 'progress', text: '🟡 Not yet ordered' };
+  }
 
-  return `
-    <div style="display:flex; align-items:center; gap:3px; margin-bottom:6px; opacity:.85;">${dots}</div>
-    <p class="muted" style="margin:0; font-size:11.5px; text-transform:uppercase; letter-spacing:.03em;">Step ${stepNum} of ${jobSteps.length} — ${activeStep ? activeStep.label : ''}${activeStep && activeStep.note ? ` (${activeStep.note})` : ''}</p>`;
+  // Booking
+  let bookingTile;
+  if (q.installation_confirmed_date) {
+    bookingTile = { cls: 'done', text: '✓ Confirmed' };
+  } else if (q.installation_date) {
+    bookingTile = { cls: 'progress', text: '🟡 Date proposed' };
+  } else {
+    bookingTile = { cls: 'progress', text: '🟡 Not yet' };
+  }
+
+  // Money — final_payment_date is the same "fully paid" signal the
+  // primary status strip's own 🟢 "closed out" case already uses;
+  // deposit_pct === 0 is the real, tolerated "no deposit required"
+  // shape confirmed against _quote_totals() during investigation, now
+  // actually settable per job (Decision Q3) rather than only via a
+  // global Business Settings change.
+  let moneyTile;
+  if (q.final_payment_date) {
+    moneyTile = { cls: 'done', text: '✓ Paid in full' };
+  } else if (q.deposit_paid_date) {
+    moneyTile = { cls: 'progress', text: '🟡 Deposit received — balance due' };
+  } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
+    moneyTile = { cls: 'progress', text: '— No deposit required — balance due' };
+  } else {
+    moneyTile = { cls: 'progress', text: '🟡 Awaiting deposit' };
+  }
+
+  const tile = (label, t) => `
+    <div class="status-tile ${t.cls}">
+      <div class="status-tile-label">${label}</div>
+      <div class="status-tile-state">${t.text}</div>
+    </div>`;
+
+  return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Money', moneyTile)}</div>`;
 }
 
 // Materials section (Job Control Panel, approved proposal §6) — a
@@ -726,9 +763,22 @@ function renderStepMapHtml(jobSteps) {
 // on this page lives in one place. Same underlying data
 // (data.job_steps' own procurement step/tiles, _job_steps() main.py)
 // as before — nothing re-derived, nothing new fetched.
-function renderMaterialsSectionHtml(jobSteps, quoteId) {
+function renderMaterialsSectionHtml(jobSteps, q) {
   const procurementStep = (jobSteps || []).find(st => st.id === 'procurement');
   if (!procurementStep) return `<p class="muted" style="margin:0;">No flooring/floor-prep lines on this job — nothing to order.</p>`;
+  // materials_not_needed (Independent Status Tiles, Decision Q2,
+  // confirmed Aug 2026) — a job built from stock on hand. Replaces the
+  // whole tile list/Generate button with a settled statement plus an
+  // Undo, same overlay pattern On Hold already uses elsewhere on this
+  // screen — never silently hides the real Order Sheet state if there
+  // happens to already be one (a job could genuinely have SOME
+  // materials ordered and use stock for the rest; toggling this back
+  // off restores the normal view exactly as it was).
+  if (q.materials_not_needed) {
+    return `
+      <p style="margin:0; color:var(--teal); font-weight:700;">✓ Not needed — using materials already on hand</p>
+      <a href="#" onclick="setMaterialsNotNeeded(${q.id}, false); return false;" style="font-size:12px; margin-top:6px; display:inline-block;">Undo — this job does need ordering</a>`;
+  }
   const tileHtml = procurementStep.tiles.map(t => {
     const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
     const isPlaced = t.status === 'placed';
@@ -742,9 +792,19 @@ function renderMaterialsSectionHtml(jobSteps, quoteId) {
     <div id="procurementTilesBlock">
       <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-weight:700; font-size:13.5px;"></div>
       ${tileHtml || '<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>'}
-      <button onclick="generateOrderSheetsForQuote(${quoteId})" style="margin-top:10px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
+      <button onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
       ${tileHtml ? `<p class="muted" style="font-size:11px; margin-top:8px;">Full previews, editing, and Mark as Placed are under Documents below.</p>` : ''}
+      ${!tileHtml ? `<a href="#" onclick="setMaterialsNotNeeded(${q.id}, true); return false;" style="font-size:12px; margin-top:8px; display:inline-block;">Using materials already on hand — mark as not needed</a>` : ''}
     </div>`;
+}
+
+// setMaterialsNotNeeded (Independent Status Tiles, Decision Q2,
+// confirmed Aug 2026) — same one-click, immediate-re-render pattern as
+// setMaterialsReceived() below, reusing the identical PUT .../materials
+// endpoint (main.py), just the new field on it.
+async function setMaterialsNotNeeded(quoteId, notNeeded) {
+  await fetch(`${API}/quotes/${quoteId}/materials?materials_not_needed=${notNeeded}`, {method: 'PUT'});
+  renderOrderDetail(document.getElementById('landing'));
 }
 
 // Order Sheet previews (Job Control Panel, approved proposal §6) — the
@@ -827,6 +887,17 @@ function jobControlPanelStatusHtml(q, workflow) {
   // read anyway (confirming receipt is a genuine, if unhurried, click
   // Burgert still owes), so no override is added for it — only the
   // one case actually confirmed blank below.
+  // Real gap caught during Independent Status Tiles verification, not
+  // present before today's build: "scheduled, materials ordered/not-
+  // needed AND received, nothing else blocking" also returns no
+  // attention_priority (_job_workflow_info()'s own final `else` branch
+  // for "scheduled" never sets one) — previously rare enough to not
+  // get noticed, now reached directly the moment a job is marked
+  // materials_not_needed, which would otherwise leave this strip
+  // completely blank on a job that's actually ready to go.
+  if (q.workflow_status === 'scheduled' && !(workflow && workflow.attention_priority)) {
+    return strip('ok', '🟢', 'Ready to complete installation', 'Materials sorted — nothing else needed before marking this job complete.');
+  }
   if (q.workflow_status === 'completed' && q.invoice_sent_date && !q.final_payment_date) {
     return strip('ok', '🟢', `Invoiced ${new Date(q.invoice_sent_date).toLocaleDateString('en-ZA')} — awaiting payment`, 'Normal — nothing to do until it comes in.');
   }
@@ -889,7 +960,16 @@ function renderWorkflowActionsHtml(q) {
     // physical stock-on-hand tracking to infer it from, so this has to
     // be a deliberate click, same reasoning every other workflow
     // transition on this screen is a named action, not a raw field.
-    const readyHtml = q.ready_for_installation
+    // materials_not_needed (Independent Status Tiles, Decision Q2,
+    // confirmed Aug 2026) — real inconsistency caught during disposable
+    // verification, not shipped: this panel used to keep saying
+    // "Materials not yet ordered — place the Order Sheet(s) below" even
+    // once the Materials tile correctly said "Not needed," directly
+    // contradicting it on the same screen. Both lines below now read
+    // the same field the tile does, so the two can never disagree.
+    const readyHtml = q.materials_not_needed
+      ? `<span class="muted">Nothing to receive — using stock already on hand.</span>`
+      : q.ready_for_installation
       ? `<span style="color:var(--teal); font-weight:700;">✓ Materials received</span> <a href="#" onclick="setMaterialsReceived(${q.id}, false); return false;" style="font-size:12px; margin-left:8px;">Undo</a>`
       : `<button onclick="setMaterialsReceived(${q.id}, true)">Mark Materials Received</button>`;
     // Materials ordered (Job Workflow Design Proposal Phase 1, confirmed
@@ -899,7 +979,9 @@ function renderWorkflowActionsHtml(q) {
     // every Order Sheet this job produced has status "placed"
     // (_materials_ordered_for_quote(), main.py). No control to click
     // here any more; place the real Order Sheet(s) below to change it.
-    const materialsHtml = q.materials_ordered
+    const materialsHtml = q.materials_not_needed
+      ? `<span style="color:var(--teal); font-weight:700;">✓ Not needed — using stock on hand</span>`
+      : q.materials_ordered
       ? `<span style="color:var(--teal); font-weight:700;">✓ Materials ordered</span>`
       : `<span class="muted">Materials not yet ordered — place the Order Sheet(s) below</span>`;
     return `
@@ -1062,10 +1144,11 @@ async function renderOrderDetail(el) {
       <button onclick="logFollowUp()" style="margin-top:6px;">Log Follow-Up</button>
     </div>
 
-    <!-- The step map — demoted (renderStepMapHtml()), a secondary
-    "where am I" reference, never the primary surface above it. -->
+    <!-- Independent Status Tiles (approved proposal, replaces the old
+    sequential step-strip map) — a secondary, at-a-glance reference,
+    never the primary surface above it. -->
     <div class="card" style="padding:12px 18px;">
-      ${renderStepMapHtml(data.job_steps)}
+      ${renderStatusTilesHtml(q, data.job_steps)}
     </div>
 
     <!-- Six named, collapsed-by-default sections (approved proposal
@@ -1144,7 +1227,7 @@ async function renderOrderDetail(el) {
       <details class="cp-section" ${defaultOpenSection(q) === 'materials' ? 'open' : ''}>
         <summary>Materials</summary>
         <div class="cp-section-body">
-          ${renderMaterialsSectionHtml(data.job_steps, q.id)}
+          ${renderMaterialsSectionHtml(data.job_steps, q)}
         </div>
       </details>
 
@@ -1171,6 +1254,13 @@ async function renderOrderDetail(el) {
           </p>
           <p style="margin:0 0 14px;"><b>Balance due:</b> R${data.balance_amount.toFixed(2)}</p>
           <div class="grid">
+            <!-- Deposit required % (Independent Status Tiles, Decision
+            Q3, confirmed Aug 2026) — a genuine per-job override of
+            deposit_pct, previously only settable via the global
+            Business Settings default at quote creation. 0 is exactly
+            how "no deposit required for this job" (Money tile) is
+            represented — no separate checkbox needed. -->
+            <div class="field"><label>Deposit required (%) <span class="adj">(this job's own required deposit — separate from the workspace-wide default; 0 means no deposit required for this job)</span></label><input id="od_deposit_pct" type="number" step="1" min="0" max="100" value="${(q.deposit_pct*100).toFixed(0)}"></div>
             <div class="field"><label>Invoice sent date</label><input id="od_invoice_sent_date" type="date" value="${q.invoice_sent_date || ''}"></div>
             <div class="field"><label>Deposit paid date</label><input id="od_deposit_paid_date" type="date" value="${q.deposit_paid_date || ''}"></div>
             <div class="field"><label>Deposit amount (R) <span class="adj">(actual amount paid — overrides the ${(q.deposit_pct*100).toFixed(0)}% calculated figure once entered; leave blank to use the percentage)</span></label><input id="od_actual_deposit_amount" type="number" step="0.01" value="${q.actual_deposit_amount != null ? q.actual_deposit_amount : ''}" placeholder="e.g. ${(data.total_incl_vat * q.deposit_pct).toFixed(2)} (calculated)"></div>
@@ -1947,8 +2037,14 @@ async function saveOrderDetails() {
   const actualDepositVal = document.getElementById('od_actual_deposit_amount').value;
   if (actualDepositVal !== '') { params.set('actual_deposit_amount', actualDepositVal); }
   else { params.set('clear_actual_deposit_amount', 'true'); }
+  // Deposit required % (Independent Status Tiles, Decision Q3,
+  // confirmed Aug 2026) — the field's own displayed value is already a
+  // whole percentage (e.g. "70"), converted back to the 0–1 fraction
+  // the backend/every other reader of deposit_pct expects.
+  const depositPctVal = document.getElementById('od_deposit_pct').value;
+  if (depositPctVal !== '') { params.set('deposit_pct', (parseFloat(depositPctVal) / 100).toString()); }
   const res = await fetch(`${API}/quotes/${currentOrderDetailQuoteId}?${params}`, {method:'PUT'});
-  if (!res.ok) { alert('Could not save — check your connection and try again.'); return; }
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not save — check your connection and try again.'); return; }
   // Save confirmation (confirmed Aug 2026, brief §2) — re-renders this
   // SAME screen in place (never navigates away, per the brief's own
   // explicit instruction) so the Deposit/Balance figures and the

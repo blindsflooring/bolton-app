@@ -1084,6 +1084,21 @@ class Quote(SQLModel, table=True):
     # _job_workflow_info() rather than read from this field.
     materials_ordered: bool = False
     ready_for_installation: bool = False
+    # Independent Status Tiles, Decision Q2 (confirmed Aug 2026, approved
+    # 31 Aug 2026) — real gap closed: a job built from stock already on
+    # hand never generates a real OrderSheet, so materials_ordered stays
+    # False forever and the Materials tile/Next Action would say
+    # "Materials required" indefinitely, indistinguishable from a job
+    # Burgert genuinely forgot to order for. This is a deliberate,
+    # manual, alternate "done" path for the Materials tile — set once,
+    # by hand, never inferred (Bolton has no stock-on-hand tracking to
+    # infer it from, same reasoning ready_for_installation above is
+    # always manual too). False by default; does not clear or get
+    # cleared by materials_ordered — the two are independent, same
+    # "don't collapse genuinely different real-world facts into one
+    # flag" precedent as materials_ordered/ready_for_installation
+    # themselves.
+    materials_not_needed: bool = False
     # On Hold (confirmed Aug 2026, Job Workflow Design Proposal Phase 1)
     # — deliberately NOT a 5th workflow_status value, per the brief's own
     # explicit "no second status system" instruction: same pattern as
