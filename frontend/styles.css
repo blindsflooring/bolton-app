@@ -537,21 +537,33 @@
   .cp-section[open] summary::before { content: '▾'; }
   .cp-section-body { padding: 12px 4px 4px 20px; }
 
-  /* Independent Status Tiles (confirmed Aug 2026, approved proposal —
-     refines the Job Control Panel) — replaces the old sequential
-     step-strip dots with three independent, at-a-glance tiles
-     (Materials/Booking/Money). Same "done" green / "not there yet"
-     amber the primary status strip above already established
-     (.control-panel-status), reused here at a smaller, secondary
-     scale rather than a third colour language. */
-  .status-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-  .status-tile { border-radius: 6px; padding: 8px 10px; border: 1px solid var(--border); }
-  .status-tile.done { background: #dcf5e6; border-color: #9fd9b6; }
-  .status-tile.progress { background: var(--cream); border-color: #e0d190; }
-  .status-tile.na { background: var(--bg, #f5f6f8); color: var(--ink-faint, #8A93A0); }
-  .status-tile-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--ink-faint, #8A93A0); margin-bottom: 3px; }
-  .status-tile-state { font-size: 13px; font-weight: 700; color: var(--navy); }
-  .status-tile.na .status-tile-state { color: var(--ink-faint, #8A93A0); font-weight: 600; }
+  /* Job Dashboard Tile Treatment (confirmed Aug 2026, approved proposal
+     — visual refinement of Independent Status Tiles, same data/fields,
+     no logic change). Real card weight now, not a plain status row —
+     reuses the exact same card language the home screen's own .tile
+     already established (border/radius/padding/shadow), just applied
+     here at rest rather than only on hover, plus a coloured top edge +
+     dot as the status signal (colour AND shape, not colour alone,
+     matching how the primary status strip already separates colour
+     from wording rather than relying on emoji-in-text). */
+  .status-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .status-tile {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    border-top: 3px solid var(--border); display: flex; flex-direction: column; gap: 6px;
+  }
+  .status-tile.done { border-top-color: var(--teal); }
+  .status-tile.progress { border-top-color: #d99a1f; }
+  .status-tile.na { border-top-color: var(--border); opacity: .7; }
+  .status-tile-head { display: flex; align-items: center; justify-content: space-between; }
+  .status-tile-label { font-family: 'Poppins', sans-serif; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; color: var(--ink-faint, #8A93A0); }
+  .status-tile-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .status-tile.done .status-tile-dot { background: #1a7a3e; }
+  .status-tile.progress .status-tile-dot { background: #d99a1f; }
+  .status-tile.na .status-tile-dot { background: var(--ink-faint, #8A93A0); }
+  .status-tile-state { font-family: 'Poppins', sans-serif; font-size: 15px; font-weight: 700; color: var(--navy); }
+  .status-tile.na .status-tile-state { color: var(--ink-faint, #8A93A0); }
+  .status-tile-sub { font-size: 11.5px; color: var(--ink-faint, #8A93A0); }
 
   /* Client Picker (confirmed Aug 2026, Save Redirect + Client Link
      Missing brief) — a real search-and-select overlay, replacing the
@@ -565,3 +577,32 @@
   .client-picker-results { max-height: 240px; overflow-y: auto; margin-top: 8px; }
   .client-picker-result { padding: 9px 10px; cursor: pointer; border-bottom: 1px solid var(--border); border-radius: 4px; }
   .client-picker-result:hover { background: var(--bg, #f5f6f8); }
+
+  /* Installation Calendar (confirmed Aug 2026, approved proposal) — a
+     plain hand-built month grid, no library, consistent with the rest
+     of this app's own convention (confirmed: nothing here loads from a
+     CDN anywhere). Confirmed (solid green) vs. tentative (dashed cream)
+     reuses the exact same colour language as the Job Detail Booking
+     tile's own confirmed/proposed distinction. */
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .cal-head h2 { font-size: 17px; }
+  .cal-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .cal-legend-dot.confirmed { background: #1a7a3e; }
+  .cal-legend-dot.tentative { background: var(--cream); border: 1px dashed #8a6d00; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal-dow { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--ink-faint, #8A93A0); text-align: center; padding-bottom: 4px; }
+  .cal-day { border: 1px solid var(--border); border-radius: 6px; min-height: 76px; padding: 4px; font-size: 11px; }
+  .cal-day.other-month { opacity: .4; }
+  .cal-day.today { border-color: var(--teal); border-width: 2px; }
+  .cal-day.has-jobs { cursor: pointer; }
+  .cal-day.has-jobs:hover { background: var(--bg, #f5f6f8); }
+  .cal-daynum { font-size: 11px; font-weight: 700; color: var(--ink-faint, #8A93A0); margin-bottom: 3px; }
+  .cal-chip { border-radius: 4px; padding: 2px 5px; margin-bottom: 2px; font-size: 10.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .cal-chip.confirmed { background: #dcf5e6; color: #1a7a3e; }
+  .cal-chip.tentative { background: var(--cream); color: #8a6d00; border: 1px dashed #c7ae4a; }
+  .cal-chip.more { background: none; color: var(--teal); font-weight: 700; cursor: pointer; }
+  @media (max-width: 700px) {
+    .cal-day { min-height: 54px; font-size: 9.5px; }
+    .cal-daynum { font-size: 9.5px; }
+    .cal-chip { font-size: 9px; }
+  }

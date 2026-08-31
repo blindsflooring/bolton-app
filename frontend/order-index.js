@@ -700,31 +700,41 @@ function openOrderDetailScreen(quoteId) {
 function renderStatusTilesHtml(q, jobSteps) {
   if (!jobSteps || !jobSteps.length) return '';
 
+  // Job Dashboard Tile Treatment (confirmed Aug 2026, approved proposal
+  // — visual refinement only, same fields/logic as before) — each tile
+  // is now a headline + a plain-language sub-line, rather than one
+  // emoji-prefixed line; colour + a small dot carry the status signal
+  // instead, matching how the primary status strip already keeps
+  // colour separate from wording.
+
   // Materials — reuses the exact same "does this job have a
   // procurement step at all" signal renderMaterialsSectionHtml()
   // already uses, so the two can never disagree about "not applicable".
   const procurementStep = jobSteps.find(st => st.id === 'procurement');
   let materialsTile;
   if (!procurementStep) {
-    materialsTile = { cls: 'na', text: '— Not applicable' };
+    materialsTile = { cls: 'na', text: 'Not applicable', sub: 'No flooring/floor-prep on this job' };
   } else if (q.materials_not_needed) {
-    materialsTile = { cls: 'done', text: '✓ Not needed (stock on hand)' };
+    materialsTile = { cls: 'done', text: 'Not needed', sub: 'Using stock already on hand' };
   } else if (q.ready_for_installation) {
-    materialsTile = { cls: 'done', text: '✓ Received' };
+    materialsTile = { cls: 'done', text: 'Received', sub: 'On site, ready to install' };
   } else if (q.materials_ordered) {
-    materialsTile = { cls: 'progress', text: '🟡 Ordered' };
+    materialsTile = { cls: 'progress', text: 'Ordered', sub: 'Awaiting delivery' };
   } else {
-    materialsTile = { cls: 'progress', text: '🟡 Not yet ordered' };
+    materialsTile = { cls: 'progress', text: 'Not yet ordered', sub: 'Place the Order Sheet(s) below' };
   }
 
-  // Booking
+  // Booking — the real date joins the sub-line when there is one,
+  // same "prominent labelling" the brief asked for, still built purely
+  // from installation_date/installation_confirmed_date.
+  const installDateShort = q.installation_date ? new Date(q.installation_date + 'T00:00:00').toLocaleDateString('en-ZA', {day:'numeric', month:'short'}) : null;
   let bookingTile;
   if (q.installation_confirmed_date) {
-    bookingTile = { cls: 'done', text: '✓ Confirmed' };
+    bookingTile = { cls: 'done', text: 'Confirmed', sub: installDateShort || 'Date confirmed' };
   } else if (q.installation_date) {
-    bookingTile = { cls: 'progress', text: '🟡 Date proposed' };
+    bookingTile = { cls: 'progress', text: 'Date proposed', sub: `${installDateShort} — not yet confirmed` };
   } else {
-    bookingTile = { cls: 'progress', text: '🟡 Not yet' };
+    bookingTile = { cls: 'progress', text: 'Not yet', sub: 'No date set' };
   }
 
   // Money — final_payment_date is the same "fully paid" signal the
@@ -735,19 +745,20 @@ function renderStatusTilesHtml(q, jobSteps) {
   // global Business Settings change.
   let moneyTile;
   if (q.final_payment_date) {
-    moneyTile = { cls: 'done', text: '✓ Paid in full' };
+    moneyTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
   } else if (q.deposit_paid_date) {
-    moneyTile = { cls: 'progress', text: '🟡 Deposit received — balance due' };
+    moneyTile = { cls: 'progress', text: 'Deposit received', sub: 'Balance due on completion' };
   } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
-    moneyTile = { cls: 'progress', text: '— No deposit required — balance due' };
+    moneyTile = { cls: 'progress', text: 'No deposit required', sub: 'Balance due on completion' };
   } else {
-    moneyTile = { cls: 'progress', text: '🟡 Awaiting deposit' };
+    moneyTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
   }
 
   const tile = (label, t) => `
     <div class="status-tile ${t.cls}">
-      <div class="status-tile-label">${label}</div>
+      <div class="status-tile-head"><span class="status-tile-label">${label}</span><span class="status-tile-dot"></span></div>
       <div class="status-tile-state">${t.text}</div>
+      <div class="status-tile-sub">${t.sub}</div>
     </div>`;
 
   return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Money', moneyTile)}</div>`;

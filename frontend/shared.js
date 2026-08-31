@@ -1029,6 +1029,11 @@ const CATEGORY_LABELS = {
 const LANDING_TILES = [
   { id: 'business', title: 'Business Overview', desc: 'Live KPIs, dynamic', ready: true },
   { id: 'orders', title: 'Order Index', desc: 'All jobs, searchable', ready: true },
+  // Installation Calendar (confirmed Aug 2026, approved proposal) —
+  // whole-business booking visibility, not tied to any one job's own
+  // page, so it gets its own top-level tile rather than living inside
+  // Order Index (Decision Q3).
+  { id: 'installCalendar', title: 'Installation Calendar', desc: 'Every booked job, whole business', ready: true },
   // Master Workflow proposal §02/§05/§06 (confirmed Aug 2026) — the
   // "LEAD" stage of the master flow, which had nowhere to live at all
   // before this: the earliest tracked stage was previously a Quote.

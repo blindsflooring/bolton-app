@@ -1125,6 +1125,7 @@ editing" scope. -->
 <script src="clients.js"></script>
 <script src="order-index.js"></script>
 <script src="leads.js"></script>
+<script src="calendar.js"></script>
 <script src="quote-builder.js"></script>
 <script src="hr.js"></script>
 <script>
@@ -1476,6 +1477,7 @@ function renderLanding() {
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
+  if (landingView === 'installCalendar') return renderInstallationCalendar(el);
   if (landingView === 'leads') return renderLeads(el);
   if (landingView === 'leadDetail') return renderLeadDetail(el);
   if (landingView === 'leadsDayList') return renderLeadsDayList(el);
@@ -1522,6 +1524,7 @@ function onTileClick(tileId) {
   if (!tile.ready) return; // coming-soon tiles do nothing yet — no fake functionality
   if (tileId === 'flooring') { landingView = 'flooring-drill'; renderLanding(); }
   else if (tileId === 'orders') { landingView = 'orders'; renderLanding(); }
+  else if (tileId === 'installCalendar') { openInstallationCalendar(); }
   else if (tileId === 'leads') { landingView = 'leads'; renderLanding(); }
   else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
