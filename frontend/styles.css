@@ -596,6 +596,13 @@
   .cal-day.today { border-color: var(--teal); border-width: 2px; }
   .cal-day.has-jobs { cursor: pointer; }
   .cal-day.has-jobs:hover { background: var(--bg, #f5f6f8); }
+  /* Drag-and-drop rescheduling (confirmed Aug 2026, approved Interactive
+     Calendar Design) — highlights whichever day cell is currently under
+     a chip being dragged (calChipPointerMove(), calendar.js). */
+  .cal-day.drop-target { background: var(--cream); border-color: var(--teal); border-width: 2px; }
+  .cal-chip { cursor: grab; }
+  .cal-chip:active { cursor: grabbing; }
+  .cal-chip.more { cursor: pointer; }
   .cal-daynum { font-size: 11px; font-weight: 700; color: var(--ink-faint, #8A93A0); margin-bottom: 3px; }
   .cal-chip { border-radius: 4px; padding: 2px 5px; margin-bottom: 2px; font-size: 10.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
   .cal-chip.confirmed { background: #dcf5e6; color: #1a7a3e; }
