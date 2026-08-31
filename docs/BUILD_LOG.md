@@ -18,6 +18,17 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-08-31
+
+### What shipped
+- **Independent Status Tiles — investigate-and-propose only, no code written, per the brief's own explicit instruction** (`Bolton-Brief-Job-Status-Tiles.docx`, "refines the just-approved Job Control Panel... keep the traffic light and Next Action exactly as approved; this specifically targets the step-strip 'map' underneath"). The real problem named directly: the approved step map is a locked sequence (Order Materials → Schedule → Installation → Complete & Invoice), but real jobs don't respect that order — paid-in-full-upfront, or built from existing stock with no real Order Sheet ever generated.
+  - **Investigated against real code before designing anything, per the brief's own explicit instruction** ("the same way the delivery-date and sign-off gaps were caught in the last proposal"). Confirmed a deposit-free or paid-in-full-upfront job is already fully tolerated by `_quote_totals()`/`_job_workflow_info()` today — zero calculation gap. A real, narrower gap found underneath that: `deposit_pct` is only ever written once, at quote creation, from Business Settings' own global default — `PUT /quotes/{quote_id}` has no `deposit_pct` parameter at all, so there's no way to mark one specific job deposit-free without changing (and reverting) a workspace-wide setting.
+  - **A second real gap confirmed, matching the brief's own suspicion**: grepped the whole data model for any stock/inventory concept — nothing exists beyond a code comment stating plainly that Bolton doesn't track physical stock-on-hand per job. A job using existing stock and never generating an Order Sheet shows "Materials required" forever, indistinguishable from one Burgert genuinely forgot to order for.
+  - **Sign-off flagged again, not re-decided** — still no such field, exactly as the previous proposal found; Burgert's own answer there was "defer," so this brief's re-ask (in tile form) is surfaced as its own decision rather than silently assumed either way.
+  - **Delivered as a written proposal**: the investigation above, a field-by-field backing table for all four proposed tiles (Materials/Booking/Money/Sign-off), a mockup showing a leftover-stock scenario the old linear map couldn't represent honestly, explicit confirmation that the traffic light/Next Action/six collapsed sections all stay untouched, and four decisions for Burgert (build a Sign-off tile or keep deferring; add the small `materials_not_needed` field; add a genuine per-job deposit-required override mirroring the existing `actual_deposit_amount` pattern; treat "all tiles done" as a new presentational-only summary, never a 5th `workflow_status` value) — published for review; nothing here has been built.
+
+---
+
 ## 2026-08-30
 
 ### What shipped
