@@ -882,7 +882,20 @@ function jobControlPanelStatusHtml(q, workflow) {
       <div><div class="cp-text">${text}</div><div class="cp-sub">${sub}</div></div>
     </div>`;
   if (workflow && workflow.attention_priority) {
-    return strip(CLASS[workflow.attention_priority], DOT[workflow.attention_priority], workflow.next_action, workflow.attention_label);
+    // Installation date next to "Prepare job" (confirmed Sept 2026) —
+    // real gap: this card said "Upcoming" with no actual date. Reads
+    // installation_date directly — the exact same field the
+    // Installation Calendar reads/writes (calendar.js) — never a
+    // separate value, so the two can never disagree about when a job
+    // is scheduled. "Upcoming" is the one attention_label unique to
+    // this branch (_job_workflow_info(), main.py: ws=="scheduled" and
+    // installation_date is tomorrow) — every other label stays exactly
+    // as it was.
+    let sub = workflow.attention_label;
+    if (sub === 'Upcoming' && q.installation_date) {
+      sub = `Upcoming — ${calFormatDate(q.installation_date)}`;
+    }
+    return strip(CLASS[workflow.attention_priority], DOT[workflow.attention_priority], workflow.next_action, sub);
   }
   // No attention_priority set — _job_workflow_info() only omits it for
   // a genuinely healthy wait; decide which honest sentence applies from
@@ -1110,7 +1123,14 @@ async function renderOrderDetail(el) {
     <span class="back-link" onclick="landingView='orders'; renderLanding();">← Back to Order Index</span>
     <div class="landing-welcome">
       <h1>${q.job_number || 'Quote #' + q.id}${q.description ? ' — ' + q.description : ''}</h1>
-      <p>${q.client_name} &nbsp; ${workflowStatusBadge(q)}</p>
+      <!-- Client Name Prominence (confirmed Sept 2026) — real gap: the
+      client is, in practice, the single most important piece of
+      context on this page, but was rendered inside the generic
+      .landing-welcome p rule (13px, muted grey) every other screen's
+      own small subtitle text also uses — changing that shared rule
+      would have affected every other screen's subtitle too. A
+      dedicated class instead, scoped to just this line. -->
+      <p class="job-detail-client-name">${q.client_name} &nbsp; ${workflowStatusBadge(q)}</p>
     </div>
 
     <!-- Job Control Panel (confirmed Aug 2026, approved proposal) —
