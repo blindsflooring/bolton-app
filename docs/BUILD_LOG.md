@@ -18,6 +18,18 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-01
+
+### What shipped
+- **URGENT — Add Line Form Defaults to an Unrelated Product, investigated and confirmed NOT a data-bleed recurrence, real risk fixed anyway, same day** (`Bolton-Brief-AddLine-Default-Range-Bleed.docx`, "check whether this is a genuine data-bleed recurrence... or a benign default, before assuming either"). Reported symptom: opening real Quote #134 (Vanessa Court) to edit it showed the Add Vinyl Line form defaulting its Range to "deZIGN series 200" — unrelated to anything actually on that quote.
+  - **Reproduced directly, per the brief's own explicit instruction, before assuming either cause**: opened multiple different real quotes in sequence (including the exact real #134) and confirmed the Range dropdown always defaulted to the same value regardless of which quote was viewed previously — a generic "first option wins" default, not session residue. Traced the one real path that COULD carry a genuine stale value (`pendingVinylRange`) and confirmed it's reliably nulled right after use at both its call sites — every other caller, including opening an existing quote, passes nothing at all.
+  - **Real risk confirmed anyway, same class as the already-fixed Colour Default Risk**: a native `<select>` auto-selects its first real option the instant none of its own options are marked `selected` — silently offering a genuinely unrelated real product that could be added to a real client's saved quote without anyone actually choosing it. Fixed with the identical, already-established placeholder pattern ("— Choose a range —"), applied to `populateVinylRangeDropdown()` (the reported symptom).
+  - **Found and fixed the identical shape in a sibling path while checking every similar code site, not just the one reported**: `populateCarpetTypeProducts()` (the Carpet tab's own product dropdown) had the exact same gap, carrying the exact same real risk. Both already had a real downstream guard (`addFloorJob()`'s colour check, `addCarpetLine()`'s own product check) that now correctly fires against the new blank default — no new guard code needed, just the placeholder. Added a companion "Choose a range first" message alongside the existing colour one so the error matches whichever field was actually left unset.
+  - **Verified end-to-end on the disposable backend/frontend, in a real browser, reproducing the exact reported sequence**: created two real quotes for two different real clients, each with its own real, different vinyl range already on it — confirmed opening either one always showed the Range dropdown as the blank placeholder, never the other quote's real range, in either order. Confirmed editing an EXISTING line still correctly re-selects its own real range (`prefillFlooringEdit()`'s own explicit preselect, unaffected). Confirmed the "Choose a range first"/"Pick a product first" guards actually block Add when left blank. Confirmed the legitimate Flooring-drill-down "start a quote pre-filled with this exact range" flow still works unchanged.
+  - **Re-verified against the real, exact quote named in the brief**: opened real Quote #134 (Vanessa Court) on the live deployed app — the Add Vinyl Line form's Range now correctly shows "— Choose a range —", not "deZIGN series 200".
+
+---
+
 ## 2026-08-31
 
 ### What shipped
