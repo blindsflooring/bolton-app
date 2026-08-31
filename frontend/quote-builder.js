@@ -516,7 +516,17 @@ function populateCarpetTypeProducts(type, preselectRange) {
     sel.innerHTML = `<option value="">No ${CARPET_TYPE_LABELS[type]} products in price book</option>`;
     return;
   }
-  sel.innerHTML = products.map(p => `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
+  // Add Line Form Defaults to an Unrelated Product (confirmed Sept
+  // 2026) — same fix as populateVinylRangeDropdown()'s own, applied
+  // here too: this call site had the identical shape (no option marked
+  // `selected` whenever no explicit preselectRange is given — every
+  // caller except editQuoteLine()'s own prefill), found while checking
+  // every sibling code path for the same risk, not just the one
+  // reported. addCarpetLine() already guards on `!productId`
+  // ("Pick a product first."), so this placeholder is enough on its
+  // own — no other change needed to block an accidental add.
+  sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>— Choose a product —</option>` +
+    products.map(p => `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
   scheduleCarpetPreview();
 }
 
@@ -907,7 +917,24 @@ function populateVinylRangeDropdown(preselectRange) {
   // discontinued (a range with a live colour left isn't discontinued
   // itself).
   const rangeAllDiscontinued = r => vinylProducts.filter(p => p.product_name === r).every(p => p.discontinued);
-  rangeSelect.innerHTML = ranges.map(r => `<option value="${r}" ${r===preselectRange?'selected':''}>${r}${rangeAllDiscontinued(r) ? ' (Discontinued)' : ''}</option>`).join('');
+  // Add Line Form Defaults to an Unrelated Product (confirmed Sept 2026)
+  // — real, confirmed cause: this call always had ranges rendered with
+  // NONE marked `selected` whenever no explicit preselectRange was
+  // given (every call site except prefillFlooringEdit(), which always
+  // passes the line's own real product name) — a native <select>
+  // silently auto-selects its first option in that case, exactly the
+  // same "no usually-correct value" risk the Colour Default Risk brief
+  // already fixed one level down. Confirmed NOT a data-bleed recurrence
+  // (checked directly): preselectRange only ever carries a genuine
+  // stale value via pendingVinylRange, which is reliably nulled right
+  // after use at both its call sites — every other caller (including
+  // openQuoteFromIndex()'s own toggleLineFields()) passes nothing at
+  // all, so the same range (whichever sorts first — "deZIGN series
+  // 200" in the real price book) would show regardless of which quote
+  // was open, a generic default, not session residue. Same explicit
+  // placeholder fix either way, one level up from Colour/Product.
+  rangeSelect.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>— Choose a range —</option>` +
+    ranges.map(r => `<option value="${r}" ${r===preselectRange?'selected':''}>${r}${rangeAllDiscontinued(r) ? ' (Discontinued)' : ''}</option>`).join('');
   onVinylRangeChange();
 }
 
@@ -1343,6 +1370,7 @@ async function addFloorJob() {
       // Colour Default Risk (confirmed Aug 2026) — same hard block as
       // the fresh-add path below: a line can never be saved with
       // colour still left as TBC, not just flagged after the fact.
+      if (!document.getElementById('fj_vinyl_range').value) { alert('Choose a range first.'); return; }
       if (!productId) { alert('Choose a colour first.'); return; }
       const materialOnly = document.getElementById('fj_material_only').checked;
       const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
@@ -1373,6 +1401,7 @@ async function addFloorJob() {
     // afterward — a TBC-coloured line can never be saved in the first
     // place, matching the exact "Pick a screed product first" guard
     // Screed's own equivalent branch already has.
+    if (!document.getElementById('fj_vinyl_range').value) { alert('Choose a range first.'); return; }
     if (!productId) { alert('Choose a colour first.'); return; }
     const jobType = document.getElementById('fj_jobtype').value;
     const materialOnly = document.getElementById('fj_material_only').checked;
