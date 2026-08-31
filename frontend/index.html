@@ -2194,8 +2194,29 @@ function effectivePerM2(product) {
   return zone === 'C' ? product.price_zone_c : zone === 'B' ? product.price_zone_b : product.price_zone_a;
 }
 
+// Sticky Range/Product column (confirmed Sept 2026) — panning right to
+// see Colour/Import Status/Category loses sight of WHICH product a row
+// even is. Column 0 is always product_name ("Range"/"Product") in
+// every one of this screen's field arrays (FLOORING/TRIM/BLINDS/
+// FLOOR_PREP_CONSOLE_FIELDS all list it first) — confirmed by reading
+// all four rather than assumed, so pinning "whichever cell index 0
+// renders" is equivalent to pinning Range/Product specifically, without
+// hardcoding a field name here. Applied as a post-process on the
+// already-built cell HTML rather than editing every type-branch above
+// individually — cheap and correct for the one type (plain text) that
+// actually ever lands at index 0 today; a lower-priority, disclosed
+// limitation if that were ever reordered (a `calc`/`calc_discount`
+// cell already carries its own `style=`, and a second `style=`
+// attribute on the same tag is simply ignored by the browser) — see
+// setupStickyHeaders() for the matching header-side fix, so the
+// "Range" label itself stays aligned with the pinned column beneath it.
+const STICKY_COL0_STYLE = 'position:sticky; left:0; z-index:2; background:var(--card); box-shadow:2px 0 4px rgba(0,0,0,0.08);';
+function stickifyFirstCell(html) {
+  return html.replace('<td', `<td style="${STICKY_COL0_STYLE}"`);
+}
+
 function supplierConsoleRow(entityType, fields, product) {
-  const cells = fields.map(([field, label, type, step]) => {
+  const cellList = fields.map(([field, label, type, step]) => {
     const key = `${entityType}:${product.id}:${field}`;
     // Staged-value-aware (confirmed Aug 2026, real gap found building
     // the bulk box-price correction below): this template used to
@@ -2310,7 +2331,8 @@ function supplierConsoleRow(entityType, fields, product) {
     // title attribute is a belt-and-braces fallback for any value still
     // too long to fit — hover shows the full text regardless of width.
     return `<td><input type="text" style="width:200px; ${stagedHighlight}" title="${val !== null && val !== undefined ? val : ''}" value="${val !== null && val !== undefined ? val : ''}" ${attrs}></td>`;
-  }).join('');
+  });
+  const cells = cellList.map((html, idx) => idx === 0 ? stickifyFirstCell(html) : html).join('');
   // BUG FIXED (Aug 2026, real column-shift confirmed from a live
   // screenshot): the table header adds a leading <th></th> for
   // FlooringProduct tables (the "NEW (import)" indicator column, added
@@ -3046,7 +3068,7 @@ function stageNewEntityField(tempId, field, inputType, rawValue) {
 const PRICE_PER_BOX_FIELD_MAP_JS = { base_cost_ex_vat: 'price_per_box_ex_vat', price_zone_a: 'price_per_box_zone_a', price_zone_b: 'price_per_box_zone_b', price_zone_c: 'price_per_box_zone_c' };
 
 function newEntityRow(entity, fields) {
-  const cells = fields.map(([field, label, type, step]) => {
+  const cellList = fields.map(([field, label, type, step]) => {
     const val = entity.fields[field];
     const isUncertain = entity.uncertainFields.has(field);
     const highlight = isUncertain ? 'background:#fff3cd; border:1px solid #e0a800;' : '';
@@ -3112,7 +3134,13 @@ function newEntityRow(entity, fields) {
       note = `<br><span class="muted" style="font-size:10px;">⚠ AI wasn't confident about this field — check it against the source sheet before committing</span>`;
     }
     return `<td>${inputHtml}${note}</td>`;
-  }).join('');
+  });
+  // Sticky Range/Product column (confirmed Sept 2026) — same treatment
+  // as supplierConsoleRow()'s real-product rows, so a staged-new import
+  // row shows the identical pinned-column behaviour when both appear in
+  // the same table (see stickifyFirstCell(), defined above that
+  // function).
+  const cells = cellList.map((html, idx) => idx === 0 ? stickifyFirstCell(html) : html).join('');
   // Trailing <td></td> here matches the Delete column added to every
   // table's header (Aug 2026) — a staged-new row is removed via the ✕
   // in its own leading badge cell, not the Delete column, so this cell
@@ -3532,6 +3560,18 @@ function setupStickyHeaders() {
     const bodyCells = firstBodyRow.querySelectorAll('td');
     cloneCells.forEach((th, i) => {
       if (bodyCells[i]) th.style.width = bodyCells[i].getBoundingClientRect().width + 'px';
+      // Sticky Range/Product column (confirmed Sept 2026) — the header
+      // label must stay aligned with its own pinned body column, not
+      // scroll away while the data underneath it stays put. Detected
+      // directly from the real body cell's own computed position
+      // (stickifyFirstCell(), above) rather than a second hardcoded
+      // index here — the sticky column's actual DOM position differs
+      // by entity type (FlooringProduct has a leading spacer <td> the
+      // others don't), so matching whichever bodyCells[i] is genuinely
+      // sticky is the only way this stays correct for every table.
+      if (bodyCells[i] && bodyCells[i].style.position === 'sticky') {
+        th.style.cssText += `; ${STICKY_COL0_STYLE}`;
+      }
     });
 
     const cloneTable = document.createElement('table');
