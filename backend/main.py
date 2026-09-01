@@ -5688,6 +5688,26 @@ def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str
     return _all_sheets_placed(sheets)
 
 
+def _order_sheet_quantity_colour_summary(session: Session, order_sheet_id: int, tenant_id: str) -> dict:
+    """Materials List: Show Quantity Ordered and Colour (confirmed Sept
+    2026) — real, already-generated OrderSheetLine data for ONE sheet,
+    summarized for the Materials tile. Not a new calculation: quantity is
+    a straight sum of each line's own `quantity` (grouped by `unit`, in
+    case a sheet genuinely mixes e.g. m² and boxes — rare, but joined
+    honestly rather than silently added across units), and colours are
+    the distinct non-blank `colour` values, in the order first seen."""
+    lines = session.exec(select(OrderSheetLine).where(OrderSheetLine.order_sheet_id == order_sheet_id, OrderSheetLine.tenant_id == tenant_id)).all()
+    qty_by_unit: dict = {}
+    colours = []
+    for l in lines:
+        unit = l.unit or ""
+        qty_by_unit[unit] = qty_by_unit.get(unit, 0.0) + l.quantity
+        if l.colour and l.colour not in colours:
+            colours.append(l.colour)
+    quantity_summary = ", ".join(f"{qty:g} {unit}".strip() for unit, qty in qty_by_unit.items())
+    return {"quantity_summary": quantity_summary, "colour_summary": ", ".join(colours)}
+
+
 def _job_steps(session: Session, quote: "Quote", tenant_id: str, materials_ordered: bool, order_sheets: list) -> list:
     """Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) — the
     adaptive step list §03 describes: Procurement -> Scheduling ->
@@ -5732,7 +5752,26 @@ def _job_steps(session: Session, quote: "Quote", tenant_id: str, materials_order
             # flooring/floor-prep lines exist but Generate Order Sheet(s)
             # hasn't been clicked yet, so the frontend can prompt for
             # that specifically rather than showing a blank step.
-            "tiles": [{"id": s.id, "supplier": s.supplier, "sheet_type": s.sheet_type, "status": s.status} for s in order_sheets],
+            "tiles": [
+                {
+                    "id": s.id, "supplier": s.supplier, "sheet_type": s.sheet_type, "status": s.status,
+                    # Materials List: Show Quantity Ordered and Colour
+                    # (confirmed Sept 2026) — surfaces what was actually
+                    # ordered, read straight from this sheet's own
+                    # OrderSheetLine rows (the same data the Order Sheet
+                    # document itself is built from, orderSheetLinesEditorHtml()
+                    # frontend), never a separate calculation. Quantity is
+                    # summed per unit (almost always one unit per sheet;
+                    # joined if genuinely mixed) so a sheet with 3 products
+                    # in the same unit reads as one real total, not three
+                    # lines the user has to add up themselves. Colours are
+                    # the distinct, non-blank values across this sheet's
+                    # lines only — never another sheet's, since each is
+                    # queried by its own order_sheet_id.
+                    **_order_sheet_quantity_colour_summary(session, s.id, tenant_id),
+                }
+                for s in order_sheets
+            ],
         })
 
     # Booking visibility fix (confirmed Aug 2026, Master Workflow

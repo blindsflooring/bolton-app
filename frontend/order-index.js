@@ -764,16 +764,22 @@ function renderStatusTilesHtml(q, jobSteps) {
   return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Money', moneyTile)}</div>`;
 }
 
-// Materials section (Job Control Panel, approved proposal §6) — a
-// compact, skimmable status line per Order Sheet this job has actually
-// produced, plus the Generate action. Deliberately text-only, no
-// embedded preview here any more — the real, printable/sendable
-// preview + action bar for each sheet now lives in the Documents
-// section below (renderOrderSheetPreviewsHtml()), alongside the Quote/
-// Invoice preview and the Document Archive, so every document preview
-// on this page lives in one place. Same underlying data
-// (data.job_steps' own procurement step/tiles, _job_steps() main.py)
-// as before — nothing re-derived, nothing new fetched.
+// Materials section (Job Control Panel §6, revised Sept 2026 — Materials
+// Section Should Show the Actual Order Sheets, approved proposal) — the
+// real Order Sheet list now lives here directly: preview + the standard
+// View/Edit/Print/Save/Mail action bar (documentPreviewTileHtml(),
+// shared.js — the exact same component Documents used to render this
+// through, moved, not duplicated), plus one-click Mark as Placed/Delete
+// (finalizeOrderSheet()/deleteOrderSheet() below — both already tolerant
+// of being called from this inline context, unchanged). Quantity-line
+// editing and "Add extra item" deliberately stay on the standalone Order
+// Sheet Detail screen (via Edit above) — real form state, not a glance-
+// and-click action, so folding it in here would clutter this section
+// rather than help it. Documents (below) now holds only the Dropbox
+// Archive and Job Card — its own, non-overlapping purpose once this
+// moved out. Same underlying data (data.job_steps' own procurement step/
+// tiles, _job_steps() main.py) as before — nothing re-derived, nothing
+// new fetched.
 function renderMaterialsSectionHtml(jobSteps, q) {
   const procurementStep = (jobSteps || []).find(st => st.id === 'procurement');
   if (!procurementStep) return `<p class="muted" style="margin:0;">No flooring/floor-prep lines on this job — nothing to order.</p>`;
@@ -790,22 +796,35 @@ function renderMaterialsSectionHtml(jobSteps, q) {
       <p style="margin:0; color:var(--teal); font-weight:700;">✓ Not needed — using materials already on hand</p>
       <a href="#" onclick="setMaterialsNotNeeded(${q.id}, false); return false;" style="font-size:12px; margin-top:6px; display:inline-block;">Undo — this job does need ordering</a>`;
   }
-  const tileHtml = procurementStep.tiles.map(t => {
+  const tiles = procurementStep.tiles.map(t => {
     const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
+    const previewId = 'dp_ordersheet_tile_' + t.id;
     const isPlaced = t.status === 'placed';
+    // Quantity + colour (confirmed Sept 2026) — read straight off
+    // t.quantity_summary/t.colour_summary, computed server-side
+    // (_order_sheet_quantity_colour_summary(), main.py) directly from
+    // this sheet's own OrderSheetLine rows — the exact data the Order
+    // Sheet document itself is built from, never a separate value, and
+    // scoped to this one sheet's id so a job with two sheets/colours
+    // can never bleed one's values into the other's line.
+    const orderedInfo = [t.quantity_summary, t.colour_summary].filter(Boolean).join(' — ');
     return `
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 0; border-bottom:1px solid var(--border);">
-        <span style="font-size:13px;">${label} <span class="muted">(${t.supplier})</span></span>
-        <span style="font-size:12px; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span>
+      <div style="flex:1 1 260px; min-width:220px; max-width:340px; border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+        <p style="margin:0 0 2px; font-size:12.5px; font-weight:600;">${label} <span class="muted" style="font-weight:400;">(${t.supplier})</span> <span style="float:right; font-weight:700; color:${isPlaced ? 'var(--teal)' : 'var(--coral)'};">${isPlaced ? '✓ Ordered' : 'Needs ordering'}</span></p>
+        ${orderedInfo ? `<p class="muted" style="margin:0 0 6px; font-size:11.5px;">${orderedInfo}</p>` : ''}
+        ${documentPreviewTileHtml(previewId, t.id, 'ordersheet')}
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+          ${!isPlaced ? `<button onclick="event.stopPropagation(); finalizeOrderSheet(${t.id})" style="font-size:12px; padding:4px 10px;">Mark as Placed</button>` : ''}
+          ${currentRole() === 'owner' ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteOrderSheet(${t.id})" style="font-size:12px; padding:4px 10px;">Delete</button>` : ''}
+        </div>
       </div>`;
   }).join('');
   return `
     <div id="procurementTilesBlock">
       <div id="orderSheetsResultBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-weight:700; font-size:13.5px;"></div>
-      ${tileHtml || '<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>'}
-      <button onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:10px; font-size:12.5px; padding:6px 12px;">${tileHtml ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
-      ${tileHtml ? `<p class="muted" style="font-size:11px; margin-top:8px;">Full previews, editing, and Mark as Placed are under Documents below.</p>` : ''}
-      ${!tileHtml ? `<a href="#" onclick="setMaterialsNotNeeded(${q.id}, true); return false;" style="font-size:12px; margin-top:8px; display:inline-block;">Using materials already on hand — mark as not needed</a>` : ''}
+      ${tiles ? `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">${tiles}</div>` : '<p class="muted" style="font-size:12.5px; margin:0;">No Order Sheet generated yet.</p>'}
+      <button onclick="generateOrderSheetsForQuote(${q.id})" style="margin-top:4px; font-size:12.5px; padding:6px 12px;">${tiles ? 'Generate another Order Sheet' : 'Generate Order Sheet(s)'}</button>
+      ${!tiles ? `<a href="#" onclick="setMaterialsNotNeeded(${q.id}, true); return false;" style="font-size:12px; margin-top:8px; display:inline-block;">Using materials already on hand — mark as not needed</a>` : ''}
     </div>`;
 }
 
@@ -816,29 +835,6 @@ function renderMaterialsSectionHtml(jobSteps, q) {
 async function setMaterialsNotNeeded(quoteId, notNeeded) {
   await fetch(`${API}/quotes/${quoteId}/materials?materials_not_needed=${notNeeded}`, {method: 'PUT'});
   renderOrderDetail(document.getElementById('landing'));
-}
-
-// Order Sheet previews (Job Control Panel, approved proposal §6) — the
-// real, printable/sendable preview this job's own procurement tiles
-// used to render inline (Job Detail: Needs Attention Bug, Conditional
-// Invoice Preview, Order Sheet Previews brief §3) now lives in
-// Documents instead of Materials, grouped with every other document
-// this job has. Exact same documentPreviewTileHtml()/
-// documentActionBarHtml() component as before (shared.js) — not a
-// second, different preview mechanism.
-function renderOrderSheetPreviewsHtml(jobSteps) {
-  const procurementStep = (jobSteps || []).find(st => st.id === 'procurement');
-  if (!procurementStep || !procurementStep.tiles.length) return '';
-  const tiles = procurementStep.tiles.map(t => {
-    const label = t.sheet_type === 'floor_prep' ? 'Flooring + Floor Prep' : 'Flooring';
-    const previewId = 'dp_ordersheet_tile_' + t.id;
-    return `
-      <div style="flex:1 1 260px; min-width:220px; max-width:340px; border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
-        <p style="margin:0 0 6px; font-size:12.5px; font-weight:600;">${label} <span class="muted" style="font-weight:400;">(${t.supplier})</span></p>
-        ${documentPreviewTileHtml(previewId, t.id, 'ordersheet')}
-      </div>`;
-  }).join('');
-  return `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">${tiles}</div>`;
 }
 
 // Primary status strip (Job Control Panel, approved proposal §5) — the
@@ -1306,7 +1302,14 @@ async function renderOrderDetail(el) {
       <details class="cp-section" ${defaultOpenSection(q) === 'documents' ? 'open' : ''}>
         <summary>Documents</summary>
         <div class="cp-section-body">
-          ${renderOrderSheetPreviewsHtml(data.job_steps)}
+          <!-- Materials Section Should Show the Actual Order Sheets
+          (confirmed Sept 2026, approved proposal) — the real Order Sheet
+          previews used to render here (renderOrderSheetPreviewsHtml(),
+          retired) now live in Materials above, the section actually
+          about them; showing them here too would be the exact duplicate
+          list the proposal was approved to avoid. Documents' own,
+          non-overlapping purpose from here on: the Dropbox Archive and
+          Job Card below. -->
           <!-- Dropbox Document Archive brief (confirmed Aug 2026) —
           this card is the Quote's own archive history. Manual trigger
           only. No Dropbox token is configured yet (confirmed with
