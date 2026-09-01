@@ -837,6 +837,79 @@ async function setMaterialsNotNeeded(quoteId, notNeeded) {
   renderOrderDetail(document.getElementById('landing'));
 }
 
+// Calendar: Multiple Work Days Per Job (confirmed Sept 2026, approved
+// proposal) — a job's EXTRA on-site days (screed before install, etc.),
+// listed right under the main Installation date field it's genuinely
+// separate from. Same tentative-vs-confirmed shape the Calendar itself
+// now understands (calendar.js) — a day is "✓ Confirmed" only once its
+// own confirmed_date matches its own work_date, never inferred from the
+// main job's installation_confirmed_date.
+const JOB_WORK_DAY_LABEL = { screed: 'Screed', installation: 'Installation', other: 'Other' };
+function renderJobWorkDaysHtml(workDays, quoteId) {
+  const rows = (workDays || []).map(wd => {
+    const isConfirmed = !!(wd.confirmed_date && wd.confirmed_date === wd.work_date);
+    return `
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
+        <span style="font-size:12.5px; font-weight:600; min-width:80px;">${JOB_WORK_DAY_LABEL[wd.day_type] || 'Other'}</span>
+        <input type="date" id="wd_date_${wd.id}" value="${wd.work_date}" onchange="updateJobWorkDay(${quoteId}, ${wd.id}, this.value)" style="max-width:150px;">
+        ${isConfirmed
+          ? '<span style="color:var(--teal); font-weight:700; font-size:12px;">✓ Confirmed</span>'
+          : `<button onclick="confirmJobWorkDay(${quoteId}, ${wd.id})" style="font-size:12px; padding:4px 10px;">Confirm</button>`}
+        <button class="delete-btn" onclick="deleteJobWorkDay(${quoteId}, ${wd.id})" style="font-size:12px; padding:4px 10px; margin-left:auto;">Delete</button>
+      </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+      <label style="font-weight:600; color:var(--navy); font-size:13px;">Extra work days <span class="adj">(e.g. a screed day separate from the install day — the main Installation date above is unaffected)</span></label>
+      <div id="workDaysList_${quoteId}" style="margin-top:6px;">
+        ${rows || '<p class="muted" style="font-size:12.5px; margin:4px 0;">No extra work days on this job.</p>'}
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-end; margin-top:10px; flex-wrap:wrap;">
+        <div class="field" style="margin:0;"><label style="font-size:11.5px;">Type</label>
+          <select id="new_work_day_type_${quoteId}">
+            <option value="screed">Screed</option>
+            <option value="installation">Installation</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0;"><label style="font-size:11.5px;">Date</label><input type="date" id="new_work_day_date_${quoteId}"></div>
+        <button onclick="addJobWorkDay(${quoteId})" style="font-size:12.5px; padding:6px 12px;">Add work day</button>
+      </div>
+    </div>`;
+}
+
+async function addJobWorkDay(quoteId) {
+  const dateVal = document.getElementById(`new_work_day_date_${quoteId}`).value;
+  if (!dateVal) { alert('Pick a date first.'); return; }
+  const dayType = document.getElementById(`new_work_day_type_${quoteId}`).value;
+  const res = await fetch(`${API}/quotes/${quoteId}/work-days`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({day_type: dayType, work_date: dateVal}),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not add this work day.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+async function updateJobWorkDay(quoteId, workDayId, dateVal) {
+  const res = await fetch(`${API}/quotes/${quoteId}/work-days/${workDayId}?work_date=${dateVal}`, {method: 'PUT'});
+  if (!res.ok) { alert('Could not update this work day.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+async function confirmJobWorkDay(quoteId, workDayId) {
+  const dateVal = document.getElementById(`wd_date_${workDayId}`).value;
+  const res = await fetch(`${API}/quotes/${quoteId}/work-days/${workDayId}/confirm?work_date=${dateVal}`, {method: 'PUT'});
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not confirm this work day.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
+async function deleteJobWorkDay(quoteId, workDayId) {
+  if (!confirm('Delete this extra work day? This cannot be undone.')) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/work-days/${workDayId}`, {method: 'DELETE'});
+  if (!res.ok) { alert('Could not delete this work day.'); return; }
+  renderOrderDetail(document.getElementById('landing'));
+}
+
 // Primary status strip (Job Control Panel, approved proposal §5) — the
 // one 🟢/🟡/🔴 line meant to be the very first thing read on this
 // page, ahead of the (now-demoted) step map and every collapsed
@@ -1265,6 +1338,7 @@ async function renderOrderDetail(el) {
             <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
+          ${renderJobWorkDaysHtml(data.work_days, q.id)}
         </div>
       </details>
 

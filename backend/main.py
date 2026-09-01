@@ -33,7 +33,7 @@ from models import (
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
-    FlaggedRecord, Lead,
+    FlaggedRecord, Lead, JobWorkDay,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -6491,6 +6491,85 @@ def schedule_quote(quote_id: int, installation_date: str, tenant_id: str = Depen
         return quote
 
 
+# Calendar: Multiple Work Days Per Job (confirmed Sept 2026, approved
+# proposal) — a job's EXTRA on-site days (screed before install, etc.),
+# genuinely separate from installation_date/schedule_quote() above, which
+# keep meaning exactly what they always have (the main/final day) and are
+# completely untouched by any of these four endpoints. Same tentative-vs-
+# confirmed shape: add/move leave confirmed_date alone (tentative, no
+# confirmation dialog needed on the frontend — nothing's been confirmed
+# either way yet); /confirm is the one and only place confirmed_date is
+# ever written, mirroring schedule_quote()'s own "set equal to confirm"
+# pattern exactly, so the calendar's existing calIsConfirmed()-style
+# comparison works identically for these too.
+class WorkDayCreate(BaseModel):
+    day_type: str = "screed"
+    work_date: str
+
+
+@app.post("/quotes/{quote_id}/work-days")
+def add_job_work_day(quote_id: int, body: WorkDayCreate, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if body.day_type not in ("screed", "installation", "other"):
+            raise HTTPException(400, "day_type must be screed, installation, or other.")
+        wd = JobWorkDay(tenant_id=tenant_id, quote_id=quote.id, day_type=body.day_type,
+                         work_date=date.fromisoformat(body.work_date))
+        session.add(wd)
+        session.commit()
+        session.refresh(wd)
+        return wd
+
+
+@app.put("/quotes/{quote_id}/work-days/{work_day_id}")
+def move_job_work_day(quote_id: int, work_day_id: int, work_date: str, tenant_id: str = Depends(get_current_tenant)):
+    """Tentative move (calendar drag, or a plain edit) — same plain-PUT
+    shape as PUT /quotes/{id}?installation_date=... for the main date.
+    Deliberately does NOT touch confirmed_date even if this day was
+    already confirmed — moving a confirmed day should go through
+    /confirm below instead, exactly the same "moving a confirmed job
+    re-confirms it at the new date" choice calendarHandleDrop() already
+    makes the user explicitly opt into for the main installation date,
+    not something this plain endpoint should do silently."""
+    with Session(engine) as session:
+        wd = get_or_404(session, JobWorkDay, work_day_id, tenant_id, "Work day")
+        if wd.quote_id != quote_id:
+            raise HTTPException(404, "Work day not found on this job.")
+        wd.work_date = date.fromisoformat(work_date)
+        session.add(wd)
+        session.commit()
+        session.refresh(wd)
+        return wd
+
+
+@app.put("/quotes/{quote_id}/work-days/{work_day_id}/confirm")
+def confirm_job_work_day(quote_id: int, work_day_id: int, work_date: str, tenant_id: str = Depends(get_current_tenant)):
+    """The one and only place confirmed_date is ever written for a work
+    day — mirrors schedule_quote()'s own installation_confirmed_date =
+    installation_date pattern exactly."""
+    with Session(engine) as session:
+        wd = get_or_404(session, JobWorkDay, work_day_id, tenant_id, "Work day")
+        if wd.quote_id != quote_id:
+            raise HTTPException(404, "Work day not found on this job.")
+        wd.work_date = date.fromisoformat(work_date)
+        wd.confirmed_date = wd.work_date
+        session.add(wd)
+        session.commit()
+        session.refresh(wd)
+        return wd
+
+
+@app.delete("/quotes/{quote_id}/work-days/{work_day_id}")
+def delete_job_work_day(quote_id: int, work_day_id: int, tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        wd = get_or_404(session, JobWorkDay, work_day_id, tenant_id, "Work day")
+        if wd.quote_id != quote_id:
+            raise HTTPException(404, "Work day not found on this job.")
+        session.delete(wd)
+        session.commit()
+        return {"deleted": work_day_id}
+
+
 @app.put("/quotes/{quote_id}/materials")
 def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_for_installation: bool = None,
                             installer_team: str = None, materials_not_needed: bool = None,
@@ -7013,6 +7092,11 @@ _CASCADE_POLICY = {
         (QuoteLineItem, "quote_id", "cascade", None),
         (OrderSheet, "quote_id", "cascade", None),
         (PaymentFollowUp, "quote_id", "cascade", None),
+        # Calendar: Multiple Work Days Per Job (confirmed Sept 2026) — a
+        # job's extra days have no independent life outside it (same
+        # reasoning as PaymentFollowUp above), no further dependents of
+        # their own, and nothing external to clean up.
+        (JobWorkDay, "quote_id", "cascade", None),
         (QuotePhoto, "quote_id", "cascade", lambda p: photo_storage.delete_photo(p.storage_path)),
         (HoursWorked, "quote_id", "assert_empty", None),          # blocked upstream by _quote_delete_dependencies
         (BuilderEstimate, "linked_quote_id", "assert_empty", None),  # blocked upstream by _quote_delete_dependencies
@@ -8592,6 +8676,18 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             # the frontend renders nothing extra in that case, same as
             # today.
             "job_steps": _job_steps(session, quote, tenant_id, materials_ordered_flag, order_sheets_for_workflow),
+            # Calendar: Multiple Work Days Per Job (confirmed Sept 2026,
+            # approved proposal) — this job's own EXTRA on-site days
+            # (screed before install, etc.), never installation_date
+            # itself — that stays exactly what it always was, read
+            # separately below on `quote`. Empty for the ordinary case
+            # (no extra days), same "nothing changes for a job that
+            # doesn't use this" as every other additive field.
+            "work_days": [
+                {"id": wd.id, "day_type": wd.day_type, "work_date": wd.work_date,
+                 "confirmed_date": wd.confirmed_date, "notes": wd.notes}
+                for wd in session.exec(select(JobWorkDay).where(JobWorkDay.quote_id == quote_id, JobWorkDay.tenant_id == tenant_id)).all()
+            ],
         }
 
         # Decline Quote reason (confirmed Aug 2026, Master Workflow
@@ -9075,6 +9171,20 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
                       or search_lower in (q.site_address or "").lower()]
 
         today = date.today()
+        # Calendar: Multiple Work Days Per Job (confirmed Sept 2026,
+        # approved proposal) — one query for every quote's extra days,
+        # grouped in Python, rather than one query per row inside the
+        # loop below (this endpoint already avoids that shape for
+        # everything else here — VAT_PCT/tt_usernames fetched once above,
+        # not per row). The calendar reads this off the same GET /quotes
+        # response it already fetches (calendarQuotesCache) — no second
+        # round trip.
+        work_days_by_quote = {}
+        for wd in session.exec(select(JobWorkDay).where(JobWorkDay.tenant_id == tenant_id)).all():
+            work_days_by_quote.setdefault(wd.quote_id, []).append({
+                "id": wd.id, "day_type": wd.day_type, "work_date": wd.work_date,
+                "confirmed_date": wd.confirmed_date, "notes": wd.notes,
+            })
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -9119,5 +9229,6 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered
+            d["work_days"] = work_days_by_quote.get(q.id, [])
             result.append(d)
         return result

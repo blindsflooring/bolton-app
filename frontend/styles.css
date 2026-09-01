@@ -595,9 +595,27 @@
   .cal-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
   .cal-legend-dot.confirmed { background: #1a7a3e; }
   .cal-legend-dot.tentative { background: var(--cream); border: 1px dashed #8a6d00; }
-  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  /* Fits one screen, no scrolling (confirmed Sept 2026 — unmet
+     requirement, closed) — row heights are no longer a fixed guess
+     (76px min-height overflowed the page on anything but a tall
+     window). calFitCalendarGrid() (calendar.js) measures the grid's
+     own real top offset after every render and sets --cal-grid-h to
+     whatever's actually left of the viewport below it, re-run on
+     resize too — not a scroll-linked hack (this file's own Sticky
+     Header comment above is explicit that category is retired for
+     good reason), just a real one-time viewport measurement.
+     grid-template-rows splits that real height across the six weeks
+     evenly; minmax(0,1fr) is what lets a row genuinely shrink instead
+     of being pushed back out by its own content. */
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: auto repeat(6, minmax(0, 1fr)); gap: 4px; height: var(--cal-grid-h, auto); }
   .cal-dow { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--ink-faint, #8A93A0); text-align: center; padding-bottom: 4px; }
-  .cal-day { border: 1px solid var(--border); border-radius: 6px; min-height: 76px; padding: 4px; font-size: 11px; }
+  /* min-height retired along with the fixed row-height guess above —
+     a day cell is now whatever share of --cal-grid-h its row gets.
+     overflow-y:auto is the deliberately narrow fallback: on a
+     genuinely packed day (rare — "+N more" already caps visible chips
+     at 3) or an unusually short window, that ONE cell scrolls
+     internally rather than the whole page ever needing to. */
+  .cal-day { border: 1px solid var(--border); border-radius: 6px; padding: 4px; font-size: 11px; overflow-y: auto; }
   .cal-day.other-month { opacity: .4; }
   .cal-day.today { border-color: var(--teal); border-width: 2px; }
   .cal-day.has-jobs { cursor: pointer; }
@@ -615,7 +633,7 @@
   .cal-chip.tentative { background: var(--cream); color: #8a6d00; border: 1px dashed #c7ae4a; }
   .cal-chip.more { background: none; color: var(--teal); font-weight: 700; cursor: pointer; }
   @media (max-width: 700px) {
-    .cal-day { min-height: 54px; font-size: 9.5px; }
+    .cal-day { font-size: 9.5px; }
     .cal-daynum { font-size: 9.5px; }
     .cal-chip { font-size: 9px; }
   }

@@ -44,19 +44,50 @@ async function renderInstallationCalendar(el) {
 // proposal) — job_number is not null (a real job, not just a quote
 // that happened to get an early tentative date typed into Job
 // Details), never declined, and has installation_date set at all.
+//
+// Calendar: Multiple Work Days Per Job (confirmed Sept 2026, approved
+// proposal) — each day a job actually occupies (its main installation
+// day, plus any real extra days from q.work_days — screed before
+// install, etc.) becomes its own normalized "chip" object here, never a
+// raw Quote reused for two different meanings. installation_date/
+// installation_confirmed_date on `q` itself are read exactly once, right
+// here, for the main chip — completely unchanged from before this
+// brief; everything downstream (rendering, drag-and-drop) works off
+// these chip objects, not `q` directly, so it never needs to know which
+// kind of day it's looking at except via workDayId (null = the main
+// day, the ONLY case that existed before this brief).
+function calMainChip(q) {
+  return {
+    quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
+    date: q.installation_date, confirmed: calIsConfirmed(q), workDayId: null, dayType: null,
+  };
+}
+function calWorkDayChip(q, wd) {
+  return {
+    quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
+    date: wd.work_date, confirmed: !!(wd.confirmed_date && wd.confirmed_date === wd.work_date),
+    workDayId: wd.id, dayType: wd.day_type,
+  };
+}
+const CAL_DAY_TYPE_LABEL = { screed: 'Screed', installation: 'Install', other: 'Other' };
+
 function calendarJobsForMonth(year, month) {
   const byDay = {};
-  calendarQuotesCache.forEach(q => {
-    if (!q.job_number || q.declined_at || !q.installation_date) return;
-    const d = q.installation_date; // 'YYYY-MM-DD', already the exact shape needed — no Date() parsing/timezone risk
-    const [y, m] = d.split('-').map(Number);
+  const push = (d, chip) => {
+    if (!d) return;
+    const [y, m] = d.split('-').map(Number);   // 'YYYY-MM-DD', already the exact shape needed — no Date() parsing/timezone risk
     if (y !== year || m !== month + 1) return;
-    (byDay[d] = byDay[d] || []).push(q);
+    (byDay[d] = byDay[d] || []).push(chip);
+  };
+  calendarQuotesCache.forEach(q => {
+    if (!q.job_number || q.declined_at) return;
+    if (q.installation_date) push(q.installation_date, calMainChip(q));
+    (q.work_days || []).forEach(wd => push(wd.work_date, calWorkDayChip(q, wd)));
   });
   // Confirmed first within each day, tentative after — the more
   // settled information first, same "done things read as settled"
   // principle the Job Control Panel's own status strip follows.
-  Object.values(byDay).forEach(list => list.sort((a, b) => (calIsConfirmed(b) ? 1 : 0) - (calIsConfirmed(a) ? 1 : 0)));
+  Object.values(byDay).forEach(list => list.sort((a, b) => (b.confirmed ? 1 : 0) - (a.confirmed ? 1 : 0)));
   return byDay;
 }
 
@@ -113,12 +144,20 @@ function renderCalendarView(el) {
     // below); the existing onclick still opens the job normally for a
     // plain tap, guarded by calDragMoved so it doesn't ALSO fire right
     // after a genuine drag-drop just released on this same element.
-    const chipsHtml = visible.map(q => {
-      const confirmed = calIsConfirmed(q);
+    const chipsHtml = visible.map(chip => {
+      // Multiple Work Days Per Job (confirmed Sept 2026) — a work-day
+      // chip (chip.workDayId set) shows its type instead of the client
+      // name, so it reads as "the same job, a different day," not a
+      // second job — tied together visually by the identical job_number
+      // text every chip for this job shares. workDayId threads through
+      // calChipPointerDown so drag-and-drop moves the right row.
+      const label = chip.workDayId
+        ? `${chip.job_number} — ${CAL_DAY_TYPE_LABEL[chip.dayType] || 'Extra day'}`
+        : `${chip.job_number} ${(chip.client_name || '').replace(/</g,'&lt;')}`;
       return `
-      <div class="cal-chip ${confirmed ? 'confirmed' : 'tentative'}" style="touch-action:none;" title="${(q.client_name || '').replace(/"/g,'&quot;')}${q.description ? ' — ' + q.description.replace(/"/g,'&quot;') : ''}"
-        onpointerdown="calChipPointerDown(event, ${q.id}, '${dateStr}', ${confirmed})"
-        onclick="if (calDragMoved) { event.stopPropagation(); return; } event.stopPropagation(); openOrderDetailScreen(${q.id});">${q.job_number} ${(q.client_name || '').replace(/</g,'&lt;')}</div>
+      <div class="cal-chip ${chip.confirmed ? 'confirmed' : 'tentative'}" style="touch-action:none;" title="${(chip.client_name || '').replace(/"/g,'&quot;')}${chip.description ? ' — ' + chip.description.replace(/"/g,'&quot;') : ''}"
+        onpointerdown="calChipPointerDown(event, ${chip.quoteId}, '${dateStr}', ${chip.confirmed}, ${chip.workDayId ?? 'null'})"
+        onclick="if (calDragMoved) { event.stopPropagation(); return; } event.stopPropagation(); openOrderDetailScreen(${chip.quoteId});">${label}</div>
     `;
     }).join('');
     const moreHtml = overflow > 0
@@ -157,6 +196,46 @@ function renderCalendarView(el) {
     <div id="calendarDayListArea"></div>
   `;
   if (calendarExpandedDay) renderCalendarDayList(calendarExpandedDay);
+  calFitCalendarGrid();
+}
+
+// Fits one screen, no scrolling (confirmed Sept 2026 — the original
+// Interactive Calendar brief's own explicit requirement, confirmed
+// directly still unmet on a real browser). A fixed row-height guess
+// (the old 76px min-height) can never actually guarantee this — it
+// only fits whatever window it happened to be tuned against. This
+// measures the grid's own real position after every render and sets
+// --cal-grid-h (styles.css) to whatever's genuinely left of the real
+// viewport below it, so the six-week grid always divides up exactly
+// the space that's really there. Re-run on resize too (orientation
+// change, a window being resized) — deliberately NOT scroll-linked
+// (this file/styles.css's own Sticky Header history is explicit that
+// whole category of fix was retired for good reason after four failed
+// attempts) — this only reacts to real viewport-size changes, never
+// to scroll position.
+function calFitCalendarGrid() {
+  const grid = document.querySelector('.cal-grid');
+  if (!grid) return;
+  // Measures EVERYTHING else on the page, not just what's above the
+  // grid — real gap found testing this directly: a fixed guess based
+  // only on the grid's own top offset still overflowed by ~76px, the
+  // page's own bottom padding reserved for the floating "back to top"
+  // button (index.html, every screen), which sits entirely below the
+  // grid and so never showed up in a top-only measurement. Clearing
+  // any previous constraint first so this always measures the grid's
+  // real natural height, not whatever it was already shrunk to.
+  grid.style.removeProperty('--cal-grid-h');
+  const nonGridHeight = document.body.scrollHeight - grid.getBoundingClientRect().height;
+  // 220px floor: below this a real six-week grid stops being legible
+  // regardless of how the space is split — a genuinely tiny window
+  // scrolls at that point, the same "normal window size" scope the
+  // brief's own testing requirement already draws.
+  const available = Math.max(window.innerHeight - nonGridHeight, 220);
+  grid.style.setProperty('--cal-grid-h', available + 'px');
+}
+if (!window._calFitResizeBound) {
+  window._calFitResizeBound = true;
+  window.addEventListener('resize', () => { if (document.querySelector('.cal-grid')) calFitCalendarGrid(); });
 }
 
 function toggleCalendarDayList(dateStr) {
@@ -174,17 +253,22 @@ function toggleCalendarDayList(dateStr) {
 function renderCalendarDayList(dateStr) {
   const jobs = (calendarJobsForMonth(calendarViewYear, calendarViewMonth)[dateStr] || []);
   const dateObj = new Date(dateStr + 'T00:00:00');
-  const rows = jobs.length ? jobs.map(q => `
-    <tr onclick="openOrderDetailScreen(${q.id})" style="cursor:pointer;">
-      <td data-label="Job"><b>${q.job_number}</b></td>
-      <td data-label="Client">${(q.client_name || '').replace(/</g,'&lt;')}</td>
-      <td data-label="Description">${(q.description || '—').replace(/</g,'&lt;')}</td>
-      <td data-label="Status">${calIsConfirmed(q) ? '<span style="color:var(--teal); font-weight:700;">✓ Confirmed</span>' : '<span class="muted">Tentative</span>'}</td>
-    </tr>`).join('') : `<tr><td colspan="4" class="muted">Nothing booked this day.</td></tr>`;
+  // Multiple Work Days Per Job (confirmed Sept 2026) — Day column added
+  // so a busy day mixing main installs and extra days (screed etc.)
+  // still reads clearly; "Install" for every chip before this brief,
+  // since workDayId was always null then.
+  const rows = jobs.length ? jobs.map(chip => `
+    <tr onclick="openOrderDetailScreen(${chip.quoteId})" style="cursor:pointer;">
+      <td data-label="Job"><b>${chip.job_number}</b></td>
+      <td data-label="Client">${(chip.client_name || '').replace(/</g,'&lt;')}</td>
+      <td data-label="Day">${chip.workDayId ? (CAL_DAY_TYPE_LABEL[chip.dayType] || 'Extra day') : 'Install'}</td>
+      <td data-label="Description">${(chip.description || '—').replace(/</g,'&lt;')}</td>
+      <td data-label="Status">${chip.confirmed ? '<span style="color:var(--teal); font-weight:700;">✓ Confirmed</span>' : '<span class="muted">Tentative</span>'}</td>
+    </tr>`).join('') : `<tr><td colspan="5" class="muted">Nothing booked this day.</td></tr>`;
   document.getElementById('calendarDayListArea').innerHTML = `
     <div class="card">
       <h2>${dateObj.toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
-      <table class="mobile-card-table"><thead><tr><th>Job</th><th>Client</th><th>Description</th><th>Status</th></tr></thead>
+      <table class="mobile-card-table"><thead><tr><th>Job</th><th>Client</th><th>Day</th><th>Description</th><th>Status</th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>`;
 }
@@ -206,14 +290,18 @@ function renderCalendarDayList(dateStr) {
 // same chip element for the life of one gesture, even once the pointer
 // has physically moved over other elements — no document-level
 // listeners needed.
-let calDrag = null;         // {quoteId, originDate, confirmed, pointerId, chipEl, cloneEl, startX, startY}
+let calDrag = null;         // {quoteId, originDate, confirmed, workDayId, pointerId, chipEl, cloneEl, startX, startY}
 let calDragMoved = false;   // true only once real movement is seen this gesture — checked by the chip's own onclick (index.html-style inline handler, above) to suppress opening the job right after a genuine drag-drop
 const CAL_DRAG_THRESHOLD = 6; // px — below this, a pointerdown+up is treated as a plain tap, not a drag
 
-function calChipPointerDown(e, quoteId, dateStr, confirmed) {
+// workDayId (confirmed Sept 2026, Multiple Work Days Per Job) — null for
+// the main installation chip, exactly as before this brief; an extra
+// day's own id otherwise, threaded through to calChipPointerUp so the
+// drop lands on the right row via the right endpoint.
+function calChipPointerDown(e, quoteId, dateStr, confirmed, workDayId) {
   if (e.button !== undefined && e.button !== 0) return; // primary mouse button / primary touch only
   const chipEl = e.currentTarget;
-  calDrag = { quoteId, originDate: dateStr, confirmed, pointerId: e.pointerId, chipEl, cloneEl: null, startX: e.clientX, startY: e.clientY };
+  calDrag = { quoteId, originDate: dateStr, confirmed, workDayId: workDayId ?? null, pointerId: e.pointerId, chipEl, cloneEl: null, startX: e.clientX, startY: e.clientY };
   calDragMoved = false;
   chipEl.setPointerCapture(e.pointerId);
   chipEl.addEventListener('pointermove', calChipPointerMove);
@@ -246,7 +334,7 @@ function calChipPointerMove(e) {
 
 async function calChipPointerUp(e) {
   if (!calDrag || e.pointerId !== calDrag.pointerId) return;
-  const { quoteId, originDate, confirmed, chipEl, cloneEl } = calDrag;
+  const { quoteId, originDate, confirmed, workDayId, chipEl, cloneEl } = calDrag;
   chipEl.removeEventListener('pointermove', calChipPointerMove);
   chipEl.removeEventListener('pointerup', calChipPointerUp);
   chipEl.removeEventListener('pointercancel', calChipPointerCancel);
@@ -265,7 +353,8 @@ async function calChipPointerUp(e) {
   const dayEl = under && under.closest('.cal-day[data-date]');
   const newDate = dayEl ? dayEl.dataset.date : null;
   if (!newDate || newDate === originDate) return; // dropped back on itself, or off the grid entirely — nothing to save
-  await calendarHandleDrop(quoteId, originDate, newDate, confirmed);
+  if (workDayId) { await calendarHandleWorkDayDrop(workDayId, quoteId, originDate, newDate, confirmed); }
+  else { await calendarHandleDrop(quoteId, originDate, newDate, confirmed); }
 }
 
 function calChipPointerCancel() {
@@ -346,7 +435,11 @@ async function calendarHandleDrop(quoteId, originDate, newDate, confirmed) {
 // matching how low the real stakes are for a still-tentative date —
 // the same plain PUT this whole move already used, just with the
 // dates swapped back.
-function showCalendarUndoToast(quoteId, originDate, newDisp, label) {
+// workDayId (confirmed Sept 2026, Multiple Work Days Per Job) — null
+// undoes via the same main-date PUT as before this brief; an extra
+// day's id undoes via its own PUT .../work-days/{id} instead, same
+// "swap the dates back" idea, right endpoint for which row moved.
+function showCalendarUndoToast(quoteId, originDate, newDisp, label, workDayId) {
   const existing = document.getElementById('calUndoToast');
   if (existing) existing.remove();
   const toast = document.createElement('div');
@@ -359,7 +452,37 @@ function showCalendarUndoToast(quoteId, originDate, newDisp, label) {
     e.preventDefault();
     clearTimeout(timeout);
     toast.remove();
-    await fetch(`${API}/quotes/${quoteId}?installation_date=${originDate}`, { method: 'PUT' });
+    const url = workDayId ? `${API}/quotes/${quoteId}/work-days/${workDayId}?work_date=${originDate}` : `${API}/quotes/${quoteId}?installation_date=${originDate}`;
+    await fetch(url, { method: 'PUT' });
     await renderInstallationCalendar(document.getElementById('landing'));
   };
+}
+
+// Extra work day drop (confirmed Sept 2026, Multiple Work Days Per Job)
+// — the same two-path discipline calendarHandleDrop() already
+// established for the main installation date, applied to one row of
+// JobWorkDay instead: a tentative day moves via a plain PUT, a
+// confirmed one gets the same "client may already be expecting the
+// original date" warning before re-confirming it at the new date.
+async function calendarHandleWorkDayDrop(workDayId, quoteId, originDate, newDate, confirmed) {
+  const q = calendarQuotesCache.find(x => x.id === quoteId);
+  const wd = q && (q.work_days || []).find(x => x.id === workDayId);
+  const dayLabel = CAL_DAY_TYPE_LABEL[wd && wd.day_type] || 'Extra day';
+  const label = q ? `${q.job_number || 'Job #' + q.id} — ${dayLabel}` : 'This day';
+  const oldDisp = calFormatDate(originDate), newDisp = calFormatDate(newDate);
+  if (confirmed) {
+    const proceed = await calShowConfirmDialog(
+      `${label} is confirmed for ${oldDisp} — moving it to ${newDisp} will re-confirm it there instead.<br><br>The client may already be expecting the original date; Bolton won't notify them — that's still on you to do.`,
+      `Move to ${newDisp}`
+    );
+    if (!proceed) return;
+    const res = await fetch(`${API}/quotes/${quoteId}/work-days/${workDayId}/confirm?work_date=${newDate}`, { method: 'PUT' });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not move this day — check your connection and try again.'); return; }
+    await renderInstallationCalendar(document.getElementById('landing'));
+  } else {
+    const res = await fetch(`${API}/quotes/${quoteId}/work-days/${workDayId}?work_date=${newDate}`, { method: 'PUT' });
+    if (!res.ok) { alert('Could not move this day — check your connection and try again.'); return; }
+    await renderInstallationCalendar(document.getElementById('landing'));
+    showCalendarUndoToast(quoteId, originDate, newDisp, label, workDayId);
+  }
 }

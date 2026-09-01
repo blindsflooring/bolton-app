@@ -1170,6 +1170,35 @@ class Quote(SQLModel, table=True):
     snapshot_json: Optional[str] = None
 
 
+class JobWorkDay(SQLModel, table=True):
+    """Calendar: Multiple Work Days Per Job (confirmed Sept 2026, approved
+    proposal) — a job like screed-then-flooring genuinely needs more than
+    one on-site date; Bolton's whole calendar/workflow model was built
+    around a single Quote.installation_date. Deliberately additive, not a
+    replacement: installation_date/installation_confirmed_date keep
+    meaning exactly what they always have (the main/final day) — every
+    existing consumer (_job_workflow_info()'s workflow_status transitions,
+    schedule_quote(), the Job Card, Order Index's own column/grouping/
+    primary status strip) is completely untouched. This table only ever
+    holds EXTRA days a job may optionally have zero or more of; a job
+    with none behaves identically to before this brief. Same tentative-
+    vs-confirmed distinction installation_date/installation_confirmed_date
+    already draw (confirmed_date is None until explicitly confirmed,
+    mirroring schedule_quote()'s own "set equal to confirm" pattern), so
+    the calendar's drag-and-drop discipline for the main date carries over
+    unchanged for these too."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    quote_id: int = Field(foreign_key="quote.id")
+    # Real, named types (confirmed with Burgert) — Screed/Installation are
+    # the two concrete examples given; Other is the deliberate catch-all
+    # rather than free text, same fixed-set convention as OrderSheet.sheet_type.
+    day_type: str = "screed"   # "screed" | "installation" | "other"
+    work_date: date
+    confirmed_date: Optional[date] = None
+    notes: str = ""
+
+
 class PaymentFollowUp(SQLModel, table=True):
     """Confirmed Aug 2026 — a quote can need MULTIPLE follow-ups over
     time (first reminder, second reminder...), so this is its own
