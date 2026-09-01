@@ -5533,7 +5533,7 @@ def delete_client(client_id: int, role: str = Depends(require_owner),
         return {"deleted": client_id}
 
 
-def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False) -> dict:
+def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False, last_follow_up_date: Optional[date] = None) -> dict:
     """Next Action / Needs Attention engine (confirmed Aug 2026, Order
     Index / Job Workflow Redesign brief + Next Action Addendum).
     Computed at read time from workflow_status plus the operational/
@@ -5552,6 +5552,17 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     deliberately NOT businessSettings.order_overdue_days — that setting
     means something different (days since INVOICE sent), and reusing it
     would conflate two unrelated concepts.
+
+    last_follow_up_date (Logged Follow-Up Doesn't Clear Needs Attention
+    Flag brief, confirmed Sept 2026) — REAL BUG FIXED: staleness used to
+    be measured purely from quote.created_at, with zero awareness of
+    PaymentFollowUp entries — logging a real follow-up (log_follow_up(),
+    below) writes to that table but this function never read it, so the
+    action taken and the flag it should have cleared were structurally
+    disconnected. The clock now resets to the most recent of created_at
+    or a logged follow-up, never permanently suppressed (brief's own
+    explicit requirement): if enough time passes again with no further
+    follow-up, the flag can resurface exactly as before.
 
     materials_ordered (Job Workflow Design Proposal Phase 1, confirmed
     Aug 2026) — REAL BUG FIXED: this used to be read directly off
@@ -5583,7 +5594,8 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
 
     if ws == "quoted":
         next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
-        if (today - quote.created_at.date()).days >= QUOTE_STALE_DAYS:
+        stale_since = max(quote.created_at.date(), last_follow_up_date) if last_follow_up_date else quote.created_at.date()
+        if (today - stale_since).days >= QUOTE_STALE_DAYS:
             attention_priority, attention_label = "notice", "Follow up"
     elif ws == "accepted":
         # Booking visibility fix (confirmed Aug 2026, Master Workflow
@@ -8653,6 +8665,13 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
         # querying OrderSheet twice in the same request.
         order_sheets_for_workflow = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
         materials_ordered_flag = _all_sheets_placed(order_sheets_for_workflow)
+        # Logged Follow-Up Doesn't Clear Needs Attention Flag (confirmed
+        # Sept 2026) — the most recent real follow-up on this job, if
+        # any; _job_workflow_info() uses it to reset the staleness clock.
+        latest_follow_up = session.exec(
+            select(PaymentFollowUp).where(PaymentFollowUp.quote_id == quote_id, PaymentFollowUp.tenant_id == tenant_id)
+            .order_by(PaymentFollowUp.follow_up_date.desc())
+        ).first()
 
         response = {
             "quote": quote.dict(),
@@ -8664,7 +8683,7 @@ def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: s
             # Addendum) — same engine list_quotes() uses, so the Job
             # Detail screen's own action button always agrees with
             # whatever the Order Index row showed to get here.
-            "workflow": _job_workflow_info(quote, date.today(), materials_ordered_flag),
+            "workflow": _job_workflow_info(quote, date.today(), materials_ordered_flag, latest_follow_up.follow_up_date if latest_follow_up else None),
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # exposed directly, not just folded into next_action's prose,
             # so the frontend can show a clean derived status line
@@ -9185,6 +9204,15 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
                 "id": wd.id, "day_type": wd.day_type, "work_date": wd.work_date,
                 "confirmed_date": wd.confirmed_date, "notes": wd.notes,
             })
+        # Logged Follow-Up Doesn't Clear Needs Attention Flag (confirmed
+        # Sept 2026) — same one-query-for-everyone shape as work_days_by_quote
+        # just above, rather than a per-row query inside the loop below.
+        # Keeps only the MOST RECENT follow-up per quote; _job_workflow_info()
+        # only ever needs that one date to reset its staleness clock.
+        latest_follow_up_by_quote = {}
+        for fu in session.exec(select(PaymentFollowUp).where(PaymentFollowUp.tenant_id == tenant_id)).all():
+            if fu.quote_id not in latest_follow_up_by_quote or fu.follow_up_date > latest_follow_up_by_quote[fu.quote_id]:
+                latest_follow_up_by_quote[fu.quote_id] = fu.follow_up_date
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -9225,7 +9253,7 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # be built client-side from this one response, no second
             # request.
             row_materials_ordered = _materials_ordered_for_quote(session, q.id, tenant_id)
-            d.update(_job_workflow_info(q, today, row_materials_ordered))
+            d.update(_job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id)))
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered

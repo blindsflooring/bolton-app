@@ -2182,7 +2182,17 @@ async function logFollowUp() {
   await fetch(`${API}/quotes/${currentOrderDetailQuoteId}/follow-ups?${params}`, {method:'POST'});
   document.getElementById('fu_date').value = '';
   document.getElementById('fu_notes').value = '';
-  loadFollowUps();
+  // Logged Follow-Up Doesn't Clear Needs Attention Flag (confirmed
+  // Sept 2026) — a bare loadFollowUps() only refreshed this section's
+  // own small list; the primary 🟢/🟡/🔴 status strip at the top of
+  // this same page (jobControlPanelStatusHtml(), reads data.workflow)
+  // stayed showing the stale "Follow up" flag until the whole quote
+  // was re-fetched some other way. A full renderOrderDetail() picks up
+  // the now-fixed _job_workflow_info() (main.py) result immediately —
+  // this already calls loadFollowUps() itself as part of its own
+  // render, so nothing is lost, only the strip gains the refresh it
+  // was missing.
+  renderOrderDetail(document.getElementById('landing'));
 }
 
 async function loadFollowUps() {
