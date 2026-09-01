@@ -2945,6 +2945,16 @@ async function uploadQuotePhotos() {
   if (!files.length) { statusEl.textContent = 'Choose one or more photos first.'; return; }
   statusEl.textContent = `Uploading ${files.length} photo${files.length !== 1 ? 's' : ''}…`;
   let uploaded = 0, failed = 0;
+  // Real bug found and fixed (confirmed Sept 2026, Burgert directly
+  // reported "upload failed" with no useful detail): the specific
+  // reason (err.detail — e.g. photo_storage.py's own real "SUPABASE_URL/
+  // SUPABASE_SERVICE_KEY are missing" or the actual Supabase HTTP error
+  // body) was being set here, per-file, then unconditionally
+  // overwritten right after the loop by a generic "N failed — see
+  // above" summary — which by then had nothing real left "above" to
+  // see, since this line just erased it. Collected here instead so the
+  // real reason survives into the final status line.
+  const failReasons = [];
   for (const file of files) {
     const body = new FormData();
     body.append('file', file);
@@ -2954,15 +2964,16 @@ async function uploadQuotePhotos() {
       else {
         failed++;
         const err = await res.json().catch(() => ({}));
-        statusEl.textContent = err.detail || `Couldn't upload ${file.name}.`;
+        failReasons.push(err.detail || `Couldn't upload ${file.name}.`);
       }
     } catch (e) {
       failed++;
+      failReasons.push(`${file.name}: check your connection and try again.`);
     }
   }
   input.value = '';
   statusEl.textContent = failed
-    ? `${uploaded} uploaded, ${failed} failed — see above.`
+    ? `${uploaded} uploaded, ${failed} failed — ${failReasons.join(' ')}`
     : `${uploaded} photo${uploaded !== 1 ? 's' : ''} uploaded ✓`;
   await loadQuotePhotos();
 }
