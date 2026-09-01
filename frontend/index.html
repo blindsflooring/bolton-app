@@ -1195,6 +1195,31 @@ function showSection(tabName) {
 
 function goToTab(tabName) { showSection(tabName); }
 
+// Third Data Bleed brief (confirmed Sept 2026) — the real, structural
+// signal for "is the user still actively working in an open quote right
+// now," replacing `!currentQuoteId` at every "start a new quote/Price
+// Check" entry point that needs to decide between resetting fresh and
+// merging into whatever's already open. currentQuoteId only tells you a
+// quote object was loaded at SOME point — it's never cleared just
+// because the user is genuinely done with that quote (saved, converted,
+// accepted, simply navigated away without an explicit "close"), so it
+// stays truthy long after the quote it names is no longer what's on
+// screen. #quoteBuilder's own display style is the one thing that's
+// ALWAYS correct here: showSection()/goToTab() (this file) is the only
+// code that ever sets it, to 'block' if and only if tabName==='quoteBuilder'
+// — every other screen this app can navigate to, including the "← Back
+// to Home" link inside Quote Builder itself, goes through it and
+// correctly sets it back to 'none'. Confirmed root cause of the third
+// recurrence: Convert to Real Quote leaves currentQuoteId pointing at
+// the just-converted quote (correctly — the user is still looking at
+// it), but the OLD guard read that as "a quote is open, don't reset,"
+// so clicking a fresh Flooring range afterward silently reused that
+// same quote instead of starting a new one.
+function isQuoteBuilderOpen() {
+  const el = document.getElementById('quoteBuilder');
+  return !!el && el.style.display === 'block';
+}
+
 // ===== AUTH (confirmed Aug 2026 — replaces the old self-reported
 // "Viewing as" dropdown entirely) =====
 // Double-submit guard (confirmed Aug 2026, Login Activity Log: Fix
@@ -1576,7 +1601,7 @@ function onTileClick(tileId) {
   // currently open, so real in-progress work on an already-open quote
   // is never wiped by clicking this tile.
   else if (tileId === 'blinds') {
-    if (!currentQuoteId) { resetQuoteBuilderUI(); }
+    if (!isQuoteBuilderOpen()) { resetQuoteBuilderUI(); }
     pendingCategory = 'blinds';
     goToTab('quoteBuilder');
     if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; }
@@ -1652,7 +1677,7 @@ async function renderFlooringDrill(el) {
 // Carpet tab with that type + range pre-selected.
 function startQuoteWithFlooringRange(range, category) {
   if (CARPET_ONLY_CATEGORIES.includes(category)) {
-    if (!currentQuoteId) { resetQuoteBuilderUI(); }
+    if (!isQuoteBuilderOpen()) { resetQuoteBuilderUI(); }
     pendingCarpetType = category;
     pendingCarpetRange = range;
     pendingCategory = 'carpet';
@@ -1680,7 +1705,7 @@ async function startQuoteWithVinylRange(range) {
   // currently open — the other branch below deliberately applies to
   // the ALREADY-open quote instead of starting a new one, so resetting
   // there would wrongly wipe out real, unsaved work.
-  if (!currentQuoteId) { resetQuoteBuilderUI(); }
+  if (!isQuoteBuilderOpen()) { resetQuoteBuilderUI(); }
   pendingVinylRange = range;
   pendingCategory = 'flooring';
   goToTab('quoteBuilder');

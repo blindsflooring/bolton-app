@@ -1687,8 +1687,27 @@ async function convertPriceCheckToQuote() {
     const res = await fetch(`${API}/quotes/${currentQuoteId}/convert-to-quote?client_id=${clientId}`, {method: 'POST'});
     if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not convert this Price Check.'); return; }
   }
-  alert('Converted — this is now a real, tracked quote and will appear on the Order Index.');
-  loadQuote();
+  // Navigate to Order Index (confirmed Sept 2026, Third Data Bleed +
+  // Convert Navigation brief §1) — "taken directly to the Order Index,
+  // where the newly created quote is now visible in context... clear,
+  // visible confirmation that a real record now exists," same action-
+  // vs-outcome principle saveQuote() already applies after a save
+  // (Save Redirect + Client Link Missing brief) — reuses its exact
+  // idiom: showRawSection('landing'), not goToTab()/showSection(),
+  // since that pair forces landingView back to 'tiles' first (flashing
+  // the tile menu for a frame before Order Index actually renders).
+  // Also closes the real gap this brief's own investigation found: this
+  // function used to leave the user sitting in Quote Builder with
+  // currentQuoteId still pointing at the just-converted quote — exactly
+  // the condition that let the third data-bleed recurrence reuse it as
+  // if it were still open. Leaving via this navigation is unaffected by
+  // that fix either way (isQuoteBuilderOpen(), index.html, now reads
+  // real DOM visibility instead of this variable), but landing on Order
+  // Index is also simply the correct, requested destination.
+  resetQuoteBuilderUI();   // same defensive backstop saveQuote() already applies before this identical navigation — leaves nothing of this quote behind in the builder now that it's done
+  showRawSection('landing');
+  landingView = 'orders';
+  renderLanding();
 }
 
 // Zero data leakage between quotes (confirmed Aug 2026, Client-Side
@@ -1708,6 +1727,55 @@ async function convertPriceCheckToQuote() {
 // "New Quote (different client)" click in between). Centralized here so
 // every entry point into "start a quote" shares one true reset,
 // including createQuote() itself as a defensive backstop.
+// Third Data Bleed brief (confirmed Sept 2026) — "Do not repeat the
+// narrow-patch approach... could a new quote always fetch a
+// guaranteed-fresh, blank state, so there is structurally no leftover
+// client-side state to leak from anywhere, ever?" Quote Builder has no
+// server-side "blank state" to fetch (a new quote doesn't exist yet
+// until Start Quote/Start Price Check is clicked) — the real structural
+// equivalent here is that #quoteBuilder is a static section, never
+// rebuilt, so every input/select inside it already carries its own
+// real, browser-tracked default (.defaultValue/.defaultChecked/each
+// <option>'s own `selected` attribute) straight from the page's own
+// HTML — completely untouched by whatever a previous quote's JS put
+// into .value/.checked. Sweeping every plain field back to that native
+// default, once, structurally covers every CURRENT field this used to
+// hand-list one at a time (confirmed identical for every one of them
+// except the documented override below) AND, unlike that list, any
+// FUTURE field a developer adds — as long as it's given a sensible
+// value="…"/checked attribute in the HTML, the normal way to author a
+// new input, it's covered by construction, with nothing new to
+// remember here. This is exactly the class of bug that has already
+// needed patching twice (a field the manual list didn't know about).
+//
+// Deliberately NOT swept: q_client/q_branch/q_owner (resetQuoteBuilderUI()
+// or the caller sets these explicitly, sometimes to a smart per-user
+// default via defaultBranchForCurrentUser()/defaultSalesOwnerForCurrentUser()
+// — never this function's job, see its own docstring below) and
+// q_measurements (sticky by design — persists across quotes).
+const QUOTE_BUILDER_FIELD_SWEEP_EXCLUDE = new Set(['q_client', 'q_branch', 'q_owner', 'q_measurements', 'fj_labour_rate']);
+// The one confirmed case where the real reset value has always
+// deliberately differed from the field's own HTML default (blank, not
+// its value="45") — kept exactly as it already behaved, not silently
+// changed by the sweep above.
+const QUOTE_BUILDER_FIELD_SWEEP_OVERRIDES = { fj_labour_rate: '' };
+function resetQuoteBuilderFieldsToDefaults() {
+  const scope = document.getElementById('quoteBuilder');
+  if (!scope) return;
+  scope.querySelectorAll('input, select, textarea').forEach(el => {
+    if (!el.id || QUOTE_BUILDER_FIELD_SWEEP_EXCLUDE.has(el.id)) return;
+    if (el.type === 'checkbox' || el.type === 'radio') { el.checked = el.defaultChecked; }
+    else if (el.tagName === 'SELECT') {
+      const def = [...el.options].find(o => o.defaultSelected);
+      el.value = def ? def.value : (el.options[0] ? el.options[0].value : '');
+    } else { el.value = el.defaultValue; }
+  });
+  Object.entries(QUOTE_BUILDER_FIELD_SWEEP_OVERRIDES).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
+}
+
 // Split in two deliberately: clearStaleQuoteResidue() is safe to call
 // at ANY point, including right before reading q_client/q_owner/q_branch
 // to create a new quote (createQuote() does exactly that) — it never
@@ -1736,85 +1804,20 @@ function clearStaleQuoteResidue() {
   if (tbody) tbody.innerHTML = '';
   const totalEl = document.getElementById('quoteTotal');
   if (totalEl) totalEl.innerHTML = '';
-  const levyAmountEl = document.getElementById('fj_transport_amount');
-  if (levyAmountEl) levyAmountEl.value = 0;
-  const levyToggleEl = document.getElementById('fj_transport_toggle');
-  if (levyToggleEl) levyToggleEl.checked = false;
   const levyFieldEl = document.getElementById('fj_transport_amount_field');
   if (levyFieldEl) levyFieldEl.style.display = 'none';
-  const courierToggleEl = document.getElementById('fj_courier_toggle');
-  if (courierToggleEl) courierToggleEl.checked = false;
-  // Quote-level Discount (confirmed Aug 2026, Full Real-Browser
-  // Walkthrough & Audit) — same stale-residue reasoning as the Transport
-  // levy fields just above: a brand-new quote must not silently inherit
-  // the PREVIOUS quote's discount %.
-  const discountPctEl = document.getElementById('fj_discount_pct');
-  if (discountPctEl) discountPctEl.value = 0;
-  // New Quote Starting Screen: Price Check Fix (confirmed Aug 2026) —
-  // real bug found, not just made-more-visible: this function already
-  // reset plenty of state (transport levy, discount %, floor prep
-  // scratch fields) but never touched the actual "Add Line" calculator
-  // inputs themselves — Price Check specifically only ever reset the
-  // OUTPUT (result panel), never the fields that produced it, since it
-  // calls this function directly without the fuller resetQuoteBuilderUI()
-  // (which would also wrongly clear q_client/disable Start Quote mid-
-  // Price-Check-flow). Confirmed via code reading, not guessed: floor
-  // size had NO reset path anywhere at all (not even indirectly, unlike
-  // Range/Colour which get refilled as a side effect of
-  // toggleLineFields()'s own product-dropdown-repopulation cascade
-  // right after this runs); glue rate had a real conditional gap too —
-  // onVinylProductChange() only overwrites it when the newly-selected
-  // product has its OWN glue_rate_per_m2 override set, so a product
-  // with none would silently inherit whatever rate the PREVIOUS
-  // calculation left behind. Blanking every raw "in progress" input
-  // here, once, closes the whole class of bug rather than chasing each
-  // field individually — the same onXChange cascades already fired by
-  // toggleLineFields() right after this function returns (both call
-  // sites: startPriceCheck() and resetQuoteBuilderUI()) then correctly
-  // refill whatever has a real per-product/business-setting default.
-  ['fj_floor_m2', 'fj_wastage', 'fj_m2_per_box', 'fj_box_price', 'fj_trade_discount',
-   'fj_markup', 'fj_labour_rate', 'fj_screed_rate',
-   'carpet_lm', 'carpet_m2', 'line_width', 'line_drop', 'line_length', 'line_num_stairs',
-   'line_misc_desc', 'line_misc_amount'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  ['line_discount', 'carpet_discount'].forEach(id => { const el = document.getElementById(id); if (el) el.value = 0; });
-  const miscCostEl = document.getElementById('line_misc_cost');
-  if (miscCostEl) miscCostEl.value = 0;
-  // Glue rate deliberately reset to its own real fallback (17.05, the
-  // same static default the input's own HTML attribute always carried),
-  // not blanked to '' like the rest of this block — real regression
-  // caught in the same pass, not shipped: onVinylProductChange() only
-  // overwrites this field when the newly-selected product has its OWN
-  // glue_rate_per_m2 override set, so blanking it here for a product
-  // with none would leave a genuinely empty field, which fjCalc() reads
-  // as a real 0 glue rate — silently pricing that vinyl line as if it
-  // needed no adhesive at all, not "reset to the confirmed universal
-  // fallback" like every other product without its own override
-  // already correctly gets.
-  const glueRateEl = document.getElementById('fj_glue_rate');
-  if (glueRateEl) glueRateEl.value = 17.05;
-  const bagCostEl = document.getElementById('fj_bag_cost');
-  if (bagCostEl) bagCostEl.value = 235;
-  const bagCoverageEl = document.getElementById('fj_bag_coverage');
-  if (bagCoverageEl) bagCoverageEl.value = 4;
-  const stairAreaEl = document.getElementById('line_stair_area');
-  if (stairAreaEl) stairAreaEl.value = 0.45;
-  const tileRemovalEl = document.getElementById('fj_tile_removal');
-  if (tileRemovalEl) tileRemovalEl.checked = false;
-  const materialOnlyEl = document.getElementById('fj_material_only');
-  if (materialOnlyEl) materialOnlyEl.checked = false;
-  const ownStaffEl = document.getElementById('fj_own_staff');
-  if (ownStaffEl) ownStaffEl.value = 'true';
-  const stairOwnStaffEl = document.getElementById('line_stair_own_staff');
-  if (stairOwnStaffEl) stairOwnStaffEl.value = 'true';
-  const stairwellTypeEl = document.getElementById('line_stairwell_type');
-  if (stairwellTypeEl) stairwellTypeEl.value = 'closed';
+  // Every plain Add Line / floor-prep / discount / transport input
+  // this block used to reset one at a time (New Quote Starting Screen:
+  // Price Check Fix, Full Real-Browser Audit, Quote Photo Attachments,
+  // and every brief since) is now covered by the structural sweep
+  // above — see its own comment for why this can never again miss a
+  // field the way a hand-maintained list already has twice.
+  resetQuoteBuilderFieldsToDefaults();
   activeCarpetType = null;   // so re-entering the Carpet tab defaults fresh to Stretch, same as a genuinely first-ever visit
   const statusDisplayEl = document.getElementById('q_status_display');
   if (statusDisplayEl) statusDisplayEl.innerHTML = '<span class="muted">—</span>';
   const saveStatusEl = document.getElementById('saveStatus');
   if (saveStatusEl) saveStatusEl.textContent = '';
-  const descriptionEl = document.getElementById('q_description');
-  if (descriptionEl) descriptionEl.value = '';
   clearLandingRows();   // stairwell landing rows are per-quote scratch state too
   // Order Details / Follow-Ups field-clearing REMOVED from here
   // (confirmed Aug 2026, Quote Builder Layout Corrections brief) —
@@ -1823,11 +1826,11 @@ function clearStaleQuoteResidue() {
   // residue independently since it's no longer part of this screen's
   // state at all.
   // Extra Rooms / Floor Prep (confirmed Aug 2026) — per-room scratch
-  // state, same reasoning as the stairwell landing rows above.
-  ['fp_room_name', 'fp_area', 'fp_thickness', 'fp_manual_desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  // state, same reasoning as the stairwell landing rows above. Its own
+  // plain input values are covered by the sweep above too; only the
+  // dynamically-rendered room cards need explicit clearing here.
   const fpRoomCardsEl = document.getElementById('floorPrepRoomCards');
   if (fpRoomCardsEl) fpRoomCardsEl.innerHTML = '';
-  ['fp_amount', 'fp_cost'].forEach(id => { const el = document.getElementById(id); if (el) el.value = 0; });
   const fpDescEl = document.getElementById('fp_calc_description');
   if (fpDescEl) fpDescEl.textContent = '';
   // Real bug found while building Sprint B's line editing: without this,
