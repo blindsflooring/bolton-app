@@ -1,4 +1,15 @@
 """
+RETIRED (Sept 2026, Photo Gallery + Job Context brief) — no longer
+imported or called anywhere in main.py. Investigating Madri's reported
+"upload failed" confirmed the real root cause directly: SUPABASE_URL/
+SUPABASE_SERVICE_KEY were never actually configured, so every single
+upload through this module hard-failed. QuotePhoto now uses the same
+Dropbox-backed mechanism already proven for the Document Archive
+(dropbox_archive.py) instead — see QuotePhoto's own docstring
+(models.py) and _upload_job_photo() (main.py). Kept in the repo, not
+deleted, in case Supabase Storage is ever revisited for something else
+— everything below this note is otherwise unchanged, historical only.
+
 Quote Photo Attachments (confirmed Aug 2026) — thin wrapper around the
 Supabase Storage REST API. Uses stdlib urllib rather than adding a new
 HTTP client dependency (requests/httpx aren't in requirements.txt today)

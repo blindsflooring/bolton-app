@@ -42,7 +42,13 @@ from spreadsheet_import import parse_master_spreadsheet
 from pdf_render import render_html_to_pdf
 import dropbox_archive
 import database_backup
-import photo_storage
+# photo_storage (Supabase Storage) retired Sept 2026, Photo Gallery +
+# Job Context brief — QuotePhoto moved onto the same Dropbox-backed
+# mechanism as the Document Archive; see photo_storage.py's own header
+# for why (never configured, confirmed the real cause of Madri's
+# reported upload failure). Module kept in the repo, unused, rather
+# than deleted — same "safe/reversible, nothing destructive" choice
+# already made for other retired-in-place fields (Quote.materials_ordered).
 
 # Confirmed Aug 2026, deployment kickoff: reads DATABASE_URL from the
 # environment (set in Render's dashboard, never committed to the repo)
@@ -154,7 +160,26 @@ PUBLIC_PATHS = {
 
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+    # /builder/ prefix (confirmed Sept 2026, real production bug found
+    # while investigating Photo Gallery + Job Context — NOT hypothetical:
+    # reproduced directly against the real deployed backend, an
+    # unauthenticated GET /builder/{slug} returned 401 "Not logged in").
+    # Every one of these four endpoints (GET /builder/{slug}, POST
+    # .../estimate, GET .../statement, POST .../estimate/{id}/photos)
+    # is genuinely meant to be public — confirmed by reading each one's
+    # own docstring and signature, none declares get_current_role/
+    # get_current_tenant — but PUBLIC_PATHS only ever matched exact,
+    # literal strings, and these all carry a dynamic {slug}/{estimate_id}
+    # segment, so none of them could ever be listed there. This
+    # closed-by-default middleware was added (Aug 2026) specifically to
+    # catch an endpoint that forgets its own auth check — it caught this
+    # one too, except this one was SUPPOSED to have none. The other
+    # staff-facing builder management endpoints live entirely under
+    # /admin/builders and /admin/builder-estimates (confirmed by
+    # grepping every @app route under /builder — only these four exist),
+    # a genuinely different prefix, so this exemption can't accidentally
+    # expose anything that should stay behind a real session.
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS or request.url.path.startswith("/builder/"):
         return await call_next(request)
     if _resolve_session(request) is None:
         return JSONResponse(status_code=401, content={"detail": "Not logged in — please log in again"})
@@ -436,6 +461,14 @@ def _ensure_new_columns():
         ("flooringproduct", "product_variant", "VARCHAR", "NULL"),
         # Independent Status Tiles, Decision Q2 (confirmed Aug 2026):
         ("quote", "materials_not_needed", "BOOLEAN", "FALSE"),
+        # Photo Gallery + Job Context (confirmed Sept 2026) — QuotePhoto
+        # moved onto Dropbox-backed storage; existing rows (if any —
+        # Supabase Storage was never actually configured, so uploads
+        # never had real bytes to carry forward) get the same empty/
+        # pending defaults a genuinely new row would never actually see.
+        ("quotephoto", "photo_bytes", "BYTEA", "''::bytea"),
+        ("quotephoto", "dropbox_status", "VARCHAR", "'pending'"),
+        ("quotephoto", "dropbox_failure_reason", "VARCHAR", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -4143,59 +4176,91 @@ def _validate_photo_upload(content_type: str, size_bytes: int):
         raise HTTPException(400, "That file appears to be empty.")
 
 
+def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"], builder_estimate_id: Optional[int],
+                       data: bytes, content_type: str, safe_name: str, uploaded_by: str) -> "QuotePhoto":
+    """Shared by the staff upload endpoint and the public builder-
+    submission one — Dropbox-backed (confirmed Sept 2026, Photo Gallery
+    + Job Context brief), same never-block-on-Dropbox discipline
+    _create_and_upload_archive() already established: the photo is
+    ALWAYS saved (photo_bytes, real bytes, right here in Postgres) —
+    a Dropbox problem only ever affects dropbox_status/
+    dropbox_failure_reason, never blocks the actual upload the way the
+    old Supabase-only path did (a hard RuntimeError -> 502, the real
+    root cause of Madri's reported failure, confirmed by reading
+    photo_storage.py directly: SUPABASE_URL/SUPABASE_SERVICE_KEY was
+    never configured)."""
+    folder = _branch_folder_name(quote.branch) if quote else "Builder Estimates"
+    reference = (quote.job_number or f"Q-{quote.id}") if quote else f"Estimate-{builder_estimate_id}"
+    dropbox_path = f"/Bolton/Photos/{folder}/{reference}_{uuid.uuid4().hex}_{safe_name}"
+    upload_result = dropbox_archive.upload_document(data, dropbox_path)
+    photo = QuotePhoto(
+        tenant_id=tenant_id, quote_id=quote.id if quote else None, builder_estimate_id=builder_estimate_id,
+        storage_path=dropbox_path, original_filename=safe_name, content_type=content_type,
+        size_bytes=len(data), uploaded_by=uploaded_by, photo_bytes=data,
+        dropbox_status="uploaded" if upload_result["ok"] else ("pending" if upload_result.get("not_configured") else "failed"),
+        dropbox_failure_reason=None if upload_result["ok"] else upload_result["reason"],
+    )
+    session.add(photo)
+    return photo
+
+
+def _photo_out(photo: "QuotePhoto") -> dict:
+    """photo_bytes deliberately excluded from every API response
+    (confirmed Sept 2026, same reasoning DocumentArchive's own
+    pdf_bytes already follows, list_document_archive() above) — real
+    bug caught here, not assumed: FastAPI's default response
+    serialization tries to JSON-encode the whole model, and raw binary
+    (a JPEG's own magic bytes) isn't valid UTF-8 — a real 500 the very
+    first time this was tested end-to-end, not a hypothetical."""
+    d = photo.dict()
+    d.pop("photo_bytes", None)
+    return d
+
+
 @app.post("/quotes/{quote_id}/photos")
 async def upload_quote_photo(quote_id: int, file: UploadFile = File(...),
                               role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
-        get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         data = await file.read()
         content_type = file.content_type or ""
         _validate_photo_upload(content_type, len(data))
         safe_name = os.path.basename(file.filename or "photo.jpg")
-        path = f"{tenant_id}/quote_{quote_id}/{uuid.uuid4().hex}_{safe_name}"
-        try:
-            photo_storage.upload_photo(path, data, content_type)
-        except RuntimeError as e:
-            raise HTTPException(502, str(e))
-        photo = QuotePhoto(
-            tenant_id=tenant_id, quote_id=quote_id, storage_path=path,
-            original_filename=safe_name, content_type=content_type,
-            size_bytes=len(data), uploaded_by="staff",
-        )
-        session.add(photo)
+        photo = _upload_job_photo(session, tenant_id, quote, None, data, content_type, safe_name, "staff")
         session.commit()
         session.refresh(photo)
-        return photo
+        return _photo_out(photo)
 
 
 @app.get("/quotes/{quote_id}/photos")
 def list_quote_photos(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")
-        return session.exec(
+        photos = session.exec(
             select(QuotePhoto).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
             .order_by(QuotePhoto.created_at)
         ).all()
+        return [_photo_out(p) for p in photos]
 
 
 @app.get("/quotes/{quote_id}/photos/{photo_id}/file")
 def get_quote_photo_file(quote_id: int, photo_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
-    """Proxies the actual bytes back through this authenticated
-    endpoint rather than ever handing out a direct Supabase Storage URL
-    — same reasoning as the bucket being private in the first place
-    (see photo_storage.py). Used for both the thumbnail gallery and the
-    full-size view; this app has no image-resizing step (deliberately
-    out of scope per the brief — "no editing, no versioning"), so both
-    just request the same original bytes."""
+    """Serves Bolton's own stored copy (photo_bytes) directly — never a
+    proxied fetch out to Dropbox (confirmed Sept 2026, Photo Gallery +
+    Job Context brief) — same reasoning download_archived_document()
+    already established for the Document Archive: viewing a photo must
+    never depend on Dropbox being reachable right now, and the DB copy
+    is the one guaranteed-consistent source regardless of whether the
+    best-effort Dropbox backup ever actually landed. Used for both the
+    thumbnail gallery and the full-size view; this app has no image-
+    resizing step (deliberately out of scope per the original brief —
+    "no editing, no versioning"), so both just request the same
+    original bytes."""
     with Session(engine) as session:
         photo = get_or_404(session, QuotePhoto, photo_id, tenant_id, "Photo")
         if photo.quote_id != quote_id:
             raise HTTPException(404, "Photo not found on this quote")
-        try:
-            data = photo_storage.download_photo(photo.storage_path)
-        except RuntimeError as e:
-            raise HTTPException(502, str(e))
-        return Response(content=data, media_type=photo.content_type)
+        return Response(content=photo.photo_bytes, media_type=photo.content_type)
 
 
 @app.delete("/quotes/{quote_id}/photos/{photo_id}")
@@ -4203,12 +4268,19 @@ def delete_quote_photo(quote_id: int, photo_id: int, role: str = Depends(get_cur
     """Any logged-in staff member can delete (Burgert, Ryno, or Madri
     per the brief — not Owner-only). Builders have no delete endpoint
     at all — their submission is otherwise read-only, per the Builder
-    Portal brief's own rule, carried over here directly."""
+    Portal brief's own rule, carried over here directly. Dropbox delete
+    is best-effort (dropbox_archive.delete_document() never raises) —
+    a genuine user-initiated removal, unlike Document Archive's own
+    permanent-record files, so this still tries to clean up the
+    Dropbox copy too, just never lets that block the real action (the
+    DB row, which the app actually reads from, is the one that
+    matters)."""
     with Session(engine) as session:
         photo = get_or_404(session, QuotePhoto, photo_id, tenant_id, "Photo")
         if photo.quote_id != quote_id:
             raise HTTPException(404, "Photo not found on this quote")
-        photo_storage.delete_photo(photo.storage_path)
+        if photo.dropbox_status == "uploaded":
+            dropbox_archive.delete_document(photo.storage_path)
         session.delete(photo)
         session.commit()
         return {"deleted": photo_id}
@@ -4243,16 +4315,10 @@ async def upload_builder_estimate_photos(slug: str, estimate_id: int, files: Lis
             content_type = f.content_type or ""
             _validate_photo_upload(content_type, len(data))
             safe_name = os.path.basename(f.filename or "photo.jpg")
-            path = f"{builder.tenant_id}/builder_estimate_{estimate_id}/{uuid.uuid4().hex}_{safe_name}"
-            try:
-                photo_storage.upload_photo(path, data, content_type)
-            except RuntimeError as e:
-                raise HTTPException(502, str(e))
-            photo = QuotePhoto(
-                tenant_id=builder.tenant_id, builder_estimate_id=estimate_id, storage_path=path,
-                original_filename=safe_name, content_type=content_type, size_bytes=len(data), uploaded_by="builder",
-            )
-            session.add(photo)
+            # Same Dropbox-backed, never-block-on-Dropbox path the staff
+            # upload endpoint uses (confirmed Sept 2026) — _upload_job_photo()
+            # is defined above upload_quote_photo().
+            _upload_job_photo(session, builder.tenant_id, None, estimate_id, data, content_type, safe_name, "builder")
             saved += 1
         session.commit()
         return {"photos_attached": saved}
@@ -7096,9 +7162,11 @@ def _quote_delete_dependencies(session: Session, quote: "Quote", tenant_id: str)
 #      months later via a real customer's failed delete click."
 #
 # Side effects that a DB-level cascade could never handle anyway
-# (deleting the QuotePhoto's real file out of Supabase Storage) stay as
-# an explicit per-entry side_effect callable, same reasoning that ruled
-# out a pure DB-level ON DELETE CASCADE for this brief.
+# (deleting the QuotePhoto's real file out of Dropbox — confirmed
+# Sept 2026, was Supabase Storage before the Photo Gallery + Job
+# Context brief) stay as an explicit per-entry side_effect callable,
+# same reasoning that ruled out a pure DB-level ON DELETE CASCADE for
+# this brief.
 _CASCADE_POLICY = {
     "quote": [
         (QuoteLineItem, "quote_id", "cascade", None),
@@ -7109,7 +7177,7 @@ _CASCADE_POLICY = {
         # reasoning as PaymentFollowUp above), no further dependents of
         # their own, and nothing external to clean up.
         (JobWorkDay, "quote_id", "cascade", None),
-        (QuotePhoto, "quote_id", "cascade", lambda p: photo_storage.delete_photo(p.storage_path)),
+        (QuotePhoto, "quote_id", "cascade", lambda p: dropbox_archive.delete_document(p.storage_path) if p.dropbox_status == "uploaded" else None),
         (HoursWorked, "quote_id", "assert_empty", None),          # blocked upstream by _quote_delete_dependencies
         (BuilderEstimate, "linked_quote_id", "assert_empty", None),  # blocked upstream by _quote_delete_dependencies
         (Lead, "converted_quote_id", "nullify", None),  # Leads brief (confirmed Aug 2026): the enquiry genuinely happened and is real history — deleting the quote it converted into must not delete the Lead, only clear the backward-link (lead_status stays "converted", same as a builder estimate surviving a Force Delete with only its link cleared)

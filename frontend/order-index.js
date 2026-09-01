@@ -1342,6 +1342,32 @@ async function renderOrderDetail(el) {
         </div>
       </details>
 
+      <!-- Photo Gallery + Job Context (confirmed Sept 2026) — uploaded
+      directly from THIS job's own page, so the client/job connection is
+      automatic (q.id is already known here) and unambiguous, per the
+      brief's own explicit "never a photo floating with no context."
+      Genuinely distinct from Documents below (supplier price books,
+      business/marketing documents) — same underlying Dropbox-backed
+      mechanism (dropbox_archive.py), different concept, per the
+      brief's own non-goal. Reuses the exact GET/POST/DELETE
+      /quotes/{id}/photos endpoints Quote Builder's own Site Photos
+      card already calls — same data, same backend, a second,
+      independently-scoped set of render/upload/delete functions here
+      (jobPhoto* below) rather than sharing quote-builder.js's
+      currentQuoteId-scoped globals, since this screen has its own
+      separate currentOrderDetailQuoteId. A photo added from either
+      screen shows on both — same rows, same source of truth. -->
+      <details class="cp-section" ${defaultOpenSection(q) === 'photos' ? 'open' : ''}>
+        <summary>Photos</summary>
+        <div class="cp-section-body">
+          <p class="muted" style="margin-top:0;">Site context for this job — no annotation or editing, just a simple gallery.</p>
+          <div id="jobPhotoGallery" class="quote-photo-gallery"></div>
+          <input type="file" id="jobPhotoInput" accept="image/*" multiple style="margin-top:10px;">
+          <button onclick="uploadJobPhotos(${q.id})" style="margin-top:6px;">Upload</button>
+          <p class="muted" id="jobPhotoUploadStatus" style="margin-top:6px;"></p>
+        </div>
+      </details>
+
       <details class="cp-section" ${defaultOpenSection(q) === 'financial' ? 'open' : ''}>
         <summary>Financial</summary>
         <div class="cp-section-body">
@@ -1403,6 +1429,7 @@ async function renderOrderDetail(el) {
     </div>
   `;
   loadFollowUps();
+  loadJobPhotos(q.id);
   // Only load whichever preview actually rendered above (conditional on
   // workflow_status, §2 of the brief) — loadDocumentPreview() itself
   // no-ops safely if the element isn't there, but calling it for a card
@@ -2202,4 +2229,108 @@ async function loadFollowUps() {
   el.innerHTML = followUps.length
     ? followUps.map(f => `<div class="muted" style="font-size:12px; padding:3px 0;">${new Date(f.follow_up_date).toLocaleDateString('en-ZA')} — ${f.notes || '(no notes)'}</div>`).join('')
     : '<p class="muted" style="font-size:12px;">No follow-ups logged yet.</p>';
+}
+
+// Photo Gallery + Job Context (confirmed Sept 2026) — Job Detail's own
+// version of quote-builder.js's Site Photos card (loadQuotePhotos()/
+// renderQuotePhotoGallery()/uploadQuotePhotos()/deleteQuotePhoto()) —
+// same backend (GET/POST/DELETE /quotes/{id}/photos), same DB rows,
+// deliberately a second, independently-scoped copy rather than sharing
+// that screen's own currentQuoteId-scoped globals, since this screen
+// tracks currentOrderDetailQuoteId instead. openPhotoLightbox()/
+// closePhotoLightbox() (quote-builder.js) are reused directly — the
+// lightbox overlay is one page-level element, not scoped to either
+// screen.
+let currentJobPhotos = [];
+let jobPhotoObjectUrls = [];
+
+async function loadJobPhotos(quoteId) {
+  if (!quoteId) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/photos`);
+  currentJobPhotos = res.ok ? await res.json() : [];
+  renderJobPhotoGallery(quoteId);
+}
+
+function renderJobPhotoGallery(quoteId) {
+  const el = document.getElementById('jobPhotoGallery');
+  if (!el) return;
+  jobPhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  jobPhotoObjectUrls = [];
+  if (!currentJobPhotos.length) {
+    el.innerHTML = '<p class="muted" style="margin:0;">No photos on this job yet.</p>';
+    return;
+  }
+  el.innerHTML = currentJobPhotos.map(p => `
+    <div class="quote-photo-thumb" id="jobPhotoThumb${p.id}">
+      <div class="photo-loading">Loading…</div>
+      <button class="photo-delete-btn" title="Delete photo" onclick="event.stopPropagation(); deleteJobPhoto(${quoteId}, ${p.id})">✕</button>
+      ${p.uploaded_by === 'builder' ? '<span class="photo-badge">Builder</span>' : ''}
+    </div>`).join('');
+  // Blob object URLs, not a plain <img src="...">, for the same reason
+  // quote-builder.js's own gallery does this — the file endpoint needs
+  // the Bearer auth header the global fetch() wrapper attaches, which a
+  // plain <img> tag has no way to send.
+  currentJobPhotos.forEach(async (p) => {
+    try {
+      const res = await fetch(`${API}/quotes/${quoteId}/photos/${p.id}/file`);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      jobPhotoObjectUrls.push(url);
+      const thumbEl = document.getElementById(`jobPhotoThumb${p.id}`);
+      if (thumbEl) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.onclick = () => openPhotoLightbox(url);
+        thumbEl.prepend(img);
+        const loadingEl = thumbEl.querySelector('.photo-loading');
+        if (loadingEl) loadingEl.remove();
+      }
+    } catch (e) {
+      const thumbEl = document.getElementById(`jobPhotoThumb${p.id}`);
+      if (thumbEl) { const l = thumbEl.querySelector('.photo-loading'); if (l) l.textContent = 'Failed'; }
+    }
+  });
+}
+
+async function uploadJobPhotos(quoteId) {
+  if (!quoteId) return;
+  const input = document.getElementById('jobPhotoInput');
+  const statusEl = document.getElementById('jobPhotoUploadStatus');
+  const files = Array.from(input.files || []);
+  if (!files.length) { statusEl.textContent = 'Choose one or more photos first.'; return; }
+  statusEl.textContent = `Uploading ${files.length} photo${files.length !== 1 ? 's' : ''}…`;
+  let uploaded = 0, failed = 0;
+  // Same real-reason-not-generic-message fix as quote-builder.js's own
+  // uploadQuotePhotos() (confirmed Sept 2026, Burgert's direct report
+  // "upload failed") — collected across the loop, not overwritten after it.
+  const failReasons = [];
+  for (const file of files) {
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const res = await fetch(`${API}/quotes/${quoteId}/photos`, { method: 'POST', body });
+      if (res.ok) { uploaded++; }
+      else {
+        failed++;
+        const err = await res.json().catch(() => ({}));
+        failReasons.push(err.detail || `Couldn't upload ${file.name}.`);
+      }
+    } catch (e) {
+      failed++;
+      failReasons.push(`${file.name}: check your connection and try again.`);
+    }
+  }
+  input.value = '';
+  statusEl.textContent = failed
+    ? `${uploaded} uploaded, ${failed} failed — ${failReasons.join(' ')}`
+    : `${uploaded} photo${uploaded !== 1 ? 's' : ''} uploaded ✓`;
+  await loadJobPhotos(quoteId);
+}
+
+async function deleteJobPhoto(quoteId, photoId) {
+  if (!confirm('Delete this photo? This cannot be undone.')) return;
+  const res = await fetch(`${API}/quotes/${quoteId}/photos/${photoId}`, { method: 'DELETE' });
+  if (!res.ok) { alert('Could not delete photo.'); return; }
+  await loadJobPhotos(quoteId);
 }

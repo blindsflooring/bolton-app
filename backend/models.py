@@ -646,9 +646,11 @@ class BuilderEstimate(SQLModel, table=True):
 
 
 class QuotePhoto(SQLModel, table=True):
-    """Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026).
-    Quote-level, not client-level, by design — every read filters by
-    quote_id, so a client's other quotes never show these.
+    """Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026),
+    moved onto Dropbox-backed storage (Photo Gallery + Job Context
+    brief, confirmed Sept 2026). Quote-level, not client-level, by
+    design — every read filters by quote_id, so a client's other
+    quotes never show these.
 
     builder_estimate_id (not quote_id) is set for photos a builder
     attached while submitting an estimate — there's no real Quote yet
@@ -657,12 +659,28 @@ class QuotePhoto(SQLModel, table=True):
     onto those same rows so "these travel with the estimate and land on
     the resulting quote" holds without ever duplicating the file itself.
 
-    Only storage_path is kept here — the actual bytes live in Supabase
-    Storage (see photo_storage.py), chosen over this app's other
-    existing file mechanism (backend/uploads/, used by HR Documents)
-    specifically because these need to reliably survive routine
-    deploys over the life of a quote, confirmed directly rather than
-    assumed."""
+    Storage redesigned (confirmed Sept 2026, investigating Madri's
+    reported "upload failed"): real root cause confirmed by reading
+    photo_storage.py directly — Supabase Storage (SUPABASE_URL/
+    SUPABASE_SERVICE_KEY) was never configured, so every upload
+    hard-failed with a clean but blocking RuntimeError. Rebuilt to
+    reuse the exact mechanism already proven for the Document Archive
+    (dropbox_archive.py) instead of a second, separate storage vendor:
+    photo_bytes is the real, authoritative copy — stored here, in
+    Postgres, same as DocumentArchive.pdf_bytes, so viewing a photo
+    never depends on Dropbox being reachable at read time. dropbox_path/
+    dropbox_status/dropbox_failure_reason mirror DocumentArchive's own
+    pending/uploaded/failed shape — Dropbox is a best-effort backup
+    layer on top, uploaded_photo() (main.py) never blocks or fails the
+    actual save on a Dropbox problem, same "Dropbox being unavailable
+    must NOT prevent Bolton from creating or saving" principle the
+    Document Archive brief already established. storage_path kept as
+    the column name for the Dropbox path itself (avoids a second,
+    parallel path column) — historical rows from before this redesign
+    hold an old, now-meaningless Supabase path string; those rows never
+    actually had real bytes to migrate (Supabase was never configured,
+    confirmed above), so there's nothing real to carry forward from
+    them."""
     id: Optional[int] = Field(default=None, primary_key=True)
     tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
     quote_id: Optional[int] = Field(default=None, foreign_key="quote.id", index=True)
@@ -673,6 +691,9 @@ class QuotePhoto(SQLModel, table=True):
     size_bytes: int
     uploaded_by: str = "staff"   # "staff" | "builder"
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    photo_bytes: bytes = b""
+    dropbox_status: str = "pending"   # "pending" | "uploaded" | "failed" — same three states as DocumentArchive.status
+    dropbox_failure_reason: Optional[str] = None
 
 
 class HoursWorked(SQLModel, table=True):
