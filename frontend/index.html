@@ -1492,17 +1492,34 @@ async function submitPasswordReset() {
   if (!sessionToken) { showLogin(); return; }
   try {
     const res = await fetch(`${API}/auth/me`);
+    // "Log in twice" bug, other half (confirmed Sep 2026): this check
+    // uses whatever token was already in localStorage and can be slow
+    // (Render cold start) — but #loginScreen is visible by default in
+    // the raw HTML, so the user can already see and submit a FRESH
+    // login before this stale check resolves. If that happened, don't
+    // let this late response undo a real, already-successful login —
+    // currentUser being set is proof one occurred while this was in flight.
+    if (currentUser) return;
     if (res.ok) {
       currentUser = await res.json();
       showApp();
       return;
     }
+    // shared.js's global 401 handler (fetch wrapper) already reacted to
+    // this exact response if the token in play there matched — cleared
+    // the session and showed its own explanatory message. Calling
+    // showLogin() again here would just blank out login_error right
+    // after it was set, leaving an unexplained empty form.
+    if (sessionInvalidatedHandled) return;
     // A clean rejection (expired/invalid token), not a network failure
     // — the stored token is genuinely dead, so clear it rather than
     // leaving it in localStorage to fail the same way on every future
     // load until the user logs in again anyway.
     setSessionToken(null);
-  } catch (e) { /* network failure, not a rejected token — leave it stored, fall through to login screen */ }
+  } catch (e) {
+    if (currentUser) return;   // same race guard as above, network-failure path
+    /* network failure, not a rejected token — leave it stored, fall through to login screen */
+  }
   showLogin();
 })();
 

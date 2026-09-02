@@ -111,6 +111,14 @@ function toggleOwnerBreakdown() {
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = function(url, options = {}) {
   const isApiCall = typeof url === 'string' && url.startsWith(API);
+  // "Log in twice on the same device" bug (confirmed Sep 2026, real root
+  // cause found via the Login Activity Log itself — 88 of 299 logged-in
+  // sessions were superseded by another login from the same account
+  // within 60 seconds, some clusters just 5-18 seconds apart). Captured
+  // HERE, at send time, deliberately — see the 401-handling block below
+  // for why comparing against this frozen value (not the live
+  // `sessionToken` variable) at resolution time is the actual fix.
+  const _tokenAtSend = sessionToken;
   if (isApiCall) {
     options = Object.assign({}, options);
     if (sessionToken) {
@@ -142,9 +150,27 @@ window.fetch = function(url, options = {}) {
   // pattern the token/timeout handling just above already uses.
   // Excludes /auth/login itself: a wrong-password 401 there is normal
   // and must never force a "logged out" redirect.
+  //
+  // Real root cause of "I log in and it immediately asks me to log in
+  // again" (confirmed Sep 2026): #loginScreen is visible by default in
+  // the raw HTML, before any JS runs — so on page load, while
+  // checkAuthOnLoad()'s own /auth/me check (using whatever token was
+  // already sitting in localStorage, possibly stale/expired from days
+  // ago) is still in flight — slow in particular right after Render's
+  // free-tier backend wakes from an idle sleep — the user can already
+  // see and submit the login form. If that FRESH login succeeds first,
+  // and only THEN does the old, stale check's 401 finally arrive, this
+  // block used to read the *current* sessionToken (by then the brand
+  // new, valid one) rather than the token the failing request actually
+  // used — so it concluded the fresh session had been invalidated and
+  // threw the user straight back to the login screen, seconds after a
+  // real, successful login. Comparing against `_tokenAtSend` (frozen
+  // the moment this specific request was dispatched, above) instead of
+  // the live `sessionToken` fixes this: a stale request's late-arriving
+  // 401 no longer clobbers a newer login that has since replaced it.
   if (isApiCall && !url.includes('/auth/login')) {
     promise.then(res => {
-      if (res.status === 401 && sessionToken && !sessionInvalidatedHandled) {
+      if (res.status === 401 && _tokenAtSend && _tokenAtSend === sessionToken && !sessionInvalidatedHandled) {
         sessionInvalidatedHandled = true;
         setSessionToken(null);
         currentUser = null;
