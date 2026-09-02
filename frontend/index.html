@@ -4238,6 +4238,16 @@ function startQuoteFromBuilderEstimate(estimateId, clientName) {
   pendingClientName = clientName;
   goToTab('quoteBuilder');
   document.getElementById('q_client').value = clientName;
+  // Real bug found + fixed (Sept 2026, Builder Portal audit): missing
+  // this call left startQuoteBtn disabled (resetQuoteBuilderUI() leaves
+  // it disabled by default, same as a fresh page load) with nothing
+  // left to ever re-enable it — pendingClientId is deliberately never
+  // set on this path (see createQuote()'s own comment on why), and
+  // updateStartQuoteButtonState() is otherwise only ever called from
+  // onQClientInput()/selectQClient(), neither of which fire when the
+  // client name is set programmatically like just above. Mirrors the
+  // sibling startQuoteForClient()'s own call to this at the same point.
+  updateStartQuoteButtonState();
 }
 
 function startQuoteForClient(clientId, clientName, preferredBranch) {
@@ -4478,7 +4488,16 @@ async function openQuoteFromIndex(quoteId) {
 function updateStartQuoteButtonState() {
   const startBtn = document.getElementById('startQuoteBtn');
   if (!startBtn || currentQuoteId) return;
-  startBtn.disabled = !pendingClientId;
+  // Real bug found + fixed (Sept 2026, Builder Portal audit): this only
+  // ever checked pendingClientId, so a quote started via "Start Quote"
+  // on a Builder Estimate (startQuoteFromBuilderEstimate() below, which
+  // sets pendingBuilderEstimateId instead — that's the one exception
+  // createQuote() itself already allows, see its own guard clause)
+  // landed on this screen with the button permanently disabled and no
+  // error shown — clicking a disabled button fires no click handler at
+  // all, so nothing happened: no alert, no network request, no console
+  // output. Exactly Burgert's "nothing happens when I click it" report.
+  startBtn.disabled = !pendingClientId && !pendingBuilderEstimateId;
 }
 
 let qClientSearchTimeout = null;
