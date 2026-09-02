@@ -18,6 +18,18 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-02 (5)
+
+### What shipped
+- **Assigned Leads / To-Dos / Calendar: Stage 2 (To-Dos) + Stage 3 (Calendar integration) — built and verified same day**, continuing directly from Stage 1 ("let's get them built," Burgert's own words once Stage 1 was confirmed working).
+  - **Stage 2 — To-Dos**: a genuinely minimal, standalone `ToDo` table (title, assigned_to, due_date, done/done_at) — confirmed directly against the brief's own question ("how it differs from a Lead") that it needed none of Lead's sales-process machinery (no `lead_status`, no mandatory proof-of-work outcome note). New `todos.js` module reusing the exact visual language `leads.js` already established (Open/Done/All tabs, inline reassign dropdown, "By Person" grouping) — not a rebuild. New "To-Dos" tile.
+  - Home's "My Leads Today" card became **"My Leads & To-Dos Today"** — leads needing action plus open to-dos due today-or-earlier, combined in one place, per the brief's own explicit "not something they have to hunt for across separate screens."
+  - **Stage 3 — Calendar integration**: `calendarJobsForMonth()` now also pulls Lead visit dates and To-Do due dates into the same per-day chip structure jobs already use, each with its own distinct colour so a mixed day reads at a glance. New per-type visibility checkboxes (Installations / Lead visits / To-Dos, default all on) — the density concern the original proposal flagged, now a real, working toggle.
+  - **Deliberate scope boundary**: lead/to-do chips are click-only, never wired into the existing drag-and-drop reschedule mechanism — that writes to a Quote's own `installation_date`/work-day via two specific existing endpoints, and extending drag semantics to two more date fields on two more entities was never confirmed as part of this stage.
+  - Verified end-to-end in disposable: full To-Do CRUD via both the API and the real UI, a lead-visit-today and a todo-due-today both correctly appearing as distinctly-styled calendar chips, visibility toggles actually hiding/showing each type, the expanded day list rendering both new row types, clicking a lead chip opening its real Lead Detail screen, and To-Dos' own By Person grouping reflecting a real reassignment.
+
+---
+
 ## 2026-09-02 (4)
 
 ### What shipped
