@@ -18,6 +18,24 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-02 (3)
+
+### What shipped
+- **New KPI Metrics: m² Quoted/Sold/Installed, Top Sellers, Quotes Per Person — proposal reviewed and approved, then built and verified same day** (`Bolton-Brief-New-KPI-Metrics.docx`, "Investigate and propose only... Confirm the real underlying data supports each metric before proposing the exact display"). Three new cards on the existing Business Overview Dashboard, not a separate screen, reusing the SAST week/month bucketing already built there for Sales & Profit.
+  - **Real gap found while investigating, before proposing anything**: every screeded job carries TWO flooring-category `QuoteLineItem` rows — a material line and a screed line — with the IDENTICAL `quantity_m2`, confirmed directly against all 17 real production quotes at the time (material sum and screed sum both exactly 647.8m², to the decimal). A naive sum would have double-counted every screeded job. Filtered to `flooring_pricing_type == "material"` only — correctly includes carpet, correctly excludes screed.
+  - Presented the findings and the one genuinely open question (Top Sellers: Sold-only vs. all quotes) to Burgert before building anything — confirmed **Sold only** ("a colour that gets quoted often but never accepted isn't really 'selling'").
+  - Shipped: m² Quoted/Sold/Installed (this week + this month), Top-Selling Floors & Colours (Month/Year toggle, same UI pattern as the existing Weekly Graph), Quotes Created — By Person (Today/Week/Month per rep).
+- **Order Index: Priority Ordering, Grouped-Client Fix, Client Name Visibility — built and verified same day** (`Bolton-Brief-OrderIndex-Priority-Sort.docx`). The brief's own 3 sort buckets (Scheduled / follow-up-needed Quoted / fresh Quoted) didn't say where Accepted or Completed fit — confirmed directly with Burgert rather than guessing: Accepted sits right after Scheduled, Completed sinks to the very bottom even if still needing invoicing.
+  - **Grouped-client fix — a real risk, not just tidiness** (Burgert's own framing): a client with jobs at different stages used to group ALL of them under one collapsed row with a "Mixed" badge — a Scheduled job could sit invisible inside a row reading "still just quoted." Grouping is now scoped to `workflow_status === "quoted"` only; anything progressed beyond Quoted always renders standalone.
+  - **Client name visibility — real gap found by reading the actual CSS before touching anything**: `.card-title` (the group header's own name styling) only had a rule inside the mobile breakpoint — completely unstyled on desktop, while a single row's name was teal+underline (linked) or plain (walk-in), and a child row inside an expanded group showed no name at all. One shared renderer + `.oi-client-name` now gives consistent size/weight/colour in all three row shapes, keeping the meaningful linked-vs-walk-in distinction.
+  - Verified against the brief's own testing requirement: built a real test client with 3 jobs at different statuses in disposable, confirmed the Scheduled job sorts first and renders standalone, the two Quoted jobs group together, and child rows show the client name. Confirmed against live production data too.
+- **Exclude Declined Alternative Quotes From KPIs and the Main Order Index — built and verified same day** (`Bolton-Brief-Decline-Quote-KPI-Exclusion.docx`, "Check first: was the 'Decline Quote reason' feature... ever actually built?"). Confirmed it was — `decline_quote()` already requires a real reason, logs to AuditLog, sets `declined_at`. This brief only needed to wire that into KPI/Order Index logic.
+  - `GET /quotes` gained `include_declined` (default False, same pattern as the existing `include_price_checks`); `m2_metrics.quoted` now excludes declined quotes (Sold/Installed and top-sellers were already correctly excluding them — both require `accepted_at`, which a declined quote can never have). Conversion-rate figures deliberately left untouched — a declined quote already correctly counts as "lost" there.
+  - New, genuinely separate "Declined Quotes" card on the Order Index (own fetch, own toggle, off by default) — not folded into the existing status tabs, since a declined quote's `workflow_status` stays "quoted" forever.
+  - Verified against a real multi-quote client scenario in disposable: declined one of a test client's 3 quotes, confirmed it vanished from the default view immediately, confirmed the remaining single quoted job correctly ungrouped, confirmed the Declined toggle revealed it with its decline date.
+
+---
+
 ## 2026-09-02 (2)
 
 ### What shipped
