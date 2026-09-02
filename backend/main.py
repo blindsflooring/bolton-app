@@ -2464,8 +2464,20 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
 
         m2_metrics = {
             "quoted": {
-                "week": m2_for([q for q in quotes if created_date_sast(q) >= monday_sast]),
-                "month": m2_for([q for q in quotes if created_date_sast(q) >= month_start_sast]),
+                # Exclude Declined Alternative Quotes (confirmed Sept
+                # 2026) — when several alternative quotes are built for
+                # one client and one is chosen, the others were never
+                # real independent opportunities; counting all of them
+                # here would make one real client need look like
+                # several. declined_at is None for every quote that's
+                # still genuinely open, so this excludes ONLY the ones
+                # a person has actually, deliberately declined (never
+                # auto-excluded on any assumption) — Accepted/Sold/
+                # Installed below are untouched, they already never
+                # included a declined quote (a declined quote can never
+                # reach accepted_at/completion_date at all).
+                "week": m2_for([q for q in quotes if q.declined_at is None and created_date_sast(q) >= monday_sast]),
+                "month": m2_for([q for q in quotes if q.declined_at is None and created_date_sast(q) >= month_start_sast]),
             },
             "sold": {
                 "week": m2_for([q for q in won_quotes if accepted_date_sast(q) >= monday_sast]),
@@ -9745,6 +9757,7 @@ def get_colour_history(quote_id: int, line_id: int, tenant_id: str = Depends(get
 def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
                  status: Optional[str] = None, workflow_status: Optional[str] = None,
                  search: Optional[str] = None, include_price_checks: bool = False,
+                 include_declined: bool = False,
                  tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — Order Index needs totals (deposit amount,
     balance amount) visible without clicking into each quote, so this
@@ -9775,6 +9788,21 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
         # not wired to anything in the frontend yet.
         if not include_price_checks:
             stmt = stmt.where(Quote.is_price_check == False)  # noqa: E712 — SQLAlchemy needs == for a WHERE clause, `is False` doesn't build a comparison expression
+        # Exclude Declined Alternative Quotes (confirmed Sept 2026) — a
+        # declined quote is a real, permanent record (never deleted —
+        # see decline_quote()'s own docstring) but must not clutter a
+        # list meant to answer "what needs my attention": it never
+        # became a job and never will. Same "excluded by default, but
+        # a real toggle exists to see it" pattern as Price Check just
+        # above — the frontend's own "Show Declined" toggle
+        # (order-index.js) is what actually wires include_declined=true,
+        # unlike include_price_checks (deliberately left unwired when
+        # that brief shipped). Still fully reachable another way even
+        # without this toggle: get_client_quotes() (a client's own
+        # Order History) never filtered by declined_at at all, so a
+        # declined quote was always visible there — untouched by this.
+        if not include_declined:
+            stmt = stmt.where(Quote.declined_at.is_(None))
         if sales_owner:
             stmt = stmt.where(Quote.sales_owner == sales_owner)
         if branch:

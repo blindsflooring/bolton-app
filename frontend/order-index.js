@@ -73,6 +73,20 @@ let orderIndexActiveTab = 'all';   // 'all' | 'quoted' | 'accepted' | 'scheduled
 // renderOrderIndex()) — toggling a tab or checking a box shouldn't
 // collapse a group you just opened to look at.
 let orderIndexExpandedClientIds = new Set();
+// Exclude Declined Alternative Quotes (confirmed Sept 2026) — a
+// declined quote is never deleted (real, permanent record, same as
+// every other quote) but must stay out of the main working list by
+// default — "what needs my attention" never includes an alternative
+// that was never going to happen. This is a genuinely SEPARATE,
+// dedicated view (its own card, its own fetch with
+// include_declined=true), not folded into the existing status tabs —
+// a declined quote's own workflow_status stays "quoted" forever
+// (decline_quote() only ever sets declined_at, main.py), so it can't
+// be told apart from a real open quote by status alone; mixing it
+// into the Quoted tab's own sort/grouping would have re-introduced
+// exactly the clutter this brief exists to remove.
+let orderIndexShowDeclined = false;
+let orderIndexDeclinedQuotes = [];
 
 const WORKFLOW_TABS = ['all', 'quoted', 'accepted', 'scheduled', 'completed'];
 
@@ -101,6 +115,22 @@ function setOrderIndexTab(tab) {
   renderOrderIndexTable();
 }
 
+// Exclude Declined Alternative Quotes (confirmed Sept 2026) — its own
+// small fetch (include_declined=true, and since every declined quote's
+// own workflow_status is still "quoted", filtered client-side down to
+// just declined_at != null so this card never accidentally shows a
+// genuinely open quote), only made the first time it's actually opened
+// — not on every Order Index load, since most visits won't need it.
+async function toggleOrderIndexDeclined() {
+  orderIndexShowDeclined = !orderIndexShowDeclined;
+  if (orderIndexShowDeclined && !orderIndexDeclinedQuotes.length) {
+    const res = await fetch(`${API}/quotes?include_declined=true&workflow_status=quoted`);
+    const all = await res.json();
+    orderIndexDeclinedQuotes = all.filter(q => q.declined_at);
+  }
+  renderOrderIndexTable();
+}
+
 async function renderOrderIndex(el, searchTerm) {
   await renderWithRetry(el, 'Order Index', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Order Index</h2><p class="muted">Loading...</p></div>`;
@@ -113,6 +143,8 @@ async function renderOrderIndex(el, searchTerm) {
   orderIndexQuotesCache = await res.json();
   orderIndexSelectedIds = new Set();
   orderIndexExpandedClientIds = new Set();
+  orderIndexShowDeclined = false;
+  orderIndexDeclinedQuotes = [];
   renderOrderIndexTable(searchTerm);
   // Focus/cursor restore only belongs on a genuine fetch (fresh load or
   // a search keystroke) — moved out of renderOrderIndexTable() itself
@@ -291,6 +323,35 @@ function renderOrderIndexTable(searchTerm) {
       <tbody>${rows}</tbody></table>
       </div>
     </div>
+
+    <!-- Exclude Declined Alternative Quotes (confirmed Sept 2026,
+    Burgert's own words: "the other two aren't lost opportunities...
+    They also clutter the Order Index with quotes that will never move
+    forward") — a genuinely separate, out-of-the-way card, not mixed
+    into the main table/tabs above. Declined quotes are never deleted
+    (decline_quote()'s own docstring, main.py) — this is exactly the
+    "remain accessible... via a filter" the brief asks for. -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 style="margin:0;">Declined Quotes</h2>
+        <button onclick="toggleOrderIndexDeclined()">${orderIndexShowDeclined ? 'Hide' : 'Show'}</button>
+      </div>
+      <p class="muted" style="margin-bottom:${orderIndexShowDeclined ? '12px' : '0'};">Alternative quotes that weren't chosen — kept for reference, out of the working list above. Click one for the full reason.</p>
+      ${orderIndexShowDeclined ? `
+      <div style="overflow-x:auto;">
+        <table class="mobile-card-table">
+          <thead><tr><th>Job</th><th>Customer</th><th>Value</th><th>Declined</th></tr></thead>
+          <tbody>${orderIndexDeclinedQuotes.length ? orderIndexDeclinedQuotes.map(q => `
+            <tr style="cursor:pointer;" onclick="openOrderDetailScreen(${q.id})">
+              <td class="job-number card-title" data-label="Job">${q.job_number || `#${q.id}`}</td>
+              <td data-label="Customer">${orderIndexClientNameHtml(q)}${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
+              <td data-label="Value">${money(q.total_incl_vat)}</td>
+              <td data-label="Declined">${new Date(q.declined_at).toLocaleDateString('en-ZA')}</td>
+            </tr>`).join('') : '<tr><td colspan="4" class="muted">No declined quotes.</td></tr>'}</tbody>
+        </table>
+      </div>` : ''}
+    </div>
+
     <div class="card">
       <h2>New Client → Start Quote</h2>
       <p class="muted">Fill in a new client's details, then jump straight into a quote for them.</p>
