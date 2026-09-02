@@ -320,6 +320,26 @@ function showEditLeadForm(leadId) {
       <div class="grid">
         <div class="field"><label>Name</label><input id="ld_edit_name" value="${(l?.name || '').replace(/"/g,'&quot;')}"></div>
         <div class="field"><label>Contact</label><input id="ld_edit_contact" value="${(l?.contact || '').replace(/"/g,'&quot;')}"></div>
+        <!-- Editable Source (confirmed Sept 2026, Burgert's own real
+        gap: "change the where did they hear about us after we saved
+        the lead" — the New Lead form already asked this, but the Edit
+        Lead form here never carried it, so it was locked in forever at
+        creation, often before it was even known for sure. Same select
+        options as the New Lead form (renderLeadsTable() above), not a
+        second, differently-worded list that could drift. -->
+        <div class="field"><label>Source <span class="adj">(how did they hear about us?)</span></label>
+          <select id="ld_edit_source">
+            <option value="" ${!l?.source?'selected':''}>—</option>
+            <option value="Referral" ${l?.source==='Referral'?'selected':''}>Referral</option>
+            <option value="Walk-in" ${l?.source==='Walk-in'?'selected':''}>Walk-in</option>
+            <option value="Google/Online search" ${l?.source==='Google/Online search'?'selected':''}>Google/Online search</option>
+            <option value="Social media" ${l?.source==='Social media'?'selected':''}>Social media</option>
+            <option value="Signage" ${l?.source==='Signage'?'selected':''}>Signage</option>
+            <option value="Builder referral" ${l?.source==='Builder referral'?'selected':''}>Builder referral</option>
+            <option value="Repeat client" ${l?.source==='Repeat client'?'selected':''}>Repeat client</option>
+            <option value="Other" ${l?.source==='Other'?'selected':''}>Other</option>
+          </select>
+        </div>
         <div class="field"><label>Site visit date</label><input id="ld_edit_visit_date" type="date" value="${l?.visit_date || ''}"></div>
         <div class="field"><label>Site address</label><input id="ld_edit_site_address" value="${(l?.site_address || '').replace(/"/g,'&quot;')}"></div>
         <div class="field" style="grid-column: span 2;"><label>Notes</label><textarea id="ld_edit_notes" rows="2" style="width:100%; font-family:inherit; font-size:14px; padding:8px; border:1px solid var(--border); border-radius:6px;">${(l?.notes || '').replace(/</g,'&lt;')}</textarea></div>
@@ -405,6 +425,7 @@ async function saveLeadEdit(leadId) {
   const body = {
     name: document.getElementById('ld_edit_name').value,
     contact: document.getElementById('ld_edit_contact').value,
+    source: document.getElementById('ld_edit_source').value,
     visit_date: document.getElementById('ld_edit_visit_date').value || null,
     site_address: document.getElementById('ld_edit_site_address').value,
     notes: document.getElementById('ld_edit_notes').value,
