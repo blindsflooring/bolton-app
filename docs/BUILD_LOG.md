@@ -18,6 +18,13 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-02 (6)
+
+### What shipped
+- **Leads: Source now editable after saving — built and verified same day** (Burgert's own words: "change the where did they hear about us after we saved the lead"). The New Lead form already asked for Source at creation, but the Edit Lead form never carried the field at all — locked in forever once saved. Added the identical Source options to the Edit Lead form and to `saveLeadEdit()`'s own PUT body; no backend change needed, `update_lead()`'s existing generic update already allowed it through. Verified in disposable: edited a real lead's Source through the actual UI function and confirmed it updated immediately.
+
+---
+
 ## 2026-09-02 (5)
 
 ### What shipped
