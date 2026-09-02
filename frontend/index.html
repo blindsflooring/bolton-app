@@ -1855,13 +1855,34 @@ function toggleTopSellersRange(range) {
   renderTopSellersCard();
 }
 
+// Business Overview KPI tile (confirmed Aug 2026, hoisted to module
+// scope Sept 2026 — Burgert's own follow-up: "I need the information
+// to be in tiles"). Was a local const inside renderBusinessOverview()
+// alone; renderTopSellersCard() below needs the exact same tile now
+// too, and can fire independently later (toggleTopSellersRange(), a
+// user click well after renderBusinessOverview() has already
+// returned) — a closure-scoped copy wouldn't have been reachable
+// there, so this is the one shared definition both now call.
+function kpiCard(label, value, sublabel) {
+  return `
+    <div class="card" style="text-align:center;">
+      <div class="muted" style="text-transform:uppercase; font-size:11px; letter-spacing:0.03em;">${label}</div>
+      <div style="font-family:'Poppins',sans-serif; font-weight:800; font-size:26px; color:var(--teal); margin:6px 0;">${value}</div>
+      ${sublabel ? `<div class="muted" style="font-size:12px;">${sublabel}</div>` : ''}
+    </div>`;
+}
+
 function renderTopSellersCard() {
   const container = document.getElementById('topSellersCard');
   if (!container || !lastAnalyticsData) return;
   const list = lastAnalyticsData.top_sellers[topSellersRange];
-  const rows = list.length ? list.map((s, i) => `
-    <tr><td data-label="#">${i + 1}</td><td data-label="Product">${s.product_name}</td><td data-label="Colour">${s.colour || '—'}</td><td data-label="m² sold">${s.m2} m²</td></tr>`).join('')
-    : '<tr><td colspan="4" class="muted">No sold quotes yet this period.</td></tr>';
+  // Tiles (confirmed Sept 2026, Burgert's own follow-up) — same
+  // kpiCard() every other KPI on this page uses, ranked #1 first via
+  // the label itself since a tile grid has no natural row order cue
+  // the way a table's own row sequence already gave for free.
+  const tiles = list.length
+    ? list.map((s, i) => kpiCard(`#${i + 1} — ${s.product_name}${s.colour ? ' — ' + s.colour : ''}`, `${s.m2} m²`, 'sold')).join('')
+    : '<div class="muted">No sold quotes yet this period.</div>';
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
       <h2 style="margin:0;">Top-Selling Floors &amp; Colours</h2>
@@ -1871,10 +1892,7 @@ function renderTopSellersCard() {
       </div>
     </div>
     <p class="muted" style="margin-top:0;">Ranked by m² sold (accepted quotes only) — a colour that's often quoted but rarely bought won't outrank a real sale.</p>
-    <table class="mobile-card-table">
-      <thead><tr><th>#</th><th>Product</th><th>Colour</th><th>m² sold</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="tile-grid">${tiles}</div>`;
 }
 
 async function renderBusinessOverview(el) {
@@ -1902,12 +1920,6 @@ async function renderBusinessOverview(el) {
   const convOfTotal = (rate, won, total) => rate === null || rate === undefined ? '—' : `${pct(rate)} (${won} of ${total} quotes won)`;
   const convDecided = (rate, won, n) => rate === null || rate === undefined ? '—' : `${pct(rate)} of decided quotes (${won} of ${n})`;
 
-  const kpiCard = (label, value, sublabel) => `
-    <div class="card" style="text-align:center;">
-      <div class="muted" style="text-transform:uppercase; font-size:11px; letter-spacing:0.03em;">${label}</div>
-      <div style="font-family:'Poppins',sans-serif; font-weight:800; font-size:26px; color:var(--teal); margin:6px 0;">${value}</div>
-      ${sublabel ? `<div class="muted" style="font-size:12px;">${sublabel}</div>` : ''}
-    </div>`;
 
   // Mobile Rendering Audit brief (confirmed Aug 2026) -- these two
   // tables didn't fit a phone screen (wrapping headers, horizontal
@@ -1930,15 +1942,6 @@ async function renderBusinessOverview(el) {
       <td data-label="Conversion (count)"><b>${convOfTotal(s.conversion_rate_by_count_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_count, s.won_quotes, decided(s))}</span></td>
       <td data-label="Conversion (value)"><b>${convOfTotal(s.conversion_rate_by_value_of_total, s.won_quotes, s.total_quotes)}</b><br><span class="muted" style="font-size:11px;">${convDecided(s.conversion_rate_by_value, s.won_quotes, decided(s))}</span></td>
     </tr>`;
-  }).join('');
-
-  // New KPI Metrics (confirmed Sept 2026) — a pure creation-volume/
-  // timing count, distinct from By Sales Owner above (which is a win-
-  // rate/value table) — reuses the exact same Sales Owner field/
-  // defaults, no new attribution mechanism.
-  const quotesPerPersonRows = Object.keys(data.quotes_per_person).sort().map(r => {
-    const s = data.quotes_per_person[r];
-    return `<tr><td data-label="Rep" style="text-transform:capitalize;">${r}</td><td data-label="Today">${s.today}</td><td data-label="This Week">${s.week}</td><td data-label="This Month">${s.month}</td></tr>`;
   }).join('');
 
   el.innerHTML = `
@@ -1988,30 +1991,31 @@ async function renderBusinessOverview(el) {
     </div>
 
     <!-- New KPI Metrics (confirmed Sept 2026, "m², Top Sellers, Quotes
-    Per Person" brief) — three new cards, same existing dashboard, no
-    new screen. -->
-    <div class="card">
-      <h2>m² Quoted, Sold &amp; Installed</h2>
-      <p class="muted">Material flooring area only — a screed line always carries the exact same area as its paired material line (confirmed against real data), so it's excluded here to avoid double-counting. Sold = accepted date; Installed = completion date, same basis as every other figure on this page.</p>
-      <table class="mobile-card-table">
-        <thead><tr><th></th><th>This Week</th><th>This Month</th></tr></thead>
-        <tbody>
-          <tr><td data-label="">Quoted</td><td data-label="This Week">${data.m2_metrics.quoted.week} m²</td><td data-label="This Month">${data.m2_metrics.quoted.month} m²</td></tr>
-          <tr><td data-label="">Sold</td><td data-label="This Week">${data.m2_metrics.sold.week} m²</td><td data-label="This Month">${data.m2_metrics.sold.month} m²</td></tr>
-          <tr><td data-label="">Installed</td><td data-label="This Week">${data.m2_metrics.installed.week} m²</td><td data-label="This Month">${data.m2_metrics.installed.month} m²</td></tr>
-        </tbody>
-      </table>
+    Per Person" brief) — three new sections, same existing dashboard,
+    no new screen. Tiles throughout (confirmed Sept 2026, Burgert's own
+    follow-up: "I need the information to be in tiles") — same
+    kpiCard()/.tile-grid pattern the rest of this page already
+    established above, not a new component. -->
+    <h2 style="margin-bottom:8px;">m² Quoted, Sold &amp; Installed</h2>
+    <p class="muted" style="margin-top:0;">Material flooring area only — a screed line always carries the exact same area as its paired material line (confirmed against real data), so it's excluded here to avoid double-counting. Sold = accepted date; Installed = completion date, same basis as every other figure on this page.</p>
+    <div class="tile-grid" style="margin-bottom:16px;">
+      ${kpiCard('Quoted — This Week', `${data.m2_metrics.quoted.week} m²`)}
+      ${kpiCard('Quoted — This Month', `${data.m2_metrics.quoted.month} m²`)}
+      ${kpiCard('Sold — This Week', `${data.m2_metrics.sold.week} m²`)}
+      ${kpiCard('Sold — This Month', `${data.m2_metrics.sold.month} m²`)}
+      ${kpiCard('Installed — This Week', `${data.m2_metrics.installed.week} m²`)}
+      ${kpiCard('Installed — This Month', `${data.m2_metrics.installed.month} m²`)}
     </div>
 
-    <div class="card" id="topSellersCard"></div>
+    <div id="topSellersCard"></div>
 
-    <div class="card">
-      <h2>Quotes Created — By Person</h2>
-      <p class="muted">Every quote created, regardless of outcome — a pure volume/timing count, not a win-rate figure (see By Sales Owner above for that).</p>
-      <table class="mobile-card-table">
-        <thead><tr><th>Rep</th><th>Today</th><th>This Week</th><th>This Month</th></tr></thead>
-        <tbody>${quotesPerPersonRows || '<tr><td colspan="4" class="muted">No quotes yet.</td></tr>'}</tbody>
-      </table>
+    <h2 style="margin-bottom:8px;">Quotes Created — By Person</h2>
+    <p class="muted" style="margin-top:0;">Every quote created, regardless of outcome — a pure volume/timing count, not a win-rate figure (see By Sales Owner above for that).</p>
+    <div class="tile-grid" style="margin-bottom:16px;">
+      ${Object.keys(data.quotes_per_person).sort().map(r => {
+        const s = data.quotes_per_person[r];
+        return kpiCard(r.charAt(0).toUpperCase() + r.slice(1), s.today, `This week: ${s.week} · This month: ${s.month}`);
+      }).join('') || '<div class="muted">No quotes yet.</div>'}
     </div>
 
     <div class="card" style="border: 2px solid var(--cream);">
