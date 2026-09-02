@@ -1806,6 +1806,7 @@ async function printInvoiceForQuote(quoteId) {
 // analytics_overview()'s own comment in main.py for why that matters.
 let lastAnalyticsData = null;
 let weeklyGraphMetric = 'sales';   // 'sales' | 'profit'
+let topSellersRange = 'month';   // 'month' | 'year' — New KPI Metrics brief (confirmed Sept 2026)
 
 function toggleWeeklyGraphMetric(metric) {
   weeklyGraphMetric = metric;
@@ -1842,6 +1843,38 @@ function renderWeeklyGraphCard() {
     <p class="muted" style="margin-top:0;">Monday to today, by acceptance date — the day a quote became Won, same basis as every other figure on this page. Today's bar is outlined.</p>
     <div style="display:flex; gap:10px; align-items:flex-end; padding-top:8px;">${bars}</div>
   `;
+}
+
+// New KPI Metrics (confirmed Sept 2026, "m², Top Sellers, Quotes Per
+// Person" brief) — SOLD basis only (confirmed directly with Burgert:
+// "a colour that gets quoted often but never accepted isn't really
+// 'selling'"), ranked by m² sold, same toggle pattern as the weekly
+// graph's Sales/Profit buttons above.
+function toggleTopSellersRange(range) {
+  topSellersRange = range;
+  renderTopSellersCard();
+}
+
+function renderTopSellersCard() {
+  const container = document.getElementById('topSellersCard');
+  if (!container || !lastAnalyticsData) return;
+  const list = lastAnalyticsData.top_sellers[topSellersRange];
+  const rows = list.length ? list.map((s, i) => `
+    <tr><td data-label="#">${i + 1}</td><td data-label="Product">${s.product_name}</td><td data-label="Colour">${s.colour || '—'}</td><td data-label="m² sold">${s.m2} m²</td></tr>`).join('')
+    : '<tr><td colspan="4" class="muted">No sold quotes yet this period.</td></tr>';
+  container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+      <h2 style="margin:0;">Top-Selling Floors &amp; Colours</h2>
+      <div class="toggle-row" style="margin:0;">
+        <button onclick="toggleTopSellersRange('month')" style="${topSellersRange==='month' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Month</button>
+        <button onclick="toggleTopSellersRange('year')" style="${topSellersRange==='year' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Year</button>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:0;">Ranked by m² sold (accepted quotes only) — a colour that's often quoted but rarely bought won't outrank a real sale.</p>
+    <table class="mobile-card-table">
+      <thead><tr><th>#</th><th>Product</th><th>Colour</th><th>m² sold</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 async function renderBusinessOverview(el) {
@@ -1899,6 +1932,15 @@ async function renderBusinessOverview(el) {
     </tr>`;
   }).join('');
 
+  // New KPI Metrics (confirmed Sept 2026) — a pure creation-volume/
+  // timing count, distinct from By Sales Owner above (which is a win-
+  // rate/value table) — reuses the exact same Sales Owner field/
+  // defaults, no new attribution mechanism.
+  const quotesPerPersonRows = Object.keys(data.quotes_per_person).sort().map(r => {
+    const s = data.quotes_per_person[r];
+    return `<tr><td data-label="Rep" style="text-transform:capitalize;">${r}</td><td data-label="Today">${s.today}</td><td data-label="This Week">${s.week}</td><td data-label="This Month">${s.month}</td></tr>`;
+  }).join('');
+
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome"><h1>Business Overview</h1><p>Live, built from real quote data — nothing here is estimated.</p></div>
@@ -1945,11 +1987,39 @@ async function renderBusinessOverview(el) {
       </table>
     </div>
 
+    <!-- New KPI Metrics (confirmed Sept 2026, "m², Top Sellers, Quotes
+    Per Person" brief) — three new cards, same existing dashboard, no
+    new screen. -->
+    <div class="card">
+      <h2>m² Quoted, Sold &amp; Installed</h2>
+      <p class="muted">Material flooring area only — a screed line always carries the exact same area as its paired material line (confirmed against real data), so it's excluded here to avoid double-counting. Sold = accepted date; Installed = completion date, same basis as every other figure on this page.</p>
+      <table class="mobile-card-table">
+        <thead><tr><th></th><th>This Week</th><th>This Month</th></tr></thead>
+        <tbody>
+          <tr><td data-label="">Quoted</td><td data-label="This Week">${data.m2_metrics.quoted.week} m²</td><td data-label="This Month">${data.m2_metrics.quoted.month} m²</td></tr>
+          <tr><td data-label="">Sold</td><td data-label="This Week">${data.m2_metrics.sold.week} m²</td><td data-label="This Month">${data.m2_metrics.sold.month} m²</td></tr>
+          <tr><td data-label="">Installed</td><td data-label="This Week">${data.m2_metrics.installed.week} m²</td><td data-label="This Month">${data.m2_metrics.installed.month} m²</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card" id="topSellersCard"></div>
+
+    <div class="card">
+      <h2>Quotes Created — By Person</h2>
+      <p class="muted">Every quote created, regardless of outcome — a pure volume/timing count, not a win-rate figure (see By Sales Owner above for that).</p>
+      <table class="mobile-card-table">
+        <thead><tr><th>Rep</th><th>Today</th><th>This Week</th><th>This Month</th></tr></thead>
+        <tbody>${quotesPerPersonRows || '<tr><td colspan="4" class="muted">No quotes yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+
     <div class="card" style="border: 2px solid var(--cream);">
       <p class="muted" style="margin:0;">⚠️ The smaller "of decided quotes" line needs quotes to actually be marked <b>Accepted</b> or <b>Declined</b> to mean anything — a quote sitting in "draft" or "sent" forever won't count toward it either way. The larger, primary conversion figure is always meaningful, including while most quotes are still undecided — it's literally "won so far out of every quote raised." Update a quote's status from the Quote Builder page (bottom of the Quote Lines card) as jobs get decided.</p>
     </div>
   `;
   renderWeeklyGraphCard();
+  renderTopSellersCard();
   });
 }
 

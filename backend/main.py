@@ -2428,6 +2428,92 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
                 **day_figures,
             })
 
+        # ---------- New KPI Metrics (confirmed Sept 2026, "m², Top
+        # Sellers, Quotes Per Person" brief) ----------
+        # m² Quoted/Sold/Installed, by week (Monday-to-today, same
+        # anchor weekly_graph above already uses) and by month. Real
+        # gap found and fixed while investigating this brief's own
+        # "confirm the real data supports this" instruction: every
+        # screeded job carries TWO flooring-category lines — a material
+        # line and a screed line — with the IDENTICAL quantity_m2,
+        # confirmed directly against all 17 real production quotes at
+        # the time (material sum and screed sum both exactly 647.8m²
+        # to the decimal). Summing quantity_m2 across every flooring-
+        # category line would double every screeded job's area.
+        # Filtered to flooring_pricing_type == "material" only below —
+        # this also correctly includes carpet (which only ever uses
+        # "material", confirmed via QuoteLineItem's own field comment,
+        # models.py) and correctly excludes screed (prep, not itself
+        # "floor installed"). Known, flagged limitation, not silently
+        # ignored: a stairwell's own tread area (num_stairs ×
+        # stair_area_m2) has no quantity_m2 at all, so it isn't counted
+        # here — zero real stairwell jobs exist in production today, so
+        # this doesn't distort anything yet.
+        material_m2_by_quote = {}
+        for l in lines:
+            if l.category == "flooring" and l.flooring_pricing_type == "material":
+                material_m2_by_quote[l.quote_id] = material_m2_by_quote.get(l.quote_id, 0.0) + (l.quantity_m2 or 0.0)
+
+        def created_date_sast(q):
+            return (q.created_at + SAST_OFFSET).date()
+
+        completed_quotes = [q for q in quotes if q.completion_date is not None]
+
+        def m2_for(quote_subset):
+            return round(sum(material_m2_by_quote.get(q.id, 0.0) for q in quote_subset), 2)
+
+        m2_metrics = {
+            "quoted": {
+                "week": m2_for([q for q in quotes if created_date_sast(q) >= monday_sast]),
+                "month": m2_for([q for q in quotes if created_date_sast(q) >= month_start_sast]),
+            },
+            "sold": {
+                "week": m2_for([q for q in won_quotes if accepted_date_sast(q) >= monday_sast]),
+                "month": m2_for([q for q in won_quotes if accepted_date_sast(q) >= month_start_sast]),
+            },
+            "installed": {
+                "week": m2_for([q for q in completed_quotes if q.completion_date >= monday_sast]),
+                "month": m2_for([q for q in completed_quotes if q.completion_date >= month_start_sast]),
+            },
+        }
+
+        # Top-selling floors/colours (confirmed Sept 2026) — SOLD basis
+        # only (confirmed directly with Burgert: "a colour that gets
+        # quoted often but never accepted isn't really 'selling'"), by
+        # month and by year. Ranked by total m² (material lines only,
+        # same filter as m2_metrics above), not line count — a single
+        # big room should outrank ten tiny quoted samples of a
+        # different colour.
+        def top_sellers_for(quote_subset, top_n=10):
+            totals = {}
+            for q in quote_subset:
+                for l in lines_by_quote.get(q.id, []):
+                    if l.category == "flooring" and l.flooring_pricing_type == "material":
+                        key = (l.product_name, l.colour)
+                        totals[key] = totals.get(key, 0.0) + (l.quantity_m2 or 0.0)
+            ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            return [{"product_name": k[0], "colour": k[1], "m2": round(v, 2)} for k, v in ranked]
+
+        year_start_sast = today_sast.replace(month=1, day=1)
+        top_sellers = {
+            "month": top_sellers_for([q for q in won_quotes if accepted_date_sast(q) >= month_start_sast]),
+            "year": top_sellers_for([q for q in won_quotes if accepted_date_sast(q) >= year_start_sast]),
+        }
+
+        # Quotes created per person (confirmed Sept 2026) — reuses the
+        # existing Sales Owner field/defaults, no new attribution
+        # mechanism. A pure COUNT of quotes CREATED, distinct from
+        # by_rep above (which summarizes won/lost VALUE, not creation
+        # volume/timing).
+        quotes_per_person = {}
+        for rep in set(q.sales_owner for q in quotes):
+            rep_quotes = [q for q in quotes if q.sales_owner == rep]
+            quotes_per_person[rep] = {
+                "today": len([q for q in rep_quotes if created_date_sast(q) == today_sast]),
+                "week": len([q for q in rep_quotes if created_date_sast(q) >= monday_sast]),
+                "month": len([q for q in rep_quotes if created_date_sast(q) >= month_start_sast]),
+            }
+
         return {
             "overall": summarize(quotes),
             "by_branch": by_branch,
@@ -2435,6 +2521,9 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             "today": sales_profit_for(today_quotes),
             "month": sales_profit_for(month_quotes),
             "weekly_graph": weekly_graph,
+            "m2_metrics": m2_metrics,
+            "top_sellers": top_sellers,
+            "quotes_per_person": quotes_per_person,
         }
 
 
