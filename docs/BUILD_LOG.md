@@ -18,6 +18,17 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-02 (4)
+
+### What shipped
+- **New KPI Metrics: switched to tiles** — Burgert's own follow-up after confirming the numbers were correct: "I need the information to be in tiles." All three new sections (m² Quoted/Sold/Installed, Top-Selling Floors & Colours, Quotes Created — By Person) now use the exact same `kpiCard()`/`.tile-grid` pattern already established elsewhere on Business Overview, not a new component. `kpiCard()` hoisted from a local closure to a shared module-level function since Top Sellers' own toggle can re-render independently, well after the closure that used to hold it had already returned.
+- **Assigned Leads, Stage 1 — proposal investigated, reviewed, approved, then built and verified same day** (`Bolton-Brief-Leads-Todos-Calendar-Integration.docx`, a genuinely large 5-section initiative, explicitly "no code until a full proposal... is reviewed and approved"). Investigated first: `Lead` had no assignment field at all (only `created_by`); an ageing/overdue signal already existed (`_lead_next_action` — 3+ days with no logged outcome already surfaces "Follow up lead") but was never shown anywhere personal; no To-Do concept exists anywhere in Bolton; Home was a plain tile grid with zero per-person content.
+  - Presented the findings plus three genuinely open decisions to Burgert before building anything: Madri's access level (confirmed **view + reassign**, not view-only), what "enforced" should mean (confirmed **surface the existing signal personally** — no new hard check-in mechanism), and build order (confirmed **Stage 1 alone first** — assignment + enforcement + visibility; the To-Do concept and full Calendar integration are separate, later stages, deliberately not started).
+  - Shipped: `Lead.assigned_to` (defaults to the creator, explicit hand-off allowed at creation); a new "My Leads Today" card on Home, personal to whoever's actually logged in (`currentUser.username`, never swapped by Owner Preview Mode), reusing the existing staleness signal, hidden entirely when nothing's due; an Assigned column + inline reassign dropdown on the Leads table; a "By Person" toggle grouping the same filtered rows under a header per assignee for Madri's own confirmed team-tracking need. Reassignment needed no new endpoint — the existing generic `PUT /leads/{id}` already allowed the new field through.
+  - Verified in disposable end-to-end: default assignment on creation, explicit assignment, filtering, reassignment persisting server-side, Home's personalized card showing exactly the right lead with its real priority flag, and the By Person grouping rendering correctly.
+
+---
+
 ## 2026-09-02 (3)
 
 ### What shipped
