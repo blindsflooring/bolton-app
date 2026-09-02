@@ -673,11 +673,35 @@ async function addClientAndStartQuote() {
 // its own briefs, not attempted in one pass here. =====
 
 let currentOrderDetailQuoteId = null;
+// Job Detail: Top Tab Bar (confirmed Sept 2026, replacing the old
+// bottom accordion — Customer/Quote/Materials/Installation/Photos/
+// Financial/Documents were a stacked <details> list requiring
+// scrolling to reach lower sections). null means "not chosen yet this
+// job view" — renderOrderDetail() falls back to defaultOpenSection(q)
+// (unchanged logic, same per-job-stage default the accordion already
+// had), then remembers whichever tab was actually picked across any
+// re-render of the SAME job (e.g. after Save Job Details), so an
+// in-progress edit never gets silently swapped back to a different
+// tab underneath the user. Reset to null only when navigating to a
+// DIFFERENT job, right here, same one entry point every job-open
+// already funnels through.
+let jobDetailActiveTab = null;
 
 function openOrderDetailScreen(quoteId) {
   currentOrderDetailQuoteId = quoteId;
+  jobDetailActiveTab = null;
   landingView = 'orderDetail';
   renderLanding();
+}
+
+function switchJobDetailTab(tabName) {
+  jobDetailActiveTab = tabName;
+  document.querySelectorAll('.jd-tab-panel').forEach(panel => {
+    panel.style.display = panel.dataset.tab === tabName ? '' : 'none';
+  });
+  document.querySelectorAll('.jd-tabs button').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
 }
 
 // Independent Status Tiles (confirmed Aug 2026, approved proposal —
@@ -1179,6 +1203,17 @@ async function renderOrderDetail(el) {
   // <h1> formula below exactly, so the two never say something different.
   setPageTitle(`${q.job_number || 'Quote #' + q.id}${q.description ? ' — ' + q.description : ''}`);
 
+  // Job Detail: Top Tab Bar (confirmed Sept 2026) — same per-job-stage
+  // default the old accordion's defaultOpenSection() already computed,
+  // now just driving which single tab is shown instead of which
+  // <details> starts open. jobDetailActiveTab (module-level) lets a
+  // re-render of this SAME job (e.g. right after Save Job Details)
+  // keep whatever tab the user was actually on, rather than recomputing
+  // the stage-based default every time.
+  const activeTab = jobDetailActiveTab || defaultOpenSection(q) || 'customer';
+  jobDetailActiveTab = activeTab;
+  const jdTab = (name, label) => `<button type="button" class="${activeTab === name ? 'active' : ''}" data-tab="${name}" onclick="switchJobDetailTab('${name}')">${label}</button>`;
+
   // Document Preview, placement 1b (confirmed Aug 2026, Client Page &
   // Quote Detail: Document Preview + Inline Edit brief) — right-hand
   // panel alongside Workflow + Job Details, roughly spanning their
@@ -1251,14 +1286,20 @@ async function renderOrderDetail(el) {
       ${renderStatusTilesHtml(q, data.job_steps)}
     </div>
 
-    <!-- Six named, collapsed-by-default sections (approved proposal
-    §6) — every field below already existed on this screen; this is a
-    regrouping into named categories, not new content. Collapsed by
-    default, per the brief's own mockup ("available, not competing for
-    attention by default") — except whichever one is actually relevant
-    to this job's current stage (defaultOpenSection() above), same
-    exception the mockup's own Materials-open example already showed.
-    Every section stays independently openable regardless. -->
+    <!-- Job Detail: Top Tab Bar (confirmed Sept 2026, replacing the old
+    bottom accordion of the same seven named sections — "requiring
+    scrolling to reach lower sections"). Same tab-button pattern already
+    used elsewhere for switching sections, not a new component. Sits
+    right here: below the three status cards above, above the section
+    content below — matching the brief's own placement requirement.
+    Every section's own content/fields/handlers below is UNCHANGED from
+    the accordion this replaces; only the <details>/<summary> wrapper
+    became a plain <div class="jd-tab-panel">, shown/hidden by
+    switchJobDetailTab() instead of the browser's native <details>
+    open/close. -->
+    <div class="jd-tabs">
+      ${jdTab('customer', 'Customer')}${jdTab('quote', 'Quote')}${jdTab('materials', 'Materials')}${jdTab('installation', 'Installation')}${jdTab('photos', 'Photos')}${jdTab('financial', 'Financial')}${jdTab('documents', 'Documents')}
+    </div>
     <div class="card">
       <!-- Save confirmation (confirmed Aug 2026, Deposit Amount + Save
       Confirmation + Default Branch brief §2) — one shared banner for
@@ -1267,9 +1308,7 @@ async function renderOrderDetail(el) {
       call), same real, temporary success banner as before this brief,
       just relocated to sit above whichever section it was clicked from. -->
       <div id="jobDetailsSaveBanner" style="display:none; background:#dcf5e6; color:#1a7a3e; border:2px solid #1a7a3e; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-weight:700; font-size:13.5px;"></div>
-      <details class="cp-section" ${defaultOpenSection(q) === 'customer' ? 'open' : ''}>
-        <summary>Customer</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="customer" style="${activeTab === 'customer' ? '' : 'display:none;'}">
           <!-- Client link (confirmed Aug 2026, Order Index -> Client
           Link Gap brief, Gap 2 fix) — real gap closed: there was
           previously no way to link an existing quote to a real Client
@@ -1289,11 +1328,8 @@ async function renderOrderDetail(el) {
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
         </div>
-      </details>
 
-      <details class="cp-section" ${defaultOpenSection(q) === 'quote' ? 'open' : ''}>
-        <summary>Quote</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="quote" style="${activeTab === 'quote' ? '' : 'display:none;'}">
           <!-- Manual Override total display (confirmed Aug 2026, Manual
           Override brief) — Job Detail doesn't show individual line
           items (that's Quote Builder's job, via "Open in Quote Builder"
@@ -1322,25 +1358,18 @@ async function renderOrderDetail(el) {
           ` : ''}
           <button onclick="openQuoteFromIndex(${q.id})" style="margin-top:12px;">Open in Quote Builder (line items)</button>
         </div>
-      </details>
 
-      <details class="cp-section" ${defaultOpenSection(q) === 'materials' ? 'open' : ''}>
-        <summary>Materials</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="materials" style="${activeTab === 'materials' ? '' : 'display:none;'}">
           ${renderMaterialsSectionHtml(data.job_steps, q)}
         </div>
-      </details>
 
-      <details class="cp-section" ${defaultOpenSection(q) === 'installation' ? 'open' : ''}>
-        <summary>Installation</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="installation" style="${activeTab === 'installation' ? '' : 'display:none;'}">
           <div class="grid">
             <div class="field"><label>Installation date</label><input id="od_installation_date" type="date" value="${q.installation_date || ''}"></div>
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
           ${renderJobWorkDaysHtml(data.work_days, q.id)}
         </div>
-      </details>
 
       <!-- Photo Gallery + Job Context (confirmed Sept 2026) — uploaded
       directly from THIS job's own page, so the client/job connection is
@@ -1357,20 +1386,15 @@ async function renderOrderDetail(el) {
       currentQuoteId-scoped globals, since this screen has its own
       separate currentOrderDetailQuoteId. A photo added from either
       screen shows on both — same rows, same source of truth. -->
-      <details class="cp-section" ${defaultOpenSection(q) === 'photos' ? 'open' : ''}>
-        <summary>Photos</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="photos" style="${activeTab === 'photos' ? '' : 'display:none;'}">
           <p class="muted" style="margin-top:0;">Site context for this job — no annotation or editing, just a simple gallery.</p>
           <div id="jobPhotoGallery" class="quote-photo-gallery"></div>
           <input type="file" id="jobPhotoInput" accept="image/*" multiple style="margin-top:10px;">
           <button onclick="uploadJobPhotos(${q.id})" style="margin-top:6px;">Upload</button>
           <p class="muted" id="jobPhotoUploadStatus" style="margin-top:6px;"></p>
         </div>
-      </details>
 
-      <details class="cp-section" ${defaultOpenSection(q) === 'financial' ? 'open' : ''}>
-        <summary>Financial</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="financial" style="${activeTab === 'financial' ? '' : 'display:none;'}">
           <!-- Deposit Amount (confirmed Aug 2026, brief §1) — same
           precedence/flagging pattern as the Manual Override total,
           without a mandatory reason. balance_amount is already
@@ -1397,11 +1421,8 @@ async function renderOrderDetail(el) {
           </div>
           <button class="primary" onclick="saveOrderDetails()" style="margin-top:10px;">Save Job Details</button>
         </div>
-      </details>
 
-      <details class="cp-section" ${defaultOpenSection(q) === 'documents' ? 'open' : ''}>
-        <summary>Documents</summary>
-        <div class="cp-section-body">
+      <div class="jd-tab-panel" data-tab="documents" style="${activeTab === 'documents' ? '' : 'display:none;'}">
           <!-- Materials Section Should Show the Actual Order Sheets
           (confirmed Sept 2026, approved proposal) — the real Order Sheet
           previews used to render here (renderOrderSheetPreviewsHtml(),
@@ -1425,7 +1446,6 @@ async function renderOrderDetail(el) {
           Accept). -->
           ${q.job_number ? `<button onclick="openJobCardScreen(${q.id})" style="margin-top:14px;">Job Card</button>` : ''}
         </div>
-      </details>
     </div>
   `;
   loadFollowUps();
@@ -1527,7 +1547,15 @@ async function acceptQuoteAction(quoteId) {
     const qRes = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
     if (qRes.ok) {
       const qData = await qRes.json();
-      const reference = qData.quote.job_number || ('Q-' + quoteId);
+      // Dropbox Filenames: Client Name + Job Name (confirmed Sept 2026)
+      // — "slow to visually scan or search a folder for the right
+      // document" without the client's name in the filename itself.
+      // _create_and_upload_archive() (main.py) sanitizes this whole
+      // string into the filename verbatim (non-alnum/hyphen -> "_"), so
+      // a single hyphen with no surrounding spaces here keeps the
+      // result clean — e.g. "J-0001-John_Smith_v2.pdf" — rather than a
+      // run of "_-_" from a spaced separator.
+      const reference = (qData.quote.job_number || ('Q-' + quoteId)) + '-' + qData.quote.client_name;
       const { html } = await buildPrintDocHtml(quoteId, 'quote');
       const cssRes = await fetch('styles.css');
       const css = cssRes.ok ? await cssRes.text() : '';
@@ -2119,7 +2147,9 @@ async function finalizeOrderSheet(orderSheetId) {
   // and must not be undone by an archive hiccup (brief §7).
   try {
     const sheetForRef = await (await fetch(`${API}/order-sheets/${orderSheetId}`)).json();
-    const reference = sheetForRef.order_number;
+    // Dropbox Filenames: Client Name + Job Name (confirmed Sept 2026) —
+    // same reasoning as acceptQuoteAction()'s own reference above.
+    const reference = sheetForRef.order_number + (sheetForRef.client_name ? '-' + sheetForRef.client_name : '');
     const { html } = await buildOrderSheetPrintHtml(orderSheetId);
     const cssRes = await fetch('styles.css');
     const css = cssRes.ok ? await cssRes.text() : '';

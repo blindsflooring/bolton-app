@@ -554,6 +554,19 @@
   .cp-section[open] summary::before { content: '▾'; }
   .cp-section-body { padding: 12px 4px 4px 20px; }
 
+  /* Job Detail: Top Tab Bar (confirmed Sept 2026) — replaces the
+     accordion above with the same button-row tab pattern already used
+     elsewhere for switching between sections (Builder Portal's
+     Builders/Estimates/Report, Add Line Item's category row) — a
+     plain flex row of buttons, active one filled teal, not a separate
+     underline-style tab component. .jd-tab-panel keeps the exact same
+     inner padding .cp-section-body already had, so none of the
+     section content itself had to be re-touched. */
+  .jd-tabs { display: flex; gap: 6px; overflow-x: auto; margin: 14px 0; }
+  .jd-tabs button { flex: none; background: white; border: 1px solid var(--border); color: var(--navy); font-weight: 700; font-size: 13px; padding: 8px 14px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .jd-tabs button.active { background: var(--teal); color: white; border-color: var(--teal); }
+  .jd-tab-panel { padding: 12px 4px 4px; }
+
   /* Job Dashboard Tile Treatment (confirmed Aug 2026, approved proposal
      — visual refinement of Independent Status Tiles, same data/fields,
      no logic change). Real card weight now, not a plain status row —

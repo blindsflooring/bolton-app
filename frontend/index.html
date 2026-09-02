@@ -1781,7 +1781,12 @@ async function printInvoiceForQuote(quoteId) {
     const qRes = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
     if (qRes.ok) {
       const qData = await qRes.json();
-      const reference = 'INV-' + (qData.quote.job_number || quoteId);
+      // Dropbox Filenames: Client Name + Job Name (confirmed Sept 2026)
+      // — same reasoning as acceptQuoteAction()'s own reference
+      // (order-index.js) — a single hyphen, no surrounding spaces, so
+      // _create_and_upload_archive()'s sanitizer (main.py) produces a
+      // clean filename like "INV-J-0001-John_Smith_v1.pdf".
+      const reference = 'INV-' + (qData.quote.job_number || quoteId) + '-' + qData.quote.client_name;
       const { html } = await buildPrintDocHtml(quoteId, 'invoice');
       const cssRes = await fetch('styles.css');
       const css = cssRes.ok ? await cssRes.text() : '';

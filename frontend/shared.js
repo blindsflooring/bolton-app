@@ -793,6 +793,15 @@ async function buildPrintDocHtml(quoteId, docType) {
         <div>
           <div class="doc-title">${isInvoice ? `TAX INVOICE #INV-${String(quoteId).padStart(4,'0')}` : `QUOTE #${String(quoteId).padStart(4,'0')}`}</div>
           <div style="text-align:right; font-size:12px; color:#6b7280;">${new Date().toLocaleDateString('en-ZA')}</div>
+          <!-- Quote Rep Attribution (confirmed Sept 2026) — "which rep
+          handled the job" wasn't shown anywhere on the client-facing
+          document. Pulled straight from the job's own sales_owner
+          (never a manual entry, per the brief's own requirement) —
+          same capitalized-first-name display every staff picker
+          already uses for this value (q_owner's own <option> labels,
+          index.html; STAFF_DEFAULT_OWNER above), not a separate
+          mapping that could drift from it. -->
+          ${data.quote.sales_owner ? `<div style="text-align:right; font-size:11px; color:#6b7280;">Your consultant: ${data.quote.sales_owner.charAt(0).toUpperCase() + data.quote.sales_owner.slice(1)}</div>` : ''}
           ${isInvoice ? `<div style="text-align:right; font-size:11px; color:#6b7280;">Ref: Quote #${quoteId}</div>` : ''}
         </div>
       </div>
