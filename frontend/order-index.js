@@ -174,7 +174,39 @@ function renderOrderIndexTable(searchTerm) {
   // both computed from the one fetched set above.
   const counts = {quoted: 0, accepted: 0, scheduled: 0, completed: 0};
   quotes.forEach(q => { if (counts[q.workflow_status] !== undefined) counts[q.workflow_status]++; });
-  const shown = orderIndexActiveTab === 'all' ? quotes : quotes.filter(q => q.workflow_status === orderIndexActiveTab);
+  // Order Index Priority Ordering (confirmed Sept 2026) — "the list
+  // should sort... by real operational priority," applied to the "All"
+  // view specifically (brief's own words: "the individual status tabs...
+  // can keep their own existing internal ordering" — untouched below,
+  // still whatever order the backend returned for a single-status tab).
+  // Five buckets, confirmed directly with Burgert where the brief's own
+  // 3-bucket description (Scheduled / follow-up-needed Quoted / fresh
+  // Quoted) didn't say where Accepted or Completed fit:
+  //   0. Scheduled — real, booked work actually happening.
+  //   1. Accepted — always carries a real attention_priority
+  //      (_job_workflow_info(), main.py: "Book installation"/"Confirm
+  //      booking"), genuinely active work not yet booked.
+  //   2. Quoted, stale (attention_priority set — gone past
+  //      QUOTE_STALE_DAYS without a follow-up) — needs action.
+  //   3. Quoted, fresh (no attention_priority) — recently sent, nothing
+  //      needed yet.
+  //   4. Completed — the physical work is done; even one still needing
+  //      an invoice sinks to the very bottom of the list, per Burgert's
+  //      own explicit call.
+  // A stable sort (Array.prototype.sort, guaranteed stable in every
+  // browser this app supports) keeps each bucket's own relative order
+  // exactly as the backend returned it — no secondary sort invented
+  // beyond what the brief actually asked for.
+  function orderIndexPriorityBucket(q) {
+    if (q.workflow_status === 'scheduled') return 0;
+    if (q.workflow_status === 'accepted') return 1;
+    if (q.workflow_status === 'quoted') return q.attention_priority ? 2 : 3;
+    if (q.workflow_status === 'completed') return 4;
+    return 5;   // safety fallback — no real workflow_status value reaches this today
+  }
+  const shown = orderIndexActiveTab === 'all'
+    ? [...quotes].sort((a, b) => orderIndexPriorityBucket(a) - orderIndexPriorityBucket(b))
+    : quotes.filter(q => q.workflow_status === orderIndexActiveTab);
 
   // Needs Attention (confirmed Aug 2026, brief §7 + addendum's priority
   // tiers) — every quote with an attention_priority set, sorted most-
@@ -301,14 +333,27 @@ function toggleClientGroup(clientId) {
   renderOrderIndexTable();
 }
 
+// Order Index: Client Name Visibility (confirmed Sept 2026) — one
+// shared renderer for every row shape this table produces (single row,
+// group header, child row inside an expanded group) so the name can
+// never drift out of sync between them again. .oi-client-name (styles.css)
+// carries the actual consistent size/weight/colour; .linked layers the
+// same teal+underline "clickable" language every other link on this
+// screen already uses, kept because it's a real, meaningful distinction
+// (a genuine linked Client record vs. a walk-in/one-off) — not something
+// the brief asked to remove, only to stop rendering inconsistently.
+function orderIndexClientNameHtml(q) {
+  return q.client_id
+    ? `<span class="oi-client-name linked" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
+    : `<span class="oi-client-name" title="No linked client record — walk-in/one-off">${q.client_name}</span>`;
+}
+
 function orderIndexRowHtml(q, isOwner, money, isChild) {
   return `
     <tr id="oi-row-${q.id}" style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
       ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
       <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}${q.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${q.test_data_label}</span>` : ''}</td>
-      <td data-label="Customer">${isChild ? '' : (q.client_id
-          ? `<span style="cursor:pointer; color:var(--teal); text-decoration:underline;" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
-          : `<span title="No linked client record — walk-in/one-off">${q.client_name}</span>`)}
+      <td data-label="Customer">${orderIndexClientNameHtml(q)}
         ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
       <td data-label="Value">${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}</td>
       <td data-label="Status">${workflowStatusBadge(q)}</td>
@@ -408,16 +453,28 @@ function toggleQuickView(quoteId) {
 }
 
 function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
-  // Group by client_id, preserving each group's first-appearance
-  // position in `shown` so the table's overall order doesn't jump
-  // around as groups collapse/expand.
+  // Group Multi-Job Client Fix (confirmed Sept 2026) — real risk found
+  // by Burgert, not just tidiness: a client with, say, 2 still-Quoted
+  // jobs and 1 that had progressed to Scheduled used to group ALL 3
+  // together under one collapsed "(3 jobs)" row, showing a "Mixed"
+  // status badge — a scheduled job genuinely happening soon could be
+  // sitting invisible inside a row that reads as "still just quoted."
+  // Grouping is now scoped to workflow_status === "quoted" ONLY — any
+  // job that has progressed beyond Quoted always renders as its own
+  // standalone row (via the same fall-through orderIndexRowHtml() call
+  // every ungrouped row already used), landing in its own correct
+  // position under the new priority order below, never hidden inside a
+  // collapsed group. Only the remaining still-Quoted jobs for that same
+  // client group together — same collapse/expand mechanism as before,
+  // unchanged. Grouped-by-first-appearance position in `shown` is
+  // preserved, same as before this fix.
   const byClient = {};
-  shown.forEach(q => { if (q.client_id) (byClient[q.client_id] = byClient[q.client_id] || []).push(q); });
+  shown.forEach(q => { if (q.client_id && q.workflow_status === 'quoted') (byClient[q.client_id] = byClient[q.client_id] || []).push(q); });
   const groupClientIds = new Set(Object.keys(byClient).filter(cid => byClient[cid].length > 1).map(Number));
 
   const seenGroup = new Set();
   return shown.map(q => {
-    if (!q.client_id || !groupClientIds.has(q.client_id)) {
+    if (!q.client_id || q.workflow_status !== 'quoted' || !groupClientIds.has(q.client_id)) {
       return orderIndexRowHtml(q, isOwner, money, false);
     }
     if (seenGroup.has(q.client_id)) return '';   // absorbed into the group row already emitted below
@@ -452,12 +509,11 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
     // row via orderIndexRowHtml — both confirmed directly with Burgert,
     // not guessed.
     const groupTotal = groupQuotes.reduce((sum, g) => sum + (g.total_incl_vat || 0), 0);
-    // Status = the shared badge if every job in the group is on the same
-    // workflow_status, otherwise "Mixed" — brief §2's own wording.
-    const statusSet = new Set(groupQuotes.map(g => g.workflow_status));
-    const groupStatusHtml = statusSet.size === 1
-      ? workflowStatusBadge(groupQuotes[0])
-      : `<span class="status-badge" style="background:#f0f0f0; color:#6b7280;">Mixed</span>`;
+    // Status: every job reaching this point is guaranteed workflow_status
+    // === "quoted" (Group Multi-Job Client Fix above scopes grouping to
+    // that status only now) — no more "Mixed" case is reachable, so the
+    // badge is always the plain Quoted one, same as any single row.
+    const groupStatusHtml = workflowStatusBadge(groupQuotes[0]);
     // Install Date = nearest/soonest date among jobs that have one set;
     // blank (—, via dateOrDash) if none do, same as an individual row.
     const installDates = groupQuotes.map(g => g.installation_date).filter(Boolean);
@@ -482,7 +538,7 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
     const headerRow = `
       <tr style="cursor:pointer; font-weight:600;" onclick="toggleClientGroup(${q.client_id})">
         ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" ${allGroupSelected ? 'checked' : ''} onchange="toggleGroupSelected([${groupQuoteIds.join(',')}], this.checked)"></td>` : ''}
-        <td colspan="2" class="card-title" data-label="Client">${expanded ? '▾' : '▸'} ${q.client_name} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
+        <td colspan="2" class="card-title" data-label="Client">${expanded ? '▾' : '▸'} ${orderIndexClientNameHtml(q)} <span class="muted" style="font-weight:400;">(${groupQuotes.length} jobs)</span></td>
         <td data-label="Total Value">${money(groupTotal)}</td>
         <td data-label="Status">${groupStatusHtml}</td>
         <td data-label="Next Install">${dateOrDash(nearestInstallDate)}</td>

@@ -449,6 +449,22 @@
      Teal + bold, matching the same "this is clickable" language the
      customer-name link and every "Edit client"-style link already use. */
   .job-number { font-family: monospace; font-size: 12.5px; color: var(--teal); font-weight: 600; }
+  /* Order Index: Client Name Visibility (confirmed Sept 2026) — real gap
+     found by reading the actual rendered styles before touching anything:
+     .card-title (used for the group-header row's client name) only has a
+     rule INSIDE the mobile breakpoint further up this file — on desktop
+     it was completely unstyled, plain default table text, while a single
+     row's own client name got teal+underline (linked) or plain (walk-in)
+     depending on client_id, and a child row inside an expanded group
+     showed no name at all. One consistent base treatment now, on both
+     desktop and mobile, for every row shape this table renders — single,
+     group header, and child. .linked layers the SAME "this is clickable"
+     teal+underline language .job-number/every other link already uses;
+     the walk-in/no-client-record case deliberately keeps its own plain
+     look — that's a real, meaningful distinction the brief doesn't ask
+     to remove, only the SIZE/WEIGHT/alignment inconsistency across rows. */
+  .oi-client-name { font-weight: 700; font-size: 14px; color: var(--navy); }
+  .oi-client-name.linked { color: var(--teal); text-decoration: underline; cursor: pointer; }
   .next-action-btn {
     background: none; border: 2px solid var(--teal); color: var(--teal);
     font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;
