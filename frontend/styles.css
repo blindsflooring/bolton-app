@@ -672,6 +672,17 @@
   .cal-chip.confirmed { background: #dcf5e6; color: #1a7a3e; }
   .cal-chip.tentative { background: var(--cream); color: #8a6d00; border: 1px dashed #c7ae4a; }
   .cal-chip.more { background: none; color: var(--teal); font-weight: 700; cursor: pointer; }
+  /* Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — own
+     colours (blue/purple), distinct from the confirmed/tentative
+     green-vs-cream job palette, so a mixed day reads at a glance as
+     "one booked job, one lead visit, one task" — never three
+     identical-looking chips a person has to actually click to tell
+     apart. cursor:pointer only (no grab/grabbing) — these chips are
+     click-only, never draggable (calLeadChip/calTodoChip's own
+     comment, calendar.js, explains why drag was deliberately not
+     extended to them). */
+  .cal-chip-lead { background: #e8f0fe; color: #1a4d8f; cursor: pointer; }
+  .cal-chip-todo { background: #f3e8fd; color: #6b2fa0; cursor: pointer; }
   @media (max-width: 700px) {
     .cal-day { font-size: 9.5px; }
     .cal-daynum { font-size: 9.5px; }

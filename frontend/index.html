@@ -1148,6 +1148,7 @@ editing" scope. -->
 <script src="clients.js"></script>
 <script src="order-index.js"></script>
 <script src="leads.js"></script>
+<script src="todos.js"></script>
 <script src="calendar.js"></script>
 <script src="quote-builder.js"></script>
 <script src="hr.js"></script>
@@ -1528,6 +1529,7 @@ function renderLanding() {
   if (landingView === 'installCalendar') return renderInstallationCalendar(el);
   if (landingView === 'photoGallery') return renderPhotoGallery(el);
   if (landingView === 'leads') return renderLeads(el);
+  if (landingView === 'todos') return renderTodos(el);
   if (landingView === 'leadDetail') return renderLeadDetail(el);
   if (landingView === 'leadsDayList') return renderLeadsDayList(el);
   if (landingView === 'orderDetail') return renderOrderDetail(el);
@@ -1584,26 +1586,42 @@ function renderLandingTiles(el) {
 // block Home on this" pattern as every other lazy-loaded section in
 // this app (loadDocumentPreview, etc.) — a slow/failed fetch here must
 // never delay or break the one screen every single login lands on.
+// Assigned Leads / To-Dos, Stage 2 (confirmed Sept 2026) — "a
+// personalized 'today' view per person... assigned leads and to-dos
+// for today, combined in one place — not something they have to hunt
+// for across separate screens." Leads (their own existing ageing
+// signal) and open To-Dos due today-or-earlier (or with no due date at
+// all — an undated task still belongs on a personal list, just never
+// flagged overdue) fetched together, rendered as one combined list.
 async function loadMyLeadsToday() {
   const container = document.getElementById('myLeadsToday');
   if (!container || !currentUser?.username) return;
   try {
-    const res = await fetch(`${API}/leads?assigned_to=${encodeURIComponent(currentUser.username)}`);
-    if (!res.ok) return;
-    const leads = await res.json();
+    const [leadsRes, todosRes] = await Promise.all([
+      fetch(`${API}/leads?assigned_to=${encodeURIComponent(currentUser.username)}`),
+      fetch(`${API}/todos?assigned_to=${encodeURIComponent(currentUser.username)}&done=false`),
+    ]);
+    const leads = leadsRes.ok ? await leadsRes.json() : [];
+    const todos = todosRes.ok ? await todosRes.json() : [];
     const needsAction = leads.filter(l => l.attention_priority);
-    if (!needsAction.length) return;   // nothing due — no empty card cluttering the one screen everyone lands on
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dueTodos = todos.filter(t => !t.due_date || t.due_date <= todayStr);
+    if (!needsAction.length && !dueTodos.length) return;   // nothing due — no empty card cluttering the one screen everyone lands on
+    const leadItems = needsAction.map(l => `
+      <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
+        <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
+        <span class="attn-detail">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
+        ${leadNextActionButton(l)}
+      </div>`).join('');
+    const todoItems = dueTodos.map(t => `
+      <div class="attention-item ${t.due_date && t.due_date < todayStr ? 'priority-critical' : 'priority-notice'}" onclick="landingView='todos'; renderLanding();">
+        <span class="attn-flag">${t.due_date && t.due_date < todayStr ? '🔴 Overdue' : '🟡 To-Do'}</span>
+        <span class="attn-detail">${t.title}</span>
+      </div>`).join('');
     container.innerHTML = `
       <div class="card" style="border-color:var(--coral);">
-        <h2 style="margin-top:0;">My Leads Today (${needsAction.length})</h2>
-        <div class="attention-list">
-          ${needsAction.map(l => `
-            <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
-              <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
-              <span class="attn-detail">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
-              ${leadNextActionButton(l)}
-            </div>`).join('')}
-        </div>
+        <h2 style="margin-top:0;">My Leads &amp; To-Dos Today (${needsAction.length + dueTodos.length})</h2>
+        <div class="attention-list">${leadItems}${todoItems}</div>
       </div>`;
   } catch (e) { /* best-effort — Home must never break because this one fetch failed */ }
 }
@@ -1616,6 +1634,7 @@ function onTileClick(tileId) {
   else if (tileId === 'installCalendar') { openInstallationCalendar(); }
   else if (tileId === 'photoGallery') { landingView = 'photoGallery'; renderLanding(); }
   else if (tileId === 'leads') { landingView = 'leads'; renderLanding(); }
+  else if (tileId === 'todos') { landingView = 'todos'; renderLanding(); }
   else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
   else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }

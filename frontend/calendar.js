@@ -22,6 +22,23 @@ let calendarViewYear = null;
 let calendarViewMonth = null;   // 0-11, JS Date convention
 let calendarExpandedDay = null; // 'YYYY-MM-DD' or null — the day currently expanded into a full list below the grid
 
+// Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026, "Shared
+// calendar integration — leads, to-dos, and measure-ups alongside
+// installations") — leads.js/todos.js own caches, fetched alongside
+// quotes on every screen visit, same "fetch once per visit, filter
+// locally per month" convention calendarQuotesCache already uses.
+// Per-type visibility toggles (confirmed in the Stage 1 proposal's own
+// recommendation on calendar density — "a per-type toggle... rather
+// than forcing everything into view at once"): default all ON, same
+// "the business already uses one shared Google Calendar for both
+// installations and client visits together" framing the brief itself
+// opens with — off is an explicit choice, not the starting state.
+let calendarLeadsCache = [];
+let calendarTodosCache = [];
+let calShowInstallations = true;
+let calShowLeads = true;
+let calShowTodos = true;
+
 function openInstallationCalendar() {
   const today = new Date();
   calendarViewYear = today.getFullYear();
@@ -34,10 +51,25 @@ function openInstallationCalendar() {
 async function renderInstallationCalendar(el) {
   await renderWithRetry(el, 'Installation Calendar', async () => {
     el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><p class="muted">Loading...</p></div>`;
-    const res = await fetch(`${API}/quotes`);
-    calendarQuotesCache = await res.json();
+    const [quotesRes, leadsRes, todosRes] = await Promise.all([
+      fetch(`${API}/quotes`), fetch(`${API}/leads`), fetch(`${API}/todos?done=false`),
+    ]);
+    calendarQuotesCache = await quotesRes.json();
+    // Best-effort (confirmed Sept 2026) — leads/todos are an addition
+    // to an already-working calendar; a failure fetching either must
+    // never take down the installation view that already worked before
+    // this brief.
+    calendarLeadsCache = leadsRes.ok ? await leadsRes.json() : [];
+    calendarTodosCache = todosRes.ok ? await todosRes.json() : [];
     renderCalendarView(el);
   });
+}
+
+function toggleCalendarType(type) {
+  if (type === 'installations') calShowInstallations = !calShowInstallations;
+  else if (type === 'leads') calShowLeads = !calShowLeads;
+  else if (type === 'todos') calShowTodos = !calShowTodos;
+  renderCalendarView(document.getElementById('landing'));
 }
 
 // Which real, booked jobs land on which day (Decision Q1, approved
@@ -58,16 +90,31 @@ async function renderInstallationCalendar(el) {
 // day, the ONLY case that existed before this brief).
 function calMainChip(q) {
   return {
-    quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
+    type: 'job', quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
     date: q.installation_date, confirmed: calIsConfirmed(q), workDayId: null, dayType: null,
   };
 }
 function calWorkDayChip(q, wd) {
   return {
-    quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
+    type: 'job', quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
     date: wd.work_date, confirmed: !!(wd.confirmed_date && wd.confirmed_date === wd.work_date),
     workDayId: wd.id, dayType: wd.day_type,
   };
+}
+// Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — lead visits
+// and to-do due dates as their own chip types. Deliberately NOT wired
+// into calChipPointerDown/drag-and-drop below — dragging a job chip
+// reschedules a Quote's own installation_date/work_day via two
+// existing, real write paths; a lead visit or a to-do due date is a
+// completely different field on a completely different entity, and
+// extending drag semantics to both was never confirmed as part of this
+// Stage 3 scope. Both chip types are click-only: open the thing they
+// represent, same as every other cross-screen navigation in this app.
+function calLeadChip(l) {
+  return { type: 'lead', leadId: l.id, name: l.name, contact: l.contact, date: l.visit_date };
+}
+function calTodoChip(t) {
+  return { type: 'todo', todoId: t.id, title: t.title, date: t.due_date };
 }
 const CAL_DAY_TYPE_LABEL = { screed: 'Screed', installation: 'Install', other: 'Other' };
 
@@ -79,14 +126,27 @@ function calendarJobsForMonth(year, month) {
     if (y !== year || m !== month + 1) return;
     (byDay[d] = byDay[d] || []).push(chip);
   };
-  calendarQuotesCache.forEach(q => {
-    if (!q.job_number || q.declined_at) return;
-    if (q.installation_date) push(q.installation_date, calMainChip(q));
-    (q.work_days || []).forEach(wd => push(wd.work_date, calWorkDayChip(q, wd)));
-  });
+  if (calShowInstallations) {
+    calendarQuotesCache.forEach(q => {
+      if (!q.job_number || q.declined_at) return;
+      if (q.installation_date) push(q.installation_date, calMainChip(q));
+      (q.work_days || []).forEach(wd => push(wd.work_date, calWorkDayChip(q, wd)));
+    });
+  }
+  if (calShowLeads) {
+    calendarLeadsCache.forEach(l => { if (l.visit_date) push(l.visit_date, calLeadChip(l)); });
+  }
+  if (calShowTodos) {
+    calendarTodosCache.forEach(t => { if (t.due_date) push(t.due_date, calTodoChip(t)); });
+  }
   // Confirmed first within each day, tentative after — the more
   // settled information first, same "done things read as settled"
-  // principle the Job Control Panel's own status strip follows.
+  // principle the Job Control Panel's own status strip follows. Lead/
+  // to-do chips have no such concept (confirmed=undefined sorts as
+  // "tentative", i.e. after confirmed jobs but not reordered among
+  // themselves) — jobs still read as the most settled thing on a
+  // mixed day, which matches their real weight (a booked installation
+  // vs. a lead visit or a task).
   Object.values(byDay).forEach(list => list.sort((a, b) => (b.confirmed ? 1 : 0) - (a.confirmed ? 1 : 0)));
   return byDay;
 }
@@ -144,7 +204,23 @@ function renderCalendarView(el) {
     // below); the existing onclick still opens the job normally for a
     // plain tap, guarded by calDragMoved so it doesn't ALSO fire right
     // after a genuine drag-drop just released on this same element.
+    //
+    // Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — lead/
+    // to-do chips are click-only (no onpointerdown at all — see
+    // calLeadChip/calTodoChip's own comment above for why drag was
+    // deliberately not extended to them), styled distinctly (own CSS
+    // classes, styles.css) so a mixed day still reads at a glance as
+    // "one booked job, one lead visit, one task," never three
+    // identical-looking chips.
     const chipsHtml = visible.map(chip => {
+      if (chip.type === 'lead') {
+        return `<div class="cal-chip cal-chip-lead" title="Lead visit: ${(chip.name || '').replace(/"/g,'&quot;')}${chip.contact ? ' — ' + chip.contact.replace(/"/g,'&quot;') : ''}"
+          onclick="event.stopPropagation(); openLeadDetailScreen(${chip.leadId});">📋 ${(chip.name || '').replace(/</g,'&lt;')}</div>`;
+      }
+      if (chip.type === 'todo') {
+        return `<div class="cal-chip cal-chip-todo" title="To-do: ${(chip.title || '').replace(/"/g,'&quot;')}"
+          onclick="event.stopPropagation(); landingView='todos'; renderLanding();">✓ ${(chip.title || '').replace(/</g,'&lt;')}</div>`;
+      }
       // Multiple Work Days Per Job (confirmed Sept 2026) — a work-day
       // chip (chip.workDayId set) shows its type instead of the client
       // name, so it reads as "the same job, a different day," not a
@@ -184,9 +260,19 @@ function renderCalendarView(el) {
         <h2 style="margin:0;">${CAL_MONTH_NAMES[month]} ${year}</h2>
         <button onclick="changeCalendarMonth(1)">Next ›</button>
       </div>
-      <div style="display:flex; gap:14px; margin:10px 0 14px; font-size:12px;" class="muted">
+      <div style="display:flex; gap:14px; margin:10px 0 14px; font-size:12px; flex-wrap:wrap;" class="muted">
         <span><span class="cal-legend-dot confirmed"></span> Confirmed</span>
         <span><span class="cal-legend-dot tentative"></span> Tentative</span>
+      </div>
+      <!-- Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — per-
+      type visibility, the proposal's own confirmed answer to "a
+      calendar showing installations, leads, to-dos, and measure-ups
+      all at once needs a real plan for staying readable." Default all
+      on — off is an explicit choice, not the starting state. -->
+      <div style="display:flex; gap:14px; margin:0 0 14px; font-size:12px; flex-wrap:wrap;">
+        <label style="cursor:pointer;"><input type="checkbox" ${calShowInstallations?'checked':''} onchange="toggleCalendarType('installations')"> Installations</label>
+        <label style="cursor:pointer;"><input type="checkbox" ${calShowLeads?'checked':''} onchange="toggleCalendarType('leads')"> Lead visits 📋</label>
+        <label style="cursor:pointer;"><input type="checkbox" ${calShowTodos?'checked':''} onchange="toggleCalendarType('todos')"> To-Dos ✓</label>
       </div>
       <div class="cal-grid">
         ${dowHtml}
@@ -257,14 +343,39 @@ function renderCalendarDayList(dateStr) {
   // so a busy day mixing main installs and extra days (screed etc.)
   // still reads clearly; "Install" for every chip before this brief,
   // since workDayId was always null then.
-  const rows = jobs.length ? jobs.map(chip => `
-    <tr onclick="openOrderDetailScreen(${chip.quoteId})" style="cursor:pointer;">
+  //
+  // Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — lead/to-do
+  // rows share the same table (a mixed day should read as one list of
+  // "everything happening today," matching the brief's own "one shared
+  // calendar" framing) but branch per type since they carry genuinely
+  // different fields than a job chip.
+  const rows = jobs.length ? jobs.map(chip => {
+    if (chip.type === 'lead') {
+      return `<tr onclick="openLeadDetailScreen(${chip.leadId})" style="cursor:pointer;">
+        <td data-label="Job">📋 Lead visit</td>
+        <td data-label="Client">${(chip.name || '').replace(/</g,'&lt;')}</td>
+        <td data-label="Day">—</td>
+        <td data-label="Description">${(chip.contact || '—').replace(/</g,'&lt;')}</td>
+        <td data-label="Status"><span class="muted">Site visit</span></td>
+      </tr>`;
+    }
+    if (chip.type === 'todo') {
+      return `<tr onclick="landingView='todos'; renderLanding();" style="cursor:pointer;">
+        <td data-label="Job">✓ To-Do</td>
+        <td data-label="Client">${(chip.title || '').replace(/</g,'&lt;')}</td>
+        <td data-label="Day">—</td>
+        <td data-label="Description">—</td>
+        <td data-label="Status"><span class="muted">Due today</span></td>
+      </tr>`;
+    }
+    return `<tr onclick="openOrderDetailScreen(${chip.quoteId})" style="cursor:pointer;">
       <td data-label="Job"><b>${chip.job_number}</b></td>
       <td data-label="Client">${(chip.client_name || '').replace(/</g,'&lt;')}</td>
       <td data-label="Day">${chip.workDayId ? (CAL_DAY_TYPE_LABEL[chip.dayType] || 'Extra day') : 'Install'}</td>
       <td data-label="Description">${(chip.description || '—').replace(/</g,'&lt;')}</td>
       <td data-label="Status">${chip.confirmed ? '<span style="color:var(--teal); font-weight:700;">✓ Confirmed</span>' : '<span class="muted">Tentative</span>'}</td>
-    </tr>`).join('') : `<tr><td colspan="5" class="muted">Nothing booked this day.</td></tr>`;
+    </tr>`;
+  }).join('') : `<tr><td colspan="5" class="muted">Nothing booked this day.</td></tr>`;
   document.getElementById('calendarDayListArea').innerHTML = `
     <div class="card">
       <h2>${dateObj.toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>

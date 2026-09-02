@@ -911,6 +911,36 @@ class Lead(SQLModel, table=True):
     site_address: str = ""
 
 
+class ToDo(SQLModel, table=True):
+    """Stage 2 of the Assigned Leads / To-Dos / Calendar brief (confirmed
+    Sept 2026) — "a broader to-do list the Owner can assign to anyone,
+    showing up on their own front page as 'today's leads and tasks'."
+    Deliberately its own table, not a Lead variant — confirmed directly
+    against the brief's own question ("how it differs from a Lead"): a
+    Lead is a sales enquiry with its own multi-stage lead_status and a
+    mandatory proof-of-work outcome note on every status change; a
+    To-Do is a genuinely generic task with none of that — just a title,
+    who it's for, an optional due date, and done/not-done. No proof-of-
+    work note required here (confirmed in the proposal) — that
+    discipline exists specifically for Lead's own sales-process
+    accountability, not a general task list.
+
+    Deliberately minimal — no priority field, no recurrence, no
+    sub-tasks — "a genuinely minimal version" per the brief's own
+    words; extend only once real use shows a genuine gap, same
+    incremental-not-speculative approach every other feature in this
+    app already follows."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    title: str
+    assigned_to: str = ""   # who it's for — same three-real-staff convention as Lead.assigned_to/Quote.sales_owner
+    created_by: str = ""    # who assigned it — real authenticated username, same convention as Lead.created_by
+    due_date: Optional[date] = None
+    done: bool = False
+    done_at: Optional[datetime] = None   # set/cleared server-side only (toggle_todo_done(), main.py), never client-writable directly — same "derive, don't trust a client-supplied timestamp" discipline as accepted_at/declined_at on Quote
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class BusinessSettings(SQLModel, table=True):
     """Singleton — always id=1, one row, created with sensible defaults
     on first call and edited via PUT from then on, rather than a full

@@ -33,7 +33,7 @@ from models import (
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
-    FlaggedRecord, Lead, JobWorkDay,
+    FlaggedRecord, Lead, JobWorkDay, ToDo,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
 from auth import hash_password, verify_password, new_session_token, new_expiry
@@ -7646,6 +7646,114 @@ def convert_lead(lead_id: int, sales_owner: str, branch: str = "gansbaai", clien
         session.refresh(lead)
         session.refresh(quote)
         return {"lead": lead, "quote": quote}
+
+
+# ---------- To-Dos, Stage 2 (confirmed Sept 2026, Assigned Leads / To-
+# Dos / Calendar brief) — see ToDo's own docstring (models.py) for why
+# this is a genuinely separate, minimal table, not a Lead variant. ----
+
+class ToDoCreate(BaseModel):
+    """Deliberately its own request model, not the raw ToDo table
+    (same reasoning as DeclineQuoteRequest/BuilderEstimateRequest
+    elsewhere in this file) — id/created_by/done/done_at/created_at
+    must never be client-settable at creation."""
+    title: str
+    assigned_to: str = ""
+    due_date: Optional[str] = None
+
+
+@app.post("/todos")
+def create_todo(body: ToDoCreate, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Assignable to anyone (brief §3 — "a broader to-do list the Owner
+    can assign to anyone"), defaults to whoever's creating it, same
+    "starts as your own unless deliberately handed off" convention
+    Lead.assigned_to already established (create_lead(), above)."""
+    if not body.title or not body.title.strip():
+        raise HTTPException(400, "A title is required.")
+    with Session(engine) as session:
+        todo = ToDo(
+            tenant_id=tenant_id, title=body.title.strip(), created_by=username,
+            assigned_to=(body.assigned_to or "").strip() or username,
+            due_date=date.fromisoformat(body.due_date) if body.due_date else None,
+        )
+        session.add(todo)
+        session.commit()
+        session.refresh(todo)
+        return todo
+
+
+@app.get("/todos")
+def list_todos(assigned_to: Optional[str] = None, done: Optional[bool] = None, tenant_id: str = Depends(get_current_tenant)):
+    """assigned_to (same convention as GET /leads' own filter) is the
+    ONE query powering both the personal Home view and the team's own
+    "By Person" grouping — no second, parallel query for either."""
+    with Session(engine) as session:
+        stmt = select(ToDo).where(ToDo.tenant_id == tenant_id)
+        if assigned_to:
+            stmt = stmt.where(ToDo.assigned_to == assigned_to)
+        if done is not None:
+            stmt = stmt.where(ToDo.done == done)
+        todos = session.exec(stmt).all()
+        # Open, soonest-due-first; done ones last — same "settled things
+        # read as settled, urgent things surface" instinct as the
+        # calendar's own confirmed-vs-tentative chip ordering.
+        todos.sort(key=lambda t: (t.done, t.due_date or date.max, t.id))
+        return todos
+
+
+class ToDoUpdate(BaseModel):
+    """Every field optional — a plain PUT that only ever changes
+    whatever was actually sent, same shape as update_lead()'s own
+    generic update, but as an explicit model here (ToDo has no
+    protected fields to exclude the way Lead does, so a raw dict body
+    would work too, but a real model keeps the API self-documenting)."""
+    title: Optional[str] = None
+    assigned_to: Optional[str] = None
+    due_date: Optional[str] = None
+    clear_due_date: bool = False   # explicit, not "due_date: null" — FastAPI/Pydantic can't tell "not sent" from "sent as null" on a plain Optional[str] otherwise
+    done: Optional[bool] = None
+
+
+@app.put("/todos/{todo_id}")
+def update_todo(todo_id: int, body: ToDoUpdate, tenant_id: str = Depends(get_current_tenant)):
+    """Reassignment (Madri's own confirmed "view + reassign" access,
+    same as leads) and marking done both go through this one generic
+    endpoint — done_at is always SERVER-derived from the done transition
+    here, never client-supplied directly (same "derive, don't trust a
+    client-supplied timestamp" discipline as Quote.accepted_at/
+    declined_at), so it can never be backdated or left stale."""
+    with Session(engine) as session:
+        todo = get_or_404(session, ToDo, todo_id, tenant_id, "To-Do")
+        if body.title is not None:
+            todo.title = body.title.strip()
+        if body.assigned_to is not None:
+            todo.assigned_to = body.assigned_to.strip()
+        if body.clear_due_date:
+            todo.due_date = None
+        elif body.due_date is not None:
+            todo.due_date = date.fromisoformat(body.due_date)
+        if body.done is not None and body.done != todo.done:
+            todo.done = body.done
+            todo.done_at = datetime.utcnow() if body.done else None
+        session.add(todo)
+        session.commit()
+        session.refresh(todo)
+        return todo
+
+
+@app.delete("/todos/{todo_id}")
+def delete_todo(todo_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """No dependency checks needed (unlike Quote/Client delete) — nothing
+    else in this app ever references a To-Do's id; it's a genuinely
+    standalone, low-stakes record. Not gated owner-only (unlike the
+    Order Index's own bulk delete) — a To-Do is far lower-stakes than a
+    real business quote, and anyone assigning/receiving tasks should be
+    able to clean up their own list."""
+    with Session(engine) as session:
+        todo = get_or_404(session, ToDo, todo_id, tenant_id, "To-Do")
+        session.delete(todo)
+        session.commit()
+        return {"deleted": todo_id}
 
 
 @app.post("/quotes/{quote_id}/follow-ups")

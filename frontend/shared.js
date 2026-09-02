@@ -1054,6 +1054,11 @@ const LANDING_TILES = [
   // Placed right after Order Index, before quoting itself — a lead is
   // the step BEFORE a quote exists.
   { id: 'leads', title: 'Leads', desc: 'New enquiries, before they’re a quote', ready: true },
+  // Assigned Leads / To-Dos, Stage 2 (confirmed Sept 2026) — genuinely
+  // separate from Leads (own table, no sales-process status/proof-of-
+  // work note), placed right next to it since both feed the same
+  // personalized Home section.
+  { id: 'todos', title: 'To-Dos', desc: 'General tasks, assignable to anyone', ready: true },
   { id: 'flooring', title: 'Flooring Quotes', desc: 'Vinyl, SPC, laminate...', ready: true },
   { id: 'blinds', title: 'Blinds', desc: 'Blinds quoting', ready: true },
   { id: 'clients', title: 'Clients', desc: 'Client records', ready: true },
