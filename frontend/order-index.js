@@ -2334,3 +2334,70 @@ async function deleteJobPhoto(quoteId, photoId) {
   if (!res.ok) { alert('Could not delete photo.'); return; }
   await loadJobPhotos(quoteId);
 }
+
+// Cross-job Photo Gallery (Photo Gallery + Job Context brief §2,
+// confirmed Sept 2026, built on request — "browse across jobs if
+// useful") — deliberately browse-only, no upload/delete controls here:
+// those stay on each job's own Photos section (Job Detail), the one
+// place that's already grouped by construction. This screen's whole
+// job is "see everything across the business, with context, click
+// through to the real one." GET /photos already excludes photo_bytes
+// (_photo_out(), main.py) and joins in job_number/client_name per row.
+let photoGalleryObjectUrls = [];
+
+async function renderPhotoGallery(el) {
+  await renderWithRetry(el, 'Photo Gallery', async () => {
+    el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><p class="muted">Loading...</p></div>`;
+    const res = await fetch(`${API}/photos`);
+    const photos = res.ok ? await res.json() : [];
+    el.innerHTML = `
+      <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+      <div class="landing-welcome">
+        <h1>Photo Gallery</h1>
+        <p>Every job's site photos, whole business, at a glance — click a photo to open its job.</p>
+      </div>
+      <div class="card">
+        ${photos.length
+          ? `<div class="quote-photo-gallery" id="photoGalleryGrid"></div>`
+          : '<p class="muted" style="margin:0;">No photos on any job yet.</p>'}
+      </div>
+    `;
+    if (photos.length) renderPhotoGalleryGrid(photos);
+  });
+}
+
+function renderPhotoGalleryGrid(photos) {
+  const el = document.getElementById('photoGalleryGrid');
+  if (!el) return;
+  photoGalleryObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  photoGalleryObjectUrls = [];
+  el.innerHTML = photos.map(p => `
+    <div class="quote-photo-thumb photo-gallery-thumb" id="galleryPhotoThumb${p.id}" onclick="openOrderDetailScreen(${p.quote_id})">
+      <div class="photo-loading">Loading…</div>
+      <div class="photo-gallery-caption">${p.job_number} — ${(p.client_name || '').replace(/</g,'&lt;')}</div>
+    </div>`).join('');
+  // Same blob-object-URL loading as every other photo thumbnail in this
+  // app (loadDocumentPreview()'s own reasoning applies identically here
+  // — the file endpoint needs the Bearer auth header a plain <img> tag
+  // has no way to send).
+  photos.forEach(async (p) => {
+    try {
+      const res = await fetch(`${API}/quotes/${p.quote_id}/photos/${p.id}/file`);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      photoGalleryObjectUrls.push(url);
+      const thumbEl = document.getElementById(`galleryPhotoThumb${p.id}`);
+      if (thumbEl) {
+        const img = document.createElement('img');
+        img.src = url;
+        thumbEl.prepend(img);
+        const loadingEl = thumbEl.querySelector('.photo-loading');
+        if (loadingEl) loadingEl.remove();
+      }
+    } catch (e) {
+      const thumbEl = document.getElementById(`galleryPhotoThumb${p.id}`);
+      if (thumbEl) { const l = thumbEl.querySelector('.photo-loading'); if (l) l.textContent = 'Failed'; }
+    }
+  });
+}

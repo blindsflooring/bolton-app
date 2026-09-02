@@ -1526,6 +1526,7 @@ function renderLanding() {
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
   if (landingView === 'installCalendar') return renderInstallationCalendar(el);
+  if (landingView === 'photoGallery') return renderPhotoGallery(el);
   if (landingView === 'leads') return renderLeads(el);
   if (landingView === 'leadDetail') return renderLeadDetail(el);
   if (landingView === 'leadsDayList') return renderLeadsDayList(el);
@@ -1573,6 +1574,7 @@ function onTileClick(tileId) {
   if (tileId === 'flooring') { landingView = 'flooring-drill'; renderLanding(); }
   else if (tileId === 'orders') { landingView = 'orders'; renderLanding(); }
   else if (tileId === 'installCalendar') { openInstallationCalendar(); }
+  else if (tileId === 'photoGallery') { landingView = 'photoGallery'; renderLanding(); }
   else if (tileId === 'leads') { landingView = 'leads'; renderLanding(); }
   else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }

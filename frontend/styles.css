@@ -427,6 +427,17 @@
   }
   .photo-lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
 
+  /* Photo Gallery + Job Context, cross-job browsing (confirmed Sept
+     2026) — same .quote-photo-thumb shape, just bigger (this screen has
+     room, and it's the whole point here — browsing, not a compact
+     inline strip) plus a caption bar carrying the job/client context
+     the brief's own §2 requires stay visible per photo. */
+  .photo-gallery-thumb { width: 160px; height: 160px; cursor: pointer; }
+  .photo-gallery-caption {
+    position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: white;
+    font-size: 11px; padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
   /* Order Index / Job Workflow (confirmed Aug 2026) */
   /* Name Link Uniformity + Confirm Job-Level Click Target (confirmed
      Aug 2026) — this already correctly opened Job Detail on click (the

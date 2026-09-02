@@ -1034,6 +1034,11 @@ const LANDING_TILES = [
   // page, so it gets its own top-level tile rather than living inside
   // Order Index (Decision Q3).
   { id: 'installCalendar', title: 'Installation Calendar', desc: 'Every booked job, whole business', ready: true },
+  // Photo Gallery + Job Context brief §2 (confirmed Sept 2026) —
+  // "browse across jobs if useful." Same "whole-business, not tied to
+  // one job's own page" reasoning as Installation Calendar right
+  // above — the per-job view already lives on each Job Detail page.
+  { id: 'photoGallery', title: 'Photo Gallery', desc: 'Every job\'s site photos, one place', ready: true },
   // Master Workflow proposal §02/§05/§06 (confirmed Aug 2026) — the
   // "LEAD" stage of the master flow, which had nowhere to live at all
   // before this: the earliest tracked stage was previously a Quote.

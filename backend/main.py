@@ -4243,6 +4243,36 @@ def list_quote_photos(quote_id: int, role: str = Depends(get_current_role), tena
         return [_photo_out(p) for p in photos]
 
 
+@app.get("/photos")
+def list_all_job_photos(tenant_id: str = Depends(get_current_tenant)):
+    """Photo Gallery + Job Context brief §2 (confirmed Sept 2026) —
+    "browse across jobs if useful," the brief's own softer, secondary
+    ask, built now on request. Genuinely browse-only: no upload/delete
+    here (those stay on each job's own Photos section, Job Detail) —
+    this just needs to show every real photo with its job/client
+    context visible, newest first, one flat list rather than a second
+    per-job grouping mechanism duplicating what Job Detail already
+    does better (its own gallery is already grouped by construction —
+    you're already on that one job's page).
+
+    Scoped to quote_id-linked photos only (job_number not null) — a
+    builder-submitted photo not yet linked to a real quote has no real
+    "job" to show context for yet; it surfaces here automatically once
+    link_builder_estimate_to_quote() backfills quote_id onto it, same
+    as everywhere else in the app that draws this same line."""
+    with Session(engine) as session:
+        rows = session.exec(
+            select(QuotePhoto, Quote)
+            .join(Quote, QuotePhoto.quote_id == Quote.id)
+            .where(QuotePhoto.tenant_id == tenant_id, Quote.job_number.is_not(None))
+            .order_by(QuotePhoto.created_at.desc())
+        ).all()
+        return [
+            {**_photo_out(photo), "job_number": quote.job_number, "client_name": quote.client_name}
+            for photo, quote in rows
+        ]
+
+
 @app.get("/quotes/{quote_id}/photos/{photo_id}/file")
 def get_quote_photo_file(quote_id: int, photo_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """Serves Bolton's own stored copy (photo_bytes) directly — never a
