@@ -4425,7 +4425,7 @@ FIELD_LABELS = {
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
     "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
-    "available_to_builder_portal": "Available to Builder Portal (max 2 products)",
+    "available_to_builder_portal": "Available to Builder Portal (max 2 ranges — every colour of a range counts as one)",
     "default_delivery_fee_per_m2": "Delivery fee default (R/m², for new products)",
     "pack_size": "Pack size", "pack_unit": "Pack unit", "coverage_rate": "Coverage rate",
     "coverage_basis": "Coverage basis", "cost_ex_vat_per_pack": "Cost per pack (ex VAT)",
@@ -4832,23 +4832,35 @@ def commit_supplier_console_changes(
 
         # Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) —
         # "capped at 2 active at a time", a hard constraint the brief
-        # explicitly says not to exceed. Checked here, as the LAST step
-        # before commit, so it catches the cap regardless of how many
-        # products this one batch touched or whether they were staged
-        # edits or new entities — session.exec() below sees this
-        # transaction's own pending changes via SQLAlchemy's autoflush,
-        # so this is accurate even though nothing has been committed
-        # yet. Raising here rolls back the WHOLE commit, same "nothing
-        # partially saved" guarantee every other validation on this
-        # endpoint already has (e.g. the deletion reference-check above).
-        builder_portal_count = len(session.exec(
-            select(FlooringProduct).where(
-                FlooringProduct.tenant_id == tenant_id,
-                FlooringProduct.available_to_builder_portal == True,
-            )
-        ).all())
-        if builder_portal_count > 2:
-            raise HTTPException(400, f"Only 2 products can be available to the Builder Portal at a time — this commit would leave {builder_portal_count}. Turn one off first.")
+        # explicitly says not to exceed. Re-scoped to RANGES, not rows
+        # (confirmed directly with Burgert, Sept 2026, resolving the
+        # Aspen/Azura Builder Portal brief): "2 products" always meant 2
+        # distinct ranges a builder can choose between — Aspen Living and
+        # Azura's deZIGN series 200 are each genuinely ONE product with
+        # several real colour options, all at the same price ("the
+        # different colours are the same price under the two different
+        # products," his own words) — never intended to mean "2 rows
+        # total," which would have made a multi-colour range unusable
+        # here by construction. Counts distinct product_name values, not
+        # FlooringProduct rows. Checked here, as the LAST step before
+        # commit, so it catches the cap regardless of how many products
+        # this one batch touched or whether they were staged edits or
+        # new entities — session.exec() below sees this transaction's
+        # own pending changes via SQLAlchemy's autoflush, so this is
+        # accurate even though nothing has been committed yet. Raising
+        # here rolls back the WHOLE commit, same "nothing partially
+        # saved" guarantee every other validation on this endpoint
+        # already has (e.g. the deletion reference-check above).
+        builder_portal_ranges = set(
+            session.exec(
+                select(FlooringProduct.product_name).where(
+                    FlooringProduct.tenant_id == tenant_id,
+                    FlooringProduct.available_to_builder_portal == True,
+                )
+            ).all()
+        )
+        if len(builder_portal_ranges) > 2:
+            raise HTTPException(400, f"Only 2 ranges can be available to the Builder Portal at a time — this commit would leave {len(builder_portal_ranges)} ({', '.join(sorted(builder_portal_ranges))}). Turn one off first.")
 
         session.commit()
         return {"changed_count": len(summary_lines), "summary": summary_lines}
