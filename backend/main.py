@@ -480,6 +480,11 @@ def _ensure_new_columns():
         ("builderestimate", "confirmed_at", "TIMESTAMP", "NULL"),
         ("builderestimate", "commission_paid", "BOOLEAN", "FALSE"),
         ("builderestimate", "commission_paid_at", "TIMESTAMP", "NULL"),
+        # Assigned Leads, Stage 1 (confirmed Sept 2026) — see Lead's own
+        # field comment, models.py. '' matches every existing lead's
+        # created_by default before this field existed — none of them
+        # silently gain a real owner they were never actually given.
+        ("lead", "assigned_to", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -7397,6 +7402,12 @@ def create_lead(lead: Lead, tenant_id: str = Depends(get_current_tenant), userna
     lead.created_by = username
     lead.lead_status = "new"
     lead.converted_quote_id = None
+    # Assigned Leads, Stage 1 (confirmed Sept 2026) — explicit assignment
+    # at creation time is allowed (e.g. Burgert logging a lead straight
+    # onto Ryno), but defaults to whoever's actually creating it, same
+    # "starts as your own unless someone deliberately hands it off"
+    # default confirmed in the proposal.
+    lead.assigned_to = (lead.assigned_to or "").strip() or username
     with Session(engine) as session:
         session.add(lead)
         session.commit()
@@ -7405,15 +7416,25 @@ def create_lead(lead: Lead, tenant_id: str = Depends(get_current_tenant), userna
 
 
 @app.get("/leads")
-def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None,
+                assigned_to: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
     """Leads screen (Master Workflow proposal §06) — same table-with-
     Next-Action pattern as the Order Index (list_quotes() above), each
     row carrying its own computed next_action/attention_priority rather
-    than a second, separate lookup the frontend would have to make."""
+    than a second, separate lookup the frontend would have to make.
+
+    assigned_to (Assigned Leads, Stage 1, confirmed Sept 2026) — the
+    ONE filter powering both new personalized views: a person's own
+    "My Leads Today" home-screen section (leads.js) and the "By Person"
+    team grouping (also leads.js, client-side grouping of the
+    unfiltered list) — no second, parallel query for either, same
+    "one source of truth" as everywhere else in this app."""
     with Session(engine) as session:
         stmt = select(Lead).where(Lead.tenant_id == tenant_id)
         if lead_status:
             stmt = stmt.where(Lead.lead_status == lead_status)
+        if assigned_to:
+            stmt = stmt.where(Lead.assigned_to == assigned_to)
         leads = session.exec(stmt).all()
         if search:
             search_lower = search.lower()

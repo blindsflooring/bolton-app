@@ -1554,6 +1554,7 @@ function renderLandingTiles(el) {
       <h1>Blinds &amp; Flooring Studio</h1>
       <p>Pick where you're working today.</p>
     </div>
+    <div id="myLeadsToday"></div>
     <div class="tile-grid">
       ${visibleLandingTiles().map(t => `
         <div class="tile ${t.ready ? '' : 'coming-soon'}" onclick="onTileClick('${t.id}')">
@@ -1566,6 +1567,45 @@ function renderLandingTiles(el) {
       `).join('')}
     </div>
   `;
+  loadMyLeadsToday();
+}
+
+// Assigned Leads, Stage 1 (confirmed Sept 2026) — Burgert's own real
+// gap: "nothing pushes anyone to actually act on one." Reuses the
+// EXACT same ageing signal that already existed (_lead_next_action(),
+// main.py — a new lead, or one gone quiet for LEAD_STALE_DAYS) — this
+// is only about surfacing it somewhere personal, per the proposal's
+// own confirmed scope ("surface the existing signal personally," not
+// a new mechanism). currentUser.username (never previewRole-swapped —
+// see its own comment, shared.js) is deliberately who's actually
+// sitting at this device, not whichever role an Owner is previewing
+// as — a personal task list has to mean the real person, always.
+// Loaded async, after the tile grid already rendered, same "don't
+// block Home on this" pattern as every other lazy-loaded section in
+// this app (loadDocumentPreview, etc.) — a slow/failed fetch here must
+// never delay or break the one screen every single login lands on.
+async function loadMyLeadsToday() {
+  const container = document.getElementById('myLeadsToday');
+  if (!container || !currentUser?.username) return;
+  try {
+    const res = await fetch(`${API}/leads?assigned_to=${encodeURIComponent(currentUser.username)}`);
+    if (!res.ok) return;
+    const leads = await res.json();
+    const needsAction = leads.filter(l => l.attention_priority);
+    if (!needsAction.length) return;   // nothing due — no empty card cluttering the one screen everyone lands on
+    container.innerHTML = `
+      <div class="card" style="border-color:var(--coral);">
+        <h2 style="margin-top:0;">My Leads Today (${needsAction.length})</h2>
+        <div class="attention-list">
+          ${needsAction.map(l => `
+            <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
+              <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
+              <span class="attn-detail">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
+              ${leadNextActionButton(l)}
+            </div>`).join('')}
+        </div>
+      </div>`;
+  } catch (e) { /* best-effort — Home must never break because this one fetch failed */ }
 }
 
 function onTileClick(tileId) {

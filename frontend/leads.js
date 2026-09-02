@@ -30,10 +30,43 @@ function leadNextActionButton(l) {
 const LEAD_TABS = ['all', 'new', 'contacted', 'potential', 'converted', 'lost'];
 let leadsActiveTab = 'all';
 let leadsCache = [];
+// Assigned Leads, Stage 1 (confirmed Sept 2026) — "By Person" is a pure
+// client-side regrouping of the SAME leadsCache the flat table already
+// has (no second fetch) — Madri's own confirmed need to "track leads
+// across the team." Off by default; the flat table stays the normal
+// view for everyone else.
+let leadsGroupByPerson = false;
+const LEAD_ASSIGNEE_LABEL = { burgert: 'Burgert', ryno: 'Ryno', madri: 'Madri' };
 
 function setLeadsTab(tab) {
   leadsActiveTab = tab;
   renderLeadsTable();
+}
+
+function toggleLeadsGroupByPerson() {
+  leadsGroupByPerson = !leadsGroupByPerson;
+  renderLeadsTable();
+}
+
+// Assigned Leads, Stage 1 (confirmed Sept 2026) — Madri's own confirmed
+// "view + reassign" access: reassigning goes through the exact same
+// generic PUT /leads/{id} every other lead-detail edit already uses
+// (update_lead(), main.py already allows assigned_to through its own
+// exclude-list) — not a new, narrower endpoint.
+async function reassignLead(leadId, newAssignee, selectEl) {
+  const res = await fetch(`${API}/leads/${leadId}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ assigned_to: newAssignee }),
+  });
+  if (!res.ok) { alert('Could not reassign this lead.'); return; }
+  const lead = leadsCache.find(l => l.id === leadId);
+  if (lead) lead.assigned_to = newAssignee;
+  renderLeadsTable();
+}
+
+function leadAssigneeSelectHtml(l) {
+  return `<select onclick="event.stopPropagation();" onchange="event.stopPropagation(); reassignLead(${l.id}, this.value, this)" style="font-size:12px; padding:2px 4px;">
+    ${Object.keys(LEAD_ASSIGNEE_LABEL).map(k => `<option value="${k}" ${l.assigned_to===k?'selected':''}>${LEAD_ASSIGNEE_LABEL[k]}</option>`).join('')}
+  </select>`;
 }
 
 async function renderLeads(el, searchTerm) {
@@ -52,6 +85,18 @@ async function renderLeads(el, searchTerm) {
   });
 }
 
+function leadRowHtml(l) {
+  return `
+    <tr style="cursor:pointer;" onclick="openLeadDetailScreen(${l.id})">
+      <td class="card-title" data-label="Name">${l.name}</td>
+      <td data-label="Contact">${l.contact || '—'}</td>
+      <td data-label="Source">${l.source || '—'}</td>
+      <td data-label="Assigned">${leadAssigneeSelectHtml(l)}</td>
+      <td data-label="Status">${leadStatusBadge(l)}</td>
+      <td data-label="Next Action">${leadNextActionButton(l)}</td>
+    </tr>`;
+}
+
 function renderLeadsTable(searchTerm) {
   if (searchTerm === undefined) {
     const existingInput = document.getElementById('leadSearchInput');
@@ -63,14 +108,23 @@ function renderLeadsTable(searchTerm) {
   leads.forEach(l => { if (counts[l.lead_status] !== undefined) counts[l.lead_status]++; });
   const shown = leadsActiveTab === 'all' ? leads : leads.filter(l => l.lead_status === leadsActiveTab);
 
-  const rows = shown.length ? shown.map(l => `
-    <tr style="cursor:pointer;" onclick="openLeadDetailScreen(${l.id})">
-      <td class="card-title" data-label="Name">${l.name}</td>
-      <td data-label="Contact">${l.contact || '—'}</td>
-      <td data-label="Source">${l.source || '—'}</td>
-      <td data-label="Status">${leadStatusBadge(l)}</td>
-      <td data-label="Next Action">${leadNextActionButton(l)}</td>
-    </tr>`).join('') : '<tr><td colspan="5" class="muted">No leads match.</td></tr>';
+  // Assigned Leads, Stage 1 (confirmed Sept 2026) — "By Person" groups
+  // the exact same `shown` rows (still respects whatever status tab is
+  // active) under a header per assignee, urgent-first within each
+  // group — same priority_order the backend already sorted the flat
+  // list by (list_leads(), main.py), just partitioned visually.
+  let bodyHtml;
+  if (leadsGroupByPerson) {
+    const byAssignee = {};
+    shown.forEach(l => { const key = l.assigned_to || '(unassigned)'; (byAssignee[key] = byAssignee[key] || []).push(l); });
+    const names = Object.keys(byAssignee).sort();
+    bodyHtml = names.length ? names.map(key => `
+      <tr><td colspan="6" style="background:var(--bg,#f5f6f8); font-weight:700; padding:8px 10px;">${LEAD_ASSIGNEE_LABEL[key] || key} (${byAssignee[key].length})</td></tr>
+      ${byAssignee[key].map(leadRowHtml).join('')}
+    `).join('') : '<tr><td colspan="6" class="muted">No leads match.</td></tr>';
+  } else {
+    bodyHtml = shown.length ? shown.map(leadRowHtml).join('') : '<tr><td colspan="6" class="muted">No leads match.</td></tr>';
+  }
 
   const tab = (key, label, count) => `<button onclick="setLeadsTab('${key}')" style="${leadsActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
 
@@ -85,11 +139,16 @@ function renderLeadsTable(searchTerm) {
         <div class="field" style="flex:1; min-width:200px;"><label>Search</label><input type="text" id="leadSearchInput" value="${searchTerm || ''}" placeholder="Name or contact..." oninput="renderLeads(document.getElementById('landing'), this.value)"></div>
         <a href="#" onclick="openLeadsDayList(); return false;" style="margin-top:22px; font-size:12px; color:var(--teal); font-weight:600; white-space:nowrap;">📋 Today's Leads (printable)</a>
       </div>
-      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
-        ${tab('all', 'All', leads.length)}${tab('new', 'New', counts.new)}${tab('contacted', 'Contacted', counts.contacted)}${tab('potential', 'Potential', counts.potential)}${tab('converted', 'Converted', counts.converted)}${tab('lost', 'Lost', counts.lost)}
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${tab('all', 'All', leads.length)}${tab('new', 'New', counts.new)}${tab('contacted', 'Contacted', counts.contacted)}${tab('potential', 'Potential', counts.potential)}${tab('converted', 'Converted', counts.converted)}${tab('lost', 'Lost', counts.lost)}
+        </div>
+        <!-- Assigned Leads, Stage 1 (confirmed Sept 2026) — Madri's own
+        confirmed "track leads across the team" need. -->
+        <button onclick="toggleLeadsGroupByPerson()" style="${leadsGroupByPerson ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">By Person</button>
       </div>
-      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Status</th><th>Next Action</th></tr></thead>
-      <tbody>${rows}</tbody></table>
+      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Assigned</th><th>Status</th><th>Next Action</th></tr></thead>
+      <tbody>${bodyHtml}</tbody></table>
     </div>
     <div class="card">
       <h2>New Lead</h2>
@@ -108,6 +167,19 @@ function renderLeadsTable(searchTerm) {
             <option value="Builder referral">Builder referral</option>
             <option value="Repeat client">Repeat client</option>
             <option value="Other">Other</option>
+          </select>
+        </div>
+        <!-- Assigned Leads, Stage 1 (confirmed Sept 2026) -- who owns
+        following this up, defaults to whoever's creating it (same
+        STAFF_DEFAULT_OWNER-style three real staff options the Sales
+        Owner picker already uses, shared.js) -- explicit hand-off at
+        creation is allowed (e.g. Burgert logging a lead straight onto
+        Ryno), just never silent. -->
+        <div class="field"><label>Assigned to</label>
+          <select id="ld_assigned_to">
+            <option value="burgert" ${effectiveUsernameForQuoting()==='burgert'?'selected':''}>Burgert</option>
+            <option value="ryno" ${effectiveUsernameForQuoting()==='ryno'?'selected':''}>Ryno</option>
+            <option value="madri" ${effectiveUsernameForQuoting()==='madri'?'selected':''}>Madri</option>
           </select>
         </div>
         <!-- Lead: Visit Date, Address Fields & Printable Day List (confirmed
@@ -130,6 +202,7 @@ async function addLead() {
     name: document.getElementById('ld_name').value,
     contact: document.getElementById('ld_contact').value,
     source: document.getElementById('ld_source').value,
+    assigned_to: document.getElementById('ld_assigned_to').value,
     visit_date: document.getElementById('ld_visit_date').value || null,
     site_address: document.getElementById('ld_site_address').value,
     notes: document.getElementById('ld_notes').value,

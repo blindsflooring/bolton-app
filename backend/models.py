@@ -884,6 +884,17 @@ class Lead(SQLModel, table=True):
     converted_quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
     created_by: str = ""   # real authenticated username, same convention as Client.created_by (Trusted Tester Accounts brief)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Assigned Leads (confirmed Sept 2026, Stage 1 of the Leads/To-Dos/
+    # Calendar brief) — Burgert's own real gap: "leads currently just
+    # sit in the Lead tile with no real enforcement — nothing pushes
+    # anyone to actually act on one." Genuinely distinct from
+    # created_by above (who logged it) — this is who owns following it
+    # up, and can be reassigned (e.g. by Madri, per her own confirmed
+    # "view + reassign" access) without rewriting history. Defaults to
+    # the creator at creation time (create_lead(), main.py) — a lead
+    # someone personally takes down always starts as their own,
+    # explicit reassignment is the only way it moves.
+    assigned_to: str = ""
     # Lead: Visit Date, Address Fields & Printable Day List (confirmed Aug
     # 2026) — real usage feedback found the same day the base feature
     # shipped: a site visit/meeting date is a scheduling detail, genuinely
