@@ -57,6 +57,17 @@ brief's own Section 1.
   .status-earned { color: #1a8a6e; font-weight: 700; }
   .status-pending { color: #b8860b; }
   .status-estimate { color: #6b7280; }
+  .action-row { display: flex; gap: 8px; margin-top: 10px; }
+  .action-row button, .action-row a { flex: 1; margin-top: 0; padding: 10px; font-size: 13px; }
+  .confirmed-badge { display: inline-block; background: #eef7f4; color: #1a8a6e; border: 1px solid #cfe9e1; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .row-actions { display: flex; gap: 6px; }
+  .row-actions button { width: auto; margin: 0; padding: 4px 8px; font-size: 11px; }
+  .letterhead-print { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    .letterhead-print, .letterhead-print * { visibility: visible; }
+    .letterhead-print { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -65,6 +76,7 @@ brief's own Section 1.
     <p class="muted">Loading...</p>
   </div>
 </div>
+<div id="printArea" class="letterhead-print"></div>
 
 <script>
 const API = 'https://bolton-backend.onrender.com';
@@ -202,7 +214,11 @@ async function submitEstimate() {
         <div class="deposit price-row"><span>Deposit payable (${(data.deposit_pct*100).toFixed(0)}%)</span><span>R${data.deposit_amount.toFixed(2)}</span></div>
       </div>
       ${photoNote}
-      <p class="muted" style="margin-top:10px;">This estimate has been logged — Blinds &amp; Flooring Studio will follow up to confirm the job.</p>`;
+      <div class="action-row">
+        <button type="button" class="secondary" onclick="printEstimate(${data.estimate_id})">Print / Download</button>
+        <button type="button" onclick="confirmOrder(${data.estimate_id}, this)">Continue with this order &rarr;</button>
+      </div>
+      <p class="muted" style="margin-top:10px;">This estimate has been logged. Press "Continue with this order" once your client is ready to proceed &mdash; Blinds &amp; Flooring Studio will take it from there.</p>`;
     renderEstimateForm(resultHtml);
   } catch (e) {
     errEl.textContent = 'Could not reach the server — try again.';
@@ -225,21 +241,113 @@ async function renderStatement() {
         <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
         <td class="${statusClass(e.status)}">${e.status}</td>
         <td>${e.commission ? 'R' + e.commission.toFixed(2) : '—'}</td>
-      </tr>`).join('') : '<tr><td colspan="6" class="muted">No estimates submitted yet.</td></tr>';
+        <td>
+          <div class="row-actions">
+            <button type="button" onclick="printEstimate(${e.id})">Print</button>
+            ${e.confirmed_by_builder
+              ? '<span class="confirmed-badge">Sent ✓</span>'
+              : `<button type="button" onclick="confirmOrder(${e.id}, this)">Continue</button>`}
+          </div>
+        </td>
+      </tr>`).join('') : '<tr><td colspan="7" class="muted">No estimates submitted yet.</td></tr>';
     document.getElementById('app').innerHTML = `
       <h1>Hi ${builderName}</h1>
       ${renderNav()}
       <div class="card">
-        <p style="margin:0;"><b>Total commission earned to date:</b> R${data.total_commission_earned.toFixed(2)}</p>
+        <p style="margin:0;"><b>Total commission earned to date:</b> R${data.total_commission_earned.toFixed(2)} <span class="muted">(${(data.commission_pct*100).toFixed(0)}% of each job's ex-VAT total, once fully paid)</span></p>
         <div style="overflow-x:auto;">
           <table>
-            <thead><tr><th>Date</th><th>Client</th><th>Product</th><th>Quoted</th><th>Status</th><th>Commission</th></tr></thead>
+            <thead><tr><th>Date</th><th>Client</th><th>Product</th><th>Quoted</th><th>Status</th><th>Commission</th><th>Actions</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
       </div>`;
   } catch (e) {
     document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
+  }
+}
+
+async function printEstimate(estimateId) {
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/estimate/${estimateId}/print`);
+    if (!res.ok) { alert('Could not load the print details — try again.'); return; }
+    const d = await res.json();
+    const dateStr = new Date(d.created_at).toLocaleDateString('en-ZA');
+    const html = `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 24px; color: #1a2b3c;">
+        <div style="display:flex; justify-content:space-between; border-bottom: 2px solid #1a2b3c; padding-bottom: 12px; margin-bottom: 20px;">
+          <div>
+            ${d.business_name ? `<div style="font-size:16px; font-weight:800;">${d.business_name}</div>` : ''}
+            <div style="font-size:11px; color:#6b7280; line-height:1.5;">
+              ${d.address ? `${d.address}<br>` : ''}
+              ${d.phone ? `Tel: ${d.phone}` : ''}${d.phone && d.email ? ' &middot; ' : ''}${d.email || ''}
+              ${d.vat_number ? `<br>VAT: ${d.vat_number}` : ''}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:18px; font-weight:800;">ESTIMATE</div>
+            <div style="font-size:11px; color:#6b7280;">${dateStr}</div>
+            <div style="font-size:11px; color:#6b7280;">Referred by: ${d.builder_name}</div>
+          </div>
+        </div>
+        <div style="margin-bottom:20px; font-size:13px;">
+          <div><b>Quoted to:</b> ${d.client_name}</div>
+          ${d.site_address ? `<div><b>Site:</b> ${d.site_address}</div>` : ''}
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead><tr><th style="text-align:left; border-bottom:1px solid #ccc; padding:6px 4px;">Description</th><th style="text-align:right; border-bottom:1px solid #ccc; padding:6px 4px;">Area</th><th style="text-align:right; border-bottom:1px solid #ccc; padding:6px 4px;">Total (ex VAT)</th></tr></thead>
+          <tbody><tr><td style="padding:6px 4px;">${d.product_name}</td><td style="text-align:right; padding:6px 4px;">${d.area_m2} m²</td><td style="text-align:right; padding:6px 4px;">R${d.quoted_price_ex_vat.toFixed(2)}</td></tr></tbody>
+        </table>
+        <div style="margin-top:16px; font-size:13px;">
+          <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>VAT (${(d.vat_pct*100).toFixed(0)}%)</span><span>R${(d.quoted_price_incl_vat - d.quoted_price_ex_vat).toFixed(2)}</span></div>
+          <div style="display:flex; justify-content:space-between; padding:4px 0; font-weight:800; font-size:15px; border-top:1px solid #1a2b3c; margin-top:4px; padding-top:8px;"><span>Total (incl VAT)</span><span>R${d.quoted_price_incl_vat.toFixed(2)}</span></div>
+          <div style="display:flex; justify-content:space-between; padding:4px 0; margin-top:10px; padding-top:10px; border-top:1px dashed #ccc;"><span>Deposit (${(d.deposit_pct*100).toFixed(0)}%, due to start)</span><span>R${d.deposit_amount.toFixed(2)}</span></div>
+        </div>
+        ${d.bank_details ? `<div style="margin-top:20px; padding-top:14px; border-top:1px solid #ccc; font-size:11px; color:#6b7280;"><b>Banking details for deposit payment:</b><br>${d.bank_details.replace(/\n/g,'<br>')}</div>` : ''}
+        <p style="margin-top:20px; font-size:11px; color:#6b7280;">This is an estimate, not a final invoice — subject to confirmation once ${d.business_name || 'we'} follow up on-site.</p>
+      </div>`;
+    document.getElementById('printArea').innerHTML = html;
+    window.print();
+  } catch (e) {
+    alert('Could not reach the server — try again.');
+  }
+}
+
+let confirmingOrder = false;
+async function confirmOrder(estimateId, btn) {
+  if (confirmingOrder) return;
+  confirmingOrder = true;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/estimate/${estimateId}/confirm`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    confirmingOrder = false;
+    if (!res.ok) {
+      alert(body.detail || 'Could not send this through — try again.');
+      btn.disabled = false;
+      btn.textContent = originalText;
+      return;
+    }
+    // My Statement is a table of several estimates at once — re-fetch so
+    // this row's Status/Actions cells reflect the real, now-confirmed
+    // server state (same "derive at read time" principle as everywhere
+    // else this table's figures come from), rather than hand-patching
+    // just the one cell. The New Estimate result screen only ever shows
+    // ONE estimate at a time, so swapping the button in place is enough
+    // there — no need to re-fetch or navigate the builder away from what
+    // they were just looking at.
+    if (view === 'statement') {
+      renderStatement();
+    } else {
+      btn.outerHTML = '<span class="confirmed-badge">Sent ✓</span>';
+    }
+  } catch (e) {
+    alert('Could not reach the server — try again.');
+    btn.disabled = false;
+    btn.textContent = originalText;
+    confirmingOrder = false;
   }
 }
 

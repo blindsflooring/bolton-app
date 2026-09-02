@@ -1068,7 +1068,7 @@ const LANDING_TILES = [
   { id: 'supplierConsole', title: 'Supplier Console', desc: 'Every supplier\'s real data, one place', ready: true },
   { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
   { id: 'accounts', title: 'Accounts', desc: 'Staff logins, password reset links', ready: true },
-  { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, estimates, commission', ready: true },
+  { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, orders, commission, reporting', ready: true },
   // Trusted Tester Accounts brief §3 (confirmed Aug 2026) — "one place
   // Burgert can review [flags], rather than hunting through the Order
   // Index." Owner-only (added to OWNER_ONLY_TILES below), same as

@@ -1962,7 +1962,8 @@ let sessionLogRange = 'all';    // 'all' | 'week' | 'month' — which quick filt
 // admin state, same caching-for-the-current-screen pattern as sessionLogRows.
 let builderPortalBuilders = [];
 let builderPortalEstimates = [];
-let builderPortalSubview = 'builders';   // 'builders' | 'estimates'
+let builderPortalReport = [];   // Builders Management Console (confirmed Sept 2026) — per-builder rollup, GET /admin/builders/report
+let builderPortalSubview = 'builders';   // 'builders' | 'estimates' | 'report'
 
 function sessionLogDateRange(range) {
   const now = new Date();
@@ -4079,18 +4080,25 @@ async function resolveFlag(flagId, action) {
 // place a builder's link is created or revoked — there is no public
 // self-service signup, deliberately, per the brief's Section 4 scope.
 async function renderBuilderPortalAdmin(el) {
-  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Builder Portal</h2><p class="muted">Loading...</p></div>`;
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Builders Management Console</h2><p class="muted">Loading...</p></div>`;
   await loadBuilderPortalAdmin();
 }
 
 async function loadBuilderPortalAdmin() {
   await renderWithRetry(document.getElementById('landing'), 'Builder Portal', async () => {
-    const [buildersRes, estimatesRes] = await Promise.all([
+    // Builders Management Console (confirmed Sept 2026) — report fetched
+    // alongside the other two so all three tabs can switch instantly
+    // (renderBuilderPortalTable() below just re-renders from state, no
+    // per-tab-click fetch), same pattern this screen already used for
+    // Builders/Estimates before this brief.
+    const [buildersRes, estimatesRes, reportRes] = await Promise.all([
       fetch(`${API}/admin/builders`),
       fetch(`${API}/admin/builder-estimates`),
+      fetch(`${API}/admin/builders/report`),
     ]);
     builderPortalBuilders = buildersRes.ok ? await buildersRes.json() : [];
     builderPortalEstimates = estimatesRes.ok ? await estimatesRes.json() : [];
+    builderPortalReport = reportRes.ok ? await reportRes.json() : [];
     renderBuilderPortalTable();
   });
 }
@@ -4119,12 +4127,17 @@ async function createBuilder() {
   const nameEl = document.getElementById('newBuilderName');
   const phoneEl = document.getElementById('newBuilderPhone');
   const emailEl = document.getElementById('newBuilderEmail');
+  const commissionEl = document.getElementById('newBuilderCommission');
   const name = nameEl.value.trim();
   if (!name) { alert("Enter the builder's name."); return; }
-  const params = new URLSearchParams({ name, phone: phoneEl.value.trim(), email: emailEl.value.trim() });
+  const commissionPct = parseFloat(commissionEl.value);
+  const params = new URLSearchParams({
+    name, phone: phoneEl.value.trim(), email: emailEl.value.trim(),
+    commission_pct: (isFinite(commissionPct) ? commissionPct : 6) / 100,
+  });
   const res = await fetch(`${API}/admin/builders?${params}`, { method: 'POST' });
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not create builder.'); return; }
-  nameEl.value = ''; phoneEl.value = ''; emailEl.value = '';
+  nameEl.value = ''; phoneEl.value = ''; emailEl.value = ''; commissionEl.value = '';
   await loadBuilderPortalAdmin();
 }
 
@@ -4133,6 +4146,25 @@ async function toggleBuilderActive(builderId, makeActive) {
   const params = new URLSearchParams({ active: makeActive });
   const res = await fetch(`${API}/admin/builders/${builderId}?${params}`, { method: 'PUT' });
   if (!res.ok) { alert('Could not update builder.'); return; }
+  await loadBuilderPortalAdmin();
+}
+
+// Builders Management Console (confirmed Sept 2026, Burgert's own
+// words: "I need to be able to make changes") — inline edit, save-on-
+// blur/Enter, matching the lightweight edit pattern already used
+// elsewhere in this app rather than a separate modal/form for one field.
+async function updateBuilderCommission(builderId, inputEl) {
+  const pct = parseFloat(inputEl.value);
+  if (!isFinite(pct) || pct < 0) { alert('Enter a real commission %.'); return; }
+  const params = new URLSearchParams({ commission_pct: pct / 100 });
+  const res = await fetch(`${API}/admin/builders/${builderId}?${params}`, { method: 'PUT' });
+  if (!res.ok) { alert('Could not update commission %.'); return; }
+  await loadBuilderPortalAdmin();
+}
+
+async function markCommissionPaid(estimateId, paid) {
+  const res = await fetch(`${API}/admin/builder-estimates/${estimateId}/mark-commission-paid?paid=${paid}`, { method: 'PUT' });
+  if (!res.ok) { alert('Could not update.'); return; }
   await loadBuilderPortalAdmin();
 }
 
@@ -4147,6 +4179,7 @@ function renderBuilderPortalTable() {
         <div class="field"><label>Name</label><input id="newBuilderName" placeholder="e.g. Deon Brits"></div>
         <div class="field"><label>Phone</label><input id="newBuilderPhone" placeholder="Optional"></div>
         <div class="field"><label>Email</label><input id="newBuilderEmail" placeholder="Optional"></div>
+        <div class="field"><label>Commission %</label><input id="newBuilderCommission" type="number" step="0.5" min="0" placeholder="6"></div>
       </div>
       <button class="primary" onclick="createBuilder()">Create link</button>
     </div>
@@ -4166,39 +4199,43 @@ function renderBuilderPortalTable() {
       was simply missed when the Builder Portal pilot was built. -->
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Name</th><th>Contact</th><th>Link</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Contact</th><th>Commission %</th><th>Link</th><th>Status</th><th></th></tr></thead>
           <tbody>
             ${builderPortalBuilders.length ? builderPortalBuilders.map(b => `
               <tr>
                 <td>${b.name}</td>
                 <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
+                <td>
+                  <input type="number" step="0.5" min="0" value="${(b.commission_pct*100).toFixed(1)}" style="width:64px;"
+                    onchange="updateBuilderCommission(${b.id}, this)"> %
+                </td>
                 <td><code style="font-size:11px;">${builderPortalLink(b.slug)}</code><br>
                   <button onclick="copyBuilderLink('${b.slug}', this)">Copy link</button></td>
                 <td>${b.active ? '<b style="color:var(--teal);">Active</b>' : '<span class="muted">Revoked</span>'}</td>
                 <td>${b.active
                   ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
                   : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
-              </tr>`).join('') : '<tr><td colspan="5" class="muted">No builders yet — add one above.</td></tr>'}
+              </tr>`).join('') : '<tr><td colspan="6" class="muted">No builders yet — add one above.</td></tr>'}
           </tbody>
         </table>
       </div>
     </div>`;
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
-  const totalCommission = builderPortalEstimates.reduce((sum, e) => sum + (e.commission_amount || 0), 0);
+  const totalOwed = builderPortalReport.reduce((sum, r) => sum + r.commission_owed, 0);
   const estimatesHtml = `
     <div class="card">
-      <p style="margin:0;"><b>Total commission owed to date:</b> R${totalCommission.toFixed(2)}</p>
+      <p style="margin:0;"><b>Total commission owed to date:</b> R${totalOwed.toFixed(2)}</p>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Estimates submitted (${builderPortalEstimates.length})</h3>
-      <!-- Same overflow-x:auto fix as the Builders table above — 9
-      columns is well past what a mobile viewport can show natural-width
-      without forcing the whole page to zoom out. Brief §3 explicitly
-      asks both tabs be checked, not just Builders. -->
+      <!-- Same overflow-x:auto fix as the Builders table above — well
+      past what a mobile viewport can show natural-width without forcing
+      the whole page to zoom out. Brief §3 explicitly asks every tab be
+      checked, not just Builders. -->
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Status</th><th>Commission</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Confirmed</th><th>Status</th><th>Commission</th><th></th></tr></thead>
           <tbody>
             ${builderPortalEstimates.length ? builderPortalEstimates.map(e => `
               <tr>
@@ -4208,12 +4245,45 @@ function renderBuilderPortalTable() {
                 <td class="muted">${e.site_address || '—'}</td>
                 <td>${e.product_name}</td>
                 <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
+                <td>${e.confirmed_by_builder ? '<b style="color:var(--teal);">By builder ✓</b>' : '<span class="muted">Not yet</span>'}</td>
                 <td>${e.commission_status}</td>
-                <td>${e.commission_amount ? 'R' + e.commission_amount.toFixed(2) : '—'}</td>
+                <td>${e.commission_amount ? 'R' + e.commission_amount.toFixed(2) + (e.commission_paid ? ' (paid)' : '') : '—'}</td>
                 <td>${e.linked_quote_id
-                  ? `<span class="muted">Quote #${e.linked_quote_id}</span>`
+                  ? (e.commission_amount && !e.commission_paid
+                      ? `<button onclick="markCommissionPaid(${e.id}, true)">Mark paid</button>`
+                      : e.commission_paid
+                        ? `<button onclick="markCommissionPaid(${e.id}, false)">Undo paid</button>`
+                        : `<span class="muted">Quote #${e.linked_quote_id}</span>`)
                   : `<button onclick="startQuoteFromBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")}')">Start Quote</button>`}</td>
-              </tr>`).join('') : '<tr><td colspan="9" class="muted">No estimates submitted yet.</td></tr>'}
+              </tr>`).join('') : '<tr><td colspan="10" class="muted">No estimates submitted yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // Builders Management Console (confirmed Sept 2026, Burgert's own
+  // words: "Give me a list of the builders, the work that they have
+  // quoted on and also what has been bought and done and what I owe
+  // them... a reporting side where I can be in control"). One row per
+  // builder — GET /admin/builders/report already aggregates this
+  // server-side, this is a straight render of it.
+  const reportHtml = `
+    <div class="card">
+      <h3 style="margin-top:0;">Builders at a glance</h3>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Builder</th><th>Estimates</th><th>Total quoted</th><th>Jobs won</th><th>Value won</th><th>Commission owed</th><th>Commission paid</th></tr></thead>
+          <tbody>
+            ${builderPortalReport.length ? builderPortalReport.map(r => `
+              <tr>
+                <td>${r.name}${!r.active ? ' <span class="muted">(revoked)</span>' : ''}</td>
+                <td>${r.estimates_count}</td>
+                <td>R${r.total_quoted_incl_vat.toFixed(2)}</td>
+                <td>${r.jobs_won}</td>
+                <td>R${r.total_won_incl_vat.toFixed(2)}</td>
+                <td style="${r.commission_owed ? 'color:var(--coral); font-weight:700;' : ''}">R${r.commission_owed.toFixed(2)}</td>
+                <td class="muted">R${r.commission_paid_total.toFixed(2)}</td>
+              </tr>`).join('') : '<tr><td colspan="7" class="muted">No builders yet.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4221,9 +4291,9 @@ function renderBuilderPortalTable() {
 
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
-    <div class="landing-welcome"><h1>Builder Portal</h1><p>Referral links, instant estimates, and commission — Owner only.</p></div>
-    <div style="display:flex; gap:8px; margin-bottom:14px;">${tab('builders', 'Builders')} ${tab('estimates', 'Estimates')}</div>
-    ${builderPortalSubview === 'builders' ? buildersHtml : estimatesHtml}
+    <div class="landing-welcome"><h1>Builders Management Console</h1><p>Referral links, instant estimates, commission, and reporting — Owner only.</p></div>
+    <div style="display:flex; gap:8px; margin-bottom:14px;">${tab('builders', 'Builders')} ${tab('estimates', 'Estimates')} ${tab('report', 'Report')}</div>
+    ${builderPortalSubview === 'builders' ? buildersHtml : builderPortalSubview === 'estimates' ? estimatesHtml : reportHtml}
   `;
 }
 

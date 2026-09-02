@@ -469,6 +469,17 @@ def _ensure_new_columns():
         ("quotephoto", "photo_bytes", "BYTEA", "''::bytea"),
         ("quotephoto", "dropbox_status", "VARCHAR", "'pending'"),
         ("quotephoto", "dropbox_failure_reason", "VARCHAR", "NULL"),
+        # Builders Management Console (confirmed Sept 2026) — see
+        # Builder/BuilderEstimate models.py docstrings for what each of
+        # these is for. 0.06 matches the exact flat rate every existing
+        # builder has been on since the pilot began (BUILDER_COMMISSION_PCT,
+        # main.py) — this migration doesn't change anyone's real rate,
+        # just makes it visible/editable per builder from here on.
+        ("builder", "commission_pct", "FLOAT", "0.06"),
+        ("builderestimate", "confirmed_by_builder", "BOOLEAN", "FALSE"),
+        ("builderestimate", "confirmed_at", "TIMESTAMP", "NULL"),
+        ("builderestimate", "commission_paid", "BOOLEAN", "FALSE"),
+        ("builderestimate", "commission_paid_at", "TIMESTAMP", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -3879,7 +3890,7 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
 # product.dict() on a real price-book row, specifically so a new
 # sensitive field added to FlooringProduct later can't leak through
 # here just because nobody remembered to update this file too.
-BUILDER_COMMISSION_PCT = 0.06   # confirmed Aug 2026 — flat 6%, on the ex-VAT total, once the linked job is fully paid (see _builder_commission_for_quote below)
+BUILDER_COMMISSION_PCT = 0.06   # confirmed Aug 2026 — the ORIGINAL flat rate, kept only as Builder.commission_pct's own field default (models.py) for brand-new builders. Per-builder and Owner-editable since Sept 2026 (Builders Management Console) — _builder_commission_for_quote() below reads builder.commission_pct, never this constant directly, for any real calculation.
 
 
 def _slugify_builder_name(name: str) -> str:
@@ -3893,7 +3904,7 @@ def _slugify_builder_name(name: str) -> str:
     return slug or "builder"
 
 
-def _builder_commission_for_quote(session: Session, quote: Optional["Quote"], tenant_id: str) -> tuple:
+def _builder_commission_for_quote(session: Session, quote: Optional["Quote"], tenant_id: str, builder: "Builder") -> tuple:
     """Commission is earned ONLY once the linked job is fully paid
     (confirmed directly: on payment received, not on invoice) — checked
     via Quote.final_payment_date, the same field the Order Index already
@@ -3904,7 +3915,13 @@ def _builder_commission_for_quote(session: Session, quote: Optional["Quote"], te
     confirmed directly in the brief. Returns (status_label, amount) —
     a small shared helper so this exact logic isn't duplicated (and
     left to drift) across the admin list and the builder's own
-    statement below."""
+    statement below.
+
+    builder param (Sept 2026, Builders Management Console) — rate is
+    now per-builder (builder.commission_pct), Owner-editable, not the
+    old flat BUILDER_COMMISSION_PCT constant. Caller always has the
+    Builder row already (it's how the estimate/quote was resolved in
+    the first place), so this costs no extra query."""
     if quote is None:
         return ("no linked job", 0.0)
     if not quote.final_payment_date:
@@ -3912,13 +3929,13 @@ def _builder_commission_for_quote(session: Session, quote: Optional["Quote"], te
     lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)).all()
     subtotal_ex_vat = sum(l.line_total for l in lines) + quote.transport_levy
     total_ex_vat = subtotal_ex_vat * (1 - quote.discount_pct)
-    return ("job completed — commission earned", round(total_ex_vat * BUILDER_COMMISSION_PCT, 2))
+    return ("job completed — commission earned", round(total_ex_vat * builder.commission_pct, 2))
 
 
 # ----- Owner-only management (Burgert/Madri creating and reviewing builders) -----
 
 @app.post("/admin/builders")
-def create_builder(name: str, phone: str = "", email: str = "",
+def create_builder(name: str, phone: str = "", email: str = "", commission_pct: float = 0.06,
                     role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         base_slug = _slugify_builder_name(name)
@@ -3927,7 +3944,7 @@ def create_builder(name: str, phone: str = "", email: str = "",
         while session.exec(select(Builder).where(Builder.slug == slug)).first():
             slug = f"{base_slug}-{n}"
             n += 1
-        builder = Builder(tenant_id=tenant_id, name=name, slug=slug, phone=phone, email=email)
+        builder = Builder(tenant_id=tenant_id, name=name, slug=slug, phone=phone, email=email, commission_pct=commission_pct)
         session.add(builder)
         session.commit()
         session.refresh(builder)
@@ -3942,18 +3959,29 @@ def list_builders(role: str = Depends(require_owner), tenant_id: str = Depends(g
 
 @app.put("/admin/builders/{builder_id}")
 def update_builder(builder_id: int, name: str = None, active: bool = None, phone: str = None, email: str = None,
+                    commission_pct: float = None,
                     role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     """active=False is how a link is revoked (brief's own required
     verification: "revoking a builder's link immediately blocks further
     access") — the public endpoints below refuse to resolve an inactive
     builder's slug at all, 404, same as if it never existed. No
-    separate token/session to expire since there never was one."""
+    separate token/session to expire since there never was one.
+
+    commission_pct (Sept 2026, Builders Management Console — Burgert's
+    own words: "I need to be able to make changes") — only ever affects
+    commission computed AFTER this change (_builder_commission_for_quote
+    always reads the builder's CURRENT rate at read time, there's no
+    historical snapshot), same "derive at read time" principle as the
+    rest of this table. That's a deliberate, accepted tradeoff — a rate
+    change is expected to be rare and forward-looking, not a payroll-
+    grade historical ledger."""
     with Session(engine) as session:
         builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
         if name is not None: builder.name = name
         if active is not None: builder.active = active
         if phone is not None: builder.phone = phone
         if email is not None: builder.email = email
+        if commission_pct is not None: builder.commission_pct = commission_pct
         session.add(builder)
         session.commit()
         session.refresh(builder)
@@ -3974,7 +4002,7 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
         result = []
         for est, builder in rows:
             quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
-            status, commission = _builder_commission_for_quote(session, quote, tenant_id)
+            status, commission = _builder_commission_for_quote(session, quote, tenant_id, builder)
             result.append({
                 "id": est.id, "builder_name": builder.name, "builder_slug": builder.slug,
                 "client_name": est.client_name, "client_contact": est.client_contact,
@@ -3982,6 +4010,80 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
                 "quoted_price_ex_vat": est.quoted_price_ex_vat, "quoted_price_incl_vat": est.quoted_price_incl_vat,
                 "created_at": est.created_at.isoformat(), "linked_quote_id": est.linked_quote_id,
                 "commission_status": status, "commission_amount": commission,
+                "commission_pct": builder.commission_pct,
+                # Builders Management Console (confirmed Sept 2026) — lets
+                # the admin screen show "Confirmed by builder ✓" instead of
+                # only inferring it from linked_quote_id being set (which
+                # is also true for an estimate staff picked up manually via
+                # the OLD link-quote path below, a genuinely different
+                # thing — see BuilderEstimate.confirmed_by_builder's own
+                # docstring, models.py), and offer "Mark commission paid"
+                # once it's actually owed.
+                "confirmed_by_builder": est.confirmed_by_builder,
+                "commission_paid": est.commission_paid,
+            })
+        return result
+
+
+@app.put("/admin/builder-estimates/{estimate_id}/mark-commission-paid")
+def mark_builder_commission_paid(estimate_id: int, paid: bool = True,
+                                  role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Builders Management Console (confirmed Sept 2026) — "what I owe
+    them" is only answerable if "owed" can eventually become "paid".
+    The commission AMOUNT itself stays derived at read time (see
+    _builder_commission_for_quote and this table's own docstring,
+    models.py) — this only ever flips the one persisted flag that says
+    whether Burgert has actually paid it out. paid=False lets an
+    accidental click be undone, same as any other toggle in this app."""
+    with Session(engine) as session:
+        est = get_or_404(session, BuilderEstimate, estimate_id, tenant_id, "Builder estimate")
+        est.commission_paid = paid
+        est.commission_paid_at = datetime.utcnow() if paid else None
+        session.add(est)
+        session.commit()
+        session.refresh(est)
+        return est
+
+
+@app.get("/admin/builders/report")
+def builders_report(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Builders Management Console (confirmed Sept 2026) — Burgert's own
+    words: "Give me a list of the builders, the work that they have
+    quoted on and also what has been bought and done and what I owe
+    them." One row per builder, aggregated server-side rather than
+    making the frontend re-derive this from the raw estimates list (the
+    same commission math already lives in _builder_commission_for_quote,
+    not duplicated here)."""
+    with Session(engine) as session:
+        builders = session.exec(select(Builder).where(Builder.tenant_id == tenant_id).order_by(Builder.name)).all()
+        result = []
+        for builder in builders:
+            estimates = session.exec(select(BuilderEstimate).where(BuilderEstimate.builder_id == builder.id)).all()
+            total_quoted_incl_vat = sum(e.quoted_price_incl_vat for e in estimates)
+            jobs_won = 0
+            total_won_incl_vat = 0.0
+            commission_owed = 0.0
+            commission_paid_total = 0.0
+            for est in estimates:
+                quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+                status, commission = _builder_commission_for_quote(session, quote, tenant_id, builder)
+                if quote and quote.final_payment_date:
+                    jobs_won += 1
+                    total_won_incl_vat += est.quoted_price_incl_vat
+                if commission:
+                    if est.commission_paid:
+                        commission_paid_total += commission
+                    else:
+                        commission_owed += commission
+            result.append({
+                "id": builder.id, "name": builder.name, "slug": builder.slug, "active": builder.active,
+                "commission_pct": builder.commission_pct,
+                "estimates_count": len(estimates),
+                "total_quoted_incl_vat": round(total_quoted_incl_vat, 2),
+                "jobs_won": jobs_won,
+                "total_won_incl_vat": round(total_won_incl_vat, 2),
+                "commission_owed": round(commission_owed, 2),
+                "commission_paid_total": round(commission_paid_total, 2),
             })
         return result
 
@@ -4115,6 +4217,183 @@ def submit_builder_estimate(slug: str, body: BuilderEstimateRequest):
         }
 
 
+@app.get("/builder/{slug}/estimate/{estimate_id}/print")
+def print_builder_estimate(slug: str, estimate_id: int):
+    """Builders Management Console (confirmed Sept 2026) — "the quote
+    can be printed on our letterhead". builder.html has no shared.js and
+    no session (see this whole section's header comment) — it can't
+    call the normal /business-settings (auth-gated) or reuse
+    buildPrintDocHtml() (shared.js) the way a staff Print/PDF button
+    does. This is that same idea's public, hand-picked equivalent: only
+    the safe letterhead fields (never cost/margin/bank access details
+    beyond what's already shown on every staff-facing printed quote
+    too) plus this ONE estimate's own already-public snapshot fields.
+    Scoped to this builder's own id, same pattern as every other
+    endpoint in this section — a builder can never print another
+    builder's estimate by guessing an id."""
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        est = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.id == estimate_id, BuilderEstimate.builder_id == builder.id)
+        ).first()
+        if not est:
+            raise HTTPException(404, "Estimate not found.")
+        settings = get_settings(session, builder.tenant_id)
+        return {
+            "business_name": settings.business_name, "address": settings.address,
+            "phone": settings.phone, "email": settings.email, "vat_number": settings.vat_number,
+            "bank_details": settings.bank_details,
+            "builder_name": builder.name,
+            "client_name": est.client_name, "site_address": est.site_address,
+            "product_name": est.product_name, "area_m2": est.area_m2,
+            "quoted_price_ex_vat": est.quoted_price_ex_vat, "quoted_price_incl_vat": est.quoted_price_incl_vat,
+            "deposit_amount": est.deposit_amount, "deposit_pct": settings.default_deposit_pct,
+            "vat_pct": settings.vat_pct, "created_at": est.created_at.isoformat(),
+        }
+
+
+@app.post("/builder/{slug}/estimate/{estimate_id}/confirm")
+def confirm_builder_order(slug: str, estimate_id: int):
+    """Builders Management Console (confirmed Sept 2026) — Burgert's own
+    words: "Let the Builder be able to press a button to continue with
+    the order, We will process it on this side." Turns an estimate the
+    builder is actually ready to proceed with into a REAL Quote,
+    automatically — same fields/pricing a staff "Start Quote" +
+    Add Line would produce by hand, just done here in one step so it
+    lands in the Order Index immediately (description below is what
+    makes it show up there and on Job Detail with zero extra frontend
+    work — see order-index.js, which already renders quote.description
+    prominently everywhere). "We will process it on this side" is then
+    just the normal Order Index accept/schedule/invoice workflow every
+    other quote already goes through — nothing builder-specific left
+    to build there.
+
+    Deliberately idempotent-guarded (confirmed_by_builder) — a builder
+    re-clicking (double-tap, page reload) must never create a second
+    quote for the same estimate.
+
+    own_staff=True/job_type=smooth/discount_pct=0 mirrors
+    submit_builder_estimate()'s own original calc exactly, so the line
+    that lands on the real quote matches the figure the builder already
+    saw to the cent — never a second, possibly-drifted recalculation."""
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        est = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.id == estimate_id, BuilderEstimate.builder_id == builder.id)
+        ).first()
+        if not est:
+            raise HTTPException(404, "Estimate not found.")
+        if est.confirmed_by_builder:
+            raise HTTPException(400, "This order has already been sent through to Blinds & Flooring Studio.")
+        product = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.id == est.product_id, FlooringProduct.tenant_id == builder.tenant_id,
+            )
+        ).first()
+        if not product:
+            raise HTTPException(400, "That product is no longer available — contact Blinds & Flooring Studio directly to confirm this order.")
+        settings = get_settings(session, builder.tenant_id)
+
+        # Real Client record, never a free-text-only quote — same safety
+        # net every other quote-creation path uses (Client-Link Audit,
+        # confirmed Aug 2026). branch="gansbaai": Builder has no branch
+        # field of its own (Phase 1 pilot never needed one) — same
+        # fallback create_quote() itself defaults to.
+        client = _resolve_or_create_client(session, builder.tenant_id, None, est.client_name, branch="gansbaai")
+        # Backfill the real contact details the builder already captured
+        # at estimate time — but only into genuinely blank fields, never
+        # overwriting something already on file (this could be an
+        # existing client the exact-name match just found, with its own
+        # real data already on record).
+        changed_client = False
+        if est.client_contact and not client.phone and not client.email:
+            # client_contact is free text (phone OR email, builder's own
+            # choice at submission) — a light heuristic, not a strict
+            # validator, same spirit as this app's other free-text
+            # phone/email fields.
+            if "@" in est.client_contact:
+                client.email = est.client_contact
+            else:
+                client.phone = est.client_contact
+            changed_client = True
+        if est.site_address and not client.address:
+            client.address = est.site_address
+            changed_client = True
+        if not client.marketing_source:
+            client.marketing_source = f"Builder referral — {builder.name}"
+            changed_client = True
+        if changed_client:
+            session.add(client)
+
+        quote = Quote(
+            tenant_id=builder.tenant_id, client_name=client.name, client_id=client.id,
+            sales_owner="burgert", branch="gansbaai",
+            deposit_pct=settings.default_deposit_pct,
+            site_address=est.site_address or client.address or "",
+            # Order Index / Job Detail already render quote.description
+            # prominently everywhere (confirmed by reading order-index.js
+            # directly before building this) — this one string is what
+            # makes a builder-confirmed order visibly identifiable
+            # throughout the whole app with zero other frontend changes.
+            description=f"Builder referral — {builder.name}",
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+
+        resolved = resolve_zone_price(session, builder.tenant_id, product, settings)
+        labour_rate = resolved.labour_rate_per_m2 if resolved.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2
+        glue_rate = resolved.glue_rate_per_m2 or 0.0
+        calc = calculate_flooring_line(
+            resolved, est.area_m2, JobType.smooth, 0.0,
+            glue_cost_per_unit=glue_rate * 70, glue_coverage_m2=70,
+            labour_rate_per_m2=labour_rate, own_staff=True,
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
+        )
+        line = QuoteLineItem(
+            quote_id=quote.id, category="flooring", product_id=product.id, tenant_id=builder.tenant_id,
+            product_name=product.product_name, colour=product.colour, original_colour=product.colour,
+            job_type=JobType.smooth, flooring_pricing_type=product.pricing_type,
+            carpet_category=product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None,
+            quantity_m2=est.area_m2, discount_pct=0.0,
+            unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
+            line_total=calc["line_total"], margin_pct=calc["margin_pct"],
+            glue_cost_total=calc["glue_cost_total"], glue_sell_total=calc["glue_sell_total"],
+            glue_units_needed=calc["glue_units_needed"],
+            labour_cost_total=calc["labour_cost_total"], labour_charged_total=calc["labour_charged_total"],
+            own_staff=calc["own_staff"], bags_allowed=calc["bags_allowed"],
+            boxes_needed=calc.get("packs_needed"), compound_cost_total=calc["compound_cost_total"],
+            tile_removal_fee_total=calc["tile_removal_fee_total"], delivery_fee_total=calc["delivery_fee_total"],
+            total_job_cost=calc["total_job_cost"],
+        )
+        session.add(line)
+        _log_quote_line_audit(session, quote, "builder-portal", "added", f"Flooring — {product.product_name}{', ' + product.colour if product.colour else ''}, {est.area_m2}m²")
+
+        est.linked_quote_id = quote.id
+        est.confirmed_by_builder = True
+        est.confirmed_at = datetime.utcnow()
+        session.add(est)
+
+        # Quote Photo Attachments backfill — identical to the existing
+        # staff link-quote endpoint above, same reasoning.
+        photos = session.exec(
+            select(QuotePhoto).where(QuotePhoto.builder_estimate_id == est.id, QuotePhoto.quote_id == None)
+        ).all()
+        for p in photos:
+            p.quote_id = quote.id
+            session.add(p)
+
+        session.commit()
+        # Hand-picked response ONLY — see this section's header comment.
+        return {"confirmed": True, "message": "Thanks — this order has been sent to Blinds & Flooring Studio to process."}
+
+
 @app.get("/builder/{slug}/statement")
 def builder_statement(slug: str):
     """Read-only history for the builder themselves (Section 2 — "they
@@ -4134,7 +4413,7 @@ def builder_statement(slug: str):
         total_earned = 0.0
         for est in estimates:
             quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
-            status, commission = _builder_commission_for_quote(session, quote, builder.tenant_id)
+            status, commission = _builder_commission_for_quote(session, quote, builder.tenant_id, builder)
             if commission:
                 total_earned += commission
             result.append({
@@ -4142,8 +4421,18 @@ def builder_statement(slug: str):
                 "product_name": est.product_name, "area_m2": est.area_m2,
                 "quoted_price_incl_vat": est.quoted_price_incl_vat, "created_at": est.created_at.isoformat(),
                 "status": status if est.linked_quote_id else "estimate only — not yet a job", "commission": commission,
+                # % Commission Shown On Statement (confirmed Sept 2026,
+                # Burgert's own words) — the dollar amount alone never
+                # showed the RATE it was calculated at; now it does,
+                # per-builder (Builder.commission_pct), not a hardcoded
+                # figure baked into the frontend.
+                "commission_pct": builder.commission_pct,
+                "confirmed_by_builder": est.confirmed_by_builder,
             })
-        return {"builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2)}
+        return {
+            "builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2),
+            "commission_pct": builder.commission_pct,
+        }
 
 
 # ---------- Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) ----------

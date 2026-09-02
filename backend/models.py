@@ -608,6 +608,15 @@ class Builder(SQLModel, table=True):
     active: bool = True
     phone: str = ""
     email: str = ""
+    # Builders Management Console (confirmed Sept 2026) — Burgert's own
+    # words: "I need to be able to make changes" to commission, and "the
+    # % commission can be shown on their commission statement". Was a
+    # single flat BUILDER_COMMISSION_PCT constant in main.py (6%, still
+    # the default here); now per-builder and Owner-editable via
+    # update_builder(), so a builder on different terms doesn't need a
+    # code change. _builder_commission_for_quote() reads THIS field now,
+    # not the old constant.
+    commission_pct: float = 0.06
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -643,6 +652,27 @@ class BuilderEstimate(SQLModel, table=True):
     deposit_amount: float
     linked_quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Builders Management Console (confirmed Sept 2026) — "Let the
+    # Builder be able to press a button to continue with the order, We
+    # will process it on this side." confirmed_by_builder distinguishes
+    # a real order request from a bare price-check estimate; the
+    # confirm endpoint (POST /builder/{slug}/estimate/{estimate_id}/
+    # confirm, main.py) is what sets both of these AND creates the real
+    # linked Quote in one step, so linked_quote_id being set already
+    # implies this — kept as its own field anyway (not derived) so a
+    # future staff-side manual link-quote (existing endpoint, unchanged)
+    # is never confused with a genuine builder-initiated order request.
+    confirmed_by_builder: bool = False
+    confirmed_at: Optional[datetime] = None
+    # Commission owed vs paid (confirmed Sept 2026) — "what I owe them".
+    # Deliberately the ONLY persisted commission state on this table;
+    # the amount itself stays derived at read time (see this model's
+    # own docstring above and _builder_commission_for_quote(), main.py)
+    # — this flag just answers "has that derived amount actually been
+    # paid out to the builder yet", which can't be derived from
+    # anything else already on Quote.
+    commission_paid: bool = False
+    commission_paid_at: Optional[datetime] = None
 
 
 class QuotePhoto(SQLModel, table=True):
