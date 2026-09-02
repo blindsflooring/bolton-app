@@ -2518,11 +2518,23 @@ function renderPhotoGalleryGrid(photos) {
   if (!el) return;
   photoGalleryObjectUrls.forEach(url => URL.revokeObjectURL(url));
   photoGalleryObjectUrls = [];
-  el.innerHTML = photos.map(p => `
-    <div class="quote-photo-thumb photo-gallery-thumb" id="galleryPhotoThumb${p.id}" onclick="openOrderDetailScreen(${p.quote_id})">
+  el.innerHTML = photos.map(p => {
+    // "Every photo ever loaded" (confirmed Sept 2026) — GET /photos no
+    // longer requires a job_number, so two real cases now show up here
+    // that never had one before: a photo on a quote not yet accepted
+    // into a job (job_number null, but quote_id IS set — still fully
+    // clickable), and a builder-submitted photo staff hasn't linked to
+    // any quote at all yet (quote_id null too — nothing to click
+    // through to). Caption and click-through both branch on that.
+    const label = p.job_number || (p.quote_id ? `Q-${p.quote_id}` : 'Builder submission — not yet linked');
+    const client = (p.client_name || '').replace(/</g,'&lt;');
+    const clickable = !!p.quote_id;
+    return `
+    <div class="quote-photo-thumb photo-gallery-thumb${clickable ? '' : ' photo-gallery-unlinked'}" id="galleryPhotoThumb${p.id}"${clickable ? ` onclick="openOrderDetailScreen(${p.quote_id})"` : ''}>
       <div class="photo-loading">Loading…</div>
-      <div class="photo-gallery-caption">${p.job_number} — ${(p.client_name || '').replace(/</g,'&lt;')}</div>
-    </div>`).join('');
+      <div class="photo-gallery-caption">${label}${client ? ' — ' + client : ''}</div>
+    </div>`;
+  }).join('');
   // Same blob-object-URL loading as every other photo thumbnail in this
   // app (loadDocumentPreview()'s own reasoning applies identically here
   // — the file endpoint needs the Bearer auth header a plain <img> tag

@@ -4763,22 +4763,41 @@ def list_all_job_photos(tenant_id: str = Depends(get_current_tenant)):
     does better (its own gallery is already grouped by construction —
     you're already on that one job's page).
 
-    Scoped to quote_id-linked photos only (job_number not null) — a
-    builder-submitted photo not yet linked to a real quote has no real
-    "job" to show context for yet; it surfaces here automatically once
-    link_builder_estimate_to_quote() backfills quote_id onto it, same
-    as everywhere else in the app that draws this same line."""
+    Every photo ever loaded, no filter (confirmed Sept 2026, Burgert's
+    own words: "draw in every photo ever loaded on the system... into
+    the photo album tile") — this used to require Quote.job_number to
+    be set, silently hiding two real categories that were never a bug,
+    just an earlier, narrower reading of "job photos": a photo on a
+    quote that hasn't been accepted into a real job yet, and a photo a
+    builder attached while submitting an estimate that staff hasn't
+    linked to a quote at all yet (builder_estimate_id set, quote_id
+    still null). Both now included — job_number/client_name come from
+    the linked Quote when there is one, else (builder-submitted, not
+    yet linked) from the BuilderEstimate's own client_name instead, so
+    the gallery caption never shows a bare blank. The frontend decides
+    whether a given card is clickable off quote_id being present, same
+    as it always did — nothing to open for a photo with no quote yet."""
     with Session(engine) as session:
-        rows = session.exec(
-            select(QuotePhoto, Quote)
-            .join(Quote, QuotePhoto.quote_id == Quote.id)
-            .where(QuotePhoto.tenant_id == tenant_id, Quote.job_number.is_not(None))
-            .order_by(QuotePhoto.created_at.desc())
+        photos = session.exec(
+            select(QuotePhoto).where(QuotePhoto.tenant_id == tenant_id).order_by(QuotePhoto.created_at.desc())
         ).all()
-        return [
-            {**_photo_out(photo), "job_number": quote.job_number, "client_name": quote.client_name}
-            for photo, quote in rows
-        ]
+        quote_ids = {p.quote_id for p in photos if p.quote_id}
+        quotes_by_id = {q.id: q for q in session.exec(select(Quote).where(Quote.id.in_(quote_ids))).all()} if quote_ids else {}
+        est_ids = {p.builder_estimate_id for p in photos if p.builder_estimate_id and not p.quote_id}
+        estimates_by_id = {e.id: e for e in session.exec(select(BuilderEstimate).where(BuilderEstimate.id.in_(est_ids))).all()} if est_ids else {}
+        result = []
+        for photo in photos:
+            row = _photo_out(photo)
+            quote = quotes_by_id.get(photo.quote_id) if photo.quote_id else None
+            if quote:
+                row["job_number"] = quote.job_number
+                row["client_name"] = quote.client_name
+            else:
+                est = estimates_by_id.get(photo.builder_estimate_id) if photo.builder_estimate_id else None
+                row["job_number"] = None
+                row["client_name"] = est.client_name if est else None
+            result.append(row)
+        return result
 
 
 @app.get("/quotes/{quote_id}/photos/{photo_id}/file")

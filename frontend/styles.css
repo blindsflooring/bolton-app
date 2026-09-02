@@ -437,6 +437,11 @@
     position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: white;
     font-size: 11px; padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* "Every photo ever loaded" (confirmed Sept 2026) — a builder-submitted
+     photo not yet linked to any quote has nothing to click through to;
+     cursor: default (overriding .photo-gallery-thumb's pointer above)
+     is the only visual difference, so it doesn't read as broken. */
+  .photo-gallery-unlinked { cursor: default; }
 
   /* Order Index / Job Workflow (confirmed Aug 2026) */
   /* Name Link Uniformity + Confirm Job-Level Click Target (confirmed
