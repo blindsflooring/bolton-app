@@ -4168,6 +4168,41 @@ async function markCommissionPaid(estimateId, paid) {
   await loadBuilderPortalAdmin();
 }
 
+// Delete Test Estimates/Quotes (confirmed Sept 2026, Burgert's own
+// words: "All of Frikkies quotes are fake quotes. Thats me testing the
+// system so I will need to be able to delete all of those quotes.").
+// Both single and bulk try WITHOUT force first — if the backend blocks
+// on a genuinely real dependency (logged hours, a recorded deposit/
+// final payment), that's surfaced as its own confirm() naming exactly
+// what would be overridden, so a real order never gets force-deleted
+// by a reflexive "OK" the way a plain retry-with-force would risk.
+async function deleteBuilderEstimate(estimateId, label) {
+  if (!confirm(`Delete "${label}"? This also deletes its linked Quote, if it has one. This can't be undone.`)) return;
+  let res = await fetch(`${API}/admin/builder-estimates/${estimateId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (!confirm(`${body.detail || 'Could not delete.'}\n\nForce delete anyway?`)) return;
+    res = await fetch(`${API}/admin/builder-estimates/${estimateId}?force=true`, { method: 'DELETE' });
+    if (!res.ok) { alert('Could not delete, even with force.'); return; }
+  }
+  await loadBuilderPortalAdmin();
+}
+
+async function deleteAllBuilderEstimates(builderId, builderName, count) {
+  if (!count) { alert(`${builderName} has no estimates to delete.`); return; }
+  if (!confirm(`Delete ALL ${count} estimate(s) for ${builderName}, including any linked Quotes? This can't be undone.`)) return;
+  let res = await fetch(`${API}/admin/builders/${builderId}/estimates`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (!confirm(`${body.detail || 'Could not delete.'}\n\nForce delete the whole batch anyway?`)) return;
+    res = await fetch(`${API}/admin/builders/${builderId}/estimates?force=true`, { method: 'DELETE' });
+    if (!res.ok) { alert('Could not delete, even with force.'); return; }
+  }
+  const result = await res.json();
+  alert(`Deleted ${result.deleted_estimates.length} estimate(s)${result.deleted_quotes.length ? ` and ${result.deleted_quotes.length} linked quote(s)` : ''}.`);
+  await loadBuilderPortalAdmin();
+}
+
 function renderBuilderPortalTable() {
   const el = document.getElementById('landing');
   const tab = (view, label) => `<button onclick="builderPortalSubview='${view}'; renderBuilderPortalTable();" style="${builderPortalSubview===view ? 'background:var(--teal); color:white;' : ''}">${label}</button>`;
@@ -4199,9 +4234,11 @@ function renderBuilderPortalTable() {
       was simply missed when the Builder Portal pilot was built. -->
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Name</th><th>Contact</th><th>Commission %</th><th>Link</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Contact</th><th>Commission %</th><th>Link</th><th>Status</th><th></th><th></th></tr></thead>
           <tbody>
-            ${builderPortalBuilders.length ? builderPortalBuilders.map(b => `
+            ${builderPortalBuilders.length ? builderPortalBuilders.map(b => {
+              const estCount = builderPortalEstimates.filter(e => e.builder_slug === b.slug).length;
+              return `
               <tr>
                 <td>${b.name}</td>
                 <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
@@ -4215,7 +4252,8 @@ function renderBuilderPortalTable() {
                 <td>${b.active
                   ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
                   : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
-              </tr>`).join('') : '<tr><td colspan="6" class="muted">No builders yet — add one above.</td></tr>'}
+                <td><button onclick="deleteAllBuilderEstimates(${b.id}, '${b.name.replace(/'/g,"\\'")}', ${estCount})" style="${estCount ? 'color:var(--coral); border-color:var(--coral);' : ''}">Delete estimates (${estCount})</button></td>
+              </tr>`;}).join('') : '<tr><td colspan="7" class="muted">No builders yet — add one above.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4235,7 +4273,7 @@ function renderBuilderPortalTable() {
       checked, not just Builders. -->
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Confirmed</th><th>Status</th><th>Commission</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Builder</th><th>Client</th><th>Site</th><th>Product</th><th>Quoted (incl VAT)</th><th>Confirmed</th><th>Status</th><th>Commission</th><th></th><th></th></tr></thead>
           <tbody>
             ${builderPortalEstimates.length ? builderPortalEstimates.map(e => `
               <tr>
@@ -4255,7 +4293,8 @@ function renderBuilderPortalTable() {
                         ? `<button onclick="markCommissionPaid(${e.id}, false)">Undo paid</button>`
                         : `<span class="muted">Quote #${e.linked_quote_id}</span>`)
                   : `<button onclick="startQuoteFromBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")}')">Start Quote</button>`}</td>
-              </tr>`).join('') : '<tr><td colspan="10" class="muted">No estimates submitted yet.</td></tr>'}
+                <td><button onclick="deleteBuilderEstimate(${e.id}, '${e.client_name.replace(/'/g,"\\'")} (${e.builder_name.replace(/'/g,"\\'")})')" style="color:var(--coral); border-color:var(--coral);">Delete</button></td>
+              </tr>`).join('') : '<tr><td colspan="11" class="muted">No estimates submitted yet.</td></tr>'}
           </tbody>
         </table>
       </div>

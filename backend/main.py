@@ -4088,6 +4088,119 @@ def builders_report(role: str = Depends(require_owner), tenant_id: str = Depends
         return result
 
 
+def _delete_builder_estimate(session: Session, est: "BuilderEstimate", tenant_id: str, username: str, force: bool) -> Optional[int]:
+    """Shared by the single and bulk delete endpoints below, same
+    "exists in exactly one place" reasoning as _delete_quote_cascade
+    itself. Confirmed Sept 2026 — Burgert, after finding his own real
+    test data mixed into a real builder's real statement: "All of
+    Frikkies quotes are fake quotes. Thats me testing the system so I
+    will need to be able to delete all of those quotes."
+
+    Removes the BuilderEstimate row itself, any QuotePhoto rows still
+    attached via builder_estimate_id (whether or not they were ever
+    backfilled onto a real quote), and — if this estimate was actually
+    confirmed into a real Quote — that Quote too, via the exact same
+    cascade machinery DELETE /quotes/{quote_id} already uses, not a
+    second, narrower path.
+
+    The linked quote's OWN _quote_delete_dependencies check always
+    reports "is linked to a builder estimate (#this one)" — tautological
+    here, since that estimate is the one being deleted right now, not a
+    real external dependency — so that ONE reason is filtered out before
+    deciding whether `force` was actually needed; a genuinely real
+    reason (logged hours, a recorded deposit/final payment — i.e. this
+    "test" quote turns out to have real business history on it) still
+    requires the caller to explicitly pass force=True, same protection
+    every other quote delete already has.
+
+    Returns the deleted quote's id if one existed, else None — purely
+    informational for the caller's response."""
+    quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+    deleted_quote_id = None
+    if quote:
+        reasons = [r for r in _quote_delete_dependencies(session, quote, tenant_id) if f"#{est.id})" not in r]
+        if reasons and not force:
+            raise HTTPException(400, f"Can't delete estimate #{est.id} — its linked Quote #{quote.id} ({quote.client_name}) {' and '.join(reasons)}. Use Force Delete if this is deliberate test cleanup.")
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="__deleted__",
+            old_value=f"Quote #{quote.id} — {quote.client_name}" + (f" ({quote.description})" if quote.description else ""),
+            new_value="(deleted, via linked builder estimate)",
+        ))
+        # id captured BEFORE the cascade runs, not after — real bug
+        # caught while testing this: _cascade_delete_children() commits
+        # partway through its own nullify/cascade steps, which expires
+        # SQLAlchemy's in-memory attributes; by the time
+        # _delete_quote_cascade() returns, `quote` is a deleted,
+        # expired instance, and reading quote.id off it raises
+        # ObjectDeletedError instead of just returning the id.
+        deleted_quote_id = quote.id
+        # force=True unconditionally here — the only reason
+        # _delete_quote_cascade's OWN internal safety net could still
+        # trip is that same tautological "linked to this estimate"
+        # case (already cleared above); any OTHER real reason was
+        # already surfaced and blocked above unless the caller
+        # explicitly forced past it.
+        _delete_quote_cascade(session, quote, tenant_id, force=True)
+    photos = session.exec(select(QuotePhoto).where(QuotePhoto.builder_estimate_id == est.id)).all()
+    for p in photos:
+        if p.dropbox_status == "uploaded":
+            dropbox_archive.delete_document(p.storage_path)
+        session.delete(p)
+    session.add(AuditLog(
+        tenant_id=tenant_id, username=username, entity_type="BuilderEstimate", entity_id=est.id,
+        field="__deleted__", old_value=f"Builder estimate #{est.id} — {est.client_name}", new_value="(deleted)",
+    ))
+    session.delete(est)
+    return deleted_quote_id
+
+
+@app.delete("/admin/builder-estimates/{estimate_id}")
+def delete_builder_estimate(estimate_id: int, force: bool = False,
+                             role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                             username: str = Depends(get_current_username)):
+    """Builders Management Console (confirmed Sept 2026) — see
+    _delete_builder_estimate's own docstring for the full reasoning."""
+    with Session(engine) as session:
+        est = get_or_404(session, BuilderEstimate, estimate_id, tenant_id, "Builder estimate")
+        deleted_quote_id = _delete_builder_estimate(session, est, tenant_id, username, force)
+        session.commit()
+        return {"deleted": estimate_id, "linked_quote_deleted": deleted_quote_id}
+
+
+@app.delete("/admin/builders/{builder_id}/estimates")
+def delete_all_builder_estimates(builder_id: int, force: bool = False,
+                                  role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                                  username: str = Depends(get_current_username)):
+    """Builders Management Console (confirmed Sept 2026) — "delete all
+    of those quotes" in one action, for exactly the case that prompted
+    this: a builder's statement full of Burgert's own test data.
+    Nothing is deleted until every one of this builder's estimates has
+    been checked (same "abort the whole batch rather than partially
+    delete" guarantee _quote_delete_dependencies' own callers already
+    give) — a real, non-test order mixed in with test ones blocks the
+    WHOLE batch unless force=True, rather than silently deleting the
+    fake ones and leaving the caller unsure what happened to the rest."""
+    with Session(engine) as session:
+        builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
+        estimates = session.exec(select(BuilderEstimate).where(BuilderEstimate.builder_id == builder_id, BuilderEstimate.tenant_id == tenant_id)).all()
+        if not force:
+            for est in estimates:
+                quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+                if quote:
+                    reasons = [r for r in _quote_delete_dependencies(session, quote, tenant_id) if f"#{est.id})" not in r]
+                    if reasons:
+                        raise HTTPException(400, f"Can't delete all of {builder.name}'s estimates — estimate #{est.id}'s linked Quote #{quote.id} ({quote.client_name}) {' and '.join(reasons)}. Use Force Delete if this is deliberate test cleanup.")
+        deleted_ids, deleted_quote_ids = [], []
+        for est in estimates:
+            deleted_ids.append(est.id)
+            qid = _delete_builder_estimate(session, est, tenant_id, username, force=True)   # already validated above when force wasn't explicitly requested
+            if qid:
+                deleted_quote_ids.append(qid)
+        session.commit()
+        return {"deleted_estimates": deleted_ids, "deleted_quotes": deleted_quote_ids}
+
+
 @app.put("/admin/builder-estimates/{estimate_id}/link-quote")
 def link_builder_estimate_to_quote(estimate_id: int, quote_id: int,
                                     role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
