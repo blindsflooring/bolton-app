@@ -1295,6 +1295,13 @@ async function doLogout() {
   currentUser = null;
   previewRole = null;   // Owner Preview Mode: never carries into the next login, per the brief
   showLogin();
+  // Cleared HERE, not in showLogin() (see its own comment) — a
+  // deliberate logout is the one case where the next person at this
+  // screen may well be somebody else, so leaving the previous user's
+  // username sitting in the box would be wrong. Every other route to
+  // the login screen is the same person whose session simply ended.
+  document.getElementById('login_username').value = '';
+  document.getElementById('login_password').value = '';
 }
 
 // Owner Preview Mode (confirmed Aug 2026): the toggle in the header
@@ -1420,8 +1427,28 @@ function showLogin() {
   document.getElementById('previewBanner').style.display = 'none';
   document.getElementById('consistencyAlertBanner').style.display = 'none';
   document.getElementById('mobileBackBtn').style.display = 'none';
-  document.getElementById('login_username').value = '';
   document.getElementById('login_error').textContent = '';
+  // Deliberately does NOT clear login_username (fixed Sept 2026,
+  // Burgert's own words: "When i am on the login page and pre populate
+  // my name and password i have to enter twice because the first time
+  // always hangs"). Root cause: this function is called from
+  // checkAuthOnLoad() AFTER its /auth/me round trip — i.e. seconds
+  // into the page load, by which time the browser/password manager has
+  // already autofilled the form. Blanking the username there left a
+  // form that LOOKS filled in (the password dots are still showing,
+  // since this never cleared that field either) but whose username is
+  // empty, so the next click just answered "Enter a username and
+  // password" and the credentials had to be entered a second time.
+  // With 24h sessions, a stale token in localStorage is the normal
+  // state every morning, which is why it happened every time rather
+  // than occasionally.
+  //
+  // Clearing belongs to doLogout() instead, which is the only path
+  // where a DIFFERENT person signing in is the actual intent — see
+  // there. Nothing else needs this form emptied: a session that
+  // expired or was ended elsewhere belongs to the same person sitting
+  // at the same machine, who is about to type the same username in
+  // again.
 }
 
 // Password Reset Link brief (confirmed Aug 2026) — checked and, if a
@@ -1490,6 +1517,10 @@ async function submitPasswordReset() {
 (async function checkAuthOnLoad() {
   if (await initResetPasswordScreenIfNeeded()) return;
   if (!sessionToken) { showLogin(); return; }
+  // Set only when the stored token turns out to be genuinely dead, and
+  // shown after showLogin() below (which clears login_error, so it has
+  // to be written afterwards, not before).
+  let deadSessionMessage = '';
   try {
     const res = await fetch(`${API}/auth/me`);
     // "Log in twice" bug, other half (confirmed Sep 2026): this check
@@ -1516,11 +1547,19 @@ async function submitPasswordReset() {
     // leaving it in localStorage to fail the same way on every future
     // load until the user logs in again anyway.
     setSessionToken(null);
+    // Sessions are a fixed 24h from login (UserSession, models.py), so
+    // this is simply what the morning after looks like — said plainly
+    // rather than left as an unexplained empty form, and deliberately
+    // NOT the fetch wrapper's "this account logged in elsewhere"
+    // message, which is a different thing and was wrong here (see
+    // shared.js).
+    deadSessionMessage = 'Your last session has expired — please log in again.';
   } catch (e) {
     if (currentUser) return;   // same race guard as above, network-failure path
     /* network failure, not a rejected token — leave it stored, fall through to login screen */
   }
   showLogin();
+  if (deadSessionMessage) document.getElementById('login_error').textContent = deadSessionMessage;
 })();
 
 // ===== LANDING PAGE =====

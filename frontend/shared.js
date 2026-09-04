@@ -168,7 +168,16 @@ window.fetch = function(url, options = {}) {
   // the moment this specific request was dispatched, above) instead of
   // the live `sessionToken` fixes this: a stale request's late-arriving
   // 401 no longer clobbers a newer login that has since replaced it.
-  if (isApiCall && !url.includes('/auth/login')) {
+  // /auth/me excluded alongside /auth/login (fixed Sept 2026): it has
+  // exactly ONE call site, checkAuthOnLoad() (index.html), and a 401
+  // there does not mean "logged in elsewhere" at all — it is the
+  // ordinary case of a stored token that has passed its fixed 24h life,
+  // which is what every user has sitting in localStorage the next
+  // morning. That call site already clears the dead token itself and
+  // says so accurately; this generic handler was overwriting that with
+  // a confident, wrong explanation on the single most common path
+  // through it.
+  if (isApiCall && !url.includes('/auth/login') && !url.includes('/auth/me')) {
     promise.then(res => {
       if (res.status === 401 && _tokenAtSend && _tokenAtSend === sessionToken && !sessionInvalidatedHandled) {
         sessionInvalidatedHandled = true;
