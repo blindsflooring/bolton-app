@@ -92,13 +92,20 @@ function calMainChip(q) {
   return {
     type: 'job', quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
     date: q.installation_date, confirmed: calIsConfirmed(q), workDayId: null, dayType: null,
+    // Visual Density & Colour Redesign (confirmed Sept 2026) — the
+    // product types already on the quote row (flooring_types, computed
+    // server-side in list_quotes() from the job's own lines). The brief
+    // asked to "confirm current entry data includes a category/type
+    // field... if not, this needs a small data-tagging step first" —
+    // it does, so no tagging step was needed.
+    types: q.flooring_types || [],
   };
 }
 function calWorkDayChip(q, wd) {
   return {
     type: 'job', quoteId: q.id, job_number: q.job_number, client_name: q.client_name, description: q.description,
     date: wd.work_date, confirmed: !!(wd.confirmed_date && wd.confirmed_date === wd.work_date),
-    workDayId: wd.id, dayType: wd.day_type,
+    workDayId: wd.id, dayType: wd.day_type, types: q.flooring_types || [],
   };
 }
 // Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — lead visits
@@ -118,6 +125,43 @@ function calTodoChip(t) {
   return { type: 'todo', todoId: t.id, title: t.title, date: t.due_date };
 }
 const CAL_DAY_TYPE_LABEL = { screed: 'Screed', installation: 'Install', other: 'Other' };
+
+// Visual Density & Colour Redesign (confirmed Sept 2026) — colour now
+// means WHAT KIND of work this is, not whether it's confirmed.
+//
+// That swap is the point of the brief: colour used to encode status
+// (green = confirmed, cream/dashed = tentative), which spent the single
+// strongest visual signal on the one thing a small dot can carry just
+// as well. Status moves to that dot (.cal-chip-dot, styles.css), and
+// colour is freed for category — "don't collapse status into the color
+// scheme", in the brief's own words.
+//
+// Deliberately ONE function rather than a class picked inline at each
+// of the three render sites: a chip's colour and the day-list's own
+// label must never disagree about what a job is.
+//
+// Screed/plak shares the flooring blue per the brief's palette rather
+// than getting its own colour — a screed day is already labelled
+// "Screed" in its own chip text (CAL_DAY_TYPE_LABEL above), so it is
+// distinguishable without spending a second colour on it. chip.dayType
+// is still carried, so splitting it out later is a one-line change.
+const CAL_CATEGORY_LABEL = {
+  flooring: 'Flooring / screed', blinds: 'Blinds', lead: 'Lead visit', todo: 'To-do', other: 'Other',
+};
+function calChipCategory(chip) {
+  if (chip.type === 'lead') return 'lead';
+  if (chip.type === 'todo') return 'todo';
+  if (chip.dayType === 'screed') return 'flooring';
+  const types = chip.types || [];
+  // Blinds only counts as a blinds job when there is NO floor on it —
+  // a job carrying both is a flooring install that happens to include
+  // blinds, and the installer's day is a flooring day.
+  if (types.length && types.every(t => t === 'Blinds')) return 'blinds';
+  if (types.length) return 'flooring';
+  // A booked job with no lines on it yet is still a real booking; it
+  // gets the neutral colour rather than being guessed into a category.
+  return 'other';
+}
 
 function calendarJobsForMonth(year, month) {
   const byDay = {};
@@ -198,8 +242,13 @@ function renderCalendarView(el) {
     const dateStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const otherMonth = m !== month;
     const jobs = byDay[dateStr] || [];
-    const visible = jobs.slice(0, 3);
-    const overflow = jobs.length - visible.length;
+    // Every entry is rendered (confirmed Sept 2026) — the old
+    // jobs.slice(0, 3) + "+N more" is gone. Hiding entries behind a
+    // counter on a moderately busy day is the exact thing this brief
+    // set out to remove: the row now grows to fit instead (see
+    // .cal-grid / --cal-row-min, styles.css).
+    const visible = jobs;
+    const isToday = dateStr === todayStr;
     // Drag-and-drop (confirmed Aug 2026, approved Interactive Calendar
     // Design) — onpointerdown starts a possible drag (calChipPointerDown,
     // below); the existing onclick still opens the job normally for a
@@ -215,11 +264,11 @@ function renderCalendarView(el) {
     // identical-looking chips.
     const chipsHtml = visible.map(chip => {
       if (chip.type === 'lead') {
-        return `<div class="cal-chip cal-chip-lead" title="Lead visit: ${(chip.name || '').replace(/"/g,'&quot;')}${chip.contact ? ' — ' + chip.contact.replace(/"/g,'&quot;') : ''}"
+        return `<div class="cal-chip cal-cat-lead ${isToday ? 'is-today' : ''}" title="Lead visit: ${(chip.name || '').replace(/"/g,'&quot;')}${chip.contact ? ' — ' + chip.contact.replace(/"/g,'&quot;') : ''}"
           onclick="event.stopPropagation(); openLeadDetailScreen(${chip.leadId});">📋 ${(chip.name || '').replace(/</g,'&lt;')}</div>`;
       }
       if (chip.type === 'todo') {
-        return `<div class="cal-chip cal-chip-todo" title="To-do: ${(chip.title || '').replace(/"/g,'&quot;')}"
+        return `<div class="cal-chip cal-cat-todo ${isToday ? 'is-today' : ''}" title="To-do: ${(chip.title || '').replace(/"/g,'&quot;')}"
           onclick="event.stopPropagation(); landingView='todos'; renderLanding();">✓ ${(chip.title || '').replace(/</g,'&lt;')}</div>`;
       }
       // Multiple Work Days Per Job (confirmed Sept 2026) — a work-day
@@ -231,15 +280,19 @@ function renderCalendarView(el) {
       const label = chip.workDayId
         ? `${chip.job_number} — ${CAL_DAY_TYPE_LABEL[chip.dayType] || 'Extra day'}`
         : `${chip.job_number} ${(chip.client_name || '').replace(/</g,'&lt;')}`;
+      // The dot carries CONFIRMED vs TENTATIVE, independent of the
+      // chip's colour, which now carries category (calChipCategory()).
+      // Kept in the tooltip too, so the distinction survives for anyone
+      // who can't read a 6px dot.
+      const cat = calChipCategory(chip);
+      const status = chip.confirmed ? 'confirmed' : 'tentative';
       return `
-      <div class="cal-chip ${chip.confirmed ? 'confirmed' : 'tentative'}" style="touch-action:none;" title="${(chip.client_name || '').replace(/"/g,'&quot;')}${chip.description ? ' — ' + chip.description.replace(/"/g,'&quot;') : ''}"
+      <div class="cal-chip cal-cat-${cat} ${isToday ? 'is-today' : ''}" style="touch-action:none;" title="${(chip.client_name || '').replace(/"/g,'&quot;')}${chip.description ? ' — ' + chip.description.replace(/"/g,'&quot;') : ''} — ${CAL_CATEGORY_LABEL[cat]}, ${status}"
         onpointerdown="calChipPointerDown(event, ${chip.quoteId}, '${dateStr}', ${chip.confirmed}, ${chip.workDayId ?? 'null'})"
-        onclick="if (calDragMoved) { event.stopPropagation(); return; } event.stopPropagation(); openOrderDetailScreen(${chip.quoteId});">${label}</div>
+        onclick="if (calDragMoved) { event.stopPropagation(); return; } event.stopPropagation(); openOrderDetailScreen(${chip.quoteId});"><span class="cal-chip-dot ${status}"></span>${label}</div>
     `;
     }).join('');
-    const moreHtml = overflow > 0
-      ? `<div class="cal-chip more" onclick="event.stopPropagation(); toggleCalendarDayList('${dateStr}');">+${overflow} more</div>`
-      : '';
+
     cellsHtml += `
       <!-- Booking leads onto the calendar (confirmed Sept 2026,
       Burgert: "I need the leads to be able to be booked into th
@@ -248,7 +301,7 @@ function renderCalendarView(el) {
       inert, which is exactly the day you want to book INTO. -->
       <div class="cal-day ${otherMonth ? 'other-month' : ''} ${dateStr === todayStr ? 'today' : ''} ${jobs.length ? 'has-jobs' : ''}" data-date="${dateStr}" onclick="toggleCalendarDayList('${dateStr}')">
         <div class="cal-daynum">${d}</div>
-        ${chipsHtml}${moreHtml}
+        ${chipsHtml}
       </div>`;
   }
 
@@ -266,9 +319,22 @@ function renderCalendarView(el) {
         <h2 style="margin:0;">${CAL_MONTH_NAMES[month]} ${year}</h2>
         <button onclick="changeCalendarMonth(1)">Next ›</button>
       </div>
-      <div style="display:flex; gap:14px; margin:10px 0 14px; font-size:12px; flex-wrap:wrap;" class="muted">
-        <span><span class="cal-legend-dot confirmed"></span> Confirmed</span>
-        <span><span class="cal-legend-dot tentative"></span> Tentative</span>
+      <!-- Legend rebuilt for the Visual Density & Colour Redesign
+      (confirmed Sept 2026). It used to explain only Confirmed vs
+      Tentative, because that was all colour meant. Colour now means
+      category, so the legend has to say which colour is which kind of
+      work — a colour scheme nobody can decode is just decoration —
+      and status keeps its own entry, now as the dot. -->
+      <div style="display:flex; gap:12px; margin:10px 0 6px; font-size:11.5px; flex-wrap:wrap; align-items:center;">
+        <span class="cal-legend-key cal-cat-flooring">Flooring / screed</span>
+        <span class="cal-legend-key cal-cat-blinds">Blinds</span>
+        <span class="cal-legend-key cal-cat-lead">Lead visit</span>
+        <span class="cal-legend-key cal-cat-todo">To-do</span>
+      </div>
+      <div style="display:flex; gap:14px; margin:0 0 12px; font-size:11.5px; flex-wrap:wrap;" class="muted">
+        <span><span class="cal-chip-dot confirmed" style="color:#1c4b8a;"></span> Confirmed</span>
+        <span><span class="cal-chip-dot tentative" style="color:#1c4b8a;"></span> Tentative</span>
+        <span><span class="cal-legend-today"></span> Today</span>
       </div>
       <!-- Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — per-
       type visibility, the proposal's own confirmed answer to "a
@@ -297,9 +363,9 @@ function renderCalendarView(el) {
 // (the old 76px min-height) can never actually guarantee this — it
 // only fits whatever window it happened to be tuned against. This
 // measures the grid's own real position after every render and sets
-// --cal-grid-h (styles.css) to whatever's genuinely left of the real
-// viewport below it, so the six-week grid always divides up exactly
-// the space that's really there. Re-run on resize too (orientation
+// --cal-row-min (styles.css) from whatever's genuinely left of the real
+// viewport below it, so a quiet six-week grid still fills exactly the
+// space that's really there. Re-run on resize too (orientation
 // change, a window being resized) — deliberately NOT scroll-linked
 // (this file/styles.css's own Sticky Header history is explicit that
 // whole category of fix was retired for good reason after four failed
@@ -316,14 +382,26 @@ function calFitCalendarGrid() {
   // grid and so never showed up in a top-only measurement. Clearing
   // any previous constraint first so this always measures the grid's
   // real natural height, not whatever it was already shrunk to.
-  grid.style.removeProperty('--cal-grid-h');
+  grid.style.removeProperty('--cal-row-min');
   const nonGridHeight = document.body.scrollHeight - grid.getBoundingClientRect().height;
   // 220px floor: below this a real six-week grid stops being legible
   // regardless of how the space is split — a genuinely tiny window
   // scrolls at that point, the same "normal window size" scope the
   // brief's own testing requirement already draws.
   const available = Math.max(window.innerHeight - nonGridHeight, 220);
-  grid.style.setProperty('--cal-grid-h', available + 'px');
+  // CHANGED Sept 2026 (Visual Density & Colour Redesign) — this used to
+  // set a hard total height and let six equal rows divide it up, which
+  // is what forced the "+N more" collapsing in the first place: a row
+  // that can never grow has to hide whatever doesn't fit.
+  //
+  // The measurement is kept and repurposed as a per-row MINIMUM instead.
+  // That resolves what would otherwise be a straight conflict between
+  // two confirmed requirements — "fits one screen, no scrolling" and
+  // "no N-more collapsing, every entry visible". A quiet month still
+  // fills exactly the space that's really there and needs no scrolling;
+  // a genuinely busy week grows its own row and the page scrolls, which
+  // is what the brief's own Google Calendar reference does too.
+  grid.style.setProperty('--cal-row-min', Math.floor(available / 6) + 'px');
 }
 if (!window._calFitResizeBound) {
   window._calFitResizeBound = true;

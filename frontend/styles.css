@@ -724,14 +724,15 @@
      tile's own confirmed/proposed distinction. */
   .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .cal-head h2 { font-size: 17px; }
-  .cal-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-  .cal-legend-dot.confirmed { background: #1a7a3e; }
-  .cal-legend-dot.tentative { background: var(--cream); border: 1px dashed #8a6d00; }
+  /* Legend keys reuse the chip's own .cal-cat-* rules, so the legend
+     can never drift from what the calendar actually draws. */
+  .cal-legend-key { border-radius: 4px; padding: 2px 7px; font-weight: 700; border-left: 3px solid; }
+  .cal-legend-today { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: middle; box-shadow: 0 0 0 1.5px var(--coral); background: #eef0f3; }
   /* Fits one screen, no scrolling (confirmed Sept 2026 — unmet
      requirement, closed) — row heights are no longer a fixed guess
      (76px min-height overflowed the page on anything but a tall
      window). calFitCalendarGrid() (calendar.js) measures the grid's
-     own real top offset after every render and sets --cal-grid-h to
+     own real top offset after every render and sets --cal-row-min to
      whatever's actually left of the viewport below it, re-run on
      resize too — not a scroll-linked hack (this file's own Sticky
      Header comment above is explicit that category is retired for
@@ -739,15 +740,23 @@
      grid-template-rows splits that real height across the six weeks
      evenly; minmax(0,1fr) is what lets a row genuinely shrink instead
      of being pushed back out by its own content. */
-  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: auto repeat(6, minmax(0, 1fr)); gap: 4px; height: var(--cal-grid-h, auto); }
+  /* CHANGED Sept 2026 (Visual Density & Colour Redesign) — rows are
+     content-sized with a floor, not six equal shares of a fixed total.
+     A row that could never grow is what forced entries to hide behind
+     "+N more"; minmax(min, auto) lets the busiest day in a week set
+     that week's height, exactly as the brief asks. --cal-row-min is
+     still the real measured viewport share (calFitCalendarGrid(),
+     calendar.js), so a quiet month fills the screen and needs no
+     scrolling — a busy one grows past it, which is the trade the brief
+     explicitly chose. */
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(var(--cal-row-min, 90px), auto); gap: 4px; }
   .cal-dow { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--ink-faint, #8A93A0); text-align: center; padding-bottom: 4px; }
   /* min-height retired along with the fixed row-height guess above —
-     a day cell is now whatever share of --cal-grid-h its row gets.
-     overflow-y:auto is the deliberately narrow fallback: on a
-     genuinely packed day (rare — "+N more" already caps visible chips
-     at 3) or an unusually short window, that ONE cell scrolls
-     internally rather than the whole page ever needing to. */
-  .cal-day { border: 1px solid var(--border); border-radius: 6px; padding: 4px; font-size: 11px; overflow-y: auto; }
+     a day cell is at least --cal-row-min tall and grows from there. */
+  /* overflow-y:auto retired with the fixed row height — a cell that
+     scrolls internally hides entries just as effectively as "+N more"
+     did, and rows now grow instead. */
+  .cal-day { border: 1px solid var(--border); border-radius: 6px; padding: 4px; font-size: 11px; }
   .cal-day.other-month { opacity: .4; }
   .cal-day.today { border-color: var(--teal); border-width: 2px; }
   .cal-day.has-jobs { cursor: pointer; }
@@ -758,12 +767,47 @@
   .cal-day.drop-target { background: var(--cream); border-color: var(--teal); border-width: 2px; }
   .cal-chip { cursor: grab; }
   .cal-chip:active { cursor: grabbing; }
-  .cal-chip.more { cursor: pointer; }
   .cal-daynum { font-size: 11px; font-weight: 700; color: var(--ink-faint, #8A93A0); margin-bottom: 3px; }
-  .cal-chip { border-radius: 4px; padding: 2px 5px; margin-bottom: 2px; font-size: 10.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-  .cal-chip.confirmed { background: #dcf5e6; color: #1a7a3e; }
-  .cal-chip.tentative { background: var(--cream); color: #8a6d00; border: 1px dashed #c7ae4a; }
-  .cal-chip.more { background: none; color: var(--teal); font-weight: 700; cursor: pointer; }
+  .cal-chip {
+    border-radius: 4px; padding: 2px 5px 2px 4px; margin-bottom: 2px; font-size: 10.5px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+    border-left: 3px solid;
+  }
+  /* Colour = CATEGORY (Visual Density & Colour Redesign, confirmed Sept
+     2026). It used to mean confirmed-vs-tentative, which spent the
+     strongest signal on the one thing a dot carries perfectly well.
+     Status is now .cal-chip-dot below, independent of colour, per the
+     brief's explicit "don't collapse status into the color scheme".
+
+     Palette is the brief's own first pass and is expected to be tuned
+     after real use: flooring/screed blue, blinds green, lead visits
+     teal, to-dos purple. Backgrounds stay pale so several chips in one
+     cell read as a list rather than a stack of blocks; the left border
+     carries the saturated version of the same hue, which is what
+     actually reads at a glance down a column. */
+  /* Not scoped to .cal-chip on purpose — the legend keys below use the
+     SAME rules, so a legend swatch and the chips it describes are
+     literally the same colour by construction rather than by two
+     declarations someone has to remember to keep in step. */
+  .cal-cat-flooring { background: #e3edfb; color: #1c4b8a; border-left-color: #4a7fc1; }
+  .cal-cat-blinds   { background: #e2f3e8; color: #1a6b3a; border-left-color: #4fa06a; }
+  .cal-cat-lead     { background: #dff2f4; color: #106a72; border-left-color: #3aa0aa; }
+  .cal-cat-todo     { background: #efe6fb; color: #5b2b9e; border-left-color: #8a5cc9; }
+  .cal-cat-other    { background: #eef0f3; color: #4b5563; border-left-color: #9aa3af; }
+  /* Today is a highlight ON TOP of the category colour, never instead
+     of it — the brief is explicit that urgent/today must not consume a
+     category colour of its own. */
+  .cal-chip.is-today { box-shadow: 0 0 0 1.5px var(--coral); }
+  /* Status: solid = confirmed, hollow = tentative. Same two states the
+     colour used to carry, now a 6px marker that works alongside any
+     category colour. Leads and to-dos render no dot at all — neither
+     has a confirmation concept, and an empty circle would imply one. */
+  .cal-chip-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle; border: 1.5px solid currentColor;
+  }
+  .cal-chip-dot.confirmed { background: currentColor; }
+  .cal-chip-dot.tentative { background: transparent; }
   /* Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — own
      colours (blue/purple), distinct from the confirmed/tentative
      green-vs-cream job palette, so a mixed day reads at a glance as
@@ -773,8 +817,9 @@
      click-only, never draggable (calLeadChip/calTodoChip's own
      comment, calendar.js, explains why drag was deliberately not
      extended to them). */
-  .cal-chip-lead { background: #e8f0fe; color: #1a4d8f; cursor: pointer; }
-  .cal-chip-todo { background: #f3e8fd; color: #6b2fa0; cursor: pointer; }
+  /* .cal-chip-lead/.cal-chip-todo retired — leads and to-dos are two of
+     the four categories now (.cal-cat-lead/.cal-cat-todo above), so
+     they no longer need their own one-off rules. */
   @media (max-width: 700px) {
     .cal-day { font-size: 9.5px; }
     .cal-daynum { font-size: 9.5px; }

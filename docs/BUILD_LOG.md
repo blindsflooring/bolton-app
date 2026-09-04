@@ -74,6 +74,32 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-09
+
+Installation Calendar — visual density & colour redesign (brief, confirmed Sept 2026).
+
+### What shipped
+- **Colour now means WHAT KIND of work an entry is, not whether it's confirmed.** Flooring/screed blue, blinds green, lead visits teal, to-dos purple, and a neutral grey for a booked job with no lines on it yet. Status moved to a small dot on each chip — solid confirmed, hollow tentative — independent of the colour, per the brief's explicit "don't collapse status into the color scheme".
+- **No more "+N more".** Every entry on a day is rendered. Day cells grow to fit, and each week row is sized by its busiest day.
+- **Today is a highlight on top of the category colour**, never instead of it — a coral ring around the chip, so "what's happening today" pops without spending a category colour on it.
+- **The legend was rebuilt** and now reuses the chips' own CSS rules, so a swatch and the chips it describes are the same colour by construction rather than by two declarations someone has to keep in step.
+- Click behaviour is untouched: an entry opens its job, empty space in a cell opens the day list.
+
+### Why (root causes, decisions, rejected alternatives)
+- **The brief asked to confirm a category field exists before building the colour logic. It does** — `flooring_types`, computed server-side per quote from its own lines. That field was added for the Order Index redesign's client list and deliberately kept when that redesign was reverted; it turned out to be exactly what this needed, so no data-tagging step was required.
+- **A genuine conflict between two confirmed requirements, resolved rather than silently picked.** "Fits one screen, no scrolling" (Sept 2026, closed as an unmet requirement) forced a fixed total grid height split into six equal rows — and a row that can never grow is precisely *why* entries had to hide behind "+N more". The measurement is kept but repurposed as a per-row **minimum** instead of a hard total: a quiet month still fills exactly the space that's really there and needs no scrolling, while a busy week grows its own row and the page scrolls — which is what the brief's own Google Calendar reference does too. Flagged to Burgert rather than assumed, since it partially reverses an earlier confirmed decision.
+- **Screed shares the flooring blue** rather than taking a fifth colour, following the brief's own palette. A screed day is already labelled "Screed" in its chip text, so it stays distinguishable without spending another colour; `chip.dayType` is still carried, so splitting it later is one line.
+- **A job carrying both blinds and flooring counts as flooring**, not blinds — the installer's day is a flooring day. Only a job with blinds and no floor is green.
+- **`calChipCategory()` is one function**, not a class picked inline at each of the three render sites, so a chip's colour and the day list can never disagree about what a job is.
+
+### Verified
+- Real-browser measurement with a deliberately busy day (two flooring installs at different statuses, a blinds install, a screed work-day, a lead visit and a to-do — six entries, where the old cap was three): all six render, none clipped, the cell doesn't scroll internally, and that row grew to 142px against a quiet row's 70px. Each category got its own class and a genuinely distinct colour; the screed day is blue and labelled Screed; job chips carry a status dot with both states present while the colour stays constant across them; leads and to-dos carry no dot; today's chip has the coral ring; and both click behaviours still work. 14 checks.
+
+### Open going into next session
+- The palette is the brief's own first pass and is expected to be tuned after a week or two of real scheduling.
+
+---
+
 ## 2026-09-08 (2)
 
 Order Index reverted to the pre-redesign layout, keeping only the stage tiles (Burgert: "Can we change it back to the way it was before this last change. I do like the coloured tiles at the top with the amounts and stats, maybe just a little smaller. Please the way the order index was shown before is the best of all so far").
