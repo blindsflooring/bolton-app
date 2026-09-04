@@ -90,7 +90,13 @@ let products = [];
 // flagging a screed product or a reducer in the price book is what
 // turns these questions on, with no frontend change.
 let portalInfo = { screed_available: false, job_types: [], trim_available: false, trim_name: '', door_width_m: 0.9, stairwell_notice: '' };
-let view = 'estimate';   // 'estimate' | 'statement'
+let view = 'estimate';   // 'estimate' | 'statement' | 'commission'
+// Potential Commission (confirmed Sept 2026, Burgert's own words: "I
+// also need a tab to show the builder his potensial commision that will
+// be paid to him"). Cached from the statement fetch — the two tabs read
+// the SAME /builder/{slug}/statement response, so a builder can never
+// see one figure on one tab and a different one on the other.
+let statementData = null;
 const MAX_PHOTOS = 5;   // Quote Photo Attachments pilot (confirmed Aug 2026) — mirrors MAX_PHOTOS_PER_SUBMISSION in main.py; server-side is the real enforcement, this is just so a builder sees the limit before hitting it
 
 async function init() {
@@ -119,6 +125,7 @@ function renderNav() {
   return `<div class="nav">
     <a onclick="view='estimate'; renderEstimateForm();" style="${view==='estimate' ? 'background:#1a2b3c; color:white;' : ''}">New Estimate</a>
     <a onclick="view='statement'; renderStatement();" style="${view==='statement' ? 'background:#1a2b3c; color:white;' : ''}">My Statement</a>
+    <a onclick="view='commission'; renderCommission();" style="${view==='commission' ? 'background:#1a2b3c; color:white;' : ''}">My Commission</a>
   </div>`;
 }
 
@@ -290,6 +297,7 @@ async function renderStatement() {
   try {
     const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/statement`);
     const data = await res.json();
+    statementData = data;
     const statusClass = (s) => s.includes('earned') ? 'status-earned' : s.includes('awaiting') ? 'status-pending' : 'status-estimate';
     const rows = data.estimates.length ? data.estimates.map(e => `
       <tr>
@@ -321,6 +329,68 @@ async function renderStatement() {
           </table>
         </div>
       </div>`;
+  } catch (e) {
+    document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
+  }
+}
+
+// Potential Commission (confirmed Sept 2026). Three deliberately
+// separate sections, not one blended "potential" total — they are
+// different promises and a builder should never read them as one pot of
+// money. Earned = the job is done and paid for; In progress = it IS a
+// real job, priced off the real quote, waiting only on the client's
+// final payment; Coming up = still just an estimate, which the client
+// may never go ahead with. The backend splits them the same way and for
+// the same reason (see builder_statement(), main.py).
+async function renderCommission() {
+  document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
+  try {
+    if (!statementData) {
+      const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/statement`);
+      statementData = await res.json();
+    }
+    const d = statementData;
+    const rand = (n) => 'R' + (n || 0).toFixed(2);
+    const dateStr = (iso) => iso ? new Date(iso).toLocaleDateString('en-ZA') : '';
+    const earned = d.estimates.filter(e => e.commission);
+    const inProgress = d.estimates.filter(e => e.potential_basis === 'in_progress');
+    const pipeline = d.estimates.filter(e => e.potential_basis === 'pipeline');
+
+    const section = (title, note, rows, amountOf, extraCell) => `
+      <div class="card">
+        <h3 style="margin-top:0;">${title}</h3>
+        <p class="muted" style="margin-top:0; font-size:12px;">${note}</p>
+        ${rows.length ? `<div style="overflow-x:auto;"><table>
+          <thead><tr><th>Client</th><th>Job value</th><th>Commission</th>${extraCell ? '<th>Status</th>' : ''}</tr></thead>
+          <tbody>${rows.map(e => `
+            <tr>
+              <td>${e.client_name}<br><span class="muted" style="font-size:11px;">${dateStr(e.created_at)}</span></td>
+              <td>${rand(e.quoted_price_incl_vat)}<br><span class="muted" style="font-size:11px;">incl VAT</span></td>
+              <td><b>${rand(amountOf(e))}</b></td>
+              ${extraCell ? `<td>${extraCell(e)}</td>` : ''}
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<p class="muted" style="margin:0;">Nothing here yet.</p>'}
+      </div>`;
+
+    document.getElementById('app').innerHTML = `
+      <h1>Hi ${builderName}</h1>
+      ${renderNav()}
+      <div class="card">
+        <p style="margin:0 0 8px;">You earn <b>${(d.commission_pct*100).toFixed(1)}%</b> of each job's value excluding VAT. It becomes yours once the client has paid Blinds &amp; Flooring Studio in full — not when the quote goes out.</p>
+        <div class="price-row"><span>Earned so far</span><span><b>${rand(d.total_commission_earned)}</b></span></div>
+        <div class="price-row"><span>&nbsp;&nbsp;of that, already paid to you</span><span>${rand(d.total_commission_paid_out)}</span></div>
+        <div class="price-row"><span>&nbsp;&nbsp;still to be paid to you</span><span><b>${rand(d.total_commission_awaiting_payout)}</b></span></div>
+        <div class="price-row" style="margin-top:8px;"><span>On jobs in progress</span><span>${rand(d.total_commission_in_progress)}</span></div>
+        <div class="price-row"><span>On estimates not yet confirmed</span><span>${rand(d.total_commission_pipeline)}</span></div>
+      </div>
+      ${section('Earned', 'These jobs are finished and the client has paid in full — this commission is yours.', earned,
+                e => e.commission,
+                e => e.commission_paid
+                  ? `<b style="color:#166534;">Paid to you ✓</b>${e.commission_paid_at ? `<br><span class="muted" style="font-size:11px;">${dateStr(e.commission_paid_at)}</span>` : ''}`
+                  : '<b>Awaiting payout</b>')}
+      ${section('In progress', 'Real jobs going ahead, priced off the actual quote. This commission is paid once the client settles their final payment.', inProgress, e => e.potential_commission, null)}
+      ${section('Coming up', 'Estimates you have submitted that have not become jobs yet. This is what the commission would be if the client goes ahead — it is not owed to you yet, and the final quote can differ from the estimate.', pipeline, e => e.potential_commission, null)}
+      <p class="muted" style="font-size:12px;">Questions about any of these? Give Blinds &amp; Flooring Studio a call.</p>`;
   } catch (e) {
     document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
   }
@@ -403,6 +473,9 @@ async function confirmOrder(estimateId, btn) {
     // ONE estimate at a time, so swapping the button in place is enough
     // there — no need to re-fetch or navigate the builder away from what
     // they were just looking at.
+    // Confirming moves this estimate from "Coming up" to "In progress"
+    // on the commission tab, so the cached statement is now stale.
+    statementData = null;
     if (view === 'statement') {
       renderStatement();
     } else {

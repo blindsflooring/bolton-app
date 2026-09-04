@@ -4459,6 +4459,125 @@ def mark_builder_commission_paid(estimate_id: int, paid: bool = True,
         return est
 
 
+@app.get("/admin/builder-portal/settings")
+def builder_portal_settings(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """What the public portal currently offers, and what it COULD offer
+    (confirmed Sept 2026, Burgert: "Screed and the trims still does not
+    pull into the builders section").
+
+    Root cause was not the pricing work — that was built and verified
+    — but where the two switches live. Exposing a floor prep product
+    meant finding the right screed row in the Supplier Console (which
+    doesn't show pricing_type, so nothing on screen says which row IS
+    the screed one) and the trim meant a tick buried in the Price Book's
+    trim tree. Neither is on the Builder Portal screen, which is where
+    someone setting up the builder portal actually is. This endpoint
+    backs a setup panel there instead.
+
+    Deliberately also reports what is NOT set, in plain words the panel
+    can show directly: an unset floor prep is the difference between
+    the portal asking about tiles and the portal silently pricing prep
+    at R0, and that state should be visible rather than something you
+    discover by testing the public link yourself."""
+    with Session(engine) as session:
+        screed_options = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.tenant_id == tenant_id, FlooringProduct.pricing_type == "screed",
+            ).order_by(FlooringProduct.display_order, FlooringProduct.product_name)
+        ).all()
+        # Reducers only, matching _builder_portal_trim()'s own filter
+        # rather than restating the rule — Burgert's "Only one trim,
+        # Reducing profile per door width opening" lives in one place.
+        trim_options = session.exec(
+            select(TrimProduct).where(
+                TrimProduct.tenant_id == tenant_id, TrimProduct.category == "reducer",
+            ).order_by(TrimProduct.product_name)
+        ).all()
+        ranges = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.tenant_id == tenant_id,
+                FlooringProduct.available_to_builder_portal == True,
+                FlooringProduct.pricing_type != "screed",
+            ).order_by(FlooringProduct.product_name)
+        ).all()
+        screed = _builder_portal_screed(session, tenant_id)
+        trim = _builder_portal_trim(session, tenant_id)
+        settings = get_settings(session, tenant_id)
+        return {
+            "screed_product_id": screed.id if screed else None,
+            "screed_options": [{"id": p.id, "name": p.product_name, "supplier": p.supplier} for p in screed_options],
+            "trim_product_id": trim.id if trim else None,
+            "trim_options": [{"id": t.id, "name": t.product_name, "profile_code": t.profile_code, "supplier": t.supplier} for t in trim_options],
+            "door_width_m": settings.builder_portal_door_width_m,
+            "ranges": sorted({p.product_name for p in ranges}),
+        }
+
+
+@app.put("/admin/builder-portal/settings")
+def update_builder_portal_settings(screed_product_id: int = None, trim_product_id: int = None,
+                                    door_width_m: float = None,
+                                    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                                    username: str = Depends(get_current_username)):
+    """Sets the portal's floor prep product and reducer trim in one
+    place. -1 means "none" (an explicit clear), since a plain missing
+    parameter already means "leave this alone" for every other admin
+    endpoint here and both meanings are genuinely needed.
+
+    Clears the flag off whatever was previously selected before setting
+    the new one, in the same transaction. The portal resolves ONE screed
+    and ONE reducer (_builder_portal_screed / _builder_portal_trim), so
+    leaving two flagged wouldn't add a second option — it would just
+    make which one wins depend on display order or alphabetical order.
+    Doing the swap here rather than asking the frontend to make two
+    calls also means it can't half-apply if the second one fails."""
+    with Session(engine) as session:
+        changes = []
+        if screed_product_id is not None:
+            current = _builder_portal_screed(session, tenant_id)
+            new_product = None
+            if screed_product_id != -1:
+                new_product = get_or_404(session, FlooringProduct, screed_product_id, tenant_id, "Screed product")
+                if new_product.pricing_type != "screed":
+                    raise HTTPException(400, f"{new_product.product_name} isn't a screed product — floor prep has to be priced off a screed row, not a flooring material.")
+            if current and (not new_product or current.id != new_product.id):
+                current.available_to_builder_portal = False
+                session.add(current)
+            if new_product:
+                new_product.available_to_builder_portal = True
+                session.add(new_product)
+            changes.append(("builder_portal_screed", current.product_name if current else "(none)",
+                            new_product.product_name if new_product else "(none)"))
+        if trim_product_id is not None:
+            current = _builder_portal_trim(session, tenant_id)
+            new_trim = None
+            if trim_product_id != -1:
+                new_trim = get_or_404(session, TrimProduct, trim_product_id, tenant_id, "Trim product")
+                if new_trim.category != "reducer":
+                    raise HTTPException(400, f"{new_trim.product_name} is a {new_trim.category.replace('_', ' ')}, not a reducing profile — the portal only offers reducers, one per door opening.")
+            if current and (not new_trim or current.id != new_trim.id):
+                current.available_to_builder_portal = False
+                session.add(current)
+            if new_trim:
+                new_trim.available_to_builder_portal = True
+                session.add(new_trim)
+            changes.append(("builder_portal_trim", current.product_name if current else "(none)",
+                            new_trim.product_name if new_trim else "(none)"))
+        if door_width_m is not None:
+            if door_width_m <= 0:
+                raise HTTPException(400, "A door opening has to be wider than 0m.")
+            settings = get_settings(session, tenant_id)
+            changes.append(("builder_portal_door_width_m", settings.builder_portal_door_width_m, door_width_m))
+            settings.builder_portal_door_width_m = door_width_m
+            session.add(settings)
+        for field, old, new in changes:
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="BusinessSettings", entity_id=0,
+                field=field, old_value=str(old), new_value=str(new),
+            ))
+        session.commit()
+        return {"changed": [c[0] for c in changes]}
+
+
 @app.get("/admin/builders/report")
 def builders_report(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     """Builders Management Console (confirmed Sept 2026) — Burgert's own
@@ -5233,11 +5352,43 @@ def builder_statement(slug: str):
         ).all()
         result = []
         total_earned = 0.0
+        # Potential Commission (confirmed Sept 2026, Burgert's own words:
+        # "I also need a tab to show the builder his potensial commision
+        # that will be paid to him"). Deliberately split into two
+        # separate figures rather than one blended "potential" number,
+        # because they are not the same promise:
+        #
+        #   in_progress — already a real job, priced off the REAL quote's
+        #   ex-VAT total, waiting only on the client's final payment.
+        #   Short of the client not paying, this is money coming.
+        #
+        #   pipeline — still just an estimate. Priced off the estimate's
+        #   own ex-VAT snapshot, because there is no quote yet. The
+        #   client may never go ahead, and even if they do the final
+        #   quote can differ from what was estimated.
+        #
+        # Showing them added together would tell a builder he is owed
+        # money for work nobody has bought yet. Both are computed with
+        # the same builder.commission_pct _builder_commission_for_quote()
+        # uses for the earned figure — one rate, never a second copy.
+        total_in_progress = 0.0
+        total_pipeline = 0.0
         for est in estimates:
             quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
             status, commission = _builder_commission_for_quote(session, quote, builder.tenant_id, builder)
+            potential, potential_basis = 0.0, ""
             if commission:
                 total_earned += commission
+            elif quote:
+                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == builder.tenant_id)).all()
+                quote_ex_vat = (sum(l.line_total for l in lines) + quote.transport_levy) * (1 - quote.discount_pct)
+                potential = round(quote_ex_vat * builder.commission_pct, 2)
+                potential_basis = "in_progress"
+                total_in_progress += potential
+            else:
+                potential = round(est.quoted_price_ex_vat * builder.commission_pct, 2)
+                potential_basis = "pipeline"
+                total_pipeline += potential
             result.append({
                 "id": est.id, "client_name": est.client_name, "site_address": est.site_address,
                 "product_name": est.product_name, "area_m2": est.area_m2,
@@ -5257,11 +5408,32 @@ def builder_statement(slug: str):
                 # Burgert does.
                 "breakdown": _builder_estimate_breakdown(est),
                 "job_type_label": BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type),
+                # Potential Commission (confirmed Sept 2026) — 0.0 on an
+                # estimate whose commission is already EARNED, so the
+                # two can never be read as stacking on top of each
+                # other for the same job.
+                "potential_commission": potential,
+                "potential_basis": potential_basis,
+                # Whether we have actually paid it out yet. The builder
+                # can already see the amount; not being able to see
+                # whether it has been paid is the obvious next question,
+                # and it is the same commission_paid flag Burgert's own
+                # financials view reads.
+                "commission_paid": est.commission_paid,
+                "commission_paid_at": est.commission_paid_at.isoformat() if est.commission_paid_at else None,
             })
+        paid_out = round(sum(r["commission"] for r in result if r["commission"] and r["commission_paid"]), 2)
         return {
             "builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2),
             "commission_pct": builder.commission_pct,
             "stairwell_notice": BUILDER_PORTAL_STAIRWELL_NOTICE,
+            # Potential Commission (confirmed Sept 2026) — see the
+            # comment on the loop above for why in-progress and pipeline
+            # are two figures and not one.
+            "total_commission_in_progress": round(total_in_progress, 2),
+            "total_commission_pipeline": round(total_pipeline, 2),
+            "total_commission_paid_out": paid_out,
+            "total_commission_awaiting_payout": round(total_earned - paid_out, 2),
         }
 
 

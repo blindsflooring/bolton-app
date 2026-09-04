@@ -2158,6 +2158,15 @@ let sessionLogRange = 'all';    // 'all' | 'week' | 'month' — which quick filt
 let builderPortalBuilders = [];
 let builderPortalEstimates = [];
 let builderPortalReport = [];   // Builders Management Console (confirmed Sept 2026) — per-builder rollup, GET /admin/builders/report
+// What the public portal currently offers (confirmed Sept 2026, Burgert:
+// "Screed and the trims still does not pull into the builders section").
+// The pricing was built and verified; the two switches that turn it on
+// just lived somewhere he had no reason to look — the screed one in the
+// Supplier Console (which doesn't even display pricing_type, so nothing
+// says which row IS the screed), the trim one inside the Price Book's
+// trim tree. Surfaced here instead, on the screen you're already on when
+// you're setting up the builder portal.
+let builderPortalSettings = null;
 let builderPortalSubview = 'builders';   // 'builders' | 'estimates' | 'report'
 
 function sessionLogDateRange(range) {
@@ -4286,14 +4295,16 @@ async function loadBuilderPortalAdmin() {
     // (renderBuilderPortalTable() below just re-renders from state, no
     // per-tab-click fetch), same pattern this screen already used for
     // Builders/Estimates before this brief.
-    const [buildersRes, estimatesRes, reportRes] = await Promise.all([
+    const [buildersRes, estimatesRes, reportRes, settingsRes] = await Promise.all([
       fetch(`${API}/admin/builders`),
       fetch(`${API}/admin/builder-estimates`),
       fetch(`${API}/admin/builders/report`),
+      fetch(`${API}/admin/builder-portal/settings`),
     ]);
     builderPortalBuilders = buildersRes.ok ? await buildersRes.json() : [];
     builderPortalEstimates = estimatesRes.ok ? await estimatesRes.json() : [];
     builderPortalReport = reportRes.ok ? await reportRes.json() : [];
+    builderPortalSettings = settingsRes.ok ? await settingsRes.json() : null;
     renderBuilderPortalTable();
   });
 }
@@ -4662,11 +4673,72 @@ async function deleteAllBuilderEstimates(builderId, builderName, count) {
   await loadBuilderPortalAdmin();
 }
 
+// What the portal offers, and the two switches that turn the extras on
+// (confirmed Sept 2026). Deliberately states what is NOT set in plain
+// words: with no floor prep product chosen, the portal doesn't ask about
+// tiles at all, which is the difference between a builder getting a real
+// over-tiles price and getting one with no prep in it. That state should
+// be visible here, not something you find out by testing the public link.
+function renderBuilderPortalSetupCard() {
+  const st = builderPortalSettings;
+  if (!st) return '';
+  const opt = (o, selectedId, label) =>
+    `<option value="${o.id}" ${o.id === selectedId ? 'selected' : ''}>${label(o)}</option>`;
+  const screedOn = st.screed_product_id != null;
+  const trimOn = st.trim_product_id != null;
+  const noRanges = 'none &mdash; <span style="color:var(--coral);">builders cannot get any estimate at all until at least one range is ticked in the Supplier Console</span>';
+  return `
+    <div class="card">
+      <h3 style="margin-top:0;">What the portal offers</h3>
+      <p class="muted" style="margin-top:0;">Builders see these when they open their link. Floors come from the Supplier Console's "Builder Portal" tick (max 2 ranges); the two extras below are set here.</p>
+      <p style="margin:0 0 10px;"><b>Floors:</b> ${st.ranges.length ? st.ranges.join(', ') : noRanges}</p>
+      <div class="grid">
+        <div class="field">
+          <label>Floor preparation (screed)</label>
+          <select id="bps_screed" onchange="saveBuilderPortalSetting('screed_product_id', this.value)">
+            <option value="-1" ${!screedOn ? 'selected' : ''}>Not offered</option>
+            ${st.screed_options.map(o => opt(o, st.screed_product_id, o => `${o.name} (${o.supplier})`)).join('')}
+          </select>
+          <p class="muted" style="font-size:12px; margin:4px 0 0;">${screedOn
+            ? 'The portal asks whether the floor is going over tiles, and prices this prep on top when it is.'
+            : '<span style="color:var(--coral);">Off &mdash; the portal never asks about tiles, so a builder quoting a tiled floor gets a price with no prep in it.</span>'}</p>
+        </div>
+        <div class="field">
+          <label>Reducer trim (per door opening)</label>
+          <select id="bps_trim" onchange="saveBuilderPortalSetting('trim_product_id', this.value)">
+            <option value="-1" ${!trimOn ? 'selected' : ''}>Not offered</option>
+            ${st.trim_options.map(o => opt(o, st.trim_product_id, o => `${o.name}${o.profile_code ? ' (' + o.profile_code + ')' : ''}`)).join('')}
+          </select>
+          <p class="muted" style="font-size:12px; margin:4px 0 0;">${trimOn
+            ? 'The portal asks how many door openings the floor runs through and adds one of these at each.'
+            : 'Off &mdash; the portal does not ask about door openings.'}${st.trim_options.length ? '' : ' <span style="color:var(--coral);">No reducing profiles in the trim price book yet.</span>'}</p>
+        </div>
+        <div class="field">
+          <label>Metres per door opening</label>
+          <input id="bps_door_width" type="number" step="0.01" min="0.01" value="${st.door_width_m}"
+                 onchange="saveBuilderPortalSetting('door_width_m', this.value)">
+          <p class="muted" style="font-size:12px; margin:4px 0 0;">Standard door opening width. Builders count doorways; this turns that into linear metres of trim.</p>
+        </div>
+      </div>
+      <p class="muted" style="font-size:12px;">Stairs are always excluded &mdash; every builder is told on the portal that we quote staircases as a company.</p>
+    </div>`;
+}
+
+async function saveBuilderPortalSetting(field, value) {
+  const res = await fetch(`${API}/admin/builder-portal/settings?${new URLSearchParams({[field]: value})}`, { method: 'PUT' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || 'Could not save that.');
+  }
+  await loadBuilderPortalAdmin();
+}
+
 function renderBuilderPortalTable() {
   const el = document.getElementById('landing');
   const tab = (view, label) => `<button onclick="builderPortalSubview='${view}'; renderBuilderPortalTable();" style="${builderPortalSubview===view ? 'background:var(--teal); color:white;' : ''}">${label}</button>`;
 
   const buildersHtml = `
+    ${renderBuilderPortalSetupCard()}
     <div class="card">
       <h3 style="margin-top:0;">Add a builder</h3>
       <div class="grid">
