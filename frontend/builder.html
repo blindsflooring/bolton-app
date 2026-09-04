@@ -406,6 +406,15 @@ async function printEstimate(estimateId) {
       <div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 24px; color: #1a2b3c;">
         <div style="display:flex; justify-content:space-between; border-bottom: 2px solid #1a2b3c; padding-bottom: 12px; margin-bottom: 20px;">
           <div>
+            <!-- Logo on builder documents (confirmed Sept 2026). A
+            custom logo uploaded in Business Settings wins; otherwise
+            the same default image the app's own header ships with,
+            served as a sibling static file rather than a second copy of
+            a 28KB base64 string pasted into this page. onerror hides
+            the element outright, so a missing file can never leave a
+            broken-image icon sitting on a document that goes to a
+            client. -->
+            <img src="${d.logo_base64 || 'logo.png'}" alt="" style="height:36px; display:block; margin-bottom:8px;" onerror="this.style.display='none';">
             ${d.business_name ? `<div style="font-size:16px; font-weight:800;">${d.business_name}</div>` : ''}
             <div style="font-size:11px; color:#6b7280; line-height:1.5;">
               ${d.address ? `${d.address}<br>` : ''}

@@ -5146,6 +5146,23 @@ def print_builder_estimate(slug: str, estimate_id: int):
             "business_name": settings.business_name, "address": settings.address,
             "phone": settings.phone, "email": settings.email, "vat_number": settings.vat_number,
             "bank_details": settings.bank_details,
+            # Logo on builder documents (confirmed Sept 2026, Burgert:
+            # "Can we also get my companies logo baked into those
+            # documents"). Staff quotes/invoices already carry it, but
+            # they read it out of the app's own header in the DOM
+            # (buildPrintDocHtml(), shared.js) — builder.html has no
+            # header, no shared.js and no session, so the only way it
+            # can have the logo is to be handed it here.
+            #
+            # Genuinely safe to serve publicly: this is the same logo
+            # printed on every quote that already goes out to clients,
+            # and it is the ONE image this endpoint returns — still no
+            # cost, margin or rate, same hand-picked-fields rule as the
+            # rest of this section. Empty unless a custom logo has been
+            # uploaded in Business Settings; builder.html falls back to
+            # the shipped default (logo.png) in that case, so the
+            # documents are never logo-less either way.
+            "logo_base64": settings.logo_base64,
             "builder_name": builder.name,
             "client_name": est.client_name, "site_address": est.site_address,
             "product_name": est.product_name, "area_m2": est.area_m2,
