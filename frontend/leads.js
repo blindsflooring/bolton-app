@@ -86,6 +86,40 @@ async function reassignLead(leadId, newAssignee, selectEl) {
   renderLeadsTable();
 }
 
+// Booking a lead onto the calendar (confirmed Sept 2026, Burgert:
+// "Theres no way to book a date for anyone"). Inline on the row, saved
+// on change — deliberately the same shape as the assignee dropdown
+// right beside it, because these two fields together ARE the booking:
+// a date, and whose day it lands in. Both were technically settable
+// before this, but only by opening the lead and going through a
+// whole-record edit form, which is why in practice nothing got booked.
+function leadVisitDateHtml(l) {
+  return `<input type="date" value="${l.visit_date || ''}"
+    onclick="event.stopPropagation();"
+    onchange="event.stopPropagation(); bookLeadVisit(${l.id}, this.value, this)"
+    style="font-size:12px; padding:2px 4px;">`;
+}
+
+async function bookLeadVisit(leadId, visitDate, inputEl) {
+  const params = new URLSearchParams({ visit_date: visitDate || '' });
+  const res = await fetch(`${API}/leads/${leadId}/book-visit?${params}`, {method: 'POST'});
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || 'Could not book that date.');
+    // Put the field back to what the server still holds, rather than
+    // leaving a date on screen that was never saved.
+    const lead = leadsCache.find(l => l.id === leadId);
+    if (inputEl && lead) inputEl.value = lead.visit_date || '';
+    return;
+  }
+  const saved = await res.json();
+  const lead = leadsCache.find(l => l.id === leadId);
+  if (lead) { lead.visit_date = saved.visit_date; lead.assigned_to = saved.assigned_to; }
+  // Deliberately no full re-render: re-rendering the table on every
+  // date change would close the Past Leads section and throw away the
+  // search box, for a change already reflected in the input itself.
+}
+
 function leadAssigneeSelectHtml(l) {
   return `<select onclick="event.stopPropagation();" onchange="event.stopPropagation(); reassignLead(${l.id}, this.value, this)" style="font-size:12px; padding:2px 4px;">
     ${Object.keys(LEAD_ASSIGNEE_LABEL).map(k => `<option value="${k}" ${l.assigned_to===k?'selected':''}>${LEAD_ASSIGNEE_LABEL[k]}</option>`).join('')}
@@ -115,6 +149,7 @@ function leadRowHtml(l) {
       <td data-label="Contact">${l.contact || '—'}</td>
       <td data-label="Source">${l.source || '—'}</td>
       <td data-label="Assigned">${leadAssigneeSelectHtml(l)}</td>
+      <td data-label="Visit">${leadVisitDateHtml(l)}</td>
       <td data-label="Status">${leadStatusBadge(l)}</td>
       <td data-label="Next Action">${leadNextActionButton(l)}
         <!-- "Mark as Lost/No Result" on any lead (confirmed Sept 2026)
@@ -201,11 +236,11 @@ function renderLeadsTable(searchTerm) {
     shown.forEach(l => { const key = l.assigned_to || '(unassigned)'; (byAssignee[key] = byAssignee[key] || []).push(l); });
     const names = Object.keys(byAssignee).sort();
     bodyHtml = names.length ? names.map(key => `
-      <tr><td colspan="6" style="background:var(--bg,#f5f6f8); font-weight:700; padding:8px 10px;">${LEAD_ASSIGNEE_LABEL[key] || key} (${byAssignee[key].length})</td></tr>
+      <tr><td colspan="7" style="background:var(--bg,#f5f6f8); font-weight:700; padding:8px 10px;">${LEAD_ASSIGNEE_LABEL[key] || key} (${byAssignee[key].length})</td></tr>
       ${byAssignee[key].map(leadRowHtml).join('')}
-    `).join('') : '<tr><td colspan="6" class="muted">No leads match.</td></tr>';
+    `).join('') : '<tr><td colspan="7" class="muted">No leads match.</td></tr>';
   } else {
-    bodyHtml = shown.length ? shown.map(leadRowHtml).join('') : '<tr><td colspan="6" class="muted">No leads match.</td></tr>';
+    bodyHtml = shown.length ? shown.map(leadRowHtml).join('') : '<tr><td colspan="7" class="muted">No leads match.</td></tr>';
   }
 
   const tab = (key, label, count) => `<button onclick="setLeadsTab('${key}')" style="${leadsActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
@@ -229,7 +264,7 @@ function renderLeadsTable(searchTerm) {
         confirmed "track leads across the team" need. -->
         <button onclick="toggleLeadsGroupByPerson()" style="${leadsGroupByPerson ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">By Person</button>
       </div>
-      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Assigned</th><th>Status</th><th>Next Action</th></tr></thead>
+      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Assigned</th><th>Visit date</th><th>Status</th><th>Next Action</th></tr></thead>
       <tbody>${bodyHtml}</tbody></table>
     </div>
     ${renderPastLeadsCard(pastLeads)}
@@ -314,6 +349,49 @@ function openLeadDetailScreen(leadId) {
   renderLanding();
 }
 
+// The booking control on the lead itself (confirmed Sept 2026) — a
+// real, labelled "Site visit" block rather than a read-only line that
+// only appeared once a date somehow existed. Date and person together,
+// because booking a visit without saying whose day it lands in is what
+// "no way to book a date for anyone" was actually describing.
+function leadVisitBookingHtml(l, terminal) {
+  if (terminal) {
+    return l.visit_date ? `<p class="muted" style="margin:4px 0;">📅 Site visit was booked for ${dateOrDash(l.visit_date)}</p>` : '';
+  }
+  return `
+    <div style="margin:10px 0; padding:10px; background:var(--bg,#f5f6f8); border-radius:8px;">
+      <p style="margin:0 0 6px; font-weight:700;">📅 Site visit</p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="date" id="leadVisitDate" value="${l.visit_date || ''}">
+        <select id="leadVisitOwner">
+          ${Object.keys(LEAD_ASSIGNEE_LABEL).map(k => `<option value="${k}" ${l.assigned_to===k?'selected':''}>${LEAD_ASSIGNEE_LABEL[k]}</option>`).join('')}
+        </select>
+        <button class="primary" onclick="bookLeadVisitFromDetail(${l.id})">${l.visit_date ? 'Update booking' : 'Book visit'}</button>
+        ${l.visit_date ? `<button class="secondary" onclick="clearLeadVisit(${l.id})">Clear</button>` : ''}
+      </div>
+      <p class="muted" style="margin:6px 0 0; font-size:12px;">${l.visit_date
+        ? 'Booked — this shows on the Installation Calendar for whoever it is assigned to.'
+        : 'Pick a date and who is going; it appears on the Installation Calendar straight away.'}</p>
+    </div>`;
+}
+
+async function bookLeadVisitFromDetail(leadId) {
+  const visitDate = document.getElementById('leadVisitDate').value;
+  const owner = document.getElementById('leadVisitOwner').value;
+  if (!visitDate) { alert('Pick a date first.'); return; }
+  const params = new URLSearchParams({visit_date: visitDate, assigned_to: owner});
+  const res = await fetch(`${API}/leads/${leadId}/book-visit?${params}`, {method: 'POST'});
+  if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Could not book that visit.'); return; }
+  renderLeadDetail(document.getElementById('landing'));
+}
+
+async function clearLeadVisit(leadId) {
+  if (!confirm('Clear this booked visit? It comes off the calendar.')) return;
+  const res = await fetch(`${API}/leads/${leadId}/book-visit?visit_date=`, {method: 'POST'});
+  if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Could not clear that visit.'); return; }
+  renderLeadDetail(document.getElementById('landing'));
+}
+
 async function renderLeadDetail(el) {
   await renderWithRetry(el, 'Lead', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='leads'; renderLanding();">← Back to Leads</span><div class="card"><p class="muted">Loading...</p></div>`;
@@ -370,7 +448,7 @@ async function renderLeadDetail(el) {
     <div class="card">
       <h2>${l.name} ${leadStatusBadge(l)}</h2>
       <p style="margin:4px 0;">${l.contact || '<span class="muted">No contact on file</span>'}${l.source ? ' · ' + l.source : ''}</p>
-      ${l.visit_date ? `<p style="margin:4px 0;">📅 Site visit: <b>${dateOrDash(l.visit_date)}</b></p>` : ''}
+      ${leadVisitBookingHtml(l, terminal)}
       ${l.site_address ? `<p style="margin:4px 0;">📍 ${l.site_address.replace(/</g,'&lt;')}</p>` : ''}
       ${l.notes ? `<p class="muted" style="margin:4px 0;">${l.notes.replace(/</g,'&lt;')}</p>` : ''}
       ${nextActionHtml}

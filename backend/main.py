@@ -8627,6 +8627,70 @@ def change_lead_status(lead_id: int, body: LeadStatusRequest, tenant_id: str = D
         return lead
 
 
+@app.post("/leads/{lead_id}/book-visit")
+def book_lead_visit(lead_id: int, visit_date: str = "", assigned_to: str = None,
+                     tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Book a lead onto the calendar (confirmed Sept 2026, Burgert: "I
+    need the leads to be able to be booked into th ecalender where we
+    can. Theres no way to book a date for anyone").
+
+    Lead.visit_date and Lead.assigned_to both already existed, and the
+    calendar already drew a chip for any lead carrying a visit_date —
+    what was missing was any real ACT of booking. The date could only
+    be set by opening a lead, clicking a small "Edit details" text
+    link, and saving a whole-record edit form; the assignee was a
+    separate control on a different screen. Nothing anywhere said
+    "book this visit", so in practice nothing ever got booked.
+
+    Deliberately its own endpoint rather than the generic PUT /leads/
+    {id}:
+      - PUT takes a whole Lead and would have every caller restate
+        name/contact/source just to set a date.
+      - Booking a visit is a real commitment someone else will plan
+        their day around, so it earns its own AuditLog row (who booked
+        it, for whom, for when) in the same proof-of-work trail every
+        status change already writes to. A generic field edit records
+        nothing.
+
+    An empty visit_date clears the booking — the same call un-books,
+    so there is one path in and one path out, both logged. Terminal
+    leads are refused: a converted lead's work is a real job with its
+    own installation date, and a lost lead has nothing to visit."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        if lead.lead_status in ("converted", "lost"):
+            raise HTTPException(400, f"This lead is already {lead.lead_status} — there's nothing left to book a visit for.")
+        new_date = None
+        if visit_date:
+            try:
+                new_date = date.fromisoformat(visit_date)
+            except ValueError:
+                raise HTTPException(400, "That date isn't valid — use the date picker.")
+        old_date, old_owner = lead.visit_date, lead.assigned_to
+        lead.visit_date = new_date
+        if assigned_to is not None:
+            lead.assigned_to = assigned_to
+        session.add(lead)
+
+        def label(d, owner):
+            if not d:
+                return "no visit booked"
+            return f"{d.isoformat()}" + (f" ({owner})" if owner else "")
+
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Lead", entity_id=lead.id,
+            field="visit_date",
+            old_value=label(old_date, old_owner),
+            # Reads as a sentence in the lead's history, which renders
+            # new_value on its own (renderLeadDetail(), leads.js).
+            new_value=(f"Site visit booked for {label(new_date, lead.assigned_to)}"
+                       if new_date else "Site visit cleared"),
+        ))
+        session.commit()
+        session.refresh(lead)
+        return lead
+
+
 @app.get("/leads/{lead_id}/linkable-quotes")
 def linkable_quotes_for_lead(lead_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Real Order Index quotes this lead could be linked to (confirmed

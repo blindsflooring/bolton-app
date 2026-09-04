@@ -111,7 +111,8 @@ function calWorkDayChip(q, wd) {
 // Stage 3 scope. Both chip types are click-only: open the thing they
 // represent, same as every other cross-screen navigation in this app.
 function calLeadChip(l) {
-  return { type: 'lead', leadId: l.id, name: l.name, contact: l.contact, date: l.visit_date };
+  return { type: 'lead', leadId: l.id, name: l.name, contact: l.contact, date: l.visit_date,
+           assignedTo: l.assigned_to };
 }
 function calTodoChip(t) {
   return { type: 'todo', todoId: t.id, title: t.title, date: t.due_date };
@@ -240,7 +241,12 @@ function renderCalendarView(el) {
       ? `<div class="cal-chip more" onclick="event.stopPropagation(); toggleCalendarDayList('${dateStr}');">+${overflow} more</div>`
       : '';
     cellsHtml += `
-      <div class="cal-day ${otherMonth ? 'other-month' : ''} ${dateStr === todayStr ? 'today' : ''} ${jobs.length ? 'has-jobs' : ''}" data-date="${dateStr}" ${jobs.length ? `onclick="toggleCalendarDayList('${dateStr}')"` : ''}>
+      <!-- Booking leads onto the calendar (confirmed Sept 2026,
+      Burgert: "I need the leads to be able to be booked into th
+      ecalender where we can"). Every day is clickable now, not only
+      days that already have something on them — an empty day was
+      inert, which is exactly the day you want to book INTO. -->
+      <div class="cal-day ${otherMonth ? 'other-month' : ''} ${dateStr === todayStr ? 'today' : ''} ${jobs.length ? 'has-jobs' : ''}" data-date="${dateStr}" onclick="toggleCalendarDayList('${dateStr}')">
         <div class="cal-daynum">${d}</div>
         ${chipsHtml}${moreHtml}
       </div>`;
@@ -336,6 +342,51 @@ function toggleCalendarDayList(dateStr) {
 // calendarQuotesCache, so there's nothing worth a real navigation for
 // here, and staying on one screen keeps this fluid rather than adding
 // a click-through for something this small.
+// Book a lead visit straight onto the day you clicked (confirmed Sept
+// 2026). Offers only leads that are still active AND not already booked
+// — a lead already sitting on another day is moved by opening it, not by
+// silently double-booking it from here, and a converted/lost lead has
+// nothing left to visit (the backend refuses those outright too).
+function renderCalendarBookLeadHtml(dateStr) {
+  const bookable = calendarLeadsCache.filter(l =>
+    ['new', 'contacted', 'potential'].includes(l.lead_status) && !l.visit_date);
+  const alsoHere = calendarLeadsCache.filter(l => l.visit_date === dateStr);
+  if (!bookable.length) {
+    return `<p class="muted" style="margin:10px 0 0; font-size:12px;">${alsoHere.length
+      ? 'Every other active lead already has a visit booked.'
+      : 'No unbooked leads to put on this day.'}</p>`;
+  }
+  return `
+    <div style="margin-top:12px; padding:10px; background:var(--bg,#f5f6f8); border-radius:8px;">
+      <p style="margin:0 0 6px; font-weight:700;">📋 Book a lead visit on this day</p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="calBookLeadId">
+          ${bookable.map(l => `<option value="${l.id}">${l.name}${l.contact ? ' · ' + l.contact : ''}</option>`).join('')}
+        </select>
+        <select id="calBookLeadOwner">
+          ${Object.keys(LEAD_ASSIGNEE_LABEL).map(k => `<option value="${k}">${LEAD_ASSIGNEE_LABEL[k]}</option>`).join('')}
+        </select>
+        <button class="primary" onclick="bookLeadOntoCalendarDay('${dateStr}')">Book</button>
+      </div>
+    </div>`;
+}
+
+async function bookLeadOntoCalendarDay(dateStr) {
+  const leadId = document.getElementById('calBookLeadId').value;
+  const owner = document.getElementById('calBookLeadOwner').value;
+  const params = new URLSearchParams({visit_date: dateStr, assigned_to: owner});
+  const res = await fetch(`${API}/leads/${leadId}/book-visit?${params}`, {method: 'POST'});
+  if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Could not book that visit.'); return; }
+  const saved = await res.json();
+  // Patch the cache the calendar draws from rather than re-fetching the
+  // whole month — the chip has to appear immediately, and nothing else
+  // on screen has changed.
+  const cached = calendarLeadsCache.find(l => l.id === saved.id);
+  if (cached) { cached.visit_date = saved.visit_date; cached.assigned_to = saved.assigned_to; }
+  renderCalendarView(document.getElementById('landing'));
+  renderCalendarDayList(dateStr);
+}
+
 function renderCalendarDayList(dateStr) {
   const jobs = (calendarJobsForMonth(calendarViewYear, calendarViewMonth)[dateStr] || []);
   const dateObj = new Date(dateStr + 'T00:00:00');
@@ -349,12 +400,13 @@ function renderCalendarDayList(dateStr) {
   // "everything happening today," matching the brief's own "one shared
   // calendar" framing) but branch per type since they carry genuinely
   // different fields than a job chip.
+  const bookingHtml = renderCalendarBookLeadHtml(dateStr);
   const rows = jobs.length ? jobs.map(chip => {
     if (chip.type === 'lead') {
       return `<tr onclick="openLeadDetailScreen(${chip.leadId})" style="cursor:pointer;">
         <td data-label="Job">📋 Lead visit</td>
         <td data-label="Client">${(chip.name || '').replace(/</g,'&lt;')}</td>
-        <td data-label="Day">—</td>
+        <td data-label="Day">${chip.assignedTo ? (LEAD_ASSIGNEE_LABEL[chip.assignedTo] || chip.assignedTo) : '—'}</td>
         <td data-label="Description">${(chip.contact || '—').replace(/</g,'&lt;')}</td>
         <td data-label="Status"><span class="muted">Site visit</span></td>
       </tr>`;
@@ -381,6 +433,7 @@ function renderCalendarDayList(dateStr) {
       <h2>${dateObj.toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
       <table class="mobile-card-table"><thead><tr><th>Job</th><th>Client</th><th>Day</th><th>Description</th><th>Status</th></tr></thead>
       <tbody>${rows}</tbody></table>
+      ${bookingHtml}
     </div>`;
 }
 
