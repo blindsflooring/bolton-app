@@ -631,6 +631,21 @@ class Builder(SQLModel, table=True):
     # code change. _builder_commission_for_quote() reads THIS field now,
     # not the old constant.
     commission_pct: float = 0.06
+    # The builder's OWN logo (confirmed Sept 2026, Burgert: "make it that
+    # the builder can load his own logo, that will get and keep them
+    # engaded"). Uploaded by the builder themselves through their portal
+    # link — there is no login here to attach it to anything else, and
+    # the link IS this pilot's whole access control (see this class's own
+    # docstring above), so whoever holds the link can set it, exactly as
+    # they can already submit estimates as this builder.
+    #
+    # Stored as a base64 data URI rather than a file/Dropbox object, the
+    # same way BusinessSettings.logo_base64 already stores ours: it is
+    # small, it is needed inline on every portal load and on the printed
+    # estimate, and it has no archival/audit meaning the way a real job
+    # photo does. Capped hard on upload (see MAX_BUILDER_LOGO_BYTES,
+    # main.py) precisely because it rides inline on every page load.
+    logo_base64: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -1112,6 +1127,22 @@ class BusinessSettings(SQLModel, table=True):
     # which is also the same 900mm figure STAIRWELL_NOSING_MM already
     # uses for a closed-side tread width.
     builder_portal_door_width_m: float = 0.9
+    # Screed/trim resolve AUTOMATICALLY now (confirmed Sept 2026,
+    # Burgert: "screed and trims stoill arent on the builders quote
+    # form, its nowhere to be seen. Screed needs to be automatically
+    # added"). The first attempt required ticking a flag on the right
+    # price-book row before the portal would offer either one, which
+    # meant the feature shipped switched off and looked simply absent.
+    # _builder_portal_screed()/_builder_portal_trim() (main.py) now fall
+    # back to the obvious candidate in the price book when nothing is
+    # explicitly pinned, so the normal case needs no setup at all.
+    #
+    # These two are the OFF switch that model still needs: "no flag set"
+    # can no longer mean "don't offer it", because that is now the
+    # auto case. Default False = offer it whenever a suitable product
+    # exists, which is the behaviour actually asked for.
+    builder_portal_screed_off: bool = False
+    builder_portal_trim_off: bool = False
     carpet_glue_cost_per_20l_drum: float = 1232.00        # Teckem TEC 008 Premium Floor Covering Adhesive, ex VAT, 1-9 drum tier (Burgert draws on consignment at single-drum pricing — the 10+ bulk rate does not apply)
     # Part 3 finding (confirmed Aug 2026): the printed quote's logo was a
     # base64 image hardcoded in frontend/index.html, not pulled from

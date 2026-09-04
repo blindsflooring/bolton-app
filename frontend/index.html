@@ -4682,42 +4682,57 @@ async function deleteAllBuilderEstimates(builderId, builderName, count) {
 function renderBuilderPortalSetupCard() {
   const st = builderPortalSettings;
   if (!st) return '';
-  const opt = (o, selectedId, label) =>
-    `<option value="${o.id}" ${o.id === selectedId ? 'selected' : ''}>${label(o)}</option>`;
-  const screedOn = st.screed_product_id != null;
-  const trimOn = st.trim_product_id != null;
-  const noRanges = 'none &mdash; <span style="color:var(--coral);">builders cannot get any estimate at all until at least one range is ticked in the Supplier Console</span>';
+  // Three states per extra, and the panel has to distinguish them or it
+  // reads as broken: "Automatic" (the default — the portal picks the
+  // price book's own screed/reducer, no setup needed), a specific
+  // product pinned by hand, or deliberately off. The previous version
+  // showed only the pinned id, so the automatic case looked identical
+  // to nothing being set at all.
+  const line = (src, name, onText) => {
+    if (src === 'off') return '<span style="color:var(--coral);">Switched off — the portal does not offer this.</span>';
+    if (src === 'none_available') return '';
+    return `<b style="color:var(--teal);">${name}</b>${src === 'auto' ? ' <span class="muted">(picked automatically)</span>' : ' <span class="muted">(pinned)</span>'} — ${onText}`;
+  };
+  const mistypedWarning = st.screed_mistyped.length ? `
+    <p style="margin:8px 0 0; padding:8px; background:#fffbeb; border-left:3px solid #b45309; font-size:13px;">
+      ${st.screed_mistyped.map(m => m.name).join(', ')} ${st.screed_mistyped.length === 1 ? 'is' : 'are'} filed under the screed category but still priced as a flooring material,
+      so ${st.screed_mistyped.length === 1 ? 'it' : 'they'} cannot be used for floor prep — pricing off ${st.screed_mistyped.length === 1 ? 'it' : 'them'} would use the flat material rate with no over-tiles multiplier.
+      Fix in the Supplier Console by setting the pricing type to screed, and ${st.screed_mistyped.length === 1 ? 'it' : 'they'} will appear below.
+    </p>` : '';
   return `
     <div class="card">
       <h3 style="margin-top:0;">What the portal offers</h3>
-      <p class="muted" style="margin-top:0;">Builders see these when they open their link. Floors come from the Supplier Console's "Builder Portal" tick (max 2 ranges); the two extras below are set here.</p>
-      <p style="margin:0 0 10px;"><b>Floors:</b> ${st.ranges.length ? st.ranges.join(', ') : noRanges}</p>
+      <p class="muted" style="margin-top:0;">This is what a builder opening their link right now actually gets. Floor prep and the reducer trim are picked automatically from your price book — you only need the dropdowns below to override or switch one off.</p>
+      <p style="margin:0 0 4px;"><b>Floors:</b> ${st.ranges.length ? st.ranges.join(', ') : '<span style="color:var(--coral);">none — tick up to 2 ranges as "Builder Portal" in the Supplier Console, otherwise builders cannot get any estimate at all</span>'}</p>
+      <p style="margin:0 0 4px;"><b>Floor prep:</b> ${st.screed_options.length
+        ? line(st.screed_source, st.screed_product_name, 'the portal asks whether the floor goes over tiles and prices this on top when it does')
+        : '<span style="color:var(--coral);">no screed product in your price book, so over-tiles jobs cannot be priced at all</span>'}</p>
+      ${mistypedWarning}
+      <p style="margin:4px 0 10px;"><b>Reducer trim:</b> ${st.trim_options.length
+        ? line(st.trim_source, st.trim_product_name, 'the portal asks how many door openings the floor runs through and adds one at each')
+        : '<span style="color:var(--coral);">no reducing profile in your trim price book</span>'}</p>
       <div class="grid">
         <div class="field">
           <label>Floor preparation (screed)</label>
-          <select id="bps_screed" onchange="saveBuilderPortalSetting('screed_product_id', this.value)">
-            <option value="-1" ${!screedOn ? 'selected' : ''}>Not offered</option>
-            ${st.screed_options.map(o => opt(o, st.screed_product_id, o => `${o.name} (${o.supplier})`)).join('')}
+          <select onchange="saveBuilderPortalSetting('screed_product_id', this.value)">
+            <option value="0" ${st.screed_source === 'auto' || st.screed_source === 'none_available' ? 'selected' : ''}>Automatic (recommended)</option>
+            ${st.screed_options.map(o => `<option value="${o.id}" ${st.screed_source === 'pinned' && o.id === st.screed_product_id ? 'selected' : ''}>Always use ${o.name} (${o.supplier})</option>`).join('')}
+            <option value="-1" ${st.screed_off ? 'selected' : ''}>Do not offer floor prep</option>
           </select>
-          <p class="muted" style="font-size:12px; margin:4px 0 0;">${screedOn
-            ? 'The portal asks whether the floor is going over tiles, and prices this prep on top when it is.'
-            : '<span style="color:var(--coral);">Off &mdash; the portal never asks about tiles, so a builder quoting a tiled floor gets a price with no prep in it.</span>'}</p>
         </div>
         <div class="field">
           <label>Reducer trim (per door opening)</label>
-          <select id="bps_trim" onchange="saveBuilderPortalSetting('trim_product_id', this.value)">
-            <option value="-1" ${!trimOn ? 'selected' : ''}>Not offered</option>
-            ${st.trim_options.map(o => opt(o, st.trim_product_id, o => `${o.name}${o.profile_code ? ' (' + o.profile_code + ')' : ''}`)).join('')}
+          <select onchange="saveBuilderPortalSetting('trim_product_id', this.value)">
+            <option value="0" ${st.trim_source === 'auto' || st.trim_source === 'none_available' ? 'selected' : ''}>Automatic (recommended)</option>
+            ${st.trim_options.map(o => `<option value="${o.id}" ${st.trim_source === 'pinned' && o.id === st.trim_product_id ? 'selected' : ''}>Always use ${o.name}${o.profile_code ? ' (' + o.profile_code + ')' : ''}</option>`).join('')}
+            <option value="-1" ${st.trim_off ? 'selected' : ''}>Do not offer a trim</option>
           </select>
-          <p class="muted" style="font-size:12px; margin:4px 0 0;">${trimOn
-            ? 'The portal asks how many door openings the floor runs through and adds one of these at each.'
-            : 'Off &mdash; the portal does not ask about door openings.'}${st.trim_options.length ? '' : ' <span style="color:var(--coral);">No reducing profiles in the trim price book yet.</span>'}</p>
         </div>
         <div class="field">
           <label>Metres per door opening</label>
-          <input id="bps_door_width" type="number" step="0.01" min="0.01" value="${st.door_width_m}"
+          <input type="number" step="0.01" min="0.01" value="${st.door_width_m}"
                  onchange="saveBuilderPortalSetting('door_width_m', this.value)">
-          <p class="muted" style="font-size:12px; margin:4px 0 0;">Standard door opening width. Builders count doorways; this turns that into linear metres of trim.</p>
+          <p class="muted" style="font-size:12px; margin:4px 0 0;">Builders count doorways; this turns that into linear metres of trim.</p>
         </div>
       </div>
       <p class="muted" style="font-size:12px;">Stairs are always excluded &mdash; every builder is told on the portal that we quote staircases as a company.</p>

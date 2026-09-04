@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import base64
 import secrets
 import shutil
 import uuid
@@ -509,6 +510,14 @@ def _ensure_new_columns():
         ("builderestimate", "trim_price_ex_vat", "FLOAT", "0.0"),
         ("trimproduct", "available_to_builder_portal", "BOOLEAN", "FALSE"),
         ("businesssettings", "builder_portal_door_width_m", "FLOAT", "0.9"),
+        # Screed/trim auto-resolution + the builder's own logo (confirmed
+        # Sept 2026) — see the models.py field comments. FALSE on both
+        # switches is the real intent for every existing tenant: nobody
+        # has ever asked for these to be off, they were only ever off
+        # because they had to be switched on by hand.
+        ("businesssettings", "builder_portal_screed_off", "BOOLEAN", "FALSE"),
+        ("businesssettings", "builder_portal_trim_off", "BOOLEAN", "FALSE"),
+        ("builder", "logo_base64", "TEXT", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -4461,37 +4470,43 @@ def mark_builder_commission_paid(estimate_id: int, paid: bool = True,
 
 @app.get("/admin/builder-portal/settings")
 def builder_portal_settings(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
-    """What the public portal currently offers, and what it COULD offer
-    (confirmed Sept 2026, Burgert: "Screed and the trims still does not
-    pull into the builders section").
+    """What the public portal currently offers, why, and anything
+    stopping it (confirmed Sept 2026).
 
-    Root cause was not the pricing work — that was built and verified
-    — but where the two switches live. Exposing a floor prep product
-    meant finding the right screed row in the Supplier Console (which
-    doesn't show pricing_type, so nothing on screen says which row IS
-    the screed one) and the trim meant a tick buried in the Price Book's
-    trim tree. Neither is on the Builder Portal screen, which is where
-    someone setting up the builder portal actually is. This endpoint
-    backs a setup panel there instead.
+    Reports the RESOLVED screed and trim — i.e. what a builder opening
+    their link right now will actually get — plus how it was arrived
+    at (pinned by hand, picked automatically, switched off, or nothing
+    suitable in the price book). "Which one is it using and why" is the
+    question this screen exists to answer; showing only the pinned id
+    would leave the automatic case looking like nothing was set.
 
-    Deliberately also reports what is NOT set, in plain words the panel
-    can show directly: an unset floor prep is the difference between
-    the portal asking about tiles and the portal silently pricing prep
-    at R0, and that state should be visible rather than something you
-    discover by testing the public link yourself."""
+    screed_mistyped is the one genuinely diagnostic field here: a
+    product CATEGORISED as screed but still typed "material" cannot be
+    used for floor prep (see _builder_portal_screed's own docstring for
+    why pricing it would produce a wrong number), and is otherwise
+    invisible — the Supplier Console doesn't display pricing_type at
+    all, so there is nowhere else this could be noticed."""
     with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
         screed_options = session.exec(
             select(FlooringProduct).where(
                 FlooringProduct.tenant_id == tenant_id, FlooringProduct.pricing_type == "screed",
             ).order_by(FlooringProduct.display_order, FlooringProduct.product_name)
         ).all()
-        # Reducers only, matching _builder_portal_trim()'s own filter
-        # rather than restating the rule — Burgert's "Only one trim,
-        # Reducing profile per door width opening" lives in one place.
         trim_options = session.exec(
             select(TrimProduct).where(
                 TrimProduct.tenant_id == tenant_id, TrimProduct.category == "reducer",
             ).order_by(TrimProduct.product_name)
+        ).all()
+        # Categorised as screed but not PRICED as screed — unusable for
+        # floor prep, and the reason a price book that plainly contains
+        # screed can still leave the portal with nothing to offer.
+        mistyped = session.exec(
+            select(FlooringProduct).where(
+                FlooringProduct.tenant_id == tenant_id,
+                FlooringProduct.flooring_category == "screed",
+                FlooringProduct.pricing_type != "screed",
+            ).order_by(FlooringProduct.product_name)
         ).all()
         ranges = session.exec(
             select(FlooringProduct).where(
@@ -4500,13 +4515,27 @@ def builder_portal_settings(role: str = Depends(require_owner), tenant_id: str =
                 FlooringProduct.pricing_type != "screed",
             ).order_by(FlooringProduct.product_name)
         ).all()
-        screed = _builder_portal_screed(session, tenant_id)
-        trim = _builder_portal_trim(session, tenant_id)
-        settings = get_settings(session, tenant_id)
+        screed = _builder_portal_screed(session, tenant_id, settings)
+        trim = _builder_portal_trim(session, tenant_id, settings)
+
+        def how(resolved, options, off):
+            if off:
+                return "off"
+            if not options:
+                return "none_available"
+            return "pinned" if resolved and resolved.available_to_builder_portal else "auto"
+
         return {
             "screed_product_id": screed.id if screed else None,
+            "screed_product_name": screed.product_name if screed else "",
+            "screed_source": how(screed, screed_options, settings.builder_portal_screed_off),
+            "screed_off": settings.builder_portal_screed_off,
             "screed_options": [{"id": p.id, "name": p.product_name, "supplier": p.supplier} for p in screed_options],
+            "screed_mistyped": [{"id": p.id, "name": p.product_name, "supplier": p.supplier} for p in mistyped],
             "trim_product_id": trim.id if trim else None,
+            "trim_product_name": trim.product_name if trim else "",
+            "trim_source": how(trim, trim_options, settings.builder_portal_trim_off),
+            "trim_off": settings.builder_portal_trim_off,
             "trim_options": [{"id": t.id, "name": t.product_name, "profile_code": t.profile_code, "supplier": t.supplier} for t in trim_options],
             "door_width_m": settings.builder_portal_door_width_m,
             "ranges": sorted({p.product_name for p in ranges}),
@@ -4518,61 +4547,69 @@ def update_builder_portal_settings(screed_product_id: int = None, trim_product_i
                                     door_width_m: float = None,
                                     role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
                                     username: str = Depends(get_current_username)):
-    """Sets the portal's floor prep product and reducer trim in one
-    place. -1 means "none" (an explicit clear), since a plain missing
-    parameter already means "leave this alone" for every other admin
-    endpoint here and both meanings are genuinely needed.
+    """Three states per extra, and all three are needed:
+      -1  — off. Sets the settings switch, so it stays off rather than
+            being re-picked automatically on the next request.
+       0  — automatic. Clears both the off switch and any pinned
+            product, letting _builder_portal_screed()/_builder_portal_trim()
+            choose. This is the default state and needs no setup.
+      id  — pinned to that specific product.
 
-    Clears the flag off whatever was previously selected before setting
-    the new one, in the same transaction. The portal resolves ONE screed
-    and ONE reducer (_builder_portal_screed / _builder_portal_trim), so
-    leaving two flagged wouldn't add a second option — it would just
-    make which one wins depend on display order or alphabetical order.
-    Doing the swap here rather than asking the frontend to make two
-    calls also means it can't half-apply if the second one fails."""
+    A missing parameter still means "leave this alone", the same as
+    every other admin endpoint here."""
     with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
         changes = []
+
+        def apply(kind, value, resolver, off_field, table, label, validate):
+            current = resolver(session, tenant_id, settings)
+            was = current.product_name if current else "(none)"
+            # Un-pin whatever was pinned, whichever way this is going —
+            # exactly one product is ever resolved, so leaving an old
+            # pin set would just make the outcome depend on sort order.
+            pinned = session.exec(
+                select(table).where(table.tenant_id == tenant_id, table.available_to_builder_portal == True)
+            ).all()
+            for prod in pinned:
+                if table is FlooringProduct and prod.pricing_type != "screed":
+                    continue   # a material range's own portal flag means something else entirely
+                prod.available_to_builder_portal = False
+                session.add(prod)
+            setattr(settings, off_field, value == -1)
+            if value > 0:
+                chosen = get_or_404(session, table, value, tenant_id, label)
+                validate(chosen)
+                chosen.available_to_builder_portal = True
+                session.add(chosen)
+            session.add(settings)
+            now = resolver(session, tenant_id, settings)
+            changes.append((f"builder_portal_{kind}", was, now.product_name if now else "(none)"))
+
         if screed_product_id is not None:
-            current = _builder_portal_screed(session, tenant_id)
-            new_product = None
-            if screed_product_id != -1:
-                new_product = get_or_404(session, FlooringProduct, screed_product_id, tenant_id, "Screed product")
-                if new_product.pricing_type != "screed":
-                    raise HTTPException(400, f"{new_product.product_name} isn't a screed product — floor prep has to be priced off a screed row, not a flooring material.")
-            if current and (not new_product or current.id != new_product.id):
-                current.available_to_builder_portal = False
-                session.add(current)
-            if new_product:
-                new_product.available_to_builder_portal = True
-                session.add(new_product)
-            changes.append(("builder_portal_screed", current.product_name if current else "(none)",
-                            new_product.product_name if new_product else "(none)"))
+            def check_screed(prod):
+                if prod.pricing_type != "screed":
+                    raise HTTPException(400, f"{prod.product_name} isn't priced as a screed product — floor prep has to come off a screed row, not a flooring material.")
+            apply("screed", screed_product_id, _builder_portal_screed, "builder_portal_screed_off",
+                  FlooringProduct, "Screed product", check_screed)
+
         if trim_product_id is not None:
-            current = _builder_portal_trim(session, tenant_id)
-            new_trim = None
-            if trim_product_id != -1:
-                new_trim = get_or_404(session, TrimProduct, trim_product_id, tenant_id, "Trim product")
-                if new_trim.category != "reducer":
-                    raise HTTPException(400, f"{new_trim.product_name} is a {new_trim.category.replace('_', ' ')}, not a reducing profile — the portal only offers reducers, one per door opening.")
-            if current and (not new_trim or current.id != new_trim.id):
-                current.available_to_builder_portal = False
-                session.add(current)
-            if new_trim:
-                new_trim.available_to_builder_portal = True
-                session.add(new_trim)
-            changes.append(("builder_portal_trim", current.product_name if current else "(none)",
-                            new_trim.product_name if new_trim else "(none)"))
+            def check_trim(prod):
+                if prod.category != "reducer":
+                    raise HTTPException(400, f"{prod.product_name} is a {prod.category.replace('_', ' ')}, not a reducing profile — the portal only offers reducers, one per door opening.")
+            apply("trim", trim_product_id, _builder_portal_trim, "builder_portal_trim_off",
+                  TrimProduct, "Trim product", check_trim)
+
         if door_width_m is not None:
             if door_width_m <= 0:
                 raise HTTPException(400, "A door opening has to be wider than 0m.")
-            settings = get_settings(session, tenant_id)
             changes.append(("builder_portal_door_width_m", settings.builder_portal_door_width_m, door_width_m))
             settings.builder_portal_door_width_m = door_width_m
             session.add(settings)
-        for field, old, new in changes:
+
+        for field, old, new_val in changes:
             session.add(AuditLog(
                 tenant_id=tenant_id, username=username, entity_type="BusinessSettings", entity_id=0,
-                field=field, old_value=str(old), new_value=str(new),
+                field=field, old_value=str(old), new_value=str(new_val),
             ))
         session.commit()
         return {"changed": [c[0] for c in changes]}
@@ -4798,45 +4835,74 @@ BUILDER_JOB_TYPE_LABELS = {
 }
 
 
-def _builder_portal_screed(session: Session, tenant_id: str):
-    """The one screed product exposed to the portal — the SAME
-    available_to_builder_portal flag the material products already use,
-    split by pricing_type rather than by a second flag, so the price
-    book has one "is this exposed to the public portal" concept, not
-    two that could disagree. Returns None if Burgert hasn't flagged a
-    screed product yet, which is a real and safe state: the portal then
-    simply doesn't offer the over-tiles options at all rather than
-    quoting floor prep at R0 (see builder_portal_info() below).
+def _builder_portal_screed(session: Session, tenant_id: str, settings=None):
+    """The floor prep product the portal prices for an over-tiles job.
 
-    NOT counted against the 2-range Builder Portal cap — that cap is
-    about how many flooring RANGES a builder gets to choose between
-    (commit_supplier_console_changes(), which now excludes screed for
-    exactly this reason); the prep product isn't a choice the builder
-    makes at all."""
-    return session.exec(
+    CHANGED Sept 2026 (Burgert: "screed and trims stoill arent on the
+    builders quote form, its nowhere to be seen. Screed needs to be
+    automatically added"). The first version required ticking
+    available_to_builder_portal on the right screed row before the
+    portal would ask about tiles at all — so the feature shipped
+    switched off and read as simply missing. Nothing was broken; the
+    on-switch was the problem.
+
+    Resolution order now:
+      1. A screed product explicitly pinned via available_to_builder_
+         portal — Burgert choosing a specific one.
+      2. Otherwise the price book's own screed product, lowest
+         display_order then name. This is the case that needs no setup,
+         and is why screed is "automatically added" now.
+      3. None, if the tenant genuinely has no screed product at all, or
+         if it has been deliberately switched off in settings.
+
+    pricing_type == "screed" is the hard requirement, NOT
+    flooring_category: calculate_flooring_line() branches on
+    pricing_type for the job-type multiplier and the bag allowance, so a
+    row merely CATEGORISED as screed while still typed "material" would
+    be priced through the material branch — flat rate, markup
+    multiplier, no multiplier for going over tiles. That is a wrong
+    number, which is worse than no line at all, so such rows are
+    deliberately not picked up here. builder_portal_settings() reports
+    them separately so they can be corrected rather than silently
+    ignored."""
+    settings = settings or get_settings(session, tenant_id)
+    if settings.builder_portal_screed_off:
+        return None
+    candidates = session.exec(
         select(FlooringProduct).where(
             FlooringProduct.tenant_id == tenant_id,
-            FlooringProduct.available_to_builder_portal == True,
             FlooringProduct.pricing_type == "screed",
         ).order_by(FlooringProduct.display_order, FlooringProduct.product_name)
-    ).first()
+    ).all()
+    for c in candidates:
+        if c.available_to_builder_portal:
+            return c
+    return candidates[0] if candidates else None
 
 
-def _builder_portal_trim(session: Session, tenant_id: str):
-    """The one trim exposed to the portal. Burgert's own words —
-    "Only one trim, Reducing profile per door width opening. Leave
-    skirtings" — so this is the single place that rule lives: a
-    reducer, first by name if more than one is ever flagged, and
-    skirtings excluded HERE rather than by trusting whoever ticks the
-    flag in the price book to remember. Returns None if nothing is
-    flagged; the portal then doesn't ask about door openings at all."""
-    return session.exec(
+def _builder_portal_trim(session: Session, tenant_id: str, settings=None):
+    """The one trim the portal offers, priced per door opening. Burgert's
+    own words: "Only one trim, Reducing profile per door width opening.
+    Leave skirtings" — so category == "reducer" is decided here, in
+    one place, rather than by trusting whoever ticks a flag to pick the
+    right kind of product.
+
+    Same auto-resolution as _builder_portal_screed() above and for the
+    same reason: pinned first, otherwise the price book's own reducer,
+    otherwise nothing."""
+    settings = settings or get_settings(session, tenant_id)
+    if settings.builder_portal_trim_off:
+        return None
+    candidates = session.exec(
         select(TrimProduct).where(
             TrimProduct.tenant_id == tenant_id,
-            TrimProduct.available_to_builder_portal == True,
             TrimProduct.category == "reducer",
         ).order_by(TrimProduct.product_name)
-    ).first()
+    ).all()
+    for c in candidates:
+        if c.available_to_builder_portal:
+            return c
+    return candidates[0] if candidates else None
 
 
 def _builder_portal_job_type(raw: str) -> JobType:
@@ -4902,7 +4968,7 @@ def _price_builder_estimate(session: Session, builder, product, area_m2: float,
     # produced, which is not what "auto-add screed" meant.
     screed = None
     if job_type != JobType.smooth:
-        screed_product = _builder_portal_screed(session, builder.tenant_id)
+        screed_product = _builder_portal_screed(session, builder.tenant_id, settings)
         if screed_product:
             screed = flooring_part(screed_product)
 
@@ -4912,7 +4978,7 @@ def _price_builder_estimate(session: Session, builder, product, area_m2: float,
     # a settings edit, not a code change.
     trim = None
     if door_openings and door_openings > 0:
-        trim_product = _builder_portal_trim(session, builder.tenant_id)
+        trim_product = _builder_portal_trim(session, builder.tenant_id, settings)
         if trim_product:
             lm = round(door_openings * settings.builder_portal_door_width_m, 2)
             calc = calculate_trim_line(trim_product, lm, 0.0, margin_warn_threshold=settings.flooring_margin_warn_threshold)
@@ -5008,10 +5074,15 @@ def builder_portal_info(slug: str):
             )
         ).all()
         settings = get_settings(session, builder.tenant_id)
-        screed = _builder_portal_screed(session, builder.tenant_id)
-        trim = _builder_portal_trim(session, builder.tenant_id)
+        screed = _builder_portal_screed(session, builder.tenant_id, settings)
+        trim = _builder_portal_trim(session, builder.tenant_id, settings)
         return {
             "builder_name": builder.name,
+            # The builder's own logo (confirmed Sept 2026, Burgert: "make
+            # it that the builder can load his own logo, that will get
+            # and keep them engaded"). Empty until they upload one; the
+            # portal simply shows their name on its own until then.
+            "builder_logo": builder.logo_base64,
             "products": [{"id": p.id, "product_name": p.product_name, "colour": p.colour} for p in products],
             # Screed + Trim On The Portal (confirmed Sept 2026). Every
             # one of these describes what the portal may ASK, never a
@@ -5163,6 +5234,12 @@ def print_builder_estimate(slug: str, estimate_id: int):
             # the shipped default (logo.png) in that case, so the
             # documents are never logo-less either way.
             "logo_base64": settings.logo_base64,
+            # The builder's own logo, alongside ours — deliberately
+            # rendered small, next to "Referred by", never in place of
+            # our letterhead. This estimate is a Blinds & Flooring Studio
+            # document quoting a real price on our behalf; a client
+            # reading it must not be left unsure whose quote it is.
+            "builder_logo": builder.logo_base64,
             "builder_name": builder.name,
             "client_name": est.client_name, "site_address": est.site_address,
             "product_name": est.product_name, "area_m2": est.area_m2,
@@ -5181,6 +5258,66 @@ def print_builder_estimate(slug: str, estimate_id: int):
             "deposit_amount": est.deposit_amount, "deposit_pct": settings.default_deposit_pct,
             "vat_pct": settings.vat_pct, "created_at": est.created_at.isoformat(),
         }
+
+
+MAX_BUILDER_LOGO_BYTES = 512 * 1024   # 512KB — far tighter than a job photo's 10MB, because unlike a photo this rides inline, base64-encoded, on every single portal page load and every printed estimate
+ALLOWED_BUILDER_LOGO_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/svg+xml", "image/webp"}
+
+
+@app.post("/builder/{slug}/logo")
+async def upload_builder_logo(slug: str, file: UploadFile = File(...)):
+    """A builder uploading their own logo (confirmed Sept 2026, Burgert:
+    "make it that the builder can load his own logo, that will get and
+    keep them engaded").
+
+    Public and unauthenticated, like every other endpoint in this
+    section: the slug IS this pilot's access control (see Builder's own
+    docstring, models.py), and whoever holds the link can already submit
+    estimates as this builder, which is a far larger capability than
+    setting their own logo. Scoped to the resolved builder's own row, so
+    one builder can never touch another's.
+
+    Validated hard, because unauthenticated writes always are here (same
+    reasoning as _validate_photo_upload above, tighter limit): a real
+    image type, non-empty, and 512KB max — this is stored as a base64
+    data URI on the Builder row and therefore travels inline on every
+    portal load and every printed estimate, unlike a job photo which is
+    fetched only when someone asks for it.
+
+    Replaces rather than versions: a logo is current-state branding, not
+    a record of anything, so there is no history worth keeping here."""
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        data = await file.read()
+        content_type = (file.content_type or "").lower()
+        if content_type not in ALLOWED_BUILDER_LOGO_TYPES:
+            raise HTTPException(400, f"'{file.content_type or 'unknown'}' isn't a supported image — use PNG, JPG, SVG or WEBP.")
+        if not data:
+            raise HTTPException(400, "That file appears to be empty.")
+        if len(data) > MAX_BUILDER_LOGO_BYTES:
+            raise HTTPException(400, f"That image is too large ({len(data) // 1024}KB) — the limit is {MAX_BUILDER_LOGO_BYTES // 1024}KB. Try a smaller version of it.")
+        builder.logo_base64 = f"data:{content_type};base64,{base64.b64encode(data).decode()}"
+        session.add(builder)
+        session.commit()
+        # Hand-picked response ONLY — see this section's header comment.
+        return {"builder_logo": builder.logo_base64}
+
+
+@app.delete("/builder/{slug}/logo")
+def remove_builder_logo(slug: str):
+    """Same public/slug-scoped reasoning as the upload above — a builder
+    who can put their logo on must be able to take it off again without
+    phoning us."""
+    with Session(engine) as session:
+        builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
+        if not builder:
+            raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        builder.logo_base64 = ""
+        session.add(builder)
+        session.commit()
+        return {"builder_logo": ""}
 
 
 @app.post("/builder/{slug}/estimate/{estimate_id}/confirm")

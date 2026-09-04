@@ -89,7 +89,7 @@ let products = [];
 // builder_portal_info() (main.py) rather than hardcoded here, so
 // flagging a screed product or a reducer in the price book is what
 // turns these questions on, with no frontend change.
-let portalInfo = { screed_available: false, job_types: [], trim_available: false, trim_name: '', door_width_m: 0.9, stairwell_notice: '' };
+let portalInfo = { screed_available: false, job_types: [], trim_available: false, trim_name: '', door_width_m: 0.9, stairwell_notice: '', builder_logo: '' };
 let view = 'estimate';   // 'estimate' | 'statement' | 'commission'
 // Potential Commission (confirmed Sept 2026, Burgert's own words: "I
 // also need a tab to show the builder his potensial commision that will
@@ -119,6 +119,70 @@ async function init() {
   } catch (e) {
     document.getElementById('app').innerHTML = '<div class="card"><p class="error">Could not reach the server — check your connection and reload.</p></div>';
   }
+}
+
+// The builder's own logo (confirmed Sept 2026, Burgert: "make it that
+// the builder can load his own logo, that will get and keep them
+// engaded"). Replaces the plain "Hi <name>" heading once they upload
+// one, and sits alongside it — this is THEIR page, so their branding
+// leads here, unlike the printed estimate, which stays on Blinds &
+// Flooring Studio's letterhead with theirs as a secondary mark.
+function renderHeader() {
+  return `<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    ${portalInfo.builder_logo ? `<img src="${portalInfo.builder_logo}" alt="" style="max-height:52px; max-width:180px; object-fit:contain;">` : ''}
+    <h1 style="margin:0;">Hi ${builderName}</h1>
+  </div>`;
+}
+
+function renderLogoCard() {
+  return `<div class="card">
+    <h3 style="margin-top:0;">Your logo</h3>
+    <p class="muted" style="margin-top:0; font-size:13px;">Add your own logo and it appears at the top of this page and on every estimate you print for a client, next to ours.</p>
+    ${portalInfo.builder_logo ? `<div style="margin-bottom:8px;"><img src="${portalInfo.builder_logo}" alt="" style="max-height:60px; max-width:220px; object-fit:contain;"></div>` : ''}
+    <input type="file" id="builder_logo_file" accept="image/png,image/jpeg,image/svg+xml,image/webp" onchange="uploadBuilderLogo(event)">
+    ${portalInfo.builder_logo ? '<button type="button" class="secondary" onclick="removeBuilderLogo()">Remove</button>' : ''}
+    <p class="muted" style="font-size:12px; margin:6px 0 0;">PNG, JPG, SVG or WEBP, up to 512KB.</p>
+    <div id="logoError" class="error"></div>
+  </div>`;
+}
+
+async function uploadBuilderLogo(event) {
+  const file = (event.target.files || [])[0];
+  const errEl = document.getElementById('logoError');
+  errEl.textContent = '';
+  if (!file) return;
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/logo`, { method: 'POST', body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { errEl.textContent = data.detail || 'Could not upload that image.'; return; }
+    portalInfo.builder_logo = data.builder_logo;
+    rerenderCurrentView();
+  } catch (e) {
+    errEl.textContent = 'Could not reach the server — try again.';
+  }
+}
+
+async function removeBuilderLogo() {
+  if (!confirm('Remove your logo?')) return;
+  try {
+    const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/logo`, { method: 'DELETE' });
+    if (!res.ok) { document.getElementById('logoError').textContent = 'Could not remove it — try again.'; return; }
+    portalInfo.builder_logo = '';
+    rerenderCurrentView();
+  } catch (e) {
+    document.getElementById('logoError').textContent = 'Could not reach the server — try again.';
+  }
+}
+
+// One place that knows how to redraw whichever tab is open — the logo
+// appears on all three, so changing it has to refresh the current one
+// whatever that is.
+function rerenderCurrentView() {
+  if (view === 'statement') renderStatement();
+  else if (view === 'commission') renderCommission();
+  else renderEstimateForm();
 }
 
 function renderNav() {
@@ -167,14 +231,14 @@ function trimFieldHtml() {
 function renderEstimateForm(resultHtml) {
   if (!products.length) {
     document.getElementById('app').innerHTML = `
-      <h1>Hi ${builderName}</h1>
+      ${renderHeader()}
       <p class="muted">Get an instant vinyl flooring estimate for your client.</p>
       ${renderNav()}
       <div class="card"><p class="error">No products are currently available through this portal — contact Blinds &amp; Flooring Studio.</p></div>`;
     return;
   }
   document.getElementById('app').innerHTML = `
-    <h1>Hi ${builderName}</h1>
+    ${renderHeader()}
     <p class="muted">Get an instant vinyl flooring estimate for your client. For anything beyond this — multiple rooms, carpets, blinds — come see us at the showroom.</p>
     ${renderNav()}
     ${stairwellNoticeHtml()}
@@ -293,7 +357,7 @@ async function submitEstimate() {
 }
 
 async function renderStatement() {
-  document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
+  document.getElementById('app').innerHTML = `${renderHeader()}${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
   try {
     const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/statement`);
     const data = await res.json();
@@ -317,7 +381,7 @@ async function renderStatement() {
         </td>
       </tr>`).join('') : '<tr><td colspan="7" class="muted">No estimates submitted yet.</td></tr>';
     document.getElementById('app').innerHTML = `
-      <h1>Hi ${builderName}</h1>
+      ${renderHeader()}
       ${renderNav()}
       ${stairwellNoticeHtml()}
       <div class="card">
@@ -328,9 +392,10 @@ async function renderStatement() {
             <tbody>${rows}</tbody>
           </table>
         </div>
-      </div>`;
+      </div>
+      ${renderLogoCard()}`;
   } catch (e) {
-    document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
+    document.getElementById('app').innerHTML = `${renderHeader()}${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
   }
 }
 
@@ -343,7 +408,7 @@ async function renderStatement() {
 // may never go ahead with. The backend splits them the same way and for
 // the same reason (see builder_statement(), main.py).
 async function renderCommission() {
-  document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
+  document.getElementById('app').innerHTML = `${renderHeader()}${renderNav()}<div class="card"><p class="muted">Loading...</p></div>`;
   try {
     if (!statementData) {
       const res = await fetch(`${API}/builder/${encodeURIComponent(slug)}/statement`);
@@ -373,7 +438,7 @@ async function renderCommission() {
       </div>`;
 
     document.getElementById('app').innerHTML = `
-      <h1>Hi ${builderName}</h1>
+      ${renderHeader()}
       ${renderNav()}
       <div class="card">
         <p style="margin:0 0 8px;">You earn <b>${(d.commission_pct*100).toFixed(1)}%</b> of each job's value excluding VAT. It becomes yours once the client has paid Blinds &amp; Flooring Studio in full — not when the quote goes out.</p>
@@ -392,7 +457,7 @@ async function renderCommission() {
       ${section('Coming up', 'Estimates you have submitted that have not become jobs yet. This is what the commission would be if the client goes ahead — it is not owed to you yet, and the final quote can differ from the estimate.', pipeline, e => e.potential_commission, null)}
       <p class="muted" style="font-size:12px;">Questions about any of these? Give Blinds &amp; Flooring Studio a call.</p>`;
   } catch (e) {
-    document.getElementById('app').innerHTML = `<h1>Hi ${builderName}</h1>${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
+    document.getElementById('app').innerHTML = `${renderHeader()}${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
   }
 }
 
@@ -426,6 +491,12 @@ async function printEstimate(estimateId) {
             <div style="font-size:18px; font-weight:800;">ESTIMATE</div>
             <div style="font-size:11px; color:#6b7280;">${dateStr}</div>
             <div style="font-size:11px; color:#6b7280;">Referred by: ${d.builder_name}</div>
+            <!-- The builder's own logo: deliberately small and under
+            "Referred by", never in place of our letterhead above. This
+            document quotes a real price on Blinds & Flooring Studio's
+            behalf, and a client reading it must not be left unsure
+            whose quote it is. -->
+            ${d.builder_logo ? `<img src="${d.builder_logo}" alt="" style="max-height:28px; max-width:120px; object-fit:contain; margin-top:6px;" onerror="this.style.display='none';">` : ''}
           </div>
         </div>
         <div style="margin-bottom:20px; font-size:13px;">
