@@ -74,6 +74,31 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-05
+
+Link Leads to Quotes + Past Leads archive (brief, confirmed Sept 2026).
+
+### What shipped
+- **"Link to Existing Quote" on a lead** (`GET /leads/{id}/linkable-quotes`, `POST /leads/{id}/link-quote`). `convert_lead()` already existed but *creates* a new Quote; there was no way to close a lead whose quote had already been raised in the Order Index without producing a duplicate. The picker returns real quote records in two groups — quotes for a Client whose name matches this lead (the brief's client_id match, using the same exact case-insensitive rule `convert_lead()` uses), and recent quotes separately for the real case where the lead was taken down as "Mev Botha" and quoted as "Anna Botha". There is no way to type a client here at all, only to pick a real quote, which is what satisfies "never free text".
+- **A quote already claimed by another lead is refused**, naming that lead, and the picker flags it before anyone tries. Forceable, since two genuine enquiries for one job do happen.
+- **Past Leads archive.** Converted and Lost are out of the main tab strip entirely and live in their own section below the active table — collapsed by default, rows only built when opened, filterable by Converted / Lost / All, newest outcome first. Burgert's own words: "Past leads or dead leads needs to be collapsable. I dont want a lead section that is over populated."
+- **"Mark as Lost / No Result" on any lead row**, one click from the list rather than only from the detail screen — still through the same outcome-note prompt every other status change uses.
+- **A converted lead says what it became.** `list_leads()` now resolves each converted lead's quote (one batched query, not one per lead) so the archive shows the real job number and links straight to it.
+
+### Why (root causes, decisions, rejected alternatives)
+- **No new table, no new status system.** `lead_status` already had `converted`/`lost` and `converted_quote_id` already existed — the archive is those two terminal states presented separately, not a parallel store. Nothing is deleted or moved, so the existing audit trail remains the whole history, exactly as the standing rules require.
+- **Linking shares `convert_lead()`'s outcome exactly** (status `converted` + `converted_quote_id`) so a lead closed either way archives identically and Past Leads stays one list. It is deliberately *not* a flag on `convert_lead()`: the two differ in what they DO — create versus attach — not in what they record.
+- **The active/past split is client-side, and `GET /leads` is unchanged.** Changing that endpoint's default would silently have altered the calendar and the home feed, which fetch the same list for different reasons. The Leads screen partitions what it already has; nothing else moved.
+- **A deleted quote must not delete the lead.** Quote deletion nullifies `converted_quote_id` (existing `_CASCADE_POLICY`), so the archive reports "quote since deleted" rather than dropping the row or crashing on a missing reference — verified directly.
+
+### Verified
+- 28 checks through the real endpoints: the picker matches by real client_id and offers no false match for a lead with no client on file; linking creates no second quote and writes the link into the lead's own proof-of-work trail; a claimed quote is refused by name and forceable; a closed lead can't be re-linked; the archive splits cleanly, keeps every original field, and drops out of the home feed (no next action); deleting the linked quote leaves the lead archived and readable. Plus the screen itself: terminal statuses out of the tab strip, archive collapsed by default and only rendered when open, filterable, and the one-click Lost action still demanding a note.
+
+### Open going into next session
+- None from this brief.
+
+---
+
 ## 2026-09-02 (6)
 
 ### What shipped

@@ -27,8 +27,20 @@ function leadNextActionButton(l) {
   return `<button class="next-action-btn" onclick="event.stopPropagation(); openLeadDetailScreen(${l.id})" title="${l.next_action}">${l.next_action === 'Contact customer' ? 'CONTACT' : 'FOLLOW UP'}</button>`;
 }
 
-const LEAD_TABS = ['all', 'new', 'contacted', 'potential', 'converted', 'lost'];
+// Past Leads archive (confirmed Sept 2026, "Link Leads to Quotes +
+// Past Leads archive" brief — Burgert: "Past leads or dead leads needs
+// to be collapsable. I dont want a lead section that is over
+// populated"). Converted and Lost dropped out of the main tab strip:
+// they are terminal, they have no next action, and every one of them
+// stays on this screen forever, so leaving them mixed into "All" is
+// exactly what over-populates it. They live in their own collapsed
+// section below the active table instead — nothing is deleted, nothing
+// is hidden, it just isn't in the way.
+const LEAD_ACTIVE_STATUSES = ['new', 'contacted', 'potential'];
+const LEAD_TABS = ['all', 'new', 'contacted', 'potential'];
 let leadsActiveTab = 'all';
+let pastLeadsOpen = false;
+let pastLeadsFilter = 'all';   // 'all' | 'converted' | 'lost'
 let leadsCache = [];
 // Assigned Leads, Stage 1 (confirmed Sept 2026) — "By Person" is a pure
 // client-side regrouping of the SAME leadsCache the flat table already
@@ -37,6 +49,17 @@ let leadsCache = [];
 // view for everyone else.
 let leadsGroupByPerson = false;
 const LEAD_ASSIGNEE_LABEL = { burgert: 'Burgert', ryno: 'Ryno', madri: 'Madri' };
+
+function togglePastLeads() {
+  pastLeadsOpen = !pastLeadsOpen;
+  renderLeadsTable();
+}
+
+function setPastLeadsFilter(f) {
+  pastLeadsFilter = f;
+  pastLeadsOpen = true;
+  renderLeadsTable();
+}
 
 function setLeadsTab(tab) {
   leadsActiveTab = tab;
@@ -93,8 +116,62 @@ function leadRowHtml(l) {
       <td data-label="Source">${l.source || '—'}</td>
       <td data-label="Assigned">${leadAssigneeSelectHtml(l)}</td>
       <td data-label="Status">${leadStatusBadge(l)}</td>
-      <td data-label="Next Action">${leadNextActionButton(l)}</td>
+      <td data-label="Next Action">${leadNextActionButton(l)}
+        <!-- "Mark as Lost/No Result" on any lead (confirmed Sept 2026)
+        — one click from the list, so closing a dead enquiry costs less
+        effort than leaving it to clutter the feed. Deliberately still
+        goes through the same outcome-note prompt as every other status
+        change (Proof-of-Work principle, proposal §02): a lead can be
+        closed quickly, but never silently. -->
+        <button onclick="event.stopPropagation(); markLeadLostFromList(${l.id}, '${l.name.replace(/'/g,"\'")}')" title="Mark as lost / no result" style="font-size:11px; padding:2px 6px; color:var(--coral); border-color:var(--coral);">Lost</button>
+      </td>
     </tr>`;
+}
+
+// Past Leads (confirmed Sept 2026). Collapsed by default and rendered
+// only when opened — an archive that grows forever must not cost
+// anything to have on the page when nobody's looking at it. Filterable
+// by outcome, per the brief, so "what did we win" and "what did we
+// lose" are each one click.
+function renderPastLeadsCard(pastLeads) {
+  const converted = pastLeads.filter(l => l.lead_status === 'converted');
+  const lost = pastLeads.filter(l => l.lead_status === 'lost');
+  const shown = pastLeadsFilter === 'converted' ? converted
+              : pastLeadsFilter === 'lost' ? lost
+              : pastLeads;
+  // Newest outcome first — an archive is read from the most recent end,
+  // unlike the active feed which is sorted by urgency.
+  const ordered = shown.slice().sort((a, b) => String(b.last_outcome_at || '').localeCompare(String(a.last_outcome_at || '')));
+  const fmt = (v) => v ? new Date(v).toLocaleDateString('en-ZA', {dateStyle: 'medium'}) : '—';
+  const pill = (key, label, count) => `<button onclick="setPastLeadsFilter('${key}')" style="${pastLeadsFilter===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label} (${count})</button>`;
+  return `
+    <div class="card">
+      <div onclick="togglePastLeads()" style="cursor:pointer; display:flex; align-items:center; gap:8px;">
+        <span style="font-size:13px;">${pastLeadsOpen ? '▾' : '▸'}</span>
+        <h2 style="margin:0;">Past Leads (${pastLeads.length})</h2>
+      </div>
+      <p class="muted" style="margin:4px 0 0;">Closed enquiries — converted to a real quote, or lost. Kept permanently; nothing is ever deleted.</p>
+      ${!pastLeadsOpen ? '' : `
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin:12px 0;">
+          ${pill('all', 'All', pastLeads.length)}${pill('converted', 'Converted', converted.length)}${pill('lost', 'Lost / No result', lost.length)}
+        </div>
+        <table class="mobile-card-table">
+          <thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Outcome</th><th>Became</th><th>Closed</th></tr></thead>
+          <tbody>
+            ${ordered.length ? ordered.map(l => `
+              <tr onclick="openLeadDetailScreen(${l.id})" style="cursor:pointer;">
+                <td data-label="Name"><b>${l.name}</b></td>
+                <td data-label="Contact">${l.contact || '—'}</td>
+                <td data-label="Source">${l.source || '—'}</td>
+                <td data-label="Outcome">${leadStatusBadge(l)}</td>
+                <td data-label="Became">${l.converted_quote
+                  ? `<a href="#" onclick="event.stopPropagation(); openQuoteFromIndex(${l.converted_quote.quote_id}); return false;" style="color:var(--teal); font-weight:600;">${l.converted_quote.job_number || '#' + l.converted_quote.quote_id}</a>`
+                  : (l.lead_status === 'converted' ? '<span class="muted">quote since deleted</span>' : '<span class="muted">—</span>')}</td>
+                <td data-label="Closed">${fmt(l.last_outcome_at)}</td>
+              </tr>`).join('') : '<tr><td colspan="6" class="muted">Nothing here yet.</td></tr>'}
+          </tbody>
+        </table>`}
+    </div>`;
 }
 
 function renderLeadsTable(searchTerm) {
@@ -103,8 +180,13 @@ function renderLeadsTable(searchTerm) {
     searchTerm = existingInput ? existingInput.value : '';
   }
   const el = document.getElementById('landing');
-  const leads = leadsCache;
-  const counts = {new: 0, contacted: 0, potential: 0, converted: 0, lost: 0};
+  // The active feed is the working list; anything terminal has moved to
+  // the archive below. A lead linked to a quote therefore disappears
+  // from here the moment it's linked, which is the brief's own "the
+  // lead is automatically cleared from the active leads feed".
+  const leads = leadsCache.filter(l => LEAD_ACTIVE_STATUSES.includes(l.lead_status));
+  const pastLeads = leadsCache.filter(l => !LEAD_ACTIVE_STATUSES.includes(l.lead_status));
+  const counts = {new: 0, contacted: 0, potential: 0};
   leads.forEach(l => { if (counts[l.lead_status] !== undefined) counts[l.lead_status]++; });
   const shown = leadsActiveTab === 'all' ? leads : leads.filter(l => l.lead_status === leadsActiveTab);
 
@@ -141,7 +223,7 @@ function renderLeadsTable(searchTerm) {
       </div>
       <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          ${tab('all', 'All', leads.length)}${tab('new', 'New', counts.new)}${tab('contacted', 'Contacted', counts.contacted)}${tab('potential', 'Potential', counts.potential)}${tab('converted', 'Converted', counts.converted)}${tab('lost', 'Lost', counts.lost)}
+          ${tab('all', 'All', leads.length)}${tab('new', 'New', counts.new)}${tab('contacted', 'Contacted', counts.contacted)}${tab('potential', 'Potential', counts.potential)}
         </div>
         <!-- Assigned Leads, Stage 1 (confirmed Sept 2026) — Madri's own
         confirmed "track leads across the team" need. -->
@@ -150,6 +232,7 @@ function renderLeadsTable(searchTerm) {
       <table class="mobile-card-table"><thead><tr><th>Name</th><th>Contact</th><th>Source</th><th>Assigned</th><th>Status</th><th>Next Action</th></tr></thead>
       <tbody>${bodyHtml}</tbody></table>
     </div>
+    ${renderPastLeadsCard(pastLeads)}
     <div class="card">
       <h2>New Lead</h2>
       <p class="muted" style="margin-top:-8px;">Often just a name and a phone number — that's enough to start.</p>
@@ -251,11 +334,26 @@ async function renderLeadDetail(el) {
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
       ${l.lead_status === 'new' ? `<button class="primary" onclick="changeLeadStatusAction(${l.id}, 'contacted')">Mark Contacted</button>` : ''}
       ${l.lead_status !== 'potential' ? `<button onclick="changeLeadStatusAction(${l.id}, 'potential')">Mark Potential</button>` : ''}
-      <button onclick="convertLeadAction(${l.id})">Convert to Quote</button>
-      <button style="color:var(--coral); border-color:var(--coral);" onclick="changeLeadStatusAction(${l.id}, 'lost')">Mark Lost</button>
-    </div>`;
+      <button onclick="convertLeadAction(${l.id})">Convert to New Quote</button>
+      <!-- Link to Quote (confirmed Sept 2026, "Link Leads to Quotes +
+      Past Leads archive" brief). Sits beside Convert deliberately: they
+      close a lead the same way but do genuinely different things —
+      Convert CREATES a quote, this ATTACHES the one already raised in
+      the Order Index. Without it, closing a lead whose quote already
+      existed meant converting anyway and ending up with a duplicate. -->
+      <button onclick="openLinkQuotePicker(${l.id})">Link to Existing Quote</button>
+      <button style="color:var(--coral); border-color:var(--coral);" onclick="changeLeadStatusAction(${l.id}, 'lost')">Mark Lost / No Result</button>
+    </div>
+    <div id="linkQuotePicker"></div>`;
 
-  const convertedHtml = l.converted_quote_id ? `<p style="margin:8px 0 0;"><a href="#" onclick="openQuoteFromIndex(${l.converted_quote_id}); return false;">→ Open Quote #${l.converted_quote_id}</a></p>` : '';
+  // Past Leads archive (confirmed Sept 2026) — a closed lead has to say
+  // what became of it, on the record itself and not only in the archive
+  // table, so opening one from anywhere tells the whole story.
+  const convertedHtml = l.converted_quote_id
+    ? `<p style="margin:8px 0 0;"><a href="#" onclick="openQuoteFromIndex(${l.converted_quote_id}); return false;">→ Open Quote #${l.converted_quote_id}</a></p>`
+    : (l.lead_status === 'lost'
+        ? '<p class="muted" style="margin:8px 0 0;">Closed as lost / no result. Kept here permanently — see the history below for why.</p>'
+        : '');
 
   // Activity history (confirmed Aug 2026, Proof-of-Work principle §02)
   // — the real AuditLog trail IS the outcome-note record, "no new
@@ -296,8 +394,63 @@ async function renderLeadDetail(el) {
   });
 }
 
+// Link to Quote picker (confirmed Sept 2026). Renders inline under the
+// action row rather than as a prompt(): unlike an outcome note, this is
+// a CHOICE between real records, and typing an id from memory is exactly
+// the free-text guessing the brief rules out.
+async function openLinkQuotePicker(leadId) {
+  const box = document.getElementById('linkQuotePicker');
+  if (!box) return;
+  if (box.dataset.open === String(leadId)) { box.dataset.open = ''; box.innerHTML = ''; return; }
+  box.dataset.open = String(leadId);
+  box.innerHTML = '<p class="muted">Loading quotes...</p>';
+  const res = await fetch(`${API}/leads/${leadId}/linkable-quotes`);
+  if (!res.ok) { box.innerHTML = '<p class="error">Could not load quotes — try again.</p>'; return; }
+  const d = await res.json();
+  const fmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-ZA', {dateStyle: 'medium'}) : '';
+  const row = (q) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+      <div style="min-width:0;">
+        <b>${q.job_number || '#' + q.id}</b> — ${q.client_name}
+        ${q.description ? `<br><span class="muted" style="font-size:12px;">${q.description}</span>` : ''}
+        <br><span class="muted" style="font-size:11.5px;">${q.workflow_status || ''} · ${fmt(q.created_at)}</span>
+        ${q.already_linked_to ? `<br><span style="color:var(--coral); font-size:11.5px;">Already linked to the lead "${q.already_linked_to}"</span>` : ''}
+      </div>
+      <button onclick="linkLeadToQuoteAction(${leadId}, ${q.id}, '${q.client_name.replace(/'/g,"\\'")}')">Link</button>
+    </div>`;
+  box.innerHTML = `
+    <div class="card" style="margin-top:12px;">
+      <h3 style="margin-top:0;">Link "${d.lead_name}" to an existing quote</h3>
+      ${d.matched.length ? `
+        <p class="muted" style="margin-top:0;">Quotes for this same client:</p>
+        ${d.matched.map(row).join('')}` : `
+        <p class="muted" style="margin-top:0;">No quote is on file under this exact client name yet. If the quote was raised under a slightly different name, pick it from the recent list below — otherwise use "Convert to New Quote" instead.</p>`}
+      <p class="muted" style="margin:14px 0 0;">Recent quotes${d.matched.length ? ' (other clients)' : ''}:</p>
+      ${d.other_recent.length ? d.other_recent.map(row).join('') : '<p class="muted">No other quotes on file.</p>'}
+      <button class="secondary" style="margin-top:10px;" onclick="openLinkQuotePicker(${leadId})">Cancel</button>
+    </div>`;
+}
+
+async function linkLeadToQuoteAction(leadId, quoteId, clientName) {
+  if (!confirm(`Link this lead to the quote for ${clientName}?\n\nThe lead moves to Past Leads as Converted, with this quote on its record.`)) return;
+  let res = await fetch(`${API}/leads/${leadId}/link-quote?quote_id=${quoteId}`, {method: 'POST'});
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    // The backend refuses a quote another lead already claims — a real
+    // mis-click guard, overridable when two enquiries genuinely were
+    // for the same job.
+    if (!confirm(`${body.detail || 'Could not link this quote.'}\n\nLink it anyway?`)) return;
+    res = await fetch(`${API}/leads/${leadId}/link-quote?quote_id=${quoteId}&force=true`, {method: 'POST'});
+    if (!res.ok) { alert('Could not link this quote.'); return; }
+  }
+  renderLanding();
+}
+
 async function changeLeadStatusAction(leadId, newStatus) {
-  const label = {contacted: 'Contacted', potential: 'Potential', lost: 'Lost'}[newStatus];
+  // "Lost / No result" (confirmed Sept 2026) — same wording the button
+  // and the Past Leads filter use, so one outcome isn't called three
+  // different things across three screens.
+  const label = {contacted: 'Contacted', potential: 'Potential', lost: 'Lost / No result'}[newStatus];
   const note = prompt(`What happened? One line — e.g. "Called 14:20, wants a site visit Thursday".\n\nMarking as: ${label}`);
   if (!note || !note.trim()) return;
   const res = await fetch(`${API}/leads/${leadId}/status`, {
@@ -305,6 +458,23 @@ async function changeLeadStatusAction(leadId, newStatus) {
   });
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not update this lead.'); return; }
   renderLeadDetail(document.getElementById('landing'));
+}
+
+// "Lost / No result" straight off a list row (confirmed Sept 2026, the
+// brief's "Add a 'Mark as Lost/No Result' action on any lead"). Shares
+// changeLeadStatusAction()'s outcome-note prompt and its endpoint, then
+// re-renders whichever list the click came from rather than dragging
+// the user onto the detail screen for a lead they've just closed.
+async function markLeadLostFromList(leadId, name) {
+  const note = prompt(`What happened? One line — e.g. "Went with another supplier".
+
+Marking "${name}" as: Lost / No result`);
+  if (!note || !note.trim()) return;
+  const res = await fetch(`${API}/leads/${leadId}/status`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({new_status: 'lost', note: note.trim()}),
+  });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not update this lead.'); return; }
+  renderLeads(document.getElementById('landing'));
 }
 
 async function convertLeadAction(leadId) {

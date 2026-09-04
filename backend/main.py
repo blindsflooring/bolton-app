@@ -8441,12 +8441,29 @@ def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None,
             search_lower = search.lower()
             leads = [l for l in leads if search_lower in l.name.lower() or search_lower in l.contact.lower()]
         today = date.today()
+        # Past Leads archive (confirmed Sept 2026) -- a converted lead is
+        # only useful in the archive if it says WHAT it converted to, so
+        # the quote it points at is resolved here rather than leaving the
+        # Leads screen to fetch the whole Order Index just to label a few
+        # rows. One query for all of them, not one per lead.
+        quote_ids = {l.converted_quote_id for l in leads if l.converted_quote_id}
+        quote_refs = {}
+        if quote_ids:
+            for q in session.exec(select(Quote).where(Quote.tenant_id == tenant_id, Quote.id.in_(quote_ids))).all():
+                quote_refs[q.id] = {"quote_id": q.id, "job_number": q.job_number,
+                                    "client_name": q.client_name, "workflow_status": q.workflow_status}
         result = []
         for lead in leads:
             last_outcome_at = _lead_last_outcome_at(session, lead, tenant_id)
             d = lead.dict()
             d.update(_lead_next_action(lead, last_outcome_at, today))
             d["last_outcome_at"] = last_outcome_at
+            # None for a lead whose linked quote has since been deleted --
+            # the lead itself deliberately survives that (Quote deletion
+            # nullifies converted_quote_id, see _CASCADE_POLICY), so the
+            # archive keeps the history either way rather than losing the
+            # row along with the quote.
+            d["converted_quote"] = quote_refs.get(lead.converted_quote_id)
             result.append(d)
         # Urgency before recency, same instinct as the Order Index's own
         # Needs Attention list: new leads needing first contact and
@@ -8608,6 +8625,115 @@ def change_lead_status(lead_id: int, body: LeadStatusRequest, tenant_id: str = D
         session.commit()
         session.refresh(lead)
         return lead
+
+
+@app.get("/leads/{lead_id}/linkable-quotes")
+def linkable_quotes_for_lead(lead_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Real Order Index quotes this lead could be linked to (confirmed
+    Sept 2026, "Link Leads to Quotes + Past Leads archive" brief:
+    "Selecting it lets you pick/confirm the Order Index quote/job just
+    created for that same client (client_id match — never free
+    text)").
+
+    Returns two groups rather than one filtered list, deliberately:
+
+      matched — quotes belonging to a Client whose name matches this
+      lead's, by the SAME exact case-insensitive rule convert_lead()
+      already uses to decide "is this the same person". This is the
+      client_id match the brief asks for, and in the normal case (a
+      quote raised minutes ago for this enquiry) it is the only group
+      anyone needs.
+
+      other_recent — the most recent quotes regardless of client. Real
+      leads get taken down as "Mev Botha" and quoted as "Anna Botha",
+      or as a company name; refusing to show anything in that case
+      would leave a genuine link impossible and push people back to
+      creating a duplicate quote. Kept as a clearly separate group so
+      picking one is a visibly deliberate act, not something that looks
+      like a match when it isn't.
+
+    Both groups carry the real client_id/client_name off the Quote
+    itself, so whatever the picker offers is an actual record — the
+    "never free text" requirement is satisfied by there being no way to
+    type a client here at all, only to choose a real quote."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        quotes = session.exec(
+            select(Quote).where(Quote.tenant_id == tenant_id).order_by(Quote.id.desc())
+        ).all()
+        clients = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+        match = next((c for c in clients if c.name.strip().lower() == lead.name.strip().lower()), None)
+        # Every lead already linked to a quote, so the picker can warn
+        # BEFORE a link is attempted rather than only failing afterwards.
+        taken = {
+            l.converted_quote_id: l.name
+            for l in session.exec(select(Lead).where(Lead.tenant_id == tenant_id, Lead.converted_quote_id != None)).all()
+            if l.id != lead_id
+        }
+
+        def row(q):
+            return {
+                "id": q.id, "client_id": q.client_id, "client_name": q.client_name,
+                "job_number": q.job_number, "description": q.description,
+                "workflow_status": q.workflow_status,
+                "created_at": q.created_at.isoformat() if q.created_at else None,
+                "already_linked_to": taken.get(q.id),
+            }
+
+        matched = [row(q) for q in quotes if match and q.client_id == match.id]
+        matched_ids = {r["id"] for r in matched}
+        return {
+            "lead_name": lead.name,
+            "matched_client_id": match.id if match else None,
+            "matched": matched,
+            "other_recent": [row(q) for q in quotes if q.id not in matched_ids][:25],
+        }
+
+
+@app.post("/leads/{lead_id}/link-quote")
+def link_lead_to_quote(lead_id: int, quote_id: int, force: bool = False,
+                        tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Link a lead to a quote that ALREADY EXISTS (confirmed Sept 2026,
+    same brief). convert_lead() above creates a brand-new Quote from a
+    lead; this is the other real path — the quote was raised first, in
+    the Order Index, and the lead now needs to point at it. Without
+    this, the only way to close such a lead was to convert it and end
+    up with a second, duplicate quote for the same job.
+
+    Shares convert_lead()'s outcome exactly — lead_status "converted"
+    plus converted_quote_id — so a lead closed either way archives
+    identically and Past Leads stays one list, not two. That is also
+    why this doesn't become a flag on convert_lead(): they differ in
+    what they DO (create vs. attach), not in what they record.
+
+    Refuses a quote already claimed by a different lead unless forced.
+    Two leads pointing at one quote is usually a mis-click, and silently
+    allowing it would make "which enquiry produced this job" ambiguous
+    forever; force stays available because genuine duplicate enquiries
+    for one job do happen."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        if lead.lead_status in ("converted", "lost"):
+            raise HTTPException(400, f"This lead is already {lead.lead_status} — it can't be linked to a quote.")
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if not force:
+            other = session.exec(
+                select(Lead).where(Lead.tenant_id == tenant_id, Lead.converted_quote_id == quote_id, Lead.id != lead_id)
+            ).first()
+            if other:
+                raise HTTPException(400, f"Quote #{quote_id} ({quote.client_name}) is already linked to the lead \"{other.name}\". Link anyway only if both enquiries really were for this same job.")
+        old_status = lead.lead_status
+        lead.lead_status = "converted"
+        lead.converted_quote_id = quote.id
+        session.add(lead)
+        _log_lead_status_audit(
+            session, lead, username, old_status, "converted",
+            f"Linked to existing Quote #{quote.id} ({quote.client_name})",
+        )
+        session.commit()
+        session.refresh(lead)
+        return {"lead": lead, "quote_id": quote.id, "quote_client_name": quote.client_name,
+                "job_number": quote.job_number}
 
 
 @app.post("/leads/{lead_id}/convert")
