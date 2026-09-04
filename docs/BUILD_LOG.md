@@ -74,6 +74,24 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-08 (2)
+
+Order Index reverted to the pre-redesign layout, keeping only the stage tiles (Burgert: "Can we change it back to the way it was before this last change. I do like the coloured tiles at the top with the amounts and stats, maybe just a little smaller. Please the way the order index was shown before is the best of all so far").
+
+### What shipped
+- **`order-index.js` restored from `86d83df`** — the single-column layout, the status tab strip, the in-table stage section dividers, the separate Declined Quotes card and the normal 900px reading width are all back exactly as they were. The two-column split, the right-hand client list, the rep/branch/month filter row and the wide container are gone.
+- **The stage tiles stayed, and are now materially smaller**: 59px tall against the redesign's 93px. The count and the Rand amount now share one line — that pairing is the point of the tile ("the amounts and stats"), and stacking them was most of the height.
+
+### Why (root causes, decisions, rejected alternatives)
+- **The tiles are display-only now, deliberately.** The restored tab strip directly beneath them already filters this screen and did so before the redesign. Two controls doing the same job on one page is exactly the clutter the redesign was meant to remove, so the tiles answer "how much is where" and the tabs answer "show me only these".
+- **Declined quotes are counted in no tile at all.** They're fetched separately and only when the Declined card is expanded, so folding them into a tile would make that tile's number jump the moment someone opened an unrelated card. A figure that changes depending on what you clicked is worse than one that never claimed to include them — so the fifth tile is "Completed / Finished & paid", and `orderStageOf()` returns a stage that matches no tile for a declined quote. It still checks `declined_at` first, so a declined quote is never miscounted as Work Quoted.
+- **Kept from the reverted work:** the backend's `total_m2`/`flooring_types` on each quote row (cheap, computed from lines already fetched, useful on a row) and — more importantly — the fix that stops a declined quote prompting "FOLLOW UP", which was a genuine bug the redesign surfaced rather than caused.
+
+### Verified
+- Real-browser measurement with six jobs spread across every stage: single column with no client list or filter row, tab strip and section dividers and Declined card all present, Needs Attention above the table, `main` back to 900px; five tiles with correct counts (a declined quote is not miscounted), each showing its Rand amount, still low-saturation, sitting above the tabs, and measurably smaller at 59px.
+
+---
+
 ## 2026-09-08
 
 Security audit of per-person visibility and the builder-portal links, plus the fixes it found (Burgert: "Make sure that Ryno can only see what is destined to him and also for madri. I need to be able to [see] what they see but not visa versa... check the builders links, I dont want them to be able to gain access to the main site and app from a backdoor").

@@ -66,40 +66,7 @@ function nextActionButton(q) {
 // list would be more confusing than useful.
 let orderIndexSelectedIds = new Set();
 let orderIndexQuotesCache = [];   // last-fetched (search-filtered, not status-tab-filtered) rows — source for the summary counts, the Needs Attention list, and the bulk-delete confirmation's client names/descriptions, all without a second round trip
-// Order Index Redesign (confirmed Sept 2026, "Stage Tiles + Filterable
-// Client List" brief). SUPERSEDES the earlier "Order Index visual
-// grouping" section-dividers work rather than sitting alongside it —
-// the brief says so explicitly, and two overlapping ways of expressing
-// the same stages on one page is exactly the cognitive load this is
-// meant to remove. The dividers, the old status tab strip, the summary
-// count line and the separate Declined Quotes card are all gone; these
-// five stages replace all of them.
-//
-// The five are the brief's own, and they are NOT the same as
-// workflow_status: "Accepted" and "Work Being Installed" split one
-// pipeline into before/after a booking exists, and "Awaiting Final
-// Payment" vs "Archive" splits `completed` on whether the money is in.
-// Declined quotes now live in Archive with everything else finished,
-// which is what retires the separate card.
-const ORDER_STAGES = [
-  { key: 'quoted',   label: 'Work Quoted',          sub: 'Awaiting client acceptance' },
-  { key: 'accepted', label: 'Accepted',             sub: 'Not yet in installation' },
-  { key: 'installing', label: 'Work Being Installed', sub: 'Installation in progress' },
-  { key: 'awaiting_payment', label: 'Awaiting Final Payment', sub: 'Installed, payment outstanding' },
-  { key: 'archive',  label: 'Archive',              sub: 'Completed, paid and declined' },
-];
-function orderStageOf(q) {
-  if (q.declined_at) return 'archive';
-  if (q.workflow_status === 'quoted') return 'quoted';
-  if (q.workflow_status === 'accepted') return 'accepted';
-  if (q.workflow_status === 'scheduled') return 'installing';
-  if (q.workflow_status === 'completed') return q.final_payment_date ? 'archive' : 'awaiting_payment';
-  return 'archive';
-}
-let orderIndexStageFilter = null;    // null = every stage; combinable with the three below
-let orderIndexRepFilter = '';
-let orderIndexBranchFilter = '';
-let orderIndexMonthFilter = '';      // 'YYYY-MM', or '' for any month
+let orderIndexActiveTab = 'all';   // 'all' | 'quoted' | 'accepted' | 'scheduled' | 'completed' — filtered client-side against orderIndexQuotesCache so the summary counts (computed from the same cache) never disagree with what a tab click shows
 // Group Multi-Quote Clients (confirmed Aug 2026, Order Index addendum
 // #2) — which client groups are manually expanded, by client_id.
 // Deliberately NOT reset on every re-render (only on a fresh fetch, in
@@ -108,18 +75,20 @@ let orderIndexMonthFilter = '';      // 'YYYY-MM', or '' for any month
 let orderIndexExpandedClientIds = new Set();
 // Exclude Declined Alternative Quotes (confirmed Sept 2026) — a
 // declined quote is never deleted (real, permanent record, same as
-// every other quote). It used to live in its own card with its own
-// second fetch, deliberately outside the status tabs. SUPERSEDED by
-// the Order Index Redesign (confirmed Sept 2026): declined quotes are
-// now part of the Archive stage — "completed jobs, expired quotes, and
-// declined quotes all live here together" — so they come down in the
-// one main fetch (include_declined=true) and are separated by
-// orderStageOf(), which checks declined_at BEFORE workflow_status
-// precisely because a declined quote's own workflow_status stays
-// "quoted" forever (decline_quote(), main.py). Same "kept, never
-// deleted, out of the working list unless asked for" outcome, one
-// mechanism instead of two.
+// every other quote) but must stay out of the main working list by
+// default — "what needs my attention" never includes an alternative
+// that was never going to happen. This is a genuinely SEPARATE,
+// dedicated view (its own card, its own fetch with
+// include_declined=true), not folded into the existing status tabs —
+// a declined quote's own workflow_status stays "quoted" forever
+// (decline_quote() only ever sets declined_at, main.py), so it can't
+// be told apart from a real open quote by status alone; mixing it
+// into the Quoted tab's own sort/grouping would have re-introduced
+// exactly the clutter this brief exists to remove.
+let orderIndexShowDeclined = false;
+let orderIndexDeclinedQuotes = [];
 
+const WORKFLOW_TABS = ['all', 'quoted', 'accepted', 'scheduled', 'completed'];
 
 // Search debounce (confirmed Aug 2026, Full Real-Browser Walkthrough &
 // Audit — real bug: renderOrderIndex()'s own oninput handler fires on
@@ -141,70 +110,41 @@ function scheduleOrderIndexSearch(value) {
   orderIndexSearchDebounceTimer = setTimeout(() => renderOrderIndex(document.getElementById('landing'), value), 300);
 }
 
-// Filters are deliberately combinable (brief: "combinable, not just
-// one-at-a-time") — each setter only touches its own value and
-// re-renders from the one cached fetch, so stage + rep + branch + month
-// narrow together rather than replacing each other.
-function setOrderIndexStage(stage) {
-  orderIndexStageFilter = orderIndexStageFilter === stage ? null : stage;   // clicking the active tile clears it
+function setOrderIndexTab(tab) {
+  orderIndexActiveTab = tab;
   renderOrderIndexTable();
-}
-function setOrderIndexFilter(which, value) {
-  if (which === 'rep') orderIndexRepFilter = value;
-  else if (which === 'branch') orderIndexBranchFilter = value;
-  else if (which === 'month') orderIndexMonthFilter = value;
-  renderOrderIndexTable();
-}
-function clearOrderIndexFilters() {
-  orderIndexStageFilter = null;
-  orderIndexRepFilter = orderIndexBranchFilter = orderIndexMonthFilter = '';
-  renderOrderIndexTable();
-}
-function orderIndexFiltersActive() {
-  return !!(orderIndexStageFilter || orderIndexRepFilter || orderIndexBranchFilter || orderIndexMonthFilter);
 }
 
-// Everything except the stage, so a tile's own count still reflects the
-// rep/branch/month you're looking at without counting itself.
-function orderIndexPassesNonStageFilters(q) {
-  if (orderIndexRepFilter && q.sales_owner !== orderIndexRepFilter) return false;
-  if (orderIndexBranchFilter && q.branch !== orderIndexBranchFilter) return false;
-  if (orderIndexMonthFilter && String(q.created_at || '').slice(0, 7) !== orderIndexMonthFilter) return false;
-  return true;
+// Exclude Declined Alternative Quotes (confirmed Sept 2026) — its own
+// small fetch (include_declined=true, and since every declined quote's
+// own workflow_status is still "quoted", filtered client-side down to
+// just declined_at != null so this card never accidentally shows a
+// genuinely open quote), only made the first time it's actually opened
+// — not on every Order Index load, since most visits won't need it.
+async function toggleOrderIndexDeclined() {
+  orderIndexShowDeclined = !orderIndexShowDeclined;
+  if (orderIndexShowDeclined && !orderIndexDeclinedQuotes.length) {
+    const res = await fetch(`${API}/quotes?include_declined=true&workflow_status=quoted`);
+    const all = await res.json();
+    orderIndexDeclinedQuotes = all.filter(q => q.declined_at);
+  }
+  renderOrderIndexTable();
 }
-
-// setOrderIndexTab()/toggleOrderIndexDeclined() removed with the tab
-// strip and the Declined card they drove (Order Index Redesign,
-// confirmed Sept 2026) — the stage tiles and setOrderIndexStage()
-// above replace both. Checked for remaining callers before deleting;
-// there were none outside the markup that also went.
 
 async function renderOrderIndex(el, searchTerm) {
-  // Wide container for this screen only (Order Index Redesign,
-  // confirmed Sept 2026) — same body-class mechanism Home and the
-  // Quote Builder already use. Cleared by renderLanding() when any
-  // other view takes over.
-  document.body.classList.add('order-index-active');
   await renderWithRetry(el, 'Order Index', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Order Index</h2><p class="muted">Loading...</p></div>`;
   // No workflow_status filter sent here deliberately — the full
   // (search-filtered) set is fetched once so the summary counts and
   // every status tab can be computed/rendered client-side from the
   // SAME data, guaranteeing they can never disagree with each other.
-  // include_declined=true (Order Index Redesign, confirmed Sept 2026) —
-  // declined quotes are part of the Archive stage now, so they have to
-  // be in the same cache every tile counts from. They're excluded from
-  // every other stage by orderStageOf() itself, which checks
-  // declined_at BEFORE workflow_status (a declined quote's own
-  // workflow_status stays "quoted" forever — see decline_quote()).
-  // This also retires the separate second fetch the old Declined
-  // Quotes card used to make.
-  const params = new URLSearchParams({ include_declined: 'true' });
-  if (searchTerm) params.set('search', searchTerm);
-  const res = await fetch(`${API}/quotes?${params}`);
+  const params = searchTerm ? `?search=${encodeURIComponent(searchTerm)}` : '';
+  const res = await fetch(`${API}/quotes${params}`);
   orderIndexQuotesCache = await res.json();
   orderIndexSelectedIds = new Set();
   orderIndexExpandedClientIds = new Set();
+  orderIndexShowDeclined = false;
+  orderIndexDeclinedQuotes = [];
   renderOrderIndexTable(searchTerm);
   // Focus/cursor restore only belongs on a genuine fetch (fresh load or
   // a search keystroke) — moved out of renderOrderIndexTable() itself
@@ -289,12 +229,28 @@ function renderOrderIndexTable(searchTerm) {
   // browser this app supports) keeps each bucket's own relative order
   // exactly as the backend returned it — no secondary sort invented
   // beyond what the brief actually asked for.
-  // The stage grouping that used to live here as in-table section
-  // headers (Order Index visual grouping, Sept 2026) is superseded by
-  // the stage tiles at the top of the page — see ORDER_STAGES /
-  // orderStageOf() at module scope. Deleted rather than left dormant:
-  // two definitions of "what stage is this job in" is exactly how the
-  // two quietly drift apart.
+  // Order Index visual grouping (confirmed Sept 2026, "Manual Quoting
+  // Categories, Lead Conversion, Order Index Clarity" brief §3) — real
+  // section headers, not just colour, so a long list reads as a few
+  // distinct stages instead of one wall of rows.
+  //
+  // Sections follow the brief's own pipeline order (quote -> accept ->
+  // install -> paid). NOTE this changes the TOP-LEVEL order from the
+  // earlier Priority Ordering decision, which put Scheduled first and
+  // Completed last across the whole list; that ordering is preserved
+  // exactly WITHIN each section (orderIndexPriorityBucket below is
+  // still the secondary sort), which is what this brief asked for.
+  //
+  // The fourth section is not in the brief but is required for the
+  // third one to be true: a completed job that HAS been paid is not
+  // "awaiting final payment", and lumping it there would mislabel
+  // finished work.
+  function orderIndexStage(q) {
+    if (q.workflow_status === 'quoted') return 0;
+    if (q.workflow_status === 'accepted' || q.workflow_status === 'scheduled') return 1;
+    if (q.workflow_status === 'completed') return q.final_payment_date ? 3 : 2;
+    return 4;
+  }
   function orderIndexPriorityBucket(q) {
     if (q.workflow_status === 'scheduled') return 0;
     if (q.workflow_status === 'accepted') return 1;
@@ -302,13 +258,10 @@ function renderOrderIndexTable(searchTerm) {
     if (q.workflow_status === 'completed') return 4;
     return 5;   // safety fallback — no real workflow_status value reaches this today
   }
-  // Every filter narrows the same cached set, combinably. Sorted by
-  // the existing operational priority within whatever survives — that
-  // ordering was confirmed separately and is untouched here.
-  const shown = quotes
-    .filter(q => orderIndexPassesNonStageFilters(q)
-                 && (!orderIndexStageFilter || orderStageOf(q) === orderIndexStageFilter))
-    .sort((a, b) => orderIndexPriorityBucket(a) - orderIndexPriorityBucket(b));
+  const shown = orderIndexActiveTab === 'all'
+    ? [...quotes].sort((a, b) => (orderIndexStage(a) - orderIndexStage(b))
+                                 || (orderIndexPriorityBucket(a) - orderIndexPriorityBucket(b)))
+    : quotes.filter(q => q.workflow_status === orderIndexActiveTab);
 
   // Needs Attention (confirmed Aug 2026, brief §7 + addendum's priority
   // tiers) — every quote with an attention_priority set, sorted most-
@@ -318,7 +271,7 @@ function renderOrderIndexTable(searchTerm) {
   // PRIORITY_ORDER/PRIORITY_FLAG defined once at module scope below
   // (shared with the group-header "most urgent" logic in
   // buildOrderIndexRowsHtml() — same ranking used in both places).
-  const attentionItems = quotes.filter(q => q.attention_priority && !q.declined_at)
+  const attentionItems = quotes.filter(q => q.attention_priority)
     .sort((a, b) => PRIORITY_ORDER[a.attention_priority] - PRIORITY_ORDER[b.attention_priority]);
   const attentionHtml = attentionItems.length ? attentionItems.map(q => `
     <div class="attention-item priority-${q.attention_priority}" onclick="openOrderDetailScreen(${q.id})">
@@ -327,102 +280,13 @@ function renderOrderIndexTable(searchTerm) {
       ${nextActionButton(q)}
     </div>`).join('') : '<p class="muted" style="margin:0;">Nothing needs attention right now.</p>';
 
-  // No stage headers inside the table any more: the tiles above ARE
-  // the stage grouping, and expressing the same five stages twice on
-  // one page is exactly the cognitive load this redesign removes.
+  // Headers only on the "All" view — a single-status tab is already one
+  // stage by definition, so a lone header above it would be noise.
   const rows = shown.length
-    ? buildOrderIndexRowsHtml(shown, isOwner, money, !!searchTerm)
-    : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match these filters.</td></tr>`;
+    ? buildOrderIndexRowsHtml(shown, isOwner, money, !!searchTerm, orderIndexActiveTab === 'all' ? orderIndexStage : null)
+    : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match.</td></tr>`;
 
-  // Stage tiles — count AND value per stage, from the same cache the
-  // table is built from, so a tile can never disagree with the rows it
-  // filters to. Counted against the OTHER active filters (rep, branch,
-  // month) so the numbers describe what you're actually looking at.
-  const forTiles = quotes.filter(orderIndexPassesNonStageFilters);
-  const stageTilesHtml = ORDER_STAGES.map(st => {
-    const inStage = forTiles.filter(q => orderStageOf(q) === st.key);
-    const value = inStage.reduce((sum, q) => sum + (q.total_incl_vat || 0), 0);
-    const active = orderIndexStageFilter === st.key;
-    return `
-      <div class="stage-tile stage-${st.key} ${active ? 'active' : ''}" onclick="setOrderIndexStage('${st.key}')"
-           title="${active ? 'Click again to show every stage' : 'Show only this stage'}">
-        <div class="stage-tile-label">${st.label}</div>
-        <div class="stage-tile-count">${inStage.length}</div>
-        <div class="stage-tile-value">${money(value)}</div>
-        <div class="stage-tile-sub">${st.sub}</div>
-      </div>`;
-  }).join('');
-
-  // Options built from the real data rather than a hardcoded list, so a
-  // new rep or a third branch needs no code change.
-  const reps = [...new Set(quotes.map(q => q.sales_owner).filter(Boolean))].sort();
-  const branches = [...new Set(quotes.map(q => q.branch).filter(Boolean))].sort();
-  const months = [...new Set(quotes.map(q => String(q.created_at || '').slice(0, 7)).filter(Boolean))].sort().reverse();
-  const monthLabel = (m) => {
-    const [y, mo] = m.split('-');
-    return new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString('en-ZA', { month: 'long', year: 'numeric' });
-  };
-  const cap = (v) => v.charAt(0).toUpperCase() + v.slice(1);
-  const filtersHtml = `
-    <div class="oi-filters">
-      <div class="field"><label>Rep</label>
-        <select onchange="setOrderIndexFilter('rep', this.value)">
-          <option value="">All reps</option>
-          ${reps.map(r => `<option value="${r}" ${orderIndexRepFilter === r ? 'selected' : ''}>${cap(r)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Branch</label>
-        <select onchange="setOrderIndexFilter('branch', this.value)">
-          <option value="">All branches</option>
-          ${branches.map(b => `<option value="${b}" ${orderIndexBranchFilter === b ? 'selected' : ''}>${cap(b)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Month</label>
-        <select onchange="setOrderIndexFilter('month', this.value)">
-          <option value="">Any month</option>
-          ${months.map(m => `<option value="${m}" ${orderIndexMonthFilter === m ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field" style="flex:1 1 200px;"><label>Search (customer, job number, or site)</label>
-        <input type="text" id="orderSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="scheduleOrderIndexSearch(this.value)">
-      </div>
-      ${orderIndexFiltersActive() ? `<div class="field" style="flex:0 0 auto;"><label>&nbsp;</label><button onclick="clearOrderIndexFilters()">Clear filters</button></div>` : ''}
-    </div>`;
-
-  // The client list (brief: "A simple running list of clients currently
-  // in the Order Index (respecting whatever filters are active)").
-  // Deliberately one row per CLIENT, not per job — the whole point is
-  // scanning who is on the books and how much floor that is, so a
-  // client with three jobs reads as one line with their combined m²
-  // rather than three lines to add up by eye. Clicking through opens
-  // their most recent job's workflow page, same as clicking a row.
-  const byClientList = {};
-  shown.forEach(q => {
-    const key = q.client_id || `name:${q.client_name}`;
-    const entry = byClientList[key] || (byClientList[key] = {
-      name: q.client_name, m2: 0, types: [], quoteId: q.id, jobs: 0,
-    });
-    entry.m2 += q.total_m2 || 0;
-    entry.jobs += 1;
-    (q.flooring_types || []).forEach(t => { if (!entry.types.includes(t)) entry.types.push(t); });
-    if (q.id > entry.quoteId) entry.quoteId = q.id;   // most recent job for the click-through
-  });
-  const clientRows = Object.values(byClientList).sort((a, b) => a.name.localeCompare(b.name));
-  const clientListHtml = `
-    <div class="card oi-client-card">
-      <h2 style="margin-top:0;">Clients (${clientRows.length})</h2>
-      <p class="muted" style="margin-top:-6px;">${orderIndexFiltersActive() ? 'Matching the filters above.' : 'Everyone currently in the Order Index.'}</p>
-      <div class="oi-client-list">
-        ${clientRows.length ? clientRows.map(c => `
-          <div class="oi-client-row" onclick="openOrderDetailScreen(${c.quoteId})">
-            <div class="oi-client-name">${c.name}${c.jobs > 1 ? ` <span class="muted" style="font-weight:400; font-size:11px;">(${c.jobs} jobs)</span>` : ''}</div>
-            <div class="oi-client-meta">
-              <span>${c.m2 ? c.m2.toFixed(1) + ' m²' : '—'}</span>
-              ${c.types.map(t => `<span class="oi-type-tag">${t}</span>`).join('')}
-            </div>
-          </div>`).join('') : '<p class="muted" style="margin:0;">No clients match these filters.</p>'}
-      </div>
-    </div>`;
+  const tab = (key, label, count) => `<button onclick="setOrderIndexTab('${key}')" style="${orderIndexActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
 
   // Unlinked Quotes notice (confirmed Aug 2026, Save Redirect + Client
   // Link Missing brief §3 — "if quotes with no real client link already
@@ -448,48 +312,67 @@ function renderOrderIndexTable(searchTerm) {
 
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
-    <div class="landing-welcome" style="margin-bottom:14px;">
+    <div class="landing-welcome">
       <h1>Order Index</h1>
-      <p>What stage is everything in, and how much is where?</p>
+      <p>What jobs do I have? Where's each one in the process? What needs to happen next?</p>
     </div>
 
-    <!-- Order Index Redesign (confirmed Sept 2026) — stages first, as
-    big calm tiles. Deliberately low-saturation colours, per the brief:
-    "this is a status overview, not an alerts panel, so it should read
-    calm rather than urgent". The urgent styling still exists, but only
-    where something genuinely is urgent — Needs Attention, below. -->
-    <div class="stage-tiles">${stageTilesHtml}</div>
+    <div class="card">
+      <h2>Needs Attention</h2>
+      <div class="attention-list">${attentionHtml}</div>
+    </div>
 
-    <div class="card">${filtersHtml}</div>
+    ${unlinkedHtml}
 
-    <!-- Table and client list side by side, so "which jobs" and "which
-    clients" are both answerable in one look rather than by scrolling
-    from one to the other. -->
-    <div class="oi-layout">
-      <div class="oi-main">
-        ${unlinkedHtml}
-        <div class="card">
-          ${isOwner ? `<div style="margin-bottom:10px;"><button id="oiDeleteSelectedBtn" class="delete-btn" disabled onclick="bulkDeleteSelectedOrders()">Delete Selected (0)</button></div>` : ''}
-          <div style="overflow-x:auto;">
-          <!-- Mobile Rendering Audit brief (confirmed Aug 2026) — same
-               .mobile-card-table treatment as Business Overview's own
-               tables; overflow-x:auto is a harmless desktop-only safety
-               net, inert once the card layout takes over. -->
-          <table class="mobile-card-table"><thead><tr>
-            ${isOwner ? `<th><input type="checkbox" id="oiSelectAll" title="Select all shown" onchange="toggleSelectAllOrders(this.checked)"></th>` : ''}
-            <th>Job</th><th>Customer</th><th>Value</th><th>Status</th><th>Install Date</th><th>Next Action</th><th></th>
-          </tr></thead>
-          <tbody>${rows}</tbody></table>
-          </div>
-        </div>
+    ${renderOrderStageTiles(quotes, money)}
 
-        <div class="card">
-          <h2>Needs Attention</h2>
-          <div class="attention-list">${attentionHtml}</div>
-        </div>
+    <div class="card">
+      <div class="workflow-tabs">
+        ${tab('all', 'All', quotes.length)} ${tab('quoted', 'Quoted', counts.quoted)} ${tab('accepted', 'Accepted', counts.accepted)} ${tab('scheduled', 'Scheduled', counts.scheduled)} ${tab('completed', 'Completed', counts.completed)}
       </div>
+      <div class="field"><label>Search (customer, job number, or site)</label><input type="text" id="orderSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="scheduleOrderIndexSearch(this.value)"></div>
+      ${isOwner ? `<div style="margin-bottom:10px;"><button id="oiDeleteSelectedBtn" class="delete-btn" disabled onclick="bulkDeleteSelectedOrders()">Delete Selected (0)</button></div>` : ''}
+      <div style="overflow-x:auto;">
+      <!-- Mobile Rendering Audit brief (confirmed Aug 2026) -- same
+           .mobile-card-table treatment as Business Overview's By
+           Branch/By Sales Owner tables (found needing it during that
+           brief's own required systematic sweep). overflow-x:auto above
+           is kept as a harmless desktop-only safety net -- inert once
+           the card layout takes over below the breakpoint. -->
+      <table class="mobile-card-table"><thead><tr>
+        ${isOwner ? `<th><input type="checkbox" id="oiSelectAll" title="Select all shown" onchange="toggleSelectAllOrders(this.checked)"></th>` : ''}
+        <th>Job</th><th>Customer</th><th>Value</th><th>Status</th><th>Install Date</th><th>Next Action</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table>
+      </div>
+    </div>
 
-      <div class="oi-side">${clientListHtml}</div>
+    <!-- Exclude Declined Alternative Quotes (confirmed Sept 2026,
+    Burgert's own words: "the other two aren't lost opportunities...
+    They also clutter the Order Index with quotes that will never move
+    forward") — a genuinely separate, out-of-the-way card, not mixed
+    into the main table/tabs above. Declined quotes are never deleted
+    (decline_quote()'s own docstring, main.py) — this is exactly the
+    "remain accessible... via a filter" the brief asks for. -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h2 style="margin:0;">Declined Quotes</h2>
+        <button onclick="toggleOrderIndexDeclined()">${orderIndexShowDeclined ? 'Hide' : 'Show'}</button>
+      </div>
+      <p class="muted" style="margin-bottom:${orderIndexShowDeclined ? '12px' : '0'};">Alternative quotes that weren't chosen — kept for reference, out of the working list above. Click one for the full reason.</p>
+      ${orderIndexShowDeclined ? `
+      <div style="overflow-x:auto;">
+        <table class="mobile-card-table">
+          <thead><tr><th>Job</th><th>Customer</th><th>Value</th><th>Declined</th></tr></thead>
+          <tbody>${orderIndexDeclinedQuotes.length ? orderIndexDeclinedQuotes.map(q => `
+            <tr style="cursor:pointer;" onclick="openOrderDetailScreen(${q.id})">
+              <td class="job-number card-title" data-label="Job">${q.job_number || `#${q.id}`}</td>
+              <td data-label="Customer">${orderIndexClientNameHtml(q)}${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
+              <td data-label="Value">${money(q.total_incl_vat)}</td>
+              <td data-label="Declined">${new Date(q.declined_at).toLocaleDateString('en-ZA')}</td>
+            </tr>`).join('') : '<tr><td colspan="4" class="muted">No declined quotes.</td></tr>'}</tbody>
+        </table>
+      </div>` : ''}
     </div>
 
     <div class="card">
@@ -543,6 +426,64 @@ function toggleClientGroup(clientId) {
 // screen already uses, kept because it's a real, meaningful distinction
 // (a genuine linked Client record vs. a walk-in/one-off) — not something
 // the brief asked to remove, only to stop rendering inconsistently.
+// Stage tiles (confirmed Sept 2026) — the one part of the Order Index
+// redesign Burgert kept: "I do like the coloured tiles at the top with
+// the amounts and stats, maybe just a little smaller." The rest of that
+// redesign (two-column layout, right-hand client list, rep/branch/month
+// filter row) was reverted at his request — "the way the order index was
+// shown before is the best of all so far".
+//
+// Display only, deliberately: the status tab strip right below them
+// already filters this screen and did so before the redesign. Two
+// controls doing the same job on one page is the clutter that redesign
+// was trying to remove in the first place, so the tiles answer "how much
+// is where" and the tabs answer "show me only these".
+//
+// Five stages, not the four workflow_status values, because two of them
+// split one status: `completed` is either awaiting final payment or
+// genuinely finished, and a declined quote is finished too. That split
+// is the whole reason a Rand figure per tile is worth reading.
+const ORDER_STAGES = [
+  { key: 'quoted', label: 'Work Quoted', sub: 'Awaiting acceptance' },
+  { key: 'accepted', label: 'Accepted', sub: 'Not yet installed' },
+  { key: 'installing', label: 'Being Installed', sub: 'In progress' },
+  { key: 'awaiting_payment', label: 'Awaiting Payment', sub: 'Installed, unpaid' },
+  { key: 'archive', label: 'Completed', sub: 'Finished & paid' },
+];
+function orderStageOf(q) {
+  // declined_at BEFORE workflow_status: a declined quote's own status
+  // stays "quoted" forever (decline_quote(), main.py), so without this
+  // check a declined quote would count as Work Quoted.
+  if (q.declined_at) return 'declined';
+  if (q.workflow_status === 'quoted') return 'quoted';
+  if (q.workflow_status === 'accepted') return 'accepted';
+  if (q.workflow_status === 'scheduled') return 'installing';
+  if (q.workflow_status === 'completed') return q.final_payment_date ? 'archive' : 'awaiting_payment';
+  return 'archive';
+}
+function renderOrderStageTiles(quotes, money) {
+  // Declined quotes are deliberately NOT counted in any tile. They are
+  // fetched separately and only when the Declined card below is opened
+  // (toggleOrderIndexDeclined()), so folding them into a tile would
+  // make that tile's number jump the moment someone expanded an
+  // unrelated card — a figure that changes based on what you clicked is
+  // worse than one that never claimed to include them. orderStageOf()
+  // returns 'declined' for them, which matches no tile.
+  return `<div class="stage-tiles">${ORDER_STAGES.map(st => {
+    const inStage = quotes.filter(q => orderStageOf(q) === st.key);
+    const value = inStage.reduce((sum, q) => sum + (q.total_incl_vat || 0), 0);
+    return `
+      <div class="stage-tile stage-${st.key}">
+        <div class="stage-tile-label">${st.label}</div>
+        <div class="stage-tile-figures">
+          <span class="stage-tile-count">${inStage.length}</span>
+          <span class="stage-tile-value">${money(value)}</span>
+        </div>
+        <div class="stage-tile-sub">${st.sub}</div>
+      </div>`;
+  }).join('')}</div>`;
+}
+
 function orderIndexClientNameHtml(q) {
   return q.client_id
     ? `<span class="oi-client-name linked" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
@@ -653,7 +594,23 @@ function toggleQuickView(quoteId) {
   loadDocumentPreview(previewId, quoteId);
 }
 
-function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
+const ORDER_INDEX_STAGE_LABELS = [
+  'Quoted — awaiting acceptance',
+  'Accepted — not yet installed',
+  'Installed — awaiting final payment',
+  'Completed & paid',
+  'Other',
+];
+
+function orderIndexStageHeaderHtml(stage, count, isOwner) {
+  return `<tr class="oi-stage-header"><td colspan="${isOwner ? 8 : 7}" style="background:var(--navy,#1a2b3c); color:#fff; font-weight:800; padding:8px 10px; letter-spacing:0.02em;">
+    ${ORDER_INDEX_STAGE_LABELS[stage]} <span style="opacity:0.75; font-weight:600;">(${count})</span>
+  </td></tr>`;
+}
+
+// stageOf (confirmed Sept 2026) — null on a single-status tab, where
+// every row is the same stage and a header would say nothing.
+function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching, stageOf) {
   // Group Multi-Job Client Fix (confirmed Sept 2026) — real risk found
   // by Burgert, not just tidiness: a client with, say, 2 still-Quoted
   // jobs and 1 that had progressed to Scheduled used to group ALL 3
@@ -673,12 +630,27 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
   shown.forEach(q => { if (q.client_id && q.workflow_status === 'quoted') (byClient[q.client_id] = byClient[q.client_id] || []).push(q); });
   const groupClientIds = new Set(Object.keys(byClient).filter(cid => byClient[cid].length > 1).map(Number));
 
+  // Counted up front so each header can state its own size — `shown` is
+  // already sorted by stage, so the headers themselves are emitted in
+  // one pass below as the stage changes.
+  const stageCounts = {};
+  if (stageOf) shown.forEach(q => { const st = stageOf(q); stageCounts[st] = (stageCounts[st] || 0) + 1; });
+  let lastStage = null;
+  const stageHeaderFor = (q) => {
+    if (!stageOf) return '';
+    const st = stageOf(q);
+    if (st === lastStage) return '';
+    lastStage = st;
+    return orderIndexStageHeaderHtml(st, stageCounts[st], isOwner);
+  };
+
   const seenGroup = new Set();
   return shown.map(q => {
     if (!q.client_id || q.workflow_status !== 'quoted' || !groupClientIds.has(q.client_id)) {
-      return orderIndexRowHtml(q, isOwner, money, false);
+      return stageHeaderFor(q) + orderIndexRowHtml(q, isOwner, money, false);
     }
     if (seenGroup.has(q.client_id)) return '';   // absorbed into the group row already emitted below
+    const stageHeader = stageHeaderFor(q);
     seenGroup.add(q.client_id);
     const groupQuotes = byClient[q.client_id];
     // Search auto-expands every group in the (already search-filtered)
@@ -747,7 +719,7 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
         <td class="card-actions-cell" data-label="" onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
       </tr>`;
     const childRows = expanded ? groupQuotes.map(g => orderIndexRowHtml(g, isOwner, money, true)).join('') : '';
-    return headerRow + childRows;
+    return stageHeader + headerRow + childRows;
   }).join('');
 }
 
@@ -1018,42 +990,21 @@ function renderStatusTilesHtml(q, jobSteps) {
     bookingTile = { cls: 'progress', text: 'Not yet', sub: 'No date set' };
   }
 
-  // Split Money Tile (confirmed Sept 2026, Burgert: "The split money
-  // tile still isnt split"). One "Money" tile had to describe two
-  // genuinely independent things — the deposit up front and the final
-  // payment at the end — so it could only ever show the more urgent of
-  // them, and "Deposit received" told you nothing about whether the
-  // balance had been invoiced or paid. Two tiles, each answering its
-  // own question.
-  //
+  // Money — final_payment_date is the same "fully paid" signal the
+  // primary status strip's own 🟢 "closed out" case already uses;
   // deposit_pct === 0 is the real, tolerated "no deposit required"
-  // shape confirmed against _quote_totals(), settable per job
-  // (Decision Q3) rather than only via a global Business Settings
-  // change.
-  let depositTile;
-  if (q.deposit_paid_date) {
-    depositTile = { cls: 'done', text: 'Received', sub: new Date(q.deposit_paid_date).toLocaleDateString('en-ZA') };
-  } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
-    depositTile = { cls: 'done', text: 'Not required', sub: 'No deposit on this job' };
-  } else {
-    depositTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
-  }
-
-  // Final payment. "Invoiced — awaiting payment" is deliberately a DONE
-  // (green) state, not a progress one (confirmed Sept 2026, same report
-  // as the Needs Attention invoice bug): once the invoice has gone out,
-  // the outstanding step is the client paying, which is not something
-  // anyone here can act on. Showing it as needs-action made two real
-  // jobs look neglected when nothing was owed by us at all.
-  let finalTile;
+  // shape confirmed against _quote_totals() during investigation, now
+  // actually settable per job (Decision Q3) rather than only via a
+  // global Business Settings change.
+  let moneyTile;
   if (q.final_payment_date) {
-    finalTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
-  } else if (q.invoice_sent_date) {
-    finalTile = { cls: 'done', text: 'Awaiting payment', sub: `Invoiced ${new Date(q.invoice_sent_date).toLocaleDateString('en-ZA')}` };
-  } else if (q.workflow_status === 'completed') {
-    finalTile = { cls: 'progress', text: 'Not yet invoiced', sub: 'Installation complete' };
+    moneyTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
+  } else if (q.deposit_paid_date) {
+    moneyTile = { cls: 'progress', text: 'Deposit received', sub: 'Balance due on completion' };
+  } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
+    moneyTile = { cls: 'progress', text: 'No deposit required', sub: 'Balance due on completion' };
   } else {
-    finalTile = { cls: 'progress', text: 'Due on completion', sub: 'Not invoiced yet' };
+    moneyTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
   }
 
   const tile = (label, t) => `
@@ -1063,7 +1014,7 @@ function renderStatusTilesHtml(q, jobSteps) {
       <div class="status-tile-sub">${t.sub}</div>
     </div>`;
 
-  return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Deposit', depositTile)}${tile('Final payment', finalTile)}</div>`;
+  return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Money', moneyTile)}</div>`;
 }
 
 // Materials section (Job Control Panel §6, revised Sept 2026 — Materials

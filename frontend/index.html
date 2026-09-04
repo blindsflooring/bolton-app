@@ -1222,7 +1222,6 @@ function showSection(tabName) {
   // gets the wide container — a Lead or Job screen reached from Home
   // keeps the normal reading width.
   document.body.classList.remove('home-active');
-  document.body.classList.remove('order-index-active');
   // Page Title (confirmed Aug 2026) -- priceBook/quoteBuilder are the
   // two tabs renderLanding() never touches (same reasoning as the
   // history-push comment below), so they need their own title here.
@@ -1635,7 +1634,6 @@ function renderLanding() {
   // reading-width page, so the class is dropped up front and added back
   // by renderLandingTiles() alone.
   if (landingView !== 'tiles') document.body.classList.remove('home-active');
-  if (landingView !== 'orders') document.body.classList.remove('order-index-active');
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
