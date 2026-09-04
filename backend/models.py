@@ -213,6 +213,20 @@ class TrimProduct(SQLModel, table=True):
     fixed_sell_price_per_lm: Optional[float] = None   # required if pricing_mode == "fixed"
     markup_multiplier: float = 1.5                    # used if pricing_mode == "markup"
     unit: str = "lm"
+    # Builder Portal: Trims (confirmed Sept 2026, Burgert's own words:
+    # "Only one trim, Reducing profile per door width opening. Leave
+    # skirtings"). Deliberately the SAME flag name FlooringProduct
+    # already uses for the same purpose, so "what's exposed to the
+    # public portal" reads identically on both tables — but the portal
+    # only ever resolves ONE trim from it (the reducer), priced per
+    # door opening rather than per metre entered by the builder, since
+    # a builder measuring their own linear metres is exactly the
+    # judgement call this pilot is not asking them to make. Skirtings
+    # are excluded by that same explicit instruction — nothing here
+    # restricts the flag to a category, but _builder_portal_trim()
+    # (main.py) is the one place that decides, so the rule lives in
+    # exactly one spot.
+    available_to_builder_portal: bool = False
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     source: str = "manual"
 
@@ -620,6 +634,26 @@ class Builder(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BuilderPortalVisit(SQLModel, table=True):
+    """Builder activity visibility (confirmed Sep 2026, Burgert's own
+    words: "I need to see when they logged on and what they did on the
+    system"). There's no real login here to log — see Builder's own
+    docstring above, "no login/account system" is this pilot's whole
+    design — so this is deliberately labeled and treated as portal
+    VISITS, not logins: one row per real GET /builder/{slug} page load
+    (builder_portal_info(), main.py), best-effort (a logging failure
+    must never block the actual public portal from loading — same
+    "never block the real thing over a side channel" principle as
+    QuotePhoto's own Dropbox best-effort upload). Estimate submissions
+    are NOT duplicated here — BuilderEstimate.created_at already is
+    that record; the admin activity view (main.py) merges both into one
+    timeline at read time rather than storing the same event twice."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    builder_id: int = Field(foreign_key="builder.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class BuilderEstimate(SQLModel, table=True):
     """One self-serve estimate a builder submitted through their portal
     link (confirmed Aug 2026, Builder Referral Portal Phase 1). Deliberately
@@ -673,6 +707,45 @@ class BuilderEstimate(SQLModel, table=True):
     # anything else already on Quote.
     commission_paid: bool = False
     commission_paid_at: Optional[datetime] = None
+    # Screed + Trim On The Portal (confirmed Sept 2026). Until this, a
+    # portal estimate was ONE flooring material line at JobType.smooth
+    # — no floor prep at all, no trim — so a builder pricing a tiled
+    # floor got a number with zero prep cost in it while the internal
+    # calculator would have put a second, screed line on the same job.
+    # Burgert, choosing between the options: "Ask floor condition,
+    # auto-add screed" and "Only one trim, Reducing profile per door
+    # width opening. Leave skirtings".
+    #
+    # Every one of these is a SNAPSHOT, same reasoning as
+    # product_name/quoted_price_* above — the screed rate, the trim
+    # rate and even which products were flagged to the portal can all
+    # change later, and this must keep showing what the builder was
+    # actually quoted. quoted_price_ex_vat/incl_vat stay the TOTAL of
+    # all three parts (nothing downstream that already reads them —
+    # statement, report, commission — has to learn about the split);
+    # these fields are the breakdown behind that total.
+    job_type: str = "smooth"          # "smooth" | "over_tiles" | "removed_tiles" — JobType's own values; plain str here, same as flooring_pricing_type, so an old row's default never has to satisfy an enum
+    material_price_ex_vat: float = 0.0
+    # Deliberately NOT declared as foreign keys, unlike product_id
+    # above. These are part of the price snapshot: screed_product_name
+    # and trim_product_name are the durable record of what was quoted,
+    # and nothing reads the ids back for logic. A real FK would instead
+    # mean that retiring a screed product or a reducer from the price
+    # book fails outright on Postgres for as long as any old estimate
+    # still mentions it — a new way for an ordinary price-book cleanup
+    # to break, bought for nothing. (delete_trim() has no reference
+    # check of its own, main.py.) It would also disagree with this
+    # feature's own ALTER TABLE migration, which adds them as plain
+    # INTEGERs, so a live-migrated database and a freshly created one
+    # would end up with different constraints.
+    screed_product_id: Optional[int] = None
+    screed_product_name: str = ""
+    screed_price_ex_vat: float = 0.0
+    trim_product_id: Optional[int] = None
+    trim_product_name: str = ""
+    trim_openings: int = 0            # what the builder actually entered — door openings, not metres (see TrimProduct.available_to_builder_portal)
+    trim_lm: float = 0.0              # openings x BusinessSettings.builder_portal_door_width_m, resolved at quote time
+    trim_price_ex_vat: float = 0.0
 
 
 class QuotePhoto(SQLModel, table=True):
@@ -1028,6 +1101,17 @@ class BusinessSettings(SQLModel, table=True):
     carpet_gripper_lm_per_box: float = 122.0              # Fotakis, LM per box — same provisional caveat as above
     carpet_underfelt_cost_per_m2: float = 42.0            # assumed same as the existing "Green" underlay in the Belgotex price list (4.00m wide, R42.00/m²) — confirmed assumption, not certainty, per the brief's own explicit flag
     carpet_underfelt_roll_width_m: float = 4.0            # matches Tufted Broadloom's own 4m roll width exactly — resolves to a 1:1 LM ratio for this specific underfelt (see calculate_carpet_line()'s own comment for the general area-based formula this still runs through)
+
+    # Builder Portal: Reducer Trim Per Door Opening (confirmed Sept
+    # 2026) — the builder tells us how many door openings the floor
+    # runs through; this is the linear metres of reducing profile each
+    # one takes. A real business number that will change the moment a
+    # standard door width does, so it lives here as an editable setting
+    # like every other rate on this model, never a constant buried in
+    # the pricing code. 0.9m = a standard SA internal door opening,
+    # which is also the same 900mm figure STAIRWELL_NOSING_MM already
+    # uses for a closed-side tread width.
+    builder_portal_door_width_m: float = 0.9
     carpet_glue_cost_per_20l_drum: float = 1232.00        # Teckem TEC 008 Premium Floor Covering Adhesive, ex VAT, 1-9 drum tier (Burgert draws on consignment at single-drum pricing — the 10+ bulk rate does not apply)
     # Part 3 finding (confirmed Aug 2026): the printed quote's logo was a
     # base64 image hardcoded in frontend/index.html, not pulled from

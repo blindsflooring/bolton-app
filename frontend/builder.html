@@ -84,6 +84,12 @@ const params = new URLSearchParams(window.location.search);
 const slug = params.get('slug') || '';
 let builderName = '';
 let products = [];
+// Screed + Trim On The Portal (confirmed Sept 2026) — everything the
+// backend says this portal may ASK about. All of it is served by
+// builder_portal_info() (main.py) rather than hardcoded here, so
+// flagging a screed product or a reducer in the price book is what
+// turns these questions on, with no frontend change.
+let portalInfo = { screed_available: false, job_types: [], trim_available: false, trim_name: '', door_width_m: 0.9, stairwell_notice: '' };
 let view = 'estimate';   // 'estimate' | 'statement'
 const MAX_PHOTOS = 5;   // Quote Photo Attachments pilot (confirmed Aug 2026) — mirrors MAX_PHOTOS_PER_SUBMISSION in main.py; server-side is the real enforcement, this is just so a builder sees the limit before hitting it
 
@@ -102,6 +108,7 @@ async function init() {
     const data = await res.json();
     builderName = data.builder_name;
     products = data.products;
+    portalInfo = data;
     renderEstimateForm();
   } catch (e) {
     document.getElementById('app').innerHTML = '<div class="card"><p class="error">Could not reach the server — check your connection and reload.</p></div>';
@@ -115,6 +122,41 @@ function renderNav() {
   </div>`;
 }
 
+// Stairs (confirmed Sept 2026, Burgert's own words: "We need to say on
+// the builders portal that a stairwell we need to qte as a company").
+// Shown on the form, the estimate result and the statement — a builder
+// pricing a house with a staircase should hit this wherever they are,
+// not only if they happened to read the form's intro paragraph. The
+// wording itself comes from the backend, so it can never say one thing
+// here and another on a printed estimate.
+function stairwellNoticeHtml() {
+  if (!portalInfo.stairwell_notice) return '';
+  return `<div class="card" style="border-left:4px solid #b45309; background:#fffbeb;">
+    <p style="margin:0; font-size:13px;"><b>Staircases</b> — ${portalInfo.stairwell_notice}</p>
+  </div>`;
+}
+
+// Floor condition. Only rendered when Burgert has actually flagged a
+// screed product to the portal (screed_available) — without one there
+// is nothing to price the prep with, and asking the question anyway
+// would imply prep was included when it wasn't.
+function jobTypeFieldHtml() {
+  if (!portalInfo.screed_available) return '';
+  return `<label>What is the floor going onto?</label>
+    <select id="job_type">${portalInfo.job_types.map(j => `<option value="${j.value}">${j.label}</option>`).join('')}</select>
+    <p class="muted" style="margin:4px 0 0; font-size:12px;">Going over tiles, or onto a floor where tiles have been lifted, needs levelling first — we add that to the price automatically.</p>`;
+}
+
+// Reducer trim, counted in door openings rather than metres — a builder
+// knows how many doorways the floor runs through; working out linear
+// metres of profile is our job, not theirs.
+function trimFieldHtml() {
+  if (!portalInfo.trim_available) return '';
+  return `<label>Door openings (optional)</label>
+    <input id="door_openings" type="number" step="1" min="0" placeholder="e.g. 3">
+    <p class="muted" style="margin:4px 0 0; font-size:12px;">How many doorways does this floor run through? We add a ${portalInfo.trim_name} at each one (${portalInfo.door_width_m}m per opening).</p>`;
+}
+
 function renderEstimateForm(resultHtml) {
   if (!products.length) {
     document.getElementById('app').innerHTML = `
@@ -126,8 +168,9 @@ function renderEstimateForm(resultHtml) {
   }
   document.getElementById('app').innerHTML = `
     <h1>Hi ${builderName}</h1>
-    <p class="muted">Get an instant vinyl flooring estimate for your client. For anything beyond a straightforward vinyl floor — stairs, trims, screed, multiple rooms — come see us at the showroom.</p>
+    <p class="muted">Get an instant vinyl flooring estimate for your client. For anything beyond this — multiple rooms, carpets, blinds — come see us at the showroom.</p>
     ${renderNav()}
+    ${stairwellNoticeHtml()}
     <div class="card">
       <label>Client name</label>
       <input id="client_name" placeholder="Client's name">
@@ -139,6 +182,8 @@ function renderEstimateForm(resultHtml) {
       <input id="area_m2" type="number" step="0.01" min="0" placeholder="e.g. 25">
       <label>Product</label>
       <select id="product_id">${products.map(p => `<option value="${p.id}">${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('')}</select>
+      ${jobTypeFieldHtml()}
+      ${trimFieldHtml()}
       <label>Site photos (optional, up to ${MAX_PHOTOS})</label>
       <input type="file" id="site_photos" accept="image/*" multiple>
       <button id="submitBtn" onclick="submitEstimate()">Get Estimate</button>
@@ -154,9 +199,17 @@ async function submitEstimate() {
   const clientName = document.getElementById('client_name').value.trim();
   const areaM2 = parseFloat(document.getElementById('area_m2').value);
   const productId = document.getElementById('product_id').value;
+  // Both fields only exist when the backend said this portal offers
+  // them — the fallbacks below are the exact pre-existing behaviour
+  // (smooth floor, no trim), so nothing changes for a tenant that
+  // hasn't flagged a screed product or a reducer.
+  const jobTypeEl = document.getElementById('job_type');
+  const openingsEl = document.getElementById('door_openings');
+  const doorOpenings = openingsEl ? (parseInt(openingsEl.value, 10) || 0) : 0;
   const photoFiles = Array.from(document.getElementById('site_photos').files || []);
   if (!clientName) { errEl.textContent = 'Enter the client\'s name.'; return; }
   if (!areaM2 || areaM2 <= 0) { errEl.textContent = 'Enter a real area in m².'; return; }
+  if (doorOpenings < 0) { errEl.textContent = 'Door openings can\'t be a negative number.'; return; }
   if (photoFiles.length > MAX_PHOTOS) { errEl.textContent = `Attach at most ${MAX_PHOTOS} photos.`; return; }
   btn.disabled = true;
   btn.textContent = 'Calculating...';
@@ -168,6 +221,8 @@ async function submitEstimate() {
         client_contact: document.getElementById('client_contact').value.trim(),
         site_address: document.getElementById('site_address').value.trim(),
         area_m2: areaM2, product_id: parseInt(productId, 10),
+        job_type: jobTypeEl ? jobTypeEl.value : 'smooth',
+        door_openings: doorOpenings,
       }),
     });
     if (!res.ok) {
@@ -208,7 +263,9 @@ async function submitEstimate() {
     const resultHtml = `
       <div class="result">
         <p style="margin:0 0 8px; font-weight:700;">Estimate for ${clientName}</p>
-        <div class="price-row"><span>${data.area_m2} m² × R${data.price_per_m2_ex_vat.toFixed(2)}/m² (ex VAT)</span><span></span></div>
+        ${(data.breakdown || []).map(b => `
+          <div class="price-row"><span>${b.label}<br><span class="muted" style="font-size:11px;">${b.detail}</span></span><span>R${b.amount_ex_vat.toFixed(2)}</span></div>`).join('')}
+        <div class="price-row"><span class="muted">Floor rate: ${data.area_m2} m² × R${data.price_per_m2_ex_vat.toFixed(2)}/m² (ex VAT)</span><span></span></div>
         <div class="price-row"><span>Total, ex VAT</span><span>R${data.total_ex_vat.toFixed(2)}</span></div>
         <div class="price-row grand"><span>Total, incl VAT</span><span>R${data.total_incl_vat.toFixed(2)}</span></div>
         <div class="deposit price-row"><span>Deposit payable (${(data.deposit_pct*100).toFixed(0)}%)</span><span>R${data.deposit_amount.toFixed(2)}</span></div>
@@ -218,7 +275,8 @@ async function submitEstimate() {
         <button type="button" class="secondary" onclick="printEstimate(${data.estimate_id})">Print / Download</button>
         <button type="button" onclick="confirmOrder(${data.estimate_id}, this)">Continue with this order &rarr;</button>
       </div>
-      <p class="muted" style="margin-top:10px;">This estimate has been logged. Press "Continue with this order" once your client is ready to proceed &mdash; Blinds &amp; Flooring Studio will take it from there.</p>`;
+      <p class="muted" style="margin-top:10px;">This estimate has been logged. Press "Continue with this order" once your client is ready to proceed &mdash; Blinds &amp; Flooring Studio will take it from there.</p>
+      ${data.stairwell_notice ? `<p class="muted" style="margin-top:6px; font-size:12px;"><b>Stairs are not in this price</b> &mdash; ${data.stairwell_notice}</p>` : ''}`;
     renderEstimateForm(resultHtml);
   } catch (e) {
     errEl.textContent = 'Could not reach the server — try again.';
@@ -237,7 +295,7 @@ async function renderStatement() {
       <tr>
         <td>${new Date(e.created_at).toLocaleDateString()}</td>
         <td>${e.client_name}</td>
-        <td>${e.product_name}</td>
+        <td>${e.product_name}${(e.breakdown && e.breakdown.length > 1) ? '<br>' + e.breakdown.slice(1).map(b => `<span class="muted" style="font-size:11px;">+ ${b.label}</span>`).join('<br>') : ''}</td>
         <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
         <td class="${statusClass(e.status)}">${e.status}</td>
         <td>${e.commission ? 'R' + e.commission.toFixed(2) : '—'}</td>
@@ -253,6 +311,7 @@ async function renderStatement() {
     document.getElementById('app').innerHTML = `
       <h1>Hi ${builderName}</h1>
       ${renderNav()}
+      ${stairwellNoticeHtml()}
       <div class="card">
         <p style="margin:0;"><b>Total commission earned to date:</b> R${data.total_commission_earned.toFixed(2)} <span class="muted">(${(data.commission_pct*100).toFixed(0)}% of each job's ex-VAT total, once fully paid)</span></p>
         <div style="overflow-x:auto;">
@@ -296,7 +355,12 @@ async function printEstimate(estimateId) {
         </div>
         <table style="width:100%; border-collapse:collapse; font-size:13px;">
           <thead><tr><th style="text-align:left; border-bottom:1px solid #ccc; padding:6px 4px;">Description</th><th style="text-align:right; border-bottom:1px solid #ccc; padding:6px 4px;">Area</th><th style="text-align:right; border-bottom:1px solid #ccc; padding:6px 4px;">Total (ex VAT)</th></tr></thead>
-          <tbody><tr><td style="padding:6px 4px;">${d.product_name}</td><td style="text-align:right; padding:6px 4px;">${d.area_m2} m²</td><td style="text-align:right; padding:6px 4px;">R${d.quoted_price_ex_vat.toFixed(2)}</td></tr></tbody>
+          <tbody>${(d.breakdown || []).map(b => `
+            <tr>
+              <td style="padding:6px 4px;">${b.label}<div style="font-size:10px; color:#6b7280;">${b.detail}</div></td>
+              <td style="text-align:right; padding:6px 4px;">${d.area_m2} m²</td>
+              <td style="text-align:right; padding:6px 4px;">R${b.amount_ex_vat.toFixed(2)}</td>
+            </tr>`).join('')}</tbody>
         </table>
         <div style="margin-top:16px; font-size:13px;">
           <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>VAT (${(d.vat_pct*100).toFixed(0)}%)</span><span>R${(d.quoted_price_incl_vat - d.quoted_price_ex_vat).toFixed(2)}</span></div>
@@ -305,6 +369,7 @@ async function printEstimate(estimateId) {
         </div>
         ${d.bank_details ? `<div style="margin-top:20px; padding-top:14px; border-top:1px solid #ccc; font-size:11px; color:#6b7280;"><b>Banking details for deposit payment:</b><br>${d.bank_details.replace(/\n/g,'<br>')}</div>` : ''}
         <p style="margin-top:20px; font-size:11px; color:#6b7280;">This is an estimate, not a final invoice — subject to confirmation once ${d.business_name || 'we'} follow up on-site.</p>
+        ${d.stairwell_notice ? `<p style="margin-top:6px; font-size:11px; color:#6b7280;"><b>Staircases are not included in this estimate.</b> ${d.stairwell_notice}</p>` : ''}
       </div>`;
     document.getElementById('printArea').innerHTML = html;
     window.print();

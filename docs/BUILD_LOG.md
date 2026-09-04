@@ -18,6 +18,41 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-04
+
+Builder Portal, second pass — everything Burgert asked for after actually using the Builders screen: opening a builder, editing and deleting their estimates, deleting the builder, the missing screed and trim on the portal itself, the stairwell exclusion, and the real financials.
+
+### What shipped
+- **Per-builder screen, delete builder, delete lead** (carried over from the previous session's uncommitted work, now finished and committed) — a builder's name is the click-through on both the Builders and Report tables; the detail screen carries editable name/phone/email, their KPIs, everything they quoted on, and an activity timeline (`BuilderPortalVisit` for "viewed the portal" merged at read time with their own `BuilderEstimate` rows for "submitted", never a second event log). `DELETE /admin/builders/{id}` reuses `_delete_builder_estimate()` for every one of their estimates first, same force/dependency semantics as the existing bulk delete. `DELETE /leads/{id}` is Owner-only and refuses a converted lead.
+- **Screed is now priced on the portal** (Burgert's own words: "Have a look and see if the Screed prices gets pulled into the builders portals prices" — the answer was **no**). `submit_builder_estimate()` hardcoded `JobType.smooth` and priced exactly ONE flooring material line, so a builder quoting a tiled floor got a price with zero floor prep in it, while the same job built internally carries a second, screed line at the same m². The portal now asks "what is the floor going onto?" and adds that prep line automatically. Burgert chose this over merely flagging it as a note.
+- **Reducer trim, per door opening** ("Only one trim, Reducing profile per door width opening. Leave skirtings"). The builder enters how many doorways the floor runs through; the linear metres come from a new `BusinessSettings.builder_portal_door_width_m` (0.9m). Skirtings deliberately excluded.
+- **Stairwell exclusion said out loud** ("We need to say on the builders portal that a stairwell we need to qte as a company") — one backend-served notice, shown on the estimate form, on the result, on My Statement and on the printed letterhead.
+- **Offline edit of a builder's estimate** (`PUT /admin/builder-estimates/{id}`) — client details, area, product, floor condition and door openings, Owner-only and audit-logged. Any pricing input changing reprices the whole estimate through the same function the portal itself uses.
+- **Builder financials** (`GET /admin/builders/{id}/financials`) — "What I owe them, When its paid, if its paid, their invoices." Asked which invoices, Burgert chose ours to the end client, so each row pairs our invoice for a referred job (sent date, amount, whether the client has paid us) with what that referral costs us (commission, whether it has been paid out, and when).
+- **Price-book plumbing** — a "Builder portal" tick on reducer rows in the trim price book (offered only on reducers, mirroring the backend's own filter), and the Supplier Console's `available_to_builder_portal` label now says what that flag means on a screed product.
+
+### Why (root causes, decisions, rejected alternatives)
+- **The screed gap was structural, not a missing feature request.** The portal's own docstring claimed the price "structurally cannot drift" from the internal calculator because both run through `calculate_flooring_line`. True for the one line it built — but the internal calculator's answer to a tiled floor is *two* lines, and the portal could only ever produce one. It was matching a job structure nobody quotes.
+- **One pricing path, extracted.** `submit` and `confirm` already carried two hand-kept copies of the material calc. Adding screed and trim would have made three, plus a fourth for the offline edit. All four now call `_price_builder_estimate()`; verified in disposable that the portal's quoted figure, the real Quote's line totals, and a hand-run internal calculation for the same job all came to R29 365.76 to the cent.
+- **The screed product is flagged with the SAME `available_to_builder_portal` field, split by `pricing_type`** rather than a second flag — one "exposed to the portal" concept in the price book, not two that can disagree. It is excluded from the pickable-product dropdown (otherwise a builder could quote bare levelling compound as their finished floor) and from the 2-range cap (that cap is about how many ranges a builder chooses between; prep is not a choice they make, and counting it would cost Burgert one of his two real ranges).
+- **Nothing flagged means the question is not asked.** No screed product flagged → no floor-condition dropdown at all, rather than showing it and pricing prep at R0 — which is the exact silent underquote this work exists to fix.
+- **Editing a confirmed estimate is refused, not worked around.** Once it is a real Quote, the quote is the record, editable in the Order Index with its own audit trail and margin checks. Rewriting the estimate underneath it would leave two disagreeing versions of one job with no way to tell which was invoiced. The 400 says exactly that, and names the quote.
+- **The two new snapshot id columns are NOT foreign keys**, unlike the pre-existing `product_id`. The stored *names* are the durable record and nothing reads the ids back for logic; a real FK would make retiring a screed product or a reducer from the price book fail on Postgres for as long as any old estimate mentions it, and would disagree with this feature's own ALTER TABLE migration, which adds them as plain INTEGERs.
+- **`material_price_ex_vat` is backfilled, not left at 0.0.** Every pre-existing estimate genuinely was material-only, so its ex-VAT total IS its material line. Left at the ALTER TABLE default, an old estimate would have rendered as "R0 + R0 + R0" against a real non-zero total on the statement and the printed letterhead — visibly broken, not merely empty.
+
+### Verified
+- Disposable SQLite + real `TestClient` against the real endpoints, with a real owner login (not dependency overrides — the closed-by-default `require_auth` middleware runs before dependencies, so overriding those would have tested a path no real request can take). 40 checks: a smooth floor still gets exactly one line; over-tiles gets floor + prep + trim; the breakdown sums to the quoted total; a bad `job_type` is a clean 400 rather than a `KeyError` 500; the confirmed Quote's three real lines total exactly what the builder was shown; the offline edit reprices and is refused once linked; commission is 6% of the real invoice value and moves from owed to paid with a date.
+- Migration checked against a *pre-existing* database, not just a fresh one — new columns stripped back out to simulate live Supabase, then `_ensure_new_columns()` run: all twelve columns added, existing rows default to `smooth`/0 (the literal truth for them), and an old estimate still renders one correct R9 000 line rather than R0.
+
+### Deferred / parked
+- Nothing from this brief. Direct email sending stays banked (see [BANKED-DECISIONS.md](../BANKED-DECISIONS.md)).
+
+### Open going into next session
+- **Burgert must flag the two price-book products before any of this shows up on the portal**: a screed product (Supplier Console → tick "Available to Builder Portal" on e.g. deZIGN S200 screed) and a reducer (Price Book → Trims → "Builder portal" tick). Until then the portal keeps behaving exactly as it did — material only, no floor-condition question, no trim.
+- `builder_portal_door_width_m` defaults to 0.9m; confirm that matches the real door openings being quoted.
+
+---
+
 ## 2026-09-02 (6)
 
 ### What shipped

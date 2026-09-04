@@ -1563,6 +1563,7 @@ function renderLanding() {
   if (landingView === 'changeLog') return renderChangeLog(el);
   if (landingView === 'accounts') return renderAccounts(el);
   if (landingView === 'builderPortal') return renderBuilderPortalAdmin(el);
+  if (landingView === 'builderDetail') return renderBuilderDetail(el);
   if (landingView === 'flaggedItems') return renderFlaggedItems(el);
 }
 
@@ -4317,6 +4318,270 @@ async function updateBuilderCommission(builderId, inputEl) {
   await loadBuilderPortalAdmin();
 }
 
+// Delete/Edit on the Builder Platform (confirmed Sep 2026, Burgert's own
+// words: "delete and edit on the builder platform") — update_builder()
+// (main.py) already accepted name/phone/email, this was purely a
+// frontend gap: only commission_pct had an inline input, name/phone
+// were plain, non-editable text. Same inline save-on-blur/Enter pattern
+// updateBuilderCommission() above already established, generalized to
+// any one field rather than three near-duplicate functions.
+async function updateBuilderField(builderId, field, value) {
+  const params = new URLSearchParams({ [field]: value });
+  const res = await fetch(`${API}/admin/builders/${builderId}?${params}`, { method: 'PUT' });
+  if (!res.ok) { alert(`Could not update ${field}.`); return; }
+  await loadBuilderPortalAdmin();
+  // loadBuilderPortalAdmin() re-renders the BUILDERS list, not this
+  // screen — without this, editing a field from the detail view
+  // silently navigated back to the list mid-edit.
+  if (landingView === 'builderDetail') renderLanding();
+}
+
+// Delete Builder (confirmed Sep 2026, same words as above) — only
+// "delete estimates" existed before; the Builder row and their portal
+// link lived forever, even revoked. Same try-without-force-first
+// pattern as deleteBuilderEstimate()/deleteAllBuilderEstimates() above
+// — a genuinely real linked order still requires an explicit, informed
+// Force Delete rather than silently vanishing.
+async function deleteBuilderAction(builderId, name, estCount) {
+  if (!confirm(`Delete ${name}? This also deletes ${estCount ? `all ${estCount} of their estimate(s) and any linked quotes` : 'their portal link'}. This can't be undone.`)) return;
+  let res = await fetch(`${API}/admin/builders/${builderId}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (!confirm(`${body.detail || 'Could not delete.'}\n\nForce delete anyway?`)) return;
+    res = await fetch(`${API}/admin/builders/${builderId}?force=true`, { method: 'DELETE' });
+    if (!res.ok) { alert('Could not delete, even with force.'); return; }
+  }
+  await loadBuilderPortalAdmin();
+}
+
+// Per-Builder Detail View (confirmed Sep 2026, Burgert's own words:
+// "click on per builder and see what they quoted on") + Builder
+// Activity Visibility ("see when they logged on and what they did on
+// the system"). builderPortalEstimates is already fetched/cached by
+// loadBuilderPortalAdmin() for the Estimates tab — filtered here by
+// builder_id rather than a second, narrower fetch. Activity (visits +
+// submissions merged) is the one genuinely new fetch, since nothing
+// like it existed before this.
+let builderDetailId = null;
+let builderDetailActivity = null;
+// Builder Financials (confirmed Sept 2026, Burgert's own words: "I also
+// need to be able to see all the financials of the builders. What I owe
+// them, When its paid, if its paid, their invoices"). Asked which
+// invoices, he chose ours to the end client — so each row pairs OUR
+// invoice for a referred job with what that referral costs us. Cached
+// per-builder alongside the activity fetch, cleared the same way.
+let builderDetailFinancials = null;
+// Which estimate's offline-edit form is currently open, if any.
+let builderEditEstimateId = null;
+function openBuilderDetailScreen(builderId) {
+  builderDetailId = builderId;
+  builderDetailActivity = null;
+  builderDetailFinancials = null;
+  builderEditEstimateId = null;
+  landingView = 'builderDetail';
+  renderLanding();
+}
+async function renderBuilderDetail(el) {
+  await renderWithRetry(el, 'Builder', async () => {
+    const builder = builderPortalBuilders.find(b => b.id === builderDetailId);
+    if (!builder) { el.innerHTML = `<span class="back-link" onclick="landingView='builderPortal'; renderLanding();">← Back</span><div class="card"><p class="muted">This builder couldn't be found.</p></div>`; return; }
+    const report = builderPortalReport.find(r => r.id === builderDetailId);
+    const estimates = builderPortalEstimates.filter(e => e.builder_id === builderDetailId);
+    // The offline-edit form's product dropdown reads flooringProducts,
+    // which is filled by an UNAWAITED loadFlooring() in the page-load
+    // init sequence — the exact race that showed "No flooring products
+    // in the price book yet" on a real Render cold start (see
+    // renderFlooringDrill()'s own comment above). Fetched here if it's
+    // still empty, so opening Edit right after login can't give a blank
+    // product list with a real price book sitting there unfetched.
+    if (!flooringProducts.length) await loadFlooring();
+    if (!builderDetailActivity || !builderDetailFinancials) {
+      const [actRes, finRes] = await Promise.all([
+        fetch(`${API}/admin/builders/${builderDetailId}/activity`),
+        fetch(`${API}/admin/builders/${builderDetailId}/financials`),
+      ]);
+      builderDetailActivity = actRes.ok ? await actRes.json() : { events: [], visit_count: 0, estimate_count: 0 };
+      builderDetailFinancials = finRes.ok ? await finRes.json()
+        : { rows: [], commission_owed: 0, commission_paid_total: 0, invoiced_incl_vat: 0, collected_incl_vat: 0 };
+    }
+    const fmt = (iso) => new Date(iso).toLocaleString('en-ZA', {dateStyle:'medium', timeStyle:'short'});
+    el.innerHTML = `
+      <span class="back-link" onclick="landingView='builderPortal'; renderLanding();">← Back to Builders</span>
+      <div class="landing-welcome"><h1>${builder.name}</h1><p>${builder.active ? 'Active portal link' : 'Revoked — link no longer works'}</p></div>
+      <div class="card">
+        <h3 style="margin-top:0;">Details</h3>
+        <div class="grid">
+          <div class="field"><label>Name</label><input value="${builder.name.replace(/"/g,'&quot;')}" onchange="updateBuilderField(${builder.id}, 'name', this.value)"></div>
+          <div class="field"><label>Phone</label><input value="${(builder.phone||'').replace(/"/g,'&quot;')}" onchange="updateBuilderField(${builder.id}, 'phone', this.value)"></div>
+          <div class="field"><label>Email</label><input value="${(builder.email||'').replace(/"/g,'&quot;')}" onchange="updateBuilderField(${builder.id}, 'email', this.value)"></div>
+        </div>
+      </div>
+      ${report ? `
+      <div class="tile-grid">
+        ${kpiCard('Estimates submitted', report.estimates_count)}
+        ${kpiCard('Jobs won', report.jobs_won)}
+        ${kpiCard('Value won', 'R' + report.total_won_incl_vat.toFixed(2))}
+        ${kpiCard('Commission owed', 'R' + report.commission_owed.toFixed(2))}
+      </div>` : ''}
+      ${renderBuilderFinancialsCard(builder)}
+      <div class="card">
+        <h3 style="margin-top:0;">What they quoted on (${estimates.length})</h3>
+        <p class="muted" style="margin-top:0;">Click Edit to correct an estimate from this side — a wrong area, the wrong product, the wrong floor condition. It reprices through the same calculator the portal uses. Once an estimate has become a real quote, edit the quote in the Order Index instead.</p>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Date</th><th>Client</th><th>What was quoted</th><th>Quoted (incl VAT)</th><th>Confirmed</th><th>Status</th><th></th><th></th></tr></thead>
+            <tbody>
+              ${estimates.length ? estimates.map(e => `
+                <tr>
+                  <td>${fmt(e.created_at)}</td>
+                  <td>${e.client_name}</td>
+                  <!-- Screed + Trim On The Portal (confirmed Sept 2026)
+                  — an estimate is up to three lines now, so showing only
+                  product_name would hide the floor prep and the trim the
+                  builder was actually quoted. Same breakdown the builder
+                  sees on their own statement and printed estimate. -->
+                  <td>${(e.breakdown || [{label: e.product_name, detail: e.area_m2 + 'm²'}]).map(b =>
+                    `<div>${b.label} <span class="muted" style="font-size:11px;">${b.detail}</span></div>`).join('')}</td>
+                  <td>R${e.quoted_price_incl_vat.toFixed(2)}</td>
+                  <td>${e.confirmed_by_builder ? '<b style="color:var(--teal);">By builder ✓</b>' : '<span class="muted">Not yet</span>'}</td>
+                  <td>${e.commission_status}</td>
+                  <td>${e.linked_quote_id
+                    ? `<a href="#" onclick="openQuoteFromIndex(${e.linked_quote_id}); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">Open Quote #${e.linked_quote_id}</a>`
+                    : `<button onclick="toggleBuilderEstimateEdit(${e.id})">Edit</button>`}</td>
+                  <td><button onclick="deleteBuilderEstimate(${e.id}, '${(e.client_name + ' — ' + e.product_name).replace(/'/g,"\\'")}')" style="color:var(--coral); border-color:var(--coral);">Delete</button></td>
+                </tr>
+                ${builderEditEstimateId === e.id ? `<tr><td colspan="8">${builderEstimateEditFormHtml(e)}</td></tr>` : ''}`).join('') : '<tr><td colspan="8" class="muted">Nothing submitted yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0;">Activity</h3>
+        <p class="muted" style="margin-top:0;">${builder.name} has no login of their own — this pilot works off a single shared link. "Viewed the portal" is every time that link was opened; submissions are their own estimates above.</p>
+        ${builderDetailActivity.events.length ? builderDetailActivity.events.map(ev => `
+          <div style="padding:6px 0; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; gap:8px;">
+            <span>${ev.type === 'visit' ? '👁️' : '📋'} ${ev.detail}</span>
+            <span class="muted" style="font-size:12px; white-space:nowrap;">${fmt(ev.at)}</span>
+          </div>`).join('') : '<p class="muted" style="margin:0;">No activity recorded yet.</p>'}
+      </div>
+      <div class="card">
+        <button style="color:var(--coral); border-color:var(--coral);" onclick="deleteBuilderAction(${builder.id}, '${builder.name.replace(/'/g,"\\'")}', ${estimates.length})">Delete this builder</button>
+      </div>
+    `;
+  });
+}
+
+// Builder Financials (confirmed Sept 2026) — "What I owe them, When
+// its paid, if its paid, their invoices." One row per referred job:
+// our invoice to the client on the left, what that referral costs us on
+// the right. Every figure is served by /admin/builders/{id}/financials,
+// which derives them from the linked Quote's own invoice_sent_date /
+// final_payment_date — the exact fields the Order Index treats as
+// "invoiced" and "paid in full" — so this card can never disagree with
+// what the Order Index shows for the same job.
+function renderBuilderFinancialsCard(builder) {
+  const f = builderDetailFinancials;
+  if (!f) return '';
+  const d = (iso) => iso ? new Date(iso).toLocaleDateString('en-ZA', {dateStyle:'medium'}) : '';
+  const rows = f.rows.filter(r => r.quote_id);
+  return `
+    <div class="card">
+      <h3 style="margin-top:0;">Financials</h3>
+      <p class="muted" style="margin-top:0;">Commission is ${(f.commission_pct*100).toFixed(1)}% of each job's ex-VAT total, and is only earned once the client has paid us in full.</p>
+      <div class="tile-grid">
+        ${kpiCard('Invoiced to clients', 'R' + f.invoiced_incl_vat.toFixed(2))}
+        ${kpiCard('Collected from clients', 'R' + f.collected_incl_vat.toFixed(2))}
+        ${kpiCard('I owe ' + builder.name, 'R' + f.commission_owed.toFixed(2))}
+        ${kpiCard('Already paid out', 'R' + f.commission_paid_total.toFixed(2))}
+      </div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr>
+            <th>Client</th><th>Job</th><th>Our invoice</th><th>Invoiced</th>
+            <th>Client paid us</th><th>Commission</th><th>Paid to ${builder.name}?</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${rows.length ? rows.map(r => `
+              <tr>
+                <td>${r.client_name}</td>
+                <td><a href="#" onclick="openQuoteFromIndex(${r.quote_id}); return false;" style="color:var(--teal); font-weight:600;">${r.job_number || '#' + r.quote_id}</a></td>
+                <td>${r.invoice_sent_date ? d(r.invoice_sent_date) : '<span class="muted">Not invoiced yet</span>'}</td>
+                <td>${r.invoice_incl_vat != null ? 'R' + r.invoice_incl_vat.toFixed(2) : '—'}</td>
+                <td>${r.client_paid_date ? d(r.client_paid_date) : '<span class="muted">Outstanding</span>'}</td>
+                <td>${r.commission_amount ? 'R' + r.commission_amount.toFixed(2) : `<span class="muted">${r.commission_status}</span>`}</td>
+                <td>${r.commission_paid
+                  ? `<b style="color:var(--teal);">Paid ✓</b>${r.commission_paid_at ? `<br><span class="muted" style="font-size:11px;">${d(r.commission_paid_at)}</span>` : ''}`
+                  : (r.commission_amount ? '<b style="color:var(--coral);">Owed</b>' : '<span class="muted">—</span>')}</td>
+                <td>${r.commission_amount
+                  ? `<button onclick="markCommissionPaid(${r.estimate_id}, ${!r.commission_paid})">${r.commission_paid ? 'Undo' : 'Mark paid'}</button>`
+                  : ''}</td>
+              </tr>`).join('') : `<tr><td colspan="8" class="muted">None of ${builder.name}'s estimates have become real jobs yet, so there is nothing invoiced and nothing owed.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// Offline edit of a builder's estimate (confirmed Sept 2026, Burgert's
+// own words: "I will need to be able to edit all their quotes off
+// line"). Pre-filled entirely from the already-fetched estimates list —
+// list_builder_estimates() carries the raw inputs (product_id/job_type/
+// trim_openings) specifically so this needs no per-estimate fetch.
+function builderEstimateEditFormHtml(e) {
+  const portalProducts = flooringProducts.filter(p => p.pricing_type !== 'screed');
+  return `
+    <div style="padding:10px; background:var(--bg-soft, #f7f8fa); border-radius:8px;">
+      <div class="grid">
+        <div class="field"><label>Client name</label><input id="bee_client_name" value="${e.client_name.replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Client contact</label><input id="bee_client_contact" value="${(e.client_contact||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Site address</label><input id="bee_site_address" value="${(e.site_address||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Area (m²)</label><input id="bee_area_m2" type="number" step="0.01" min="0" value="${e.area_m2}"></div>
+        <div class="field"><label>Product</label>
+          <select id="bee_product_id">${portalProducts.map(p =>
+            `<option value="${p.id}" ${p.id === e.product_id ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Floor going onto</label>
+          <select id="bee_job_type">
+            <option value="smooth" ${e.job_type === 'smooth' ? 'selected' : ''}>Smooth screed / new floor</option>
+            <option value="over_tiles" ${e.job_type === 'over_tiles' ? 'selected' : ''}>Going over existing tiles</option>
+            <option value="removed_tiles" ${e.job_type === 'removed_tiles' ? 'selected' : ''}>Tiles removed first</option>
+          </select>
+        </div>
+        <div class="field"><label>Door openings</label><input id="bee_door_openings" type="number" step="1" min="0" value="${e.trim_openings || 0}"></div>
+      </div>
+      <p class="muted" style="font-size:12px;">Changing the area, product, floor condition or door openings reprices the whole estimate through the same calculator the builder's portal uses — the total is never typed in by hand.</p>
+      <button onclick="saveBuilderEstimateEdit(${e.id})">Save changes</button>
+      <button class="secondary" onclick="toggleBuilderEstimateEdit(${e.id})">Cancel</button>
+    </div>`;
+}
+
+function toggleBuilderEstimateEdit(estimateId) {
+  builderEditEstimateId = builderEditEstimateId === estimateId ? null : estimateId;
+  renderLanding();
+}
+
+async function saveBuilderEstimateEdit(estimateId) {
+  const params = new URLSearchParams({
+    client_name: document.getElementById('bee_client_name').value.trim(),
+    client_contact: document.getElementById('bee_client_contact').value.trim(),
+    site_address: document.getElementById('bee_site_address').value.trim(),
+    area_m2: document.getElementById('bee_area_m2').value,
+    product_id: document.getElementById('bee_product_id').value,
+    job_type: document.getElementById('bee_job_type').value,
+    door_openings: document.getElementById('bee_door_openings').value || 0,
+  });
+  const res = await fetch(`${API}/admin/builder-estimates/${estimateId}?${params}`, { method: 'PUT' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || 'Could not save this estimate.');
+    return;
+  }
+  builderEditEstimateId = null;
+  builderDetailFinancials = null;   // repricing changes what a won job is worth
+  await loadBuilderPortalAdmin();
+  renderLanding();
+}
+
 async function markCommissionPaid(estimateId, paid) {
   const res = await fetch(`${API}/admin/builder-estimates/${estimateId}/mark-commission-paid?paid=${paid}`, { method: 'PUT' });
   if (!res.ok) { alert('Could not update.'); return; }
@@ -4389,13 +4654,17 @@ function renderBuilderPortalTable() {
       was simply missed when the Builder Portal pilot was built. -->
       <div style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Name</th><th>Contact</th><th>Commission %</th><th>Link</th><th>Status</th><th></th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Contact</th><th>Commission %</th><th>Link</th><th>Status</th><th></th><th></th><th></th></tr></thead>
           <tbody>
             ${builderPortalBuilders.length ? builderPortalBuilders.map(b => {
               const estCount = builderPortalEstimates.filter(e => e.builder_slug === b.slug).length;
               return `
               <tr>
-                <td>${b.name}</td>
+                <!-- Per-Builder Detail View (confirmed Sep 2026): name is
+                the click-through, same "click the name to drill in"
+                convention as Client/Job rows elsewhere in this app
+                (orderIndexClientNameHtml, order-index.js) -->
+                <td><a href="#" onclick="openBuilderDetailScreen(${b.id}); return false;" style="color:var(--teal); font-weight:600; text-decoration:underline;">${b.name}</a></td>
                 <td class="muted">${[b.phone, b.email].filter(Boolean).join(' · ') || '—'}</td>
                 <td>
                   <input type="number" step="0.5" min="0" value="${(b.commission_pct*100).toFixed(1)}" style="width:64px;"
@@ -4408,7 +4677,8 @@ function renderBuilderPortalTable() {
                   ? `<button onclick="toggleBuilderActive(${b.id}, false)">Revoke</button>`
                   : `<button onclick="toggleBuilderActive(${b.id}, true)">Re-activate</button>`}</td>
                 <td><button onclick="deleteAllBuilderEstimates(${b.id}, '${b.name.replace(/'/g,"\\'")}', ${estCount})" style="${estCount ? 'color:var(--coral); border-color:var(--coral);' : ''}">Delete estimates (${estCount})</button></td>
-              </tr>`;}).join('') : '<tr><td colspan="7" class="muted">No builders yet — add one above.</td></tr>'}
+                <td><button onclick="deleteBuilderAction(${b.id}, '${b.name.replace(/'/g,"\\'")}', ${estCount})" style="color:var(--coral); border-color:var(--coral);">Delete builder</button></td>
+              </tr>`;}).join('') : '<tr><td colspan="8" class="muted">No builders yet — add one above.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4470,7 +4740,7 @@ function renderBuilderPortalTable() {
           <tbody>
             ${builderPortalReport.length ? builderPortalReport.map(r => `
               <tr>
-                <td>${r.name}${!r.active ? ' <span class="muted">(revoked)</span>' : ''}</td>
+                <td><a href="#" onclick="openBuilderDetailScreen(${r.id}); return false;" style="color:var(--teal); font-weight:600; text-decoration:underline;">${r.name}</a>${!r.active ? ' <span class="muted">(revoked)</span>' : ''}</td>
                 <td>${r.estimates_count}</td>
                 <td>R${r.total_quoted_incl_vat.toFixed(2)}</td>
                 <td>${r.jobs_won}</td>

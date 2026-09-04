@@ -279,6 +279,13 @@ async function renderLeadDetail(el) {
       ${convertedHtml}
       ${actionsHtml}
       ${!terminal ? `<p style="margin-top:14px;"><a href="#" onclick="showEditLeadForm(${l.id}); return false;" style="font-size:12px; color:var(--teal); font-weight:600;">Edit details</a></p>` : ''}
+      <!-- Delete Lead (confirmed Sep 2026, Burgert's own words: "I also
+      need to be able to delete leads") — Owner-only, matching
+      delete_lead()'s own require_owner gate (main.py); a converted
+      lead can still be deleted by role, but that endpoint blocks it
+      with a clear reason, same as clicking through and finding out
+      rather than hiding the option and looking broken. -->
+      ${realRole() === 'owner' ? `<p style="margin-top:6px;"><a href="#" onclick="deleteLeadAction(${l.id}, '${l.name.replace(/'/g,"\\'")}'); return false;" style="font-size:12px; color:var(--coral); font-weight:600;">Delete lead</a></p>` : ''}
     </div>
     <div class="card">
       <h2>Activity</h2>
@@ -308,6 +315,14 @@ async function convertLeadAction(leadId) {
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not convert this lead.'); return; }
   const data = await res.json();
   await openQuoteFromIndex(data.quote.id);
+}
+
+async function deleteLeadAction(leadId, name) {
+  if (!confirm(`Delete the lead "${name}"? This can't be undone.`)) return;
+  const res = await fetch(`${API}/leads/${leadId}`, { method: 'DELETE' });
+  if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not delete this lead.'); return; }
+  landingView = 'leads';
+  renderLanding();
 }
 
 function showEditLeadForm(leadId) {

@@ -31,7 +31,7 @@ from models import (
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
-    SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto,
+    SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead, JobWorkDay, ToDo,
 )
@@ -485,6 +485,30 @@ def _ensure_new_columns():
         # created_by default before this field existed — none of them
         # silently gain a real owner they were never actually given.
         ("lead", "assigned_to", "VARCHAR", "''"),
+        # Screed + Trim On The Portal (confirmed Sept 2026) — see
+        # BuilderEstimate's own field comments (models.py) for what each
+        # of these is. 'smooth'/0.0/NULL across the board is not a
+        # placeholder: every estimate submitted before this genuinely
+        # WAS priced as a smooth floor with no screed and no trim (that
+        # was the only thing submit_builder_estimate() could produce),
+        # so these defaults are the literal truth for every existing
+        # row, not a guess. material_price_ex_vat is the one that can't
+        # be defaulted honestly at ALTER TABLE time — 0.0 here, then
+        # backfilled to each row's own quoted_price_ex_vat by
+        # _backfill_builder_estimate_breakdown() below, since for those
+        # rows the material line WAS the whole quote.
+        ("builderestimate", "job_type", "VARCHAR", "'smooth'"),
+        ("builderestimate", "material_price_ex_vat", "FLOAT", "0.0"),
+        ("builderestimate", "screed_product_id", "INTEGER", "NULL"),
+        ("builderestimate", "screed_product_name", "VARCHAR", "''"),
+        ("builderestimate", "screed_price_ex_vat", "FLOAT", "0.0"),
+        ("builderestimate", "trim_product_id", "INTEGER", "NULL"),
+        ("builderestimate", "trim_product_name", "VARCHAR", "''"),
+        ("builderestimate", "trim_openings", "INTEGER", "0"),
+        ("builderestimate", "trim_lm", "FLOAT", "0.0"),
+        ("builderestimate", "trim_price_ex_vat", "FLOAT", "0.0"),
+        ("trimproduct", "available_to_builder_portal", "BOOLEAN", "FALSE"),
+        ("businesssettings", "builder_portal_door_width_m", "FLOAT", "0.9"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1537,6 +1561,33 @@ def on_startup():
                 print(f"Migration: moved {fixed} misplaced product name(s) out of 'colour' and into the new 'product_variant' field (Luxury Vinyl Planks / Vinyl Composite Tiles) — see this block's own comment")
     except Exception as e:
         print(f"Migration: product_variant backfill failed ({e}) — Luxury Vinyl Planks/Vinyl Composite Tiles keep showing the old, mislabeled 'colour' values until this is retried")
+
+    # Screed + Trim On The Portal (confirmed Sept 2026) — every
+    # BuilderEstimate that existed before this brief was a single
+    # flooring material line and nothing else (see this feature's own
+    # migration-list comment above), so for those rows the material
+    # price IS the whole ex-VAT total. Backfilled rather than left at
+    # the ALTER TABLE default of 0.0, which would make an old estimate
+    # render as "R0 material + R0 screed + R0 trim" against a real
+    # non-zero total on the statement and the printed letterhead — a
+    # visibly broken breakdown, not merely an empty one. Guarded on
+    # == 0.0 so re-running this can never overwrite a real breakdown
+    # written by the new pricing path.
+    try:
+        with Session(engine) as session:
+            estimates_to_fix = session.exec(
+                select(BuilderEstimate).where(BuilderEstimate.material_price_ex_vat == 0.0)
+            ).all()
+            fixed = 0
+            for est in estimates_to_fix:
+                est.material_price_ex_vat = est.quoted_price_ex_vat
+                session.add(est)
+                fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: backfilled material_price_ex_vat for {fixed} existing builder estimate(s) — each was a material-only quote, so the material price is its full ex-VAT total")
+    except Exception as e:
+        print(f"Migration: builder estimate breakdown backfill failed ({e}) — older estimates show a R0 material line on their breakdown until this is retried")
 
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render
@@ -4094,6 +4145,85 @@ def update_builder(builder_id: int, name: str = None, active: bool = None, phone
         return builder
 
 
+@app.get("/admin/builders/{builder_id}/activity")
+def builder_activity(builder_id: int, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Builder activity visibility (confirmed Sep 2026, Burgert's own
+    words: "I need to see when they logged on and what they did on the
+    system"). Honest framing throughout: this pilot has no login (see
+    Builder's own docstring), so "when they logged on" becomes "when
+    they viewed the portal" (BuilderPortalVisit, best-effort-logged in
+    builder_portal_info() above) and "what they did" becomes "what they
+    submitted" (their existing BuilderEstimate rows — not duplicated
+    into a second event log, read straight from the real source).
+    Merged into one timeline at read time, newest first, same "derive,
+    don't duplicate state that could drift" principle as everywhere
+    else in this codebase. Capped at the most recent 200 events —
+    plenty for a single small builder's activity, and this pilot has no
+    real login/session concept to page through like the real staff
+    Login Activity Log does."""
+    with Session(engine) as session:
+        builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
+        visits = session.exec(
+            select(BuilderPortalVisit).where(BuilderPortalVisit.builder_id == builder_id, BuilderPortalVisit.tenant_id == tenant_id)
+            .order_by(BuilderPortalVisit.created_at.desc()).limit(200)
+        ).all()
+        estimates = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.builder_id == builder_id, BuilderEstimate.tenant_id == tenant_id)
+            .order_by(BuilderEstimate.created_at.desc()).limit(200)
+        ).all()
+        events = (
+            [{"type": "visit", "at": v.created_at.isoformat(), "detail": "Viewed the portal"} for v in visits]
+            + [{"type": "estimate", "at": e.created_at.isoformat(),
+                "detail": f"Submitted an estimate for {e.client_name}" + (" — confirmed as a real order" if e.confirmed_by_builder else "")}
+               for e in estimates]
+        )
+        events.sort(key=lambda ev: ev["at"], reverse=True)
+        return {"builder_name": builder.name, "visit_count": len(visits), "estimate_count": len(estimates), "events": events[:200]}
+
+
+@app.delete("/admin/builders/{builder_id}")
+def delete_builder(builder_id: int, force: bool = False,
+                    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                    username: str = Depends(get_current_username)):
+    """Confirmed Sep 2026, Burgert's own words: "I also need to be able
+    to delete leads and also delete and edit on the builder platform."
+    Only "delete estimates" existed before this — the Builder row
+    itself, and their portal link, lived forever even once revoked.
+
+    Reuses _delete_builder_estimate for every one of this builder's
+    estimates first (same force/dependency semantics as the existing
+    bulk "delete all estimates" endpoint, not a second, narrower path),
+    then removes their BuilderPortalVisit rows (no cascade policy entry
+    needed — nothing else references those, and they carry no business
+    history worth protecting), then the Builder row itself."""
+    with Session(engine) as session:
+        builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
+        estimates = session.exec(select(BuilderEstimate).where(BuilderEstimate.builder_id == builder_id, BuilderEstimate.tenant_id == tenant_id)).all()
+        if not force:
+            for est in estimates:
+                quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+                if quote:
+                    reasons = [r for r in _quote_delete_dependencies(session, quote, tenant_id) if f"#{est.id})" not in r]
+                    if reasons:
+                        raise HTTPException(400, f"Can't delete {builder.name} — estimate #{est.id}'s linked Quote #{quote.id} ({quote.client_name}) {' and '.join(reasons)}. Use Force Delete if this is deliberate.")
+        deleted_estimate_ids, deleted_quote_ids = [], []
+        for est in estimates:
+            deleted_estimate_ids.append(est.id)
+            qid = _delete_builder_estimate(session, est, tenant_id, username, force=True)   # already validated above when force wasn't explicitly requested
+            if qid:
+                deleted_quote_ids.append(qid)
+        visits = session.exec(select(BuilderPortalVisit).where(BuilderPortalVisit.builder_id == builder_id, BuilderPortalVisit.tenant_id == tenant_id)).all()
+        for v in visits:
+            session.delete(v)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Builder", entity_id=builder.id,
+            field="__deleted__", old_value=f"Builder — {builder.name}", new_value="(deleted)",
+        ))
+        session.delete(builder)
+        session.commit()
+        return {"deleted": builder_id, "deleted_estimates": deleted_estimate_ids, "deleted_quotes": deleted_quote_ids}
+
+
 @app.get("/admin/builder-estimates")
 def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     """Every estimate submitted across every builder, for Burgert/Madri
@@ -4110,7 +4240,7 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
             quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
             status, commission = _builder_commission_for_quote(session, quote, tenant_id, builder)
             result.append({
-                "id": est.id, "builder_name": builder.name, "builder_slug": builder.slug,
+                "id": est.id, "builder_id": builder.id, "builder_name": builder.name, "builder_slug": builder.slug,
                 "client_name": est.client_name, "client_contact": est.client_contact,
                 "site_address": est.site_address, "area_m2": est.area_m2, "product_name": est.product_name,
                 "quoted_price_ex_vat": est.quoted_price_ex_vat, "quoted_price_incl_vat": est.quoted_price_incl_vat,
@@ -4127,8 +4257,186 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
                 # once it's actually owed.
                 "confirmed_by_builder": est.confirmed_by_builder,
                 "commission_paid": est.commission_paid,
+                "commission_paid_at": est.commission_paid_at.isoformat() if est.commission_paid_at else None,
+                # Screed + Trim On The Portal + Offline Edit (confirmed
+                # Sept 2026) — the breakdown for display, plus the raw
+                # inputs (product_id / job_type / trim_openings) that
+                # update_builder_estimate() below takes back, so the
+                # edit form pre-fills from this same already-fetched
+                # list instead of a per-estimate round trip.
+                "breakdown": _builder_estimate_breakdown(est),
+                "product_id": est.product_id,
+                "job_type": est.job_type,
+                "job_type_label": BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type),
+                "trim_openings": est.trim_openings,
             })
         return result
+
+
+@app.put("/admin/builder-estimates/{estimate_id}")
+def update_builder_estimate(estimate_id: int, client_name: str = None, client_contact: str = None,
+                            site_address: str = None, area_m2: float = None, product_id: int = None,
+                            job_type: str = None, door_openings: int = None,
+                            role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+                            username: str = Depends(get_current_username)):
+    """Confirmed Sept 2026, Burgert's own words: "I will need to be able
+    to edit all their quotes off line and also delete it." Deleting
+    already existed (delete_builder_estimate below); editing did not —
+    a builder's submitted estimate was write-once, so a wrong area or
+    the wrong product meant deleting it and asking the builder to
+    resubmit through the portal.
+
+    Owner-only and audit-logged, same as every other correction to a
+    real business record in this app. Anything not passed is left
+    exactly as it was, so the frontend can send one changed field
+    without having to restate the rest.
+
+    Any pricing input changing (area, product, floor condition, door
+    openings) reprices the WHOLE estimate through
+    _price_builder_estimate() — the same function the builder's own
+    portal submission runs through — rather than editing one stored
+    Rand figure by hand. A hand-edited total would be the one number in
+    this system not backed by the pricing engine, and would silently
+    disagree with the real quote the moment it was confirmed.
+
+    Refuses once the estimate has become a real Quote. That is not a
+    limitation to work around: at that point the real record IS the
+    quote, editable in the Order Index with its own audit trail,
+    line-level history and margin checks. Rewriting the estimate
+    underneath it would leave two disagreeing versions of the same job
+    and no way to tell which one was invoiced."""
+    with Session(engine) as session:
+        est = get_or_404(session, BuilderEstimate, estimate_id, tenant_id, "Builder estimate")
+        if est.linked_quote_id:
+            quote = session.get(Quote, est.linked_quote_id)
+            raise HTTPException(400, f"This estimate is already Quote #{est.linked_quote_id}"
+                                     f"{' (' + quote.client_name + ')' if quote else ''} — edit it there, in the Order Index, "
+                                     "so the change lands on the real job with its own history.")
+        builder = get_or_404(session, Builder, est.builder_id, tenant_id, "Builder")
+        settings = get_settings(session, tenant_id)
+        changes = []
+        for field, value in (("client_name", client_name), ("client_contact", client_contact), ("site_address", site_address)):
+            if value is not None and getattr(est, field) != value:
+                changes.append((field, getattr(est, field), value))
+                setattr(est, field, value)
+
+        new_area = est.area_m2 if area_m2 is None else area_m2
+        if new_area <= 0:
+            raise HTTPException(400, "Enter a real area in m².")
+        new_product_id = est.product_id if product_id is None else product_id
+        new_job_type = _builder_portal_job_type(est.job_type if job_type is None else job_type)
+        new_openings = est.trim_openings if door_openings is None else door_openings
+        repricing = (new_area != est.area_m2 or new_product_id != est.product_id
+                     or new_job_type.value != est.job_type or new_openings != est.trim_openings)
+        if repricing:
+            # Deliberately NOT filtered on available_to_builder_portal:
+            # Burgert correcting an estimate offline is not the public
+            # portal, and the whole point of this endpoint is fixing an
+            # estimate that went out on the wrong product — including
+            # onto a product he has since stopped exposing to builders.
+            # _require_active_flooring_product() still applies, so a
+            # never-reviewed bulk-import row can't be quoted from here
+            # any more than anywhere else.
+            product = _require_active_flooring_product(
+                get_or_404(session, FlooringProduct, new_product_id, tenant_id, "Flooring product"))
+            old_total = est.quoted_price_incl_vat
+            est.area_m2 = new_area
+            priced = _price_builder_estimate(session, builder, product, new_area, new_job_type, new_openings, settings)
+            _apply_builder_estimate_pricing(est, product, priced)
+            changes.append(("priced", f"R{old_total:.2f} incl VAT", f"R{est.quoted_price_incl_vat:.2f} incl VAT"))
+
+        if not changes:
+            return {"estimate_id": est.id, "changed": [], "message": "Nothing changed."}
+        for field, old, new in changes:
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="BuilderEstimate", entity_id=est.id,
+                field=field, old_value=str(old), new_value=str(new),
+            ))
+        session.add(est)
+        session.commit()
+        session.refresh(est)
+        return {
+            "estimate_id": est.id, "changed": [c[0] for c in changes],
+            "quoted_price_ex_vat": est.quoted_price_ex_vat,
+            "quoted_price_incl_vat": est.quoted_price_incl_vat,
+            "deposit_amount": est.deposit_amount,
+            "breakdown": _builder_estimate_breakdown(est),
+        }
+
+
+@app.get("/admin/builders/{builder_id}/financials")
+def builder_financials(builder_id: int, role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Confirmed Sept 2026, Burgert's own words: "I also need to be able
+    to see all the financials of the builders. What I owe them, When
+    its paid, if its paid, their invoices." Asked which invoices he
+    meant, he chose the job invoices we sent the client — so each row
+    below is one referred job, pairing OUR invoice to the end client
+    with what the referral costs us.
+
+    /admin/builders/report already answered "what do I owe them" as a
+    single total per builder; this is the row-by-row version behind
+    that number — which job, which invoice, whether the client has
+    actually paid us yet, and whether the builder has been paid out.
+    Same _builder_commission_for_quote() the report and the builder's
+    own statement use, never a second copy of the commission rule.
+
+    The invoice figures come off the linked Quote itself (invoice_sent_
+    date / final_payment_date, the exact fields the Order Index already
+    treats as "invoiced" and "paid in full"), so this view can never
+    disagree with what the Order Index shows for the same job."""
+    with Session(engine) as session:
+        builder = get_or_404(session, Builder, builder_id, tenant_id, "Builder")
+        estimates = session.exec(
+            select(BuilderEstimate).where(BuilderEstimate.builder_id == builder_id, BuilderEstimate.tenant_id == tenant_id)
+            .order_by(BuilderEstimate.created_at.desc())
+        ).all()
+        settings = get_settings(session, tenant_id)
+        rows, owed, paid_out, invoiced_total, collected_total = [], 0.0, 0.0, 0.0, 0.0
+        for est in estimates:
+            quote = session.get(Quote, est.linked_quote_id) if est.linked_quote_id else None
+            status, commission = _builder_commission_for_quote(session, quote, tenant_id, builder)
+            # The real, final ex-VAT value of the job as invoiced —
+            # same subtotal/discount math get_quote() and the commission
+            # helper itself use, not the builder's original estimate,
+            # which is what was quoted rather than what was sold.
+            invoice_ex_vat = None
+            if quote:
+                lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)).all()
+                invoice_ex_vat = round((sum(l.line_total for l in lines) + quote.transport_levy) * (1 - quote.discount_pct), 2)
+            invoice_incl_vat = round(invoice_ex_vat * (1 + settings.vat_pct), 2) if invoice_ex_vat is not None else None
+            if commission:
+                if est.commission_paid:
+                    paid_out += commission
+                else:
+                    owed += commission
+            if quote and quote.invoice_sent_date:
+                invoiced_total += invoice_incl_vat or 0.0
+            if quote and quote.final_payment_date:
+                collected_total += invoice_incl_vat or 0.0
+            rows.append({
+                "estimate_id": est.id,
+                "client_name": est.client_name,
+                "created_at": est.created_at.isoformat(),
+                "quoted_incl_vat": est.quoted_price_incl_vat,
+                "quote_id": quote.id if quote else None,
+                "job_number": quote.job_number if quote else None,
+                "invoice_sent_date": quote.invoice_sent_date.isoformat() if quote and quote.invoice_sent_date else None,
+                "invoice_incl_vat": invoice_incl_vat,
+                "client_paid_date": quote.final_payment_date.isoformat() if quote and quote.final_payment_date else None,
+                "commission_status": status,
+                "commission_pct": builder.commission_pct,
+                "commission_amount": commission,
+                "commission_paid": est.commission_paid,
+                "commission_paid_at": est.commission_paid_at.isoformat() if est.commission_paid_at else None,
+            })
+        return {
+            "builder_name": builder.name, "commission_pct": builder.commission_pct,
+            "rows": rows,
+            "commission_owed": round(owed, 2),
+            "commission_paid_total": round(paid_out, 2),
+            "invoiced_incl_vat": round(invoiced_total, 2),
+            "collected_incl_vat": round(collected_total, 2),
+        }
 
 
 @app.put("/admin/builder-estimates/{estimate_id}/mark-commission-paid")
@@ -4342,21 +4650,269 @@ def link_builder_estimate_to_quote(estimate_id: int, quote_id: int,
 
 # ----- Public, unauthenticated — see this section's own header comment -----
 
+# ----- Screed + Trim On The Portal (confirmed Sept 2026) -----
+# Found by reading submit_builder_estimate() below against the internal
+# calculator: a portal estimate was ONE flooring material line, always
+# at JobType.smooth, and nothing else. Internally, a floor going over
+# tiles carries a SECOND flooring line — a screed/prep line at the
+# same m² — so the portal was quietly handing builders a price with
+# zero floor-prep cost in it. Burgert, on being shown that: "Ask floor
+# condition, auto-add screed", and separately "Only one trim, Reducing
+# profile per door width opening. Leave skirtings".
+#
+# Both extras are resolved server-side from a flagged price-book
+# product, never chosen or measured by the builder — the portal asks
+# only the two things a builder genuinely knows about their own site
+# (what the floor is going onto, and how many door openings it runs
+# through) and makes every pricing decision here.
+
+BUILDER_PORTAL_STAIRWELL_NOTICE = (
+    "Stairs are quoted by us, not here. Every staircase has to be measured on site "
+    "(number of stairs, open or closed sides, landings), so send the job through and "
+    "Blinds & Flooring Studio will quote the stairwell for you as a company."
+)
+
+BUILDER_JOB_TYPE_LABELS = {
+    "smooth": "Smooth screed / new floor",
+    "over_tiles": "Going over existing tiles",
+    "removed_tiles": "Tiles removed first",
+}
+
+
+def _builder_portal_screed(session: Session, tenant_id: str):
+    """The one screed product exposed to the portal — the SAME
+    available_to_builder_portal flag the material products already use,
+    split by pricing_type rather than by a second flag, so the price
+    book has one "is this exposed to the public portal" concept, not
+    two that could disagree. Returns None if Burgert hasn't flagged a
+    screed product yet, which is a real and safe state: the portal then
+    simply doesn't offer the over-tiles options at all rather than
+    quoting floor prep at R0 (see builder_portal_info() below).
+
+    NOT counted against the 2-range Builder Portal cap — that cap is
+    about how many flooring RANGES a builder gets to choose between
+    (commit_supplier_console_changes(), which now excludes screed for
+    exactly this reason); the prep product isn't a choice the builder
+    makes at all."""
+    return session.exec(
+        select(FlooringProduct).where(
+            FlooringProduct.tenant_id == tenant_id,
+            FlooringProduct.available_to_builder_portal == True,
+            FlooringProduct.pricing_type == "screed",
+        ).order_by(FlooringProduct.display_order, FlooringProduct.product_name)
+    ).first()
+
+
+def _builder_portal_trim(session: Session, tenant_id: str):
+    """The one trim exposed to the portal. Burgert's own words —
+    "Only one trim, Reducing profile per door width opening. Leave
+    skirtings" — so this is the single place that rule lives: a
+    reducer, first by name if more than one is ever flagged, and
+    skirtings excluded HERE rather than by trusting whoever ticks the
+    flag in the price book to remember. Returns None if nothing is
+    flagged; the portal then doesn't ask about door openings at all."""
+    return session.exec(
+        select(TrimProduct).where(
+            TrimProduct.tenant_id == tenant_id,
+            TrimProduct.available_to_builder_portal == True,
+            TrimProduct.category == "reducer",
+        ).order_by(TrimProduct.product_name)
+    ).first()
+
+
+def _builder_portal_job_type(raw: str) -> JobType:
+    """Free-text job_type off a public, unauthenticated request — a bad
+    value must be a clean 400, never a KeyError 500 out of
+    calculate_flooring_line()'s own screed_multipliers lookup."""
+    try:
+        return JobType(raw)
+    except ValueError:
+        raise HTTPException(400, "Pick how the floor is going down: smooth, over tiles, or tiles removed.")
+
+
+def _price_builder_estimate(session: Session, builder, product, area_m2: float,
+                            job_type: JobType, door_openings: int, settings) -> dict:
+    """THE pricing path for a builder-portal estimate — one function,
+    called by submit (the price the builder sees), confirm (the real
+    Quote's actual lines), the printed letterhead, and the Owner's
+    offline edit. Before this feature there were already two hand-kept
+    copies of the material calc (submit + confirm, verified identical
+    line by line); adding screed and trim would have made that three or
+    four, which is exactly how a builder-facing price and the real
+    quote's price start to drift apart. Extracting it keeps
+    submit_builder_estimate()'s original promise — "structurally
+    cannot drift" — true now that an estimate is up to three lines
+    instead of one.
+
+    Every part runs through the same calculate_flooring_line /
+    calculate_trim_line the internal Quote Builder uses, with the same
+    settings-driven bag cost and coverage add_flooring_line() gets from
+    the Console, so a portal estimate and a staff-built quote for the
+    same job come out to the same cents.
+
+    own_staff=True and discount_pct=0 throughout, unchanged from the
+    original: a self-serve estimate has neither a subcontracted-labour
+    pass-through nor a quote-level discount to apply."""
+    bag_coverage = {
+        JobType.smooth: settings.default_bag_coverage_smooth_m2,
+        JobType.over_tiles: settings.default_bag_coverage_over_tiles_m2,
+        JobType.removed_tiles: settings.default_bag_coverage_removed_tiles_m2,
+    }[job_type]
+
+    def flooring_part(prod):
+        resolved = resolve_zone_price(session, builder.tenant_id, prod, settings)
+        labour_rate = resolved.labour_rate_per_m2 if resolved.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2
+        glue_rate = resolved.glue_rate_per_m2 or 0.0
+        calc = calculate_flooring_line(
+            resolved, area_m2, job_type, 0.0,
+            glue_cost_per_unit=glue_rate * 70, glue_coverage_m2=70,
+            labour_rate_per_m2=labour_rate,
+            bag_cost=settings.default_bag_cost, bag_coverage_m2=bag_coverage,
+            own_staff=True,
+            margin_warn_threshold=settings.flooring_margin_warn_threshold,
+            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
+            vat_pct=settings.vat_pct,
+        )
+        return {"product": prod, "resolved": resolved, "calc": calc, "total_ex_vat": round(calc["line_total"], 2)}
+
+    material = flooring_part(product)
+
+    # Screed only when the floor genuinely needs prep. Smooth IS the
+    # "no prep needed" answer — adding a x1.0 screed line to every
+    # smooth floor would inflate every estimate the portal has ever
+    # produced, which is not what "auto-add screed" meant.
+    screed = None
+    if job_type != JobType.smooth:
+        screed_product = _builder_portal_screed(session, builder.tenant_id)
+        if screed_product:
+            screed = flooring_part(screed_product)
+
+    # Reducer trim, priced per door opening — the builder never enters
+    # linear metres (see _builder_portal_trim above). The door width
+    # comes from BusinessSettings, so a standard door width changing is
+    # a settings edit, not a code change.
+    trim = None
+    if door_openings and door_openings > 0:
+        trim_product = _builder_portal_trim(session, builder.tenant_id)
+        if trim_product:
+            lm = round(door_openings * settings.builder_portal_door_width_m, 2)
+            calc = calculate_trim_line(trim_product, lm, 0.0, margin_warn_threshold=settings.flooring_margin_warn_threshold)
+            trim = {"product": trim_product, "calc": calc, "openings": door_openings, "lm": lm,
+                    "total_ex_vat": round(calc["line_total"], 2)}
+
+    total_ex_vat = round(material["total_ex_vat"]
+                         + (screed["total_ex_vat"] if screed else 0.0)
+                         + (trim["total_ex_vat"] if trim else 0.0), 2)
+    total_incl_vat = round(total_ex_vat * (1 + settings.vat_pct), 2)
+    return {
+        "job_type": job_type,
+        "material": material, "screed": screed, "trim": trim,
+        "total_ex_vat": total_ex_vat,
+        "total_incl_vat": total_incl_vat,
+        "deposit": round(total_incl_vat * settings.default_deposit_pct, 2),
+    }
+
+
+def _apply_builder_estimate_pricing(est, product, priced: dict) -> None:
+    """Writes a _price_builder_estimate() result onto the estimate's own
+    snapshot fields. Shared by submit and the Owner's offline edit so
+    the two can never write a partially-different set of fields (e.g.
+    an edit that drops the screed line but leaves last time's
+    screed_product_name still sitting on the row)."""
+    product_label = f"{product.product_name}{' — ' + product.colour if product.colour else ''}"
+    est.product_id = product.id
+    est.product_name = product_label
+    est.job_type = priced["job_type"].value
+    est.material_price_ex_vat = priced["material"]["total_ex_vat"]
+    est.screed_product_id = priced["screed"]["product"].id if priced["screed"] else None
+    est.screed_product_name = priced["screed"]["product"].product_name if priced["screed"] else ""
+    est.screed_price_ex_vat = priced["screed"]["total_ex_vat"] if priced["screed"] else 0.0
+    est.trim_product_id = priced["trim"]["product"].id if priced["trim"] else None
+    est.trim_product_name = priced["trim"]["product"].product_name if priced["trim"] else ""
+    est.trim_openings = priced["trim"]["openings"] if priced["trim"] else 0
+    est.trim_lm = priced["trim"]["lm"] if priced["trim"] else 0.0
+    est.trim_price_ex_vat = priced["trim"]["total_ex_vat"] if priced["trim"] else 0.0
+    est.quoted_price_ex_vat = priced["total_ex_vat"]
+    est.quoted_price_incl_vat = priced["total_incl_vat"]
+    est.deposit_amount = priced["deposit"]
+
+
+def _builder_estimate_breakdown(est) -> list:
+    """The parts of an estimate as display rows, straight off the stored
+    snapshot — never recalculated at read time, so a statement or a
+    reprinted letterhead always shows what the builder was ACTUALLY
+    quoted even after the price book moves underneath it (same
+    denormalized-snapshot principle as BuilderEstimate.product_name
+    itself). Shared by the builder's own statement, the printed
+    letterhead and the Owner's admin views so all three describe the
+    same estimate identically."""
+    rows = [{"label": est.product_name, "detail": f"{est.area_m2}m²", "amount_ex_vat": est.material_price_ex_vat}]
+    if est.screed_price_ex_vat:
+        rows.append({"label": f"Floor preparation — {est.screed_product_name}",
+                     "detail": f"{est.area_m2}m², {BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type)}",
+                     "amount_ex_vat": est.screed_price_ex_vat})
+    if est.trim_price_ex_vat:
+        rows.append({"label": est.trim_product_name,
+                     "detail": f"{est.trim_openings} door opening(s), {est.trim_lm}lm",
+                     "amount_ex_vat": est.trim_price_ex_vat})
+    return rows
+
+
 @app.get("/builder/{slug}")
 def builder_portal_info(slug: str):
     with Session(engine) as session:
         builder = session.exec(select(Builder).where(Builder.slug == slug, Builder.active == True)).first()
         if not builder:
             raise HTTPException(404, "This link isn't active. Contact Blinds & Flooring Studio for a valid link.")
+        # Builder activity visibility (confirmed Sep 2026) — logged here,
+        # not in a middleware, so it only ever counts a real, resolved
+        # portal load for an active builder (never a 404 on a dead/
+        # revoked slug). Best-effort: never let a logging problem take
+        # down the actual public portal a builder is trying to use.
+        try:
+            session.add(BuilderPortalVisit(tenant_id=builder.tenant_id, builder_id=builder.id))
+            session.commit()
+        except Exception:
+            session.rollback()
+        # pricing_type != "screed" (Screed + Trim On The Portal,
+        # confirmed Sept 2026) — the flagged screed product is the
+        # PREP product this portal now adds automatically, not a floor a
+        # builder picks. Without this filter, flagging it would have put
+        # "deZIGN S200 screed" in the same dropdown as the vinyl ranges
+        # and let a builder quote bare levelling compound as their
+        # finished floor.
         products = session.exec(
             select(FlooringProduct).where(
                 FlooringProduct.tenant_id == builder.tenant_id,
                 FlooringProduct.available_to_builder_portal == True,
+                FlooringProduct.pricing_type != "screed",
             )
         ).all()
+        settings = get_settings(session, builder.tenant_id)
+        screed = _builder_portal_screed(session, builder.tenant_id)
+        trim = _builder_portal_trim(session, builder.tenant_id)
         return {
             "builder_name": builder.name,
             "products": [{"id": p.id, "product_name": p.product_name, "colour": p.colour} for p in products],
+            # Screed + Trim On The Portal (confirmed Sept 2026). Every
+            # one of these describes what the portal may ASK, never a
+            # cost or a rate — same hand-picked-fields rule as the
+            # rest of this section. screed_available False (nothing
+            # flagged yet) deliberately hides the floor-condition
+            # question entirely rather than showing it and pricing prep
+            # at R0, which is the exact silent underquote this feature
+            # exists to fix.
+            "screed_available": screed is not None,
+            "job_types": [{"value": k, "label": v} for k, v in BUILDER_JOB_TYPE_LABELS.items()],
+            "trim_available": trim is not None,
+            "trim_name": trim.product_name if trim else "",
+            "door_width_m": settings.builder_portal_door_width_m,
+            # Stairs (confirmed Sept 2026, Burgert's own words: "We need
+            # to say on the builders portal that a stairwell we need to
+            # qte as a company"). Served from here rather than hardcoded
+            # into builder.html so it reads identically everywhere it is
+            # shown — the form, the result, and the statement page.
+            "stairwell_notice": BUILDER_PORTAL_STAIRWELL_NOTICE,
         }
 
 
@@ -4366,6 +4922,12 @@ class BuilderEstimateRequest(BaseModel):
     site_address: str = ""
     area_m2: float
     product_id: int
+    # Screed + Trim On The Portal (confirmed Sept 2026) -- both default
+    # to the exact pre-existing behaviour (smooth floor, no trim), so an
+    # older client that doesn't send them still gets the identical
+    # estimate it always did.
+    job_type: str = "smooth"
+    door_openings: int = 0
 
 
 @app.post("/builder/{slug}/estimate")
@@ -4397,42 +4959,43 @@ def submit_builder_estimate(slug: str, body: BuilderEstimateRequest):
         if not product:
             raise HTTPException(400, "That product isn't currently available through this portal.")
         settings = get_settings(session, builder.tenant_id)
-        resolved = resolve_zone_price(session, builder.tenant_id, product, settings)
-        labour_rate = resolved.labour_rate_per_m2 if resolved.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2
-        glue_rate = resolved.glue_rate_per_m2 or 0.0
-        calc = calculate_flooring_line(
-            resolved, body.area_m2, JobType.smooth, 0.0,
-            glue_cost_per_unit=glue_rate * 70, glue_coverage_m2=70,
-            labour_rate_per_m2=labour_rate, own_staff=True,
-            margin_warn_threshold=settings.flooring_margin_warn_threshold,
-            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
-            vat_pct=settings.vat_pct,
-        )
-        price_ex_vat = round(calc["line_total"], 2)
-        price_incl_vat = round(price_ex_vat * (1 + settings.vat_pct), 2)
-        deposit = round(price_incl_vat * settings.default_deposit_pct, 2)
-        product_label = f"{product.product_name}{' — ' + product.colour if product.colour else ''}"
+        job_type = _builder_portal_job_type(body.job_type)
+        priced = _price_builder_estimate(session, builder, product, body.area_m2, job_type, body.door_openings, settings)
 
         estimate = BuilderEstimate(
             tenant_id=builder.tenant_id, builder_id=builder.id,
             client_name=body.client_name, client_contact=body.client_contact, site_address=body.site_address,
-            area_m2=body.area_m2, product_id=product.id, product_name=product_label,
-            quoted_price_ex_vat=price_ex_vat, quoted_price_incl_vat=price_incl_vat, deposit_amount=deposit,
+            area_m2=body.area_m2,
+            # Every pricing and snapshot field below is written in
+            # exactly one place — see _apply_builder_estimate_pricing(),
+            # shared with the Owner's offline edit.
+            product_id=product.id, product_name="",
+            quoted_price_ex_vat=0.0, quoted_price_incl_vat=0.0, deposit_amount=0.0,
         )
+        _apply_builder_estimate_pricing(estimate, product, priced)
         session.add(estimate)
         session.commit()
         session.refresh(estimate)
+        floor_ex_vat = priced["material"]["total_ex_vat"] + (priced["screed"]["total_ex_vat"] if priced["screed"] else 0.0)
         # Hand-picked response fields ONLY — see this section's header comment.
         return {
             "estimate_id": estimate.id,
-            "product_name": product_label,
+            "product_name": estimate.product_name,
             "area_m2": estimate.area_m2,
-            "price_per_m2_ex_vat": round(price_ex_vat / body.area_m2, 2),
-            "price_per_m2_incl_vat": round(price_incl_vat / body.area_m2, 2),
-            "total_ex_vat": price_ex_vat,
-            "total_incl_vat": price_incl_vat,
-            "deposit_amount": deposit,
+            # Per-m2 stays the FLOOR rate (material + prep across the
+            # same area), deliberately excluding trim — trim is priced
+            # per door opening, so folding it in would make the "R/m2"
+            # figure move every time a builder added a doorway, which is
+            # not what a per-m2 rate means to anyone reading it.
+            "price_per_m2_ex_vat": round(floor_ex_vat / body.area_m2, 2),
+            "price_per_m2_incl_vat": round(floor_ex_vat * (1 + settings.vat_pct) / body.area_m2, 2),
+            "breakdown": [dict(r, amount_incl_vat=round(r["amount_ex_vat"] * (1 + settings.vat_pct), 2))
+                          for r in _builder_estimate_breakdown(estimate)],
+            "total_ex_vat": estimate.quoted_price_ex_vat,
+            "total_incl_vat": estimate.quoted_price_incl_vat,
+            "deposit_amount": estimate.deposit_amount,
             "deposit_pct": settings.default_deposit_pct,
+            "stairwell_notice": BUILDER_PORTAL_STAIRWELL_NOTICE,
         }
 
 
@@ -4467,6 +5030,17 @@ def print_builder_estimate(slug: str, estimate_id: int):
             "builder_name": builder.name,
             "client_name": est.client_name, "site_address": est.site_address,
             "product_name": est.product_name, "area_m2": est.area_m2,
+            # Screed + Trim On The Portal (confirmed Sept 2026) — an
+            # estimate is now up to three lines, so the letterhead has
+            # to itemise them the way a real printed quote does. Read
+            # off the stored snapshot (_builder_estimate_breakdown()),
+            # never recalculated here, so reprinting an old estimate
+            # months later still shows the figures the builder was
+            # actually given.
+            "breakdown": [dict(r, amount_incl_vat=round(r["amount_ex_vat"] * (1 + settings.vat_pct), 2))
+                          for r in _builder_estimate_breakdown(est)],
+            "job_type_label": BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type),
+            "stairwell_notice": BUILDER_PORTAL_STAIRWELL_NOTICE,
             "quoted_price_ex_vat": est.quoted_price_ex_vat, "quoted_price_incl_vat": est.quoted_price_incl_vat,
             "deposit_amount": est.deposit_amount, "deposit_pct": settings.default_deposit_pct,
             "vat_pct": settings.vat_pct, "created_at": est.created_at.isoformat(),
@@ -4564,35 +5138,64 @@ def confirm_builder_order(slug: str, estimate_id: int):
         session.commit()
         session.refresh(quote)
 
-        resolved = resolve_zone_price(session, builder.tenant_id, product, settings)
-        labour_rate = resolved.labour_rate_per_m2 if resolved.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2
-        glue_rate = resolved.glue_rate_per_m2 or 0.0
-        calc = calculate_flooring_line(
-            resolved, est.area_m2, JobType.smooth, 0.0,
-            glue_cost_per_unit=glue_rate * 70, glue_coverage_m2=70,
-            labour_rate_per_m2=labour_rate, own_staff=True,
-            margin_warn_threshold=settings.flooring_margin_warn_threshold,
-            tile_removal_fee_per_m2_incl_vat=settings.tile_removal_fee_per_m2_incl_vat,
-            vat_pct=settings.vat_pct,
+        # Screed + Trim On The Portal (confirmed Sept 2026) — the
+        # estimate the builder confirmed can now be up to three lines
+        # (floor, floor prep, reducer trim), so this builds whatever
+        # that estimate actually priced instead of one hardcoded
+        # flooring line. Recalculated through the SAME
+        # _price_builder_estimate() the builder's own quoted figure came
+        # from, with that estimate's own stored job_type and door
+        # openings — the pre-existing behaviour (this endpoint always
+        # recalculated rather than copying the snapshot), kept because a
+        # real QuoteLineItem needs the cost/margin/glue/bag figures only
+        # a live calc produces, not just a sell price.
+        priced = _price_builder_estimate(
+            session, builder, product, est.area_m2,
+            _builder_portal_job_type(est.job_type), est.trim_openings, settings,
         )
-        line = QuoteLineItem(
-            quote_id=quote.id, category="flooring", product_id=product.id, tenant_id=builder.tenant_id,
-            product_name=product.product_name, colour=product.colour, original_colour=product.colour,
-            job_type=JobType.smooth, flooring_pricing_type=product.pricing_type,
-            carpet_category=product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None,
-            quantity_m2=est.area_m2, discount_pct=0.0,
-            unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
-            line_total=calc["line_total"], margin_pct=calc["margin_pct"],
-            glue_cost_total=calc["glue_cost_total"], glue_sell_total=calc["glue_sell_total"],
-            glue_units_needed=calc["glue_units_needed"],
-            labour_cost_total=calc["labour_cost_total"], labour_charged_total=calc["labour_charged_total"],
-            own_staff=calc["own_staff"], bags_allowed=calc["bags_allowed"],
-            boxes_needed=calc.get("packs_needed"), compound_cost_total=calc["compound_cost_total"],
-            tile_removal_fee_total=calc["tile_removal_fee_total"], delivery_fee_total=calc["delivery_fee_total"],
-            total_job_cost=calc["total_job_cost"],
-        )
-        session.add(line)
-        _log_quote_line_audit(session, quote, "builder-portal", "added", f"Flooring — {product.product_name}{', ' + product.colour if product.colour else ''}, {est.area_m2}m²")
+
+        def add_flooring_part(part):
+            prod, calc = part["product"], part["calc"]
+            line = QuoteLineItem(
+                quote_id=quote.id, category="flooring", product_id=prod.id, tenant_id=builder.tenant_id,
+                product_name=prod.product_name, colour=prod.colour, original_colour=prod.colour,
+                job_type=priced["job_type"], flooring_pricing_type=prod.pricing_type,
+                carpet_category=prod.flooring_category if prod.flooring_category in CARPET_ONLY_CATEGORIES else None,
+                quantity_m2=est.area_m2, discount_pct=0.0,
+                unit_cost=calc["unit_cost"], unit_price=calc["unit_price"],
+                line_total=calc["line_total"], margin_pct=calc["margin_pct"],
+                glue_cost_total=calc["glue_cost_total"], glue_sell_total=calc["glue_sell_total"],
+                glue_units_needed=calc["glue_units_needed"],
+                labour_cost_total=calc["labour_cost_total"], labour_charged_total=calc["labour_charged_total"],
+                own_staff=calc["own_staff"], bags_allowed=calc["bags_allowed"],
+                boxes_needed=calc.get("packs_needed"), compound_cost_total=calc["compound_cost_total"],
+                tile_removal_fee_total=calc["tile_removal_fee_total"], delivery_fee_total=calc["delivery_fee_total"],
+                total_job_cost=calc["total_job_cost"],
+            )
+            session.add(line)
+            _log_quote_line_audit(session, quote, "builder-portal", "added",
+                                  f"Flooring — {prod.product_name}{', ' + prod.colour if prod.colour else ''}, {est.area_m2}m\u00b2")
+
+        add_flooring_part(priced["material"])
+        if priced["screed"]:
+            add_flooring_part(priced["screed"])
+        if priced["trim"]:
+            trim_product, trim_calc = priced["trim"]["product"], priced["trim"]["calc"]
+            # _trim_line_category() — the same single source of truth
+            # add_trim_line()/edit_trim_line() use, so a portal-created
+            # trim line lands in the identical bucket a staff-created
+            # one would.
+            trim_line = QuoteLineItem(
+                quote_id=quote.id, category=_trim_line_category(trim_product), product_id=trim_product.id,
+                tenant_id=builder.tenant_id, product_name=trim_product.product_name,
+                length_m=priced["trim"]["lm"], trim_sub_category=trim_product.category,
+                discount_pct=0.0,
+                unit_cost=trim_calc["unit_cost"], unit_price=trim_calc["unit_price"],
+                line_total=trim_calc["line_total"], margin_pct=trim_calc["margin_pct"],
+            )
+            session.add(trim_line)
+            _log_quote_line_audit(session, quote, "builder-portal", "added",
+                                  f"Trim — {trim_product.product_name}, {priced['trim']['lm']}lm ({priced['trim']['openings']} door opening(s))")
 
         est.linked_quote_id = quote.id
         est.confirmed_by_builder = True
@@ -4647,10 +5250,18 @@ def builder_statement(slug: str):
                 # figure baked into the frontend.
                 "commission_pct": builder.commission_pct,
                 "confirmed_by_builder": est.confirmed_by_builder,
+                # Screed + Trim On The Portal (confirmed Sept 2026) —
+                # same stored-snapshot breakdown the printed letterhead
+                # and the Owner's admin views use, so a builder looking
+                # at their own history sees the identical itemisation
+                # Burgert does.
+                "breakdown": _builder_estimate_breakdown(est),
+                "job_type_label": BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type),
             })
         return {
             "builder_name": builder.name, "estimates": result, "total_commission_earned": round(total_earned, 2),
             "commission_pct": builder.commission_pct,
+            "stairwell_notice": BUILDER_PORTAL_STAIRWELL_NOTICE,
         }
 
 
@@ -4952,7 +5563,13 @@ FIELD_LABELS = {
     "tile_length_mm": "Plank length (mm)", "tile_width_mm": "Plank width (mm)",
     "tile_thickness_mm": "Plank thickness (mm)", "tiles_per_pack": "Planks per box",
     "sku": "Product code", "wear_layer_mm": "Wear layer (mm)", "discontinued": "Discontinued",
-    "available_to_builder_portal": "Available to Builder Portal (max 2 ranges — every colour of a range counts as one)",
+    # Screed + Trim On The Portal (confirmed Sept 2026) — the cap now
+    # excludes screed (_builder_portal_screed()), and a screed product
+    # flagged here plays a completely different role from a material
+    # one: it is the floor prep the portal adds automatically, never a
+    # floor a builder picks. Said plainly in the label, since this
+    # checkbox is the only place Burgert makes that choice.
+    "available_to_builder_portal": "Available to Builder Portal (max 2 material ranges — every colour of a range counts as one. On a SCREED product this instead sets the floor prep the portal prices automatically for over-tiles jobs, and doesn't count towards the 2.)",
     "default_delivery_fee_per_m2": "Delivery fee default (R/m², for new products)",
     "pack_size": "Pack size", "pack_unit": "Pack unit", "coverage_rate": "Coverage rate",
     "coverage_basis": "Coverage basis", "cost_ex_vat_per_pack": "Cost per pack (ex VAT)",
@@ -5378,11 +5995,20 @@ def commit_supplier_console_changes(
         # here rolls back the WHOLE commit, same "nothing partially
         # saved" guarantee every other validation on this endpoint
         # already has (e.g. the deletion reference-check above).
+        # pricing_type != "screed" (Screed + Trim On The Portal,
+        # confirmed Sept 2026) — this cap is about how many flooring
+        # RANGES a builder gets to choose between, which is what the
+        # original brief's "capped at 2 active at a time" constraint
+        # meant. The flagged screed product is prep the portal adds
+        # automatically (_builder_portal_screed()), never something a
+        # builder picks, so counting it here would have made flagging it
+        # cost Burgert one of his two real ranges.
         builder_portal_ranges = set(
             session.exec(
                 select(FlooringProduct.product_name).where(
                     FlooringProduct.tenant_id == tenant_id,
                     FlooringProduct.available_to_builder_portal == True,
+                    FlooringProduct.pricing_type != "screed",
                 )
             ).all()
         )
@@ -7569,6 +8195,36 @@ def update_lead(lead_id: int, updates: Lead, tenant_id: str = Depends(get_curren
         session.commit()
         session.refresh(lead)
         return lead
+
+
+@app.delete("/leads/{lead_id}")
+def delete_lead(lead_id: int, role: str = Depends(require_owner),
+                 tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
+    """Confirmed Sep 2026, Burgert's own words: "I also need to be able
+    to delete leads." Owner-only and audit-logged, same convention as
+    delete_client() above — a real business record, not a throwaway.
+
+    No cascade needed: nothing has an FK onto Lead.id — a Lead only
+    ever feeds INTO a Quote via converted_quote_id (see this codebase's
+    own comment on that field, models.py), never the other way. The
+    one thing that DOES need protecting is a converted lead itself:
+    once it's real business history behind a real Quote, deleting it
+    would silently sever that history (and, per _CASCADE_POLICY's own
+    entry for Quote deletion nullifying this same field, could even
+    resurrect confusion about which lead a quote came from) — same
+    "delete the quote first if you really mean it" pattern as
+    delete_client() uses for a client with quotes attached."""
+    with Session(engine) as session:
+        lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        if lead.lead_status == "converted":
+            raise HTTPException(400, f"Can't delete {lead.name} — this lead was converted to a real quote. Delete that quote first if you really need to remove this lead.")
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Lead", entity_id=lead.id,
+            field="__deleted__", old_value=f"Lead — {lead.name}", new_value="(deleted)",
+        ))
+        session.delete(lead)
+        session.commit()
+        return {"deleted": lead_id}
 
 
 @app.post("/leads/{lead_id}/status")

@@ -167,13 +167,22 @@ function renderTrimTree(products) {
           <td>${p.product_name}${p.profile_code ? ' ('+p.profile_code+')' : ''}</td>
           <td class="cost-col">R${p.cost_ex_vat_per_lm.toFixed(2)}</td>
           <td>R${sell.toFixed(2)}</td><td class="cost-col">${margin}%</td>
+          <!-- Builder Portal: Trims (confirmed Sept 2026, Burgert's own
+          words: "Only one trim, Reducing profile per door width
+          opening. Leave skirtings"). Only offered on reducers, mirroring
+          _builder_portal_trim()'s own filter (main.py) — showing this on
+          a skirting row would let Burgert tick a box that the portal
+          then silently ignores. -->
+          <td>${p.category === 'reducer'
+            ? `<label style="font-size:12px; white-space:nowrap;"><input type="checkbox" ${p.available_to_builder_portal ? 'checked' : ''} onchange="setTrimBuilderPortal(${p.id}, this.checked)"> Builder portal</label>`
+            : ''}</td>
           <td><button class="delete-btn" onclick="deleteTrim(${p.id})">Delete</button></td>
         </tr>`;
       }).join('');
       return `<details class="tree-node supplier">
         <summary>${supplier} <span class="tree-count">(${bySupplier[supplier].length})</span></summary>
         <div class="tree-body">
-          <table><thead><tr><th>Product</th><th class="cost-col">Cost/lm</th><th>Sell/lm</th><th class="cost-col">Margin</th><th></th></tr></thead>
+          <table><thead><tr><th>Product</th><th class="cost-col">Cost/lm</th><th>Sell/lm</th><th class="cost-col">Margin</th><th></th><th></th></tr></thead>
           <tbody>${rows}</tbody></table>
         </div>
       </details>`;
@@ -183,6 +192,35 @@ function renderTrimTree(products) {
       <div class="tree-body">${supplierHtml}</div>
     </details>`;
   }).join('');
+}
+
+// Builder Portal: Trims (confirmed Sept 2026). The portal resolves ONE
+// reducer (_builder_portal_trim(), main.py — first by name), so ticking
+// a second one doesn't add it, it just makes which one wins depend on
+// alphabetical order. Untick the current one first, which is what this
+// does automatically rather than leaving Burgert to discover it.
+async function setTrimBuilderPortal(id, checked) {
+  const product = trimProducts.find(p => p.id === id);
+  if (!product) return;
+  if (checked) {
+    const already = trimProducts.find(p => p.id !== id && p.category === 'reducer' && p.available_to_builder_portal);
+    if (already && !confirm(`${already.product_name} is currently the Builder Portal trim. Replace it with ${product.product_name}?`)) {
+      loadTrims();
+      return;
+    }
+    if (already) {
+      await fetch(`${API}/price-book/trims/${already.id}`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({...already, available_to_builder_portal: false}),
+      });
+    }
+  }
+  const res = await fetch(`${API}/price-book/trims/${id}`, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({...product, available_to_builder_portal: checked}),
+  });
+  if (!res.ok) alert('Could not update this trim.');
+  loadTrims();
 }
 
 async function deleteTrim(id) {
