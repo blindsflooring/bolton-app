@@ -1584,6 +1584,33 @@ async function autoAddScreedLine(floorM2, role) {
   if (result.warning) alert(result.warning);
 }
 
+// Auto-scroll on New Quote / Price Check (confirmed Sept 2026,
+// Burgert: "the page should automatically scroll down to bring the
+// quote-entry section into view, instead of leaving Burgert to scroll
+// manually every time"). Same instinct as the rest of the
+// no-unnecessary-scrolling work: pressing the button IS the intent to
+// start entering lines, so the app should already be there.
+//
+// Called at the very END of both entry points, after toggleLineFields()
+// has settled — that call is async (it may fetch price-book data on a
+// cold start) and it decides WHICH category card is visible, so
+// scrolling before it finishes would aim at a card whose height is
+// still changing underneath, and land in the wrong place.
+//
+// scrollIntoView with behavior:'smooth' rather than a jump, so it reads
+// as the page following you rather than teleporting. block:'start'
+// puts the Add Line card at the top of the viewport, which is where
+// the actual work begins.
+function scrollToQuoteEntry() {
+  const target = document.getElementById('addLineCard');
+  if (!target) return;
+  // requestAnimationFrame: the cards above were only just un-hidden
+  // (display:block), and their real heights don't exist until the
+  // browser has laid them out — measuring/scrolling in the same tick
+  // would use the pre-layout position.
+  requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+
 async function createQuote() {
   const typedClientName = document.getElementById('q_client').value;
   // Clarify Buttons + Price Check + Marketing Source (confirmed Aug
@@ -1718,6 +1745,7 @@ async function createQuote() {
     pendingCarpetRange = null;
   }
   pendingCategory = null;
+  scrollToQuoteEntry();
 }
 
 // Price Check (confirmed Aug 2026, New Quote Screen brief §3) — reuses
@@ -1768,6 +1796,7 @@ async function startPriceCheck() {
   if (pendingCarpetType) { selectCarpetType(pendingCarpetType, pendingCarpetRange); pendingCarpetType = null; pendingCarpetRange = null; }
   pendingCategory = null;
   loadQuote();
+  scrollToQuoteEntry();
 }
 
 async function convertPriceCheckToQuote() {

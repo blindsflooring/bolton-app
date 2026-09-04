@@ -74,6 +74,32 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-07
+
+Order Index Redesign (stage tiles + filterable client list), plus auto-scroll on New Quote / Price Check.
+
+### What shipped
+- **Five stage tiles at the top of the Order Index**, each with a count AND a Rand value, each a filter toggle: Work Quoted, Accepted, Work Being Installed, Awaiting Final Payment, Archive. Low-saturation colours throughout — measured, not eyeballed: the browser check asserts the tile backgrounds have an RGB spread under 30, because "this is a status overview, not an alerts panel".
+- **Combinable filters** — stage, rep, branch and month all narrow together rather than replacing each other, with a Clear filters button that appears only when something is active. Rep/branch/month options are built from the real data, so a new rep or a third branch needs no code change.
+- **Right-hand client list**, respecting every active filter: client name, total m², and flooring type as a label, clicking through to that client's most recent job. Deliberately one row per CLIENT rather than per job — the point is scanning who is on the books and how much floor that is, so a client with three jobs reads as one line with their combined m² instead of three lines to add up by eye.
+- **Auto-scroll on New Quote / Price Check** — pressing either now brings the quote-entry section into view instead of leaving it to be scrolled to manually.
+
+### Why (root causes, decisions, rejected alternatives)
+- **This supersedes the in-table section dividers rather than joining them**, exactly as the brief said. The dividers, the status tab strip, the summary count line and the separate Declined Quotes card were all deleted, not left alongside — expressing the same five stages twice on one page is precisely the cognitive load this was meant to remove. The dead header machinery went with them rather than being left dormant behind a `null` argument: two definitions of "what stage is this job in" is how the two quietly drift apart.
+- **Declined quotes moved into Archive**, which retires their separate second fetch. `orderStageOf()` checks `declined_at` BEFORE `workflow_status`, because a declined quote's own status stays "quoted" forever.
+- **A real bug this exposed, fixed:** with declined quotes now in the main table, a declined row was still showing a "FOLLOW UP" button — the workflow engine had never known about `declined_at` at all. It now returns no action for a declined quote, checked before every status branch for the same reason On Hold is.
+- **m² uses the same rule as the m² KPIs** (material flooring lines only). A screeded job carries a material line and a screed line at the identical area, so counting every flooring line would double it — asserted directly in the browser check.
+- **The scroll fires at the END of both entry points, after `toggleLineFields()` settles.** That call is async and decides which category card is visible, so scrolling earlier would aim at a card whose height is still changing. `requestAnimationFrame` for the same reason: the cards above were only just un-hidden and have no real height until the browser lays them out.
+
+### Verified
+- Real headless-browser measurement against the actual frontend and backend, with six jobs deliberately spread across all five stages: all five tiles render with correct counts (declined and fully-paid both in Archive) and non-zero values; tile colours are low-saturation; the client list sits to the right, lists every client, shows m² without screed doubling, and labels Carpet vs Vinyl correctly; clicking a tile filters and shows a pressed state, clicking again clears it; stage + branch + rep combine and can honestly empty the result; Clear filters restores everything; the tab strip, Declined card and in-table dividers are all gone while Needs Attention remains; and a declined quote no longer prompts a follow-up while a live one still does. 24 checks.
+- Auto-scroll measured the same way: from a standing start at the top of the page, both Price Check and New Quote scroll to 514px and land the Add Line card at y=0.
+
+### Open going into next session
+- **"Expired quotes" has no equivalent in the system today** — quotes have no expiry concept, only a staleness prompt after 7 days. Archive therefore holds completed-and-paid jobs plus declined quotes. Flagged for Burgert to decide whether quotes should actually expire.
+
+---
+
 ## 2026-09-06 (3)
 
 Home in one view (Burgert: "I need the my leads and to dos, possibly be on the left of the page. I dont want to be scrolling hardly anywhere on this system. Scrolling breaks work flow and breaks up your data, i need to be able to see all my data with one view, wherever possible").

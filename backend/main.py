@@ -7317,6 +7317,21 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     next_action = action_button = action_target = None
     attention_priority = attention_label = None
 
+    # A declined quote has nothing left to do (found Sept 2026, Order
+    # Index Redesign — declined quotes now appear in the main table as
+    # part of the Archive stage, which made this visible: the row was
+    # still prompting "FOLLOW UP" on a quote the client had already
+    # turned down). Checked before every status branch for the same
+    # reason On Hold is: declined_at sits alongside workflow_status
+    # rather than replacing it, so a declined quote's own status stays
+    # "quoted" forever (decline_quote()) and every branch below would
+    # otherwise treat it as live work.
+    if quote.declined_at:
+        return {
+            "next_action": None, "action_button": None, "action_target": None,
+            "attention_priority": None, "attention_label": None,
+        }
+
     if quote.on_hold_reason:
         return {
             "next_action": f"On Hold — {quote.on_hold_reason}", "action_button": "VIEW HOLD", "action_target": "job_detail",
@@ -11394,6 +11409,21 @@ def get_colour_history(quote_id: int, line_id: int, tenant_id: str = Depends(get
         }
 
 
+# Order Index Redesign (confirmed Sept 2026, "Stage Tiles + Filterable
+# Client List" brief) — the client list needs "flooring type as a label
+# (Vinyl / Carpet / Engineered Wood / etc.)". Derived from data already
+# on each line, never a new stored field: a manual line names its own
+# category, a carpet line carries carpet_category, and an ordinary
+# flooring line's type comes from its FlooringProduct. Kept here rather
+# than in the frontend so one place decides what a category is called.
+FLOORING_TYPE_LABELS = {
+    "vinyl": "Vinyl", "spc": "SPC", "novilon": "Novilon", "laminate": "Laminate",
+    "engineered_wood": "Engineered Wood", "screed": "Screed", "carpet": "Carpet",
+    "carpet_tufted_broadloom": "Carpet", "carpet_needlepunch_broadloom": "Carpet",
+    "carpet_tile": "Carpet Tile", "cushion_vinyl": "Cushion Vinyl",
+}
+
+
 @app.get("/quotes")
 def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
                  status: Optional[str] = None, workflow_status: Optional[str] = None,
@@ -11483,6 +11513,15 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
         for fu in session.exec(select(PaymentFollowUp).where(PaymentFollowUp.tenant_id == tenant_id)).all():
             if fu.quote_id not in latest_follow_up_by_quote or fu.follow_up_date > latest_follow_up_by_quote[fu.quote_id]:
                 latest_follow_up_by_quote[fu.quote_id] = fu.follow_up_date
+        # Order Index Redesign (confirmed Sept 2026) — one query for
+        # every flooring product's category, not one per line inside the
+        # loop below; same shape work_days_by_quote/latest_follow_up_by_
+        # quote above already use for the same reason.
+        flooring_category_by_product = {
+            pid: cat for pid, cat in session.exec(
+                select(FlooringProduct.id, FlooringProduct.flooring_category).where(FlooringProduct.tenant_id == tenant_id)
+            ).all()
+        }
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -11528,5 +11567,30 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered
             d["work_days"] = work_days_by_quote.get(q.id, [])
+            # Order Index Redesign (confirmed Sept 2026) — m² and flooring
+            # type for the client list. m² uses the SAME rule the m²
+            # KPIs already use (material flooring lines only): a screeded
+            # job carries a material line AND a screed line at the
+            # identical area, so counting every flooring line would
+            # double it — see analytics_overview()'s own comment for the
+            # real production data that was confirmed against.
+            d["total_m2"] = round(sum(
+                l.quantity_m2 or 0.0 for l in lines
+                if l.category == "flooring" and l.flooring_pricing_type == "material"
+            ), 2)
+            types = []
+            for l in lines:
+                label = None
+                if l.manual_category:
+                    label = FLOORING_TYPE_LABELS.get(l.manual_category)
+                elif l.carpet_category:
+                    label = FLOORING_TYPE_LABELS.get(l.carpet_category)
+                elif l.category == "flooring" and l.flooring_pricing_type == "material":
+                    label = FLOORING_TYPE_LABELS.get(flooring_category_by_product.get(l.product_id))
+                elif l.category == "blinds":
+                    label = "Blinds"
+                if label and label not in types:
+                    types.append(label)
+            d["flooring_types"] = types
             result.append(d)
         return result
