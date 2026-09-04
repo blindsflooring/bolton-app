@@ -85,11 +85,12 @@ Business Overview card order, and a new standing UI convention.
 
 ### Why (root causes, decisions, rejected alternatives)
 - **Fixed all four instances, not just the reported one.** Swapping only the cards that were reported would have left the m² tiles directly beneath them contradicting the very rule being introduced — which is exactly how a convention dies.
-- **The rule is about ORDER, not emphasis or defaults, and the difference matters at two points.** The Top Sellers toggle's button order changed but *This Month stays the selected default* — that's what someone opens the card to see. And on the Quotes-Created-By-Person cards the sub-line was reordered (month before week) while the headline figure was left as today's count: which number gets the big type is emphasis, not ordering, and that card exists to answer "what has each person done today". Flagged rather than changed silently, since making it the month would change what the card says at a glance.
+- **The rule turned out to cover emphasis too, not just reading order.** The Quotes-Created-By-Person headline was initially left as today's count and flagged as the one place the rule hadn't been extended; asked directly, Burgert confirmed "yes make the headline the month". The big figure is now the month, with week and today below it, and the card's caption says so. Default *selection* remains genuinely separate: the Top Sellers toggle reads Year-then-Month but still opens on This Month, which is what someone goes there to see.
 - **Sales-then-Profit is a pair, not a scope hierarchy**, so it keeps its own order — the brief says so explicitly and the distinction is worth keeping straight for future screens.
 
 ### Verified
-- Real-browser check of the rendered DOM order: the four money cards read Month/Month/Today/Today with the Sales→Profit pairing intact; all six m² tiles put Month before Week; the Top Sellers toggle reads Year then Month with Month still selected; and the per-person sub-line reads month before week. 6 checks.
+- Real-browser check of the rendered DOM order: the four money cards read Month/Month/Today/Today with the Sales→Profit pairing intact; all six m² tiles put Month before Week; the Top Sellers toggle reads Year then Month with Month still selected. 6 checks.
+- Headline change verified separately against data where the figures genuinely differ — 3 quotes this month, only 1 of them today — confirming the big number reads 3 (the month) rather than 1, that today's real figure is still shown below it, and that the caption states which period the big number is. 4 checks.
 
 ---
 

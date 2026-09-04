@@ -2298,18 +2298,18 @@ async function renderBusinessOverview(el) {
     <div id="topSellersCard"></div>
 
     <h2 style="margin-bottom:8px;">Quotes Created — By Person</h2>
-    <p class="muted" style="margin-top:0;">Every quote created, regardless of outcome — a pure volume/timing count, not a win-rate figure (see By Sales Owner above for that).</p>
+    <p class="muted" style="margin-top:0;">Big figure is <b>this month</b>; week and today are below it. Every quote created, regardless of outcome — a pure volume/timing count, not a win-rate figure (see By Sales Owner above for that).</p>
     <div class="tile-grid" style="margin-bottom:16px;">
       ${Object.keys(data.quotes_per_person).sort().map(r => {
         const s = data.quotes_per_person[r];
-        // Standing rule (biggest to smallest, left to right) applied to
-        // the sub-line: month before week. The HEADLINE figure is left
-        // as today's count deliberately — which number gets the big
-        // type is emphasis, not ordering, and this card exists to
-        // answer "what has each person done today". Flagged to Burgert
-        // rather than changed silently, since making it the month would
-        // change what the card says at a glance, not just its order.
-        return kpiCard(r.charAt(0).toUpperCase() + r.slice(1), s.today, `This month: ${s.month} · This week: ${s.week}`);
+        // Standing rule (biggest to smallest, left to right) applied
+        // top-down as well as left-to-right: the MONTH is the headline
+        // figure, then week, then today. Burgert confirmed this
+        // directly ("yes make the headline the month") when the
+        // headline was flagged as the one place the rule had not been
+        // extended — so the rule governs emphasis here too, not just
+        // reading order.
+        return kpiCard(r.charAt(0).toUpperCase() + r.slice(1), s.month, `This week: ${s.week} · Today: ${s.today}`);
       }).join('') || '<div class="muted">No quotes yet.</div>'}
     </div>
 
