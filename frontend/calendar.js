@@ -49,6 +49,10 @@ function openInstallationCalendar() {
 }
 
 async function renderInstallationCalendar(el) {
+  // Wide container for this screen only (brief §0) — same body-class
+  // mechanism Home and the Quote Builder already use; renderLanding()
+  // clears it when any other view takes over.
+  document.body.classList.add('calendar-active');
   await renderWithRetry(el, 'Installation Calendar', async () => {
     el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><p class="muted">Loading...</p></div>`;
     const [quotesRes, leadsRes, todosRes] = await Promise.all([
@@ -307,48 +311,73 @@ function renderCalendarView(el) {
 
   const dowHtml = CAL_DOW.map(d => `<div class="cal-dow">${d}</div>`).join('');
 
+  // Header/layout restructure (confirmed Sept 2026, brief §0) — the
+  // title, description, legend and filter checkboxes used to stack
+  // full-width ABOVE the grid, and between them they ate roughly a
+  // third of the viewport before a single day cell was drawn. That is
+  // what stopped the month fitting on one screen, and it got worse the
+  // moment rows were allowed to grow (§2). None of it is per-column
+  // information, so none of it needs the full width: it moves into a
+  // narrow left rail and the grid takes everything that's left.
+  //
+  // This is also what makes §2's "rows grow to fit" and the earlier
+  // "fits one screen, no scrolling" requirement stop fighting each
+  // other — the space reclaimed here is handed straight to the grid by
+  // calFitCalendarGrid()'s own measurement, which needs no change to
+  // benefit from it.
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
-    <div class="landing-welcome">
-      <h1>Installation Calendar</h1>
-      <p>Every booked job, whole business, at a glance — click a job to open it, click a busy day to see everything on it.</p>
-    </div>
-    <div class="card">
-      <div class="cal-head">
-        <button onclick="changeCalendarMonth(-1)">‹ Prev</button>
-        <h2 style="margin:0;">${CAL_MONTH_NAMES[month]} ${year}</h2>
-        <button onclick="changeCalendarMonth(1)">Next ›</button>
-      </div>
-      <!-- Legend rebuilt for the Visual Density & Colour Redesign
-      (confirmed Sept 2026). It used to explain only Confirmed vs
-      Tentative, because that was all colour meant. Colour now means
-      category, so the legend has to say which colour is which kind of
-      work — a colour scheme nobody can decode is just decoration —
-      and status keeps its own entry, now as the dot. -->
-      <div style="display:flex; gap:12px; margin:10px 0 6px; font-size:11.5px; flex-wrap:wrap; align-items:center;">
-        <span class="cal-legend-key cal-cat-flooring">Flooring / screed</span>
-        <span class="cal-legend-key cal-cat-blinds">Blinds</span>
-        <span class="cal-legend-key cal-cat-lead">Lead visit</span>
-        <span class="cal-legend-key cal-cat-todo">To-do</span>
-      </div>
-      <div style="display:flex; gap:14px; margin:0 0 12px; font-size:11.5px; flex-wrap:wrap;" class="muted">
-        <span><span class="cal-chip-dot confirmed" style="color:#1c4b8a;"></span> Confirmed</span>
-        <span><span class="cal-chip-dot tentative" style="color:#1c4b8a;"></span> Tentative</span>
-        <span><span class="cal-legend-today"></span> Today</span>
-      </div>
-      <!-- Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) — per-
-      type visibility, the proposal's own confirmed answer to "a
-      calendar showing installations, leads, to-dos, and measure-ups
-      all at once needs a real plan for staying readable." Default all
-      on — off is an explicit choice, not the starting state. -->
-      <div style="display:flex; gap:14px; margin:0 0 14px; font-size:12px; flex-wrap:wrap;">
-        <label style="cursor:pointer;"><input type="checkbox" ${calShowInstallations?'checked':''} onchange="toggleCalendarType('installations')"> Installations</label>
-        <label style="cursor:pointer;"><input type="checkbox" ${calShowLeads?'checked':''} onchange="toggleCalendarType('leads')"> Lead visits 📋</label>
-        <label style="cursor:pointer;"><input type="checkbox" ${calShowTodos?'checked':''} onchange="toggleCalendarType('todos')"> To-Dos ✓</label>
-      </div>
-      <div class="cal-grid">
-        ${dowHtml}
-        ${cellsHtml}
+    <div class="cal-layout">
+      <aside class="cal-sidebar">
+        <h1>Installation Calendar</h1>
+        <p class="muted">Every booked job, whole business, at a glance — click a job to open it, click a busy day to see everything on it.</p>
+
+        <!-- Legend rebuilt for the Visual Density & Colour Redesign
+        (confirmed Sept 2026). It used to explain only Confirmed vs
+        Tentative, because that was all colour meant. Colour now means
+        category, so the legend has to say which colour is which kind
+        of work — a colour scheme nobody can decode is just decoration
+        — and status keeps its own entry, now as the dot. -->
+        <div class="cal-sidebar-group">
+          <div class="cal-sidebar-heading">Type</div>
+          <span class="cal-legend-key cal-cat-flooring">Flooring / screed</span>
+          <span class="cal-legend-key cal-cat-blinds">Blinds</span>
+          <span class="cal-legend-key cal-cat-lead">Lead visit</span>
+          <span class="cal-legend-key cal-cat-todo">To-do</span>
+        </div>
+
+        <div class="cal-sidebar-group muted">
+          <div class="cal-sidebar-heading">Status</div>
+          <span><span class="cal-chip-dot confirmed" style="color:#1c4b8a;"></span> Confirmed</span>
+          <span><span class="cal-chip-dot tentative" style="color:#1c4b8a;"></span> Tentative</span>
+          <span><span class="cal-legend-today"></span> Today</span>
+        </div>
+
+        <!-- Assigned Leads / To-Dos, Stage 3 (confirmed Sept 2026) —
+        per-type visibility, the proposal's own confirmed answer to "a
+        calendar showing installations, leads, to-dos, and measure-ups
+        all at once needs a real plan for staying readable." Default
+        all on — off is an explicit choice, not the starting state.
+        Behaviour untouched by this brief (its own §4 says so); only
+        where the controls sit has changed. -->
+        <div class="cal-sidebar-group">
+          <div class="cal-sidebar-heading">Show</div>
+          <label><input type="checkbox" ${calShowInstallations?'checked':''} onchange="toggleCalendarType('installations')"> Installations</label>
+          <label><input type="checkbox" ${calShowLeads?'checked':''} onchange="toggleCalendarType('leads')"> Lead visits 📋</label>
+          <label><input type="checkbox" ${calShowTodos?'checked':''} onchange="toggleCalendarType('todos')"> To-Dos ✓</label>
+        </div>
+      </aside>
+
+      <div class="cal-main">
+        <div class="cal-head">
+          <button onclick="changeCalendarMonth(-1)">‹ Prev</button>
+          <h2 style="margin:0;">${CAL_MONTH_NAMES[month]} ${year}</h2>
+          <button onclick="changeCalendarMonth(1)">Next ›</button>
+        </div>
+        <div class="cal-grid">
+          ${dowHtml}
+          ${cellsHtml}
+        </div>
       </div>
     </div>
     <div id="calendarDayListArea"></div>
@@ -382,26 +411,47 @@ function calFitCalendarGrid() {
   // grid and so never showed up in a top-only measurement. Clearing
   // any previous constraint first so this always measures the grid's
   // real natural height, not whatever it was already shrunk to.
-  grid.style.removeProperty('--cal-row-min');
-  const nonGridHeight = document.body.scrollHeight - grid.getBoundingClientRect().height;
+  // Measured with NO row minimum first, so this is the grid's genuine
+  // content height — what it needs, not what it was last squeezed to.
+  grid.style.setProperty('--cal-row-min', '0px');
+  const naturalGrid = grid.getBoundingClientRect().height;
+  const nonGridHeight = document.body.scrollHeight - naturalGrid;
   // 220px floor: below this a real six-week grid stops being legible
   // regardless of how the space is split — a genuinely tiny window
   // scrolls at that point, the same "normal window size" scope the
   // brief's own testing requirement already draws.
   const available = Math.max(window.innerHeight - nonGridHeight, 220);
-  // CHANGED Sept 2026 (Visual Density & Colour Redesign) — this used to
-  // set a hard total height and let six equal rows divide it up, which
-  // is what forced the "+N more" collapsing in the first place: a row
-  // that can never grow has to hide whatever doesn't fit.
+
+  // CHANGED Sept 2026 — this used to set a hard total height split into
+  // six equal rows, which is what forced the "+N more" collapsing in
+  // the first place: a row that can never grow has to hide whatever
+  // doesn't fit. It became a per-row MINIMUM instead, so a busy row can
+  // exceed it.
   //
-  // The measurement is kept and repurposed as a per-row MINIMUM instead.
-  // That resolves what would otherwise be a straight conflict between
-  // two confirmed requirements — "fits one screen, no scrolling" and
-  // "no N-more collapsing, every entry visible". A quiet month still
-  // fills exactly the space that's really there and needs no scrolling;
-  // a genuinely busy week grows its own row and the page scrolls, which
-  // is what the brief's own Google Calendar reference does too.
-  grid.style.setProperty('--cal-row-min', Math.floor(available / 6) + 'px');
+  // CORRECTED again (brief §0, found by measuring rather than assuming):
+  // available/6 is the wrong minimum the moment any row exceeds it. A
+  // busy row grows past its share while the other five still claim
+  // theirs, so the grid overshoots by exactly that excess — measured at
+  // 1062px against a 900px viewport, i.e. the "fits one screen"
+  // requirement quietly broken by the density change.
+  //
+  // Solved by converging on the minimum that makes the real total match
+  // the real space, instead of computing a share and hoping. Each pass
+  // measures what the grid ACTUALLY became and corrects by the
+  // difference spread over the six rows; it settles in two or three
+  // passes because the relationship is near-linear. Bounded at 8 so a
+  // pathological layout can never spin here.
+  //
+  // If the content genuinely cannot fit, the minimum converges to 0 and
+  // the page scrolls — the honest outcome, and still every entry
+  // visible, which is the requirement that wins per this brief.
+  let rowMin = Math.floor(available / 6);
+  for (let pass = 0; pass < 8; pass++) {
+    grid.style.setProperty('--cal-row-min', Math.max(0, Math.round(rowMin)) + 'px');
+    const diff = available - grid.getBoundingClientRect().height;
+    if (Math.abs(diff) <= 2 || (rowMin <= 0 && diff < 0)) break;
+    rowMin = Math.max(0, rowMin + diff / 6);
+  }
 }
 if (!window._calFitResizeBound) {
   window._calFitResizeBound = true;

@@ -74,6 +74,26 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-09 (2)
+
+Installation Calendar §0 — header/layout restructure (the revised brief, which added this section to the density/colour work shipped earlier today).
+
+### What shipped
+- **Two-column layout.** The page title, description, legend and the Installations/Lead visits/To-Dos filter checkboxes moved out of the full-width stack above the grid and into a narrow 190px left rail. The Prev/Month/Next bar and the grid take the remaining width. The card wrapper around the whole thing went too — a border and ~32px of padding for no information.
+- **The calendar runs wide** (1500px), same `body`-class mechanism Home and the Quote Builder already use, cleared when any other screen takes over.
+- **The whole month now fits on one screen again** — measured at exactly 900px against a 900px viewport, with the last week row fully visible, on the same deliberately-busy month used for the density checks.
+- On a phone the rail stacks back above the grid, where there's vertical room to spare and no horizontal room to give.
+
+### Why (root causes, decisions, rejected alternatives)
+- **§0 is what resolves the conflict flagged this morning.** Letting rows grow (§2) and "fits one screen, no scrolling" were pulling against each other; the header block was eating roughly a third of the viewport before a single day cell was drawn, and none of it is per-column information. Reclaiming that space is what lets both hold at once.
+- **A real bug found by measuring rather than assuming.** `calFitCalendarGrid()` set the per-row minimum to `available / 6`. That is the wrong minimum the moment any row exceeds it: a busy row grows past its share while the other five still claim theirs, so the grid overshoots by exactly that excess — measured at **1062px against a 900px viewport**, i.e. the "fits one screen" requirement quietly broken by the density change, in the very pass that was supposed to preserve it. It now converges on the minimum that makes the real total match the real space: each pass measures what the grid actually became and corrects by the difference over six rows, settling in two or three passes, bounded at eight so it can never spin.
+- **If the content genuinely cannot fit, the minimum converges to 0 and the page scrolls** — the honest outcome, with every entry still visible, which is the requirement that wins per this brief.
+
+### Verified
+- 21 real-browser checks: the rail sits beside the grid with the title, legend and all three filter checkboxes in it and Prev/Month/Next still with the grid; the whole month fits with the last row fully visible; every §1–3 behaviour still holds afterwards (six entries on the busy day, no "+N more", four distinct category colours, both status dot states, legend swatches matching the chips exactly, today's ring, both click behaviours); the wide container is scoped to this screen only; and a 390px phone stacks the rail above the grid.
+
+---
+
 ## 2026-09-09
 
 Installation Calendar — visual density & colour redesign (brief, confirmed Sept 2026).
