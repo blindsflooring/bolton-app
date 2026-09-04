@@ -4278,6 +4278,7 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
                 "job_type": est.job_type,
                 "job_type_label": BUILDER_JOB_TYPE_LABELS.get(est.job_type, est.job_type),
                 "trim_openings": est.trim_openings,
+                "floor_prep_included": est.screed_price_ex_vat > 0,
             })
         return result
 
@@ -4285,7 +4286,7 @@ def list_builder_estimates(role: str = Depends(require_owner), tenant_id: str = 
 @app.put("/admin/builder-estimates/{estimate_id}")
 def update_builder_estimate(estimate_id: int, client_name: str = None, client_contact: str = None,
                             site_address: str = None, area_m2: float = None, product_id: int = None,
-                            job_type: str = None, door_openings: int = None,
+                            job_type: str = None, door_openings: int = None, include_floor_prep: bool = None,
                             role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
                             username: str = Depends(get_current_username)):
     """Confirmed Sept 2026, Burgert's own words: "I will need to be able
@@ -4335,8 +4336,11 @@ def update_builder_estimate(estimate_id: int, client_name: str = None, client_co
         new_product_id = est.product_id if product_id is None else product_id
         new_job_type = _builder_portal_job_type(est.job_type if job_type is None else job_type)
         new_openings = est.trim_openings if door_openings is None else door_openings
+        had_prep = est.screed_price_ex_vat > 0
+        new_prep = had_prep if include_floor_prep is None else include_floor_prep
         repricing = (new_area != est.area_m2 or new_product_id != est.product_id
-                     or new_job_type.value != est.job_type or new_openings != est.trim_openings)
+                     or new_job_type.value != est.job_type or new_openings != est.trim_openings
+                     or new_prep != had_prep)
         if repricing:
             # Deliberately NOT filtered on available_to_builder_portal:
             # Burgert correcting an estimate offline is not the public
@@ -4350,7 +4354,8 @@ def update_builder_estimate(estimate_id: int, client_name: str = None, client_co
                 get_or_404(session, FlooringProduct, new_product_id, tenant_id, "Flooring product"))
             old_total = est.quoted_price_incl_vat
             est.area_m2 = new_area
-            priced = _price_builder_estimate(session, builder, product, new_area, new_job_type, new_openings, settings)
+            priced = _price_builder_estimate(session, builder, product, new_area, new_job_type, new_openings,
+                                             settings, include_floor_prep=new_prep)
             _apply_builder_estimate_pricing(est, product, priced)
             changes.append(("priced", f"R{old_total:.2f} incl VAT", f"R{est.quoted_price_incl_vat:.2f} incl VAT"))
 
@@ -4916,7 +4921,8 @@ def _builder_portal_job_type(raw: str) -> JobType:
 
 
 def _price_builder_estimate(session: Session, builder, product, area_m2: float,
-                            job_type: JobType, door_openings: int, settings) -> dict:
+                            job_type: JobType, door_openings: int, settings,
+                            include_floor_prep: bool = True) -> dict:
     """THE pricing path for a builder-portal estimate — one function,
     called by submit (the price the builder sees), confirm (the real
     Quote's actual lines), the printed letterhead, and the Owner's
@@ -4962,12 +4968,25 @@ def _price_builder_estimate(session: Session, builder, product, area_m2: float,
 
     material = flooring_part(product)
 
-    # Screed only when the floor genuinely needs prep. Smooth IS the
-    # "no prep needed" answer — adding a x1.0 screed line to every
-    # smooth floor would inflate every estimate the portal has ever
-    # produced, which is not what "auto-add screed" meant.
+    # CORRECTED Sept 2026 (Burgert, third report on the same feature:
+    # "The screed shows up on the drop down but it does not pull into
+    # the quote with the floro and trim"). This used to add the prep
+    # line only when job_type != smooth, on the reasoning that "Smooth"
+    # meant "no prep needed" — which was simply wrong about the
+    # business. Smooth is a real screed RATE, not the absence of screed:
+    # deZIGN S200 is R130/m2 smooth, and the internal calculator prices
+    # a smooth screed line every day. So the floor condition sets the
+    # RATE (smooth = base, over tiles / tiles removed = that product's
+    # own multipliers — see calculate_flooring_line), never whether the
+    # line exists at all.
+    #
+    # A genuinely already-level floor is a real case, so it stays
+    # expressible — but as an explicit choice the builder makes
+    # (include_floor_prep), not as a silent side effect of leaving a
+    # dropdown on its default value, which is exactly how prep went
+    # missing from every estimate until now.
     screed = None
-    if job_type != JobType.smooth:
+    if include_floor_prep:
         screed_product = _builder_portal_screed(session, builder.tenant_id, settings)
         if screed_product:
             screed = flooring_part(screed_product)
@@ -5118,6 +5137,11 @@ class BuilderEstimateRequest(BaseModel):
     # estimate it always did.
     job_type: str = "smooth"
     door_openings: int = 0
+    # Defaults TRUE (confirmed Sept 2026) — floor prep is on every
+    # estimate unless the builder says the floor is already level. An
+    # older client that doesn't send this therefore gets prep included,
+    # which is the corrected behaviour, not the old one.
+    include_floor_prep: bool = True
 
 
 @app.post("/builder/{slug}/estimate")
@@ -5150,7 +5174,8 @@ def submit_builder_estimate(slug: str, body: BuilderEstimateRequest):
             raise HTTPException(400, "That product isn't currently available through this portal.")
         settings = get_settings(session, builder.tenant_id)
         job_type = _builder_portal_job_type(body.job_type)
-        priced = _price_builder_estimate(session, builder, product, body.area_m2, job_type, body.door_openings, settings)
+        priced = _price_builder_estimate(session, builder, product, body.area_m2, job_type, body.door_openings,
+                                         settings, include_floor_prep=body.include_floor_prep)
 
         estimate = BuilderEstimate(
             tenant_id=builder.tenant_id, builder_id=builder.id,
@@ -5425,6 +5450,11 @@ def confirm_builder_order(slug: str, estimate_id: int):
         priced = _price_builder_estimate(
             session, builder, product, est.area_m2,
             _builder_portal_job_type(est.job_type), est.trim_openings, settings,
+            # Derived from the stored snapshot rather than a new column:
+            # a priced screed line IS the record that prep was included,
+            # and there is no way for one to exist without the other
+            # (_apply_builder_estimate_pricing writes both together).
+            include_floor_prep=est.screed_price_ex_vat > 0,
         )
 
         def add_flooring_part(part):

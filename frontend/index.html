@@ -4590,11 +4590,12 @@ function builderEstimateEditFormHtml(e) {
           <select id="bee_product_id">${portalProducts.map(p =>
             `<option value="${p.id}" ${p.id === e.product_id ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('')}</select>
         </div>
-        <div class="field"><label>Floor going onto</label>
+        <div class="field"><label>Floor preparation</label>
           <select id="bee_job_type">
-            <option value="smooth" ${e.job_type === 'smooth' ? 'selected' : ''}>Smooth screed / new floor</option>
-            <option value="over_tiles" ${e.job_type === 'over_tiles' ? 'selected' : ''}>Going over existing tiles</option>
-            <option value="removed_tiles" ${e.job_type === 'removed_tiles' ? 'selected' : ''}>Tiles removed first</option>
+            <option value="smooth" ${e.floor_prep_included && e.job_type === 'smooth' ? 'selected' : ''}>Smooth screed / new floor</option>
+            <option value="over_tiles" ${e.floor_prep_included && e.job_type === 'over_tiles' ? 'selected' : ''}>Going over existing tiles</option>
+            <option value="removed_tiles" ${e.floor_prep_included && e.job_type === 'removed_tiles' ? 'selected' : ''}>Tiles removed first</option>
+            <option value="no_prep" ${!e.floor_prep_included ? 'selected' : ''}>Floor already level — no preparation</option>
           </select>
         </div>
         <div class="field"><label>Door openings</label><input id="bee_door_openings" type="number" step="1" min="0" value="${e.trim_openings || 0}"></div>
@@ -4617,7 +4618,12 @@ async function saveBuilderEstimateEdit(estimateId) {
     site_address: document.getElementById('bee_site_address').value.trim(),
     area_m2: document.getElementById('bee_area_m2').value,
     product_id: document.getElementById('bee_product_id').value,
-    job_type: document.getElementById('bee_job_type').value,
+    // "no_prep" is not a job type — same mapping the builder's own
+    // portal uses (jobTypeFieldHtml(), builder.html), kept identical so
+    // an estimate edited here and one submitted there mean the same
+    // thing by the same rules.
+    job_type: document.getElementById('bee_job_type').value === 'no_prep' ? 'smooth' : document.getElementById('bee_job_type').value,
+    include_floor_prep: document.getElementById('bee_job_type').value !== 'no_prep',
     door_openings: document.getElementById('bee_door_openings').value || 0,
   });
   const res = await fetch(`${API}/admin/builder-estimates/${estimateId}?${params}`, { method: 'PUT' });
@@ -4705,7 +4711,7 @@ function renderBuilderPortalSetupCard() {
       <p class="muted" style="margin-top:0;">This is what a builder opening their link right now actually gets. Floor prep and the reducer trim are picked automatically from your price book — you only need the dropdowns below to override or switch one off.</p>
       <p style="margin:0 0 4px;"><b>Floors:</b> ${st.ranges.length ? st.ranges.join(', ') : '<span style="color:var(--coral);">none — tick up to 2 ranges as "Builder Portal" in the Supplier Console, otherwise builders cannot get any estimate at all</span>'}</p>
       <p style="margin:0 0 4px;"><b>Floor prep:</b> ${st.screed_options.length
-        ? line(st.screed_source, st.screed_product_name, 'the portal asks whether the floor goes over tiles and prices this on top when it does')
+        ? line(st.screed_source, st.screed_product_name, 'priced onto every estimate, at this product\'s smooth rate or its higher over-tiles / tiles-removed rate depending on what the builder picks')
         : '<span style="color:var(--coral);">no screed product in your price book, so over-tiles jobs cannot be priced at all</span>'}</p>
       ${mistypedWarning}
       <p style="margin:4px 0 10px;"><b>Reducer trim:</b> ${st.trim_options.length

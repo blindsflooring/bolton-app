@@ -213,9 +213,17 @@ function stairwellNoticeHtml() {
 // would imply prep was included when it wasn't.
 function jobTypeFieldHtml() {
   if (!portalInfo.screed_available) return '';
-  return `<label>What is the floor going onto?</label>
-    <select id="job_type">${portalInfo.job_types.map(j => `<option value="${j.value}">${j.label}</option>`).join('')}</select>
-    <p class="muted" style="margin:4px 0 0; font-size:12px;">Going over tiles, or onto a floor where tiles have been lifted, needs levelling first — we add that to the price automatically.</p>`;
+  // "no_prep" is deliberately the LAST option and never the default.
+  // Floor preparation is on every estimate unless the builder actively
+  // says the floor is already level — leaving this dropdown alone must
+  // never be the thing that silently drops prep out of the price, which
+  // is exactly what used to happen.
+  return `<label>Floor preparation</label>
+    <select id="job_type">
+      ${portalInfo.job_types.map(j => `<option value="${j.value}">${j.label}</option>`).join('')}
+      <option value="no_prep">Floor is already level — no preparation needed</option>
+    </select>
+    <p class="muted" style="margin:4px 0 0; font-size:12px;">Levelling is included in every estimate. Going over tiles, or onto a floor where tiles have been lifted, costs more than a straight screed — pick whichever matches the site and we price it accordingly.</p>`;
 }
 
 // Reducer trim, counted in door openings rather than metres — a builder
@@ -260,7 +268,8 @@ function renderEstimateForm(resultHtml) {
       <button id="submitBtn" onclick="submitEstimate()">Get Estimate</button>
       <div id="formError" class="error"></div>
       ${resultHtml || ''}
-    </div>`;
+    </div>
+    ${renderLogoCard()}`;
 }
 
 async function submitEstimate() {
@@ -275,6 +284,11 @@ async function submitEstimate() {
   // (smooth floor, no trim), so nothing changes for a tenant that
   // hasn't flagged a screed product or a reducer.
   const jobTypeEl = document.getElementById('job_type');
+  // "no_prep" isn't a real job type — it's the builder saying the floor
+  // needs no levelling at all. The rate still has to be a valid job
+  // type for the material line, so it falls back to smooth.
+  const rawJobType = jobTypeEl ? jobTypeEl.value : 'smooth';
+  const includeFloorPrep = rawJobType !== 'no_prep';
   const openingsEl = document.getElementById('door_openings');
   const doorOpenings = openingsEl ? (parseInt(openingsEl.value, 10) || 0) : 0;
   const photoFiles = Array.from(document.getElementById('site_photos').files || []);
@@ -292,7 +306,8 @@ async function submitEstimate() {
         client_contact: document.getElementById('client_contact').value.trim(),
         site_address: document.getElementById('site_address').value.trim(),
         area_m2: areaM2, product_id: parseInt(productId, 10),
-        job_type: jobTypeEl ? jobTypeEl.value : 'smooth',
+        job_type: includeFloorPrep ? rawJobType : 'smooth',
+        include_floor_prep: includeFloorPrep,
         door_openings: doorOpenings,
       }),
     });
@@ -393,7 +408,7 @@ async function renderStatement() {
           </table>
         </div>
       </div>
-      ${renderLogoCard()}`;
+`;
   } catch (e) {
     document.getElementById('app').innerHTML = `${renderHeader()}${renderNav()}<div class="card"><p class="error">Could not reach the server — try again.</p></div>`;
   }
