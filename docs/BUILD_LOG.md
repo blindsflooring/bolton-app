@@ -74,6 +74,29 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-06 (3)
+
+Home in one view (Burgert: "I need the my leads and to dos, possibly be on the left of the page. I dont want to be scrolling hardly anywhere on this system. Scrolling breaks work flow and breaks up your data, i need to be able to see all my data with one view, wherever possible").
+
+### What shipped
+- **My Leads & To-Dos moved to its own left-hand column on Home**, beside the tile grid instead of stacked above it. It used to sit above the tiles, so the busier your day the further down every tile was pushed — the more work you had, the less of the app you could see. Neither column can push the other off screen now, whatever the list length.
+- **The personal list scrolls inside its own card**, not by growing the page. The column is what's height-bounded, with the card filling it — deliberately not a magic max-height on the list itself, which would need re-guessing every time the card's heading or padding changed.
+- **The column removes itself when nothing is due** (`.home-side:empty`) and the tiles reclaim the full width. Flexbox rather than grid specifically for this: a grid would keep the empty column's track reserved and leave the tiles squeezed into a 340px lane with dead space beside them.
+- **Home runs at 1500px** via `body.home-active`, the same mechanism the Quote Builder already uses for the same reason. Tiles are tighter on Home only.
+- **Phones are unchanged**: stacked, personal list first.
+
+### Why (root causes, decisions, rejected alternatives)
+- **The first attempt silently didn't work, and only a real browser caught it.** `main` is capped at 900px — a reading width, right for a quote or a job page — so Home had 868px of usable space and the two columns simply wrapped, reproducing the exact stacked layout this change exists to remove. Measured, not guessed: the columns reported identical x positions at a 1440px viewport.
+- **A second real bug the browser caught:** inside a 340px column on a wide screen, each list row squeezed the client name into a wrapped two-character sliver. The existing fix for that (`@media max-width: 700px`) keys off the VIEWPORT, which never fires here — the column is narrow, the screen isn't. Same fix, re-applied by container instead of by screen.
+
+### Verified
+- Real headless-browser measurement (Playwright) against the actual frontend and a real backend, logged in as a real owner with a deliberately busy day (8 leads + 6 to-dos): columns side by side with the list on the left; the whole page exactly fits a 1440x900 viewport with no scrolling; all 18 tiles visible, the last ending at 558px; the list scrolls within its own card; the tiles reclaim full width when the list empties; and a 390px phone still stacks with the list first.
+
+### Open going into next session
+- "Wherever possible" is broader than Home — Order Index, Job Detail and the Business Overview still scroll. Flagged to Burgert rather than assumed.
+
+---
+
 ## 2026-09-06 (2)
 
 Bug: jobs whose invoices had already gone out kept demanding to be invoiced.

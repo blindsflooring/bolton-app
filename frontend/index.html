@@ -1216,6 +1216,12 @@ function showSection(tabName) {
   // duplicates the rest of this display-toggling logic — see its own
   // comment.
   document.body.classList.toggle('quote-builder-active', tabName === 'quoteBuilder');
+  // Home in one view (confirmed Sept 2026) — see body.home-active in
+  // styles.css. Cleared here on every tab change, then re-applied by
+  // renderLandingTiles() itself, so only the actual Home tile screen
+  // gets the wide container — a Lead or Job screen reached from Home
+  // keeps the normal reading width.
+  document.body.classList.remove('home-active');
   // Page Title (confirmed Aug 2026) -- priceBook/quoteBuilder are the
   // two tabs renderLanding() never touches (same reasoning as the
   // history-push comment below), so they need their own title here.
@@ -1623,6 +1629,11 @@ function renderLanding() {
   // renderLanding(), so they correctly do NOT create a new history
   // entry for what's still logically the same screen.
   pushNavState();
+  // Only the Home tile screen runs wide (body.home-active, styles.css);
+  // every other view that renders into this same container is a normal
+  // reading-width page, so the class is dropped up front and added back
+  // by renderLandingTiles() alone.
+  if (landingView !== 'tiles') document.body.classList.remove('home-active');
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'orders') return renderOrderIndex(el);
@@ -1652,22 +1663,39 @@ function renderLanding() {
 
 function renderLandingTiles(el) {
   setPageTitle('Home');
+  document.body.classList.add('home-active');
   el.innerHTML = `
-    <div class="landing-welcome">
+    <div class="landing-welcome home-welcome">
       <h1>Blinds &amp; Flooring Studio</h1>
       <p>Pick where you're working today.</p>
     </div>
-    <div id="myLeadsToday"></div>
-    <div class="tile-grid">
-      ${visibleLandingTiles().map(t => `
-        <div class="tile ${t.ready ? '' : 'coming-soon'}" onclick="onTileClick('${t.id}')">
-          <div>
-            <h3>${t.title}</h3>
-            <p>${t.desc}</p>
-          </div>
-          ${t.ready ? '' : '<span class="tile-badge">Coming soon</span>'}
+    <!-- Home in one view (confirmed Sept 2026, Burgert: "I need the my
+    leads and to dos, possibly be on the left of the page. I dont want
+    to be scrolling hardly anywhere on this system. Scrolling breaks
+    work flow and breaks up your data").
+    My Leads & To-Dos used to sit ABOVE the tile grid, so a busy day
+    pushed every tile below the fold — the more work you had, the less
+    of the app you could see. Side by side instead: the personal list
+    keeps its own column on the left and the tiles keep theirs, so
+    neither can push the other off screen no matter how long the list
+    gets. #myLeadsToday empties itself when nothing is due
+    (loadMyLeadsToday()), and .home-side:empty then collapses the
+    column entirely so a quiet day gives the tiles the full width. -->
+    <div class="home-layout">
+      <div id="myLeadsToday" class="home-side"></div>
+      <div class="home-main">
+        <div class="tile-grid">
+          ${visibleLandingTiles().map(t => `
+            <div class="tile ${t.ready ? '' : 'coming-soon'}" onclick="onTileClick('${t.id}')">
+              <div>
+                <h3>${t.title}</h3>
+                <p>${t.desc}</p>
+              </div>
+              ${t.ready ? '' : '<span class="tile-badge">Coming soon</span>'}
+            </div>
+          `).join('')}
         </div>
-      `).join('')}
+      </div>
     </div>
   `;
   loadMyLeadsToday();
@@ -1736,7 +1764,7 @@ async function loadMyLeadsToday() {
         <span class="attn-detail">${t.title}</span>
       </div>`).join('');
     container.innerHTML = `
-      <div class="card" style="border-color:var(--coral);">
+      <div class="card home-side-card" style="border-color:var(--coral);">
         <h2 style="margin-top:0;">My Leads &amp; To-Dos Today (${needsAction.length + dueTodos.length})</h2>
         <div class="attention-list">${leadItems}${todoItems}</div>
       </div>`;

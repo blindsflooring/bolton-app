@@ -86,6 +86,15 @@
      showRawSection()), not a change to the shared main{} rule above —
      every other screen keeps the 900px cap untouched. */
   body.quote-builder-active main { max-width: 1200px; }
+  /* Home in one view (confirmed Sept 2026) — same mechanism the Quote
+     Builder already uses for the same reason. main's 900px cap is a
+     READING width, right for a quote or a job page; Home is a
+     dashboard whose whole job is showing everything at once, and at
+     868px of usable space the personal list and the tile grid simply
+     could not fit beside each other (measured in a real browser: they
+     wrapped, which is exactly the stacked layout this change exists to
+     get rid of). */
+  body.home-active main { max-width: 1500px; }
   .quote-builder-layout { display: block; }
   @media (min-width: 900px) {
     body.quote-builder-active .quote-builder-layout {
@@ -313,6 +322,53 @@
      unaffected. */
   .landing-welcome p.job-detail-client-name { font-family: 'Poppins', sans-serif; font-size: 19px; font-weight: 700; color: var(--navy); }
   .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+
+  /* Home in one view (confirmed Sept 2026) — "I dont want to be
+     scrolling hardly anywhere on this system... i need to be able to
+     see all my data with one view".
+     Flexbox rather than grid deliberately: when the personal list has
+     nothing due it removes itself (.home-side:empty below), and flex
+     lets the tiles simply reclaim the whole row. A grid would keep the
+     empty column's track reserved and leave the tiles squeezed into a
+     340px lane with dead space beside them. */
+  .home-layout { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .home-side { flex: 0 0 340px; min-width: 0; position: sticky; top: 12px; display: flex; max-height: calc(100vh - 285px); }
+  .home-side:empty { display: none; }
+  .home-main { flex: 1 1 460px; min-width: 0; }
+  /* The list scrolls inside its own card rather than growing the page:
+     twenty overdue leads must not turn Home into a scrolling document,
+     which is the exact failure this whole change is about.
+     The COLUMN is what's bounded, and the card fills it — deliberately
+     not a magic max-height on the list itself, which would have to be
+     re-guessed every time the card's heading or padding changed.
+     min-height:0 on both is what actually lets a flex child shrink
+     below its content and scroll; without it the list just grows and
+     pushes the page down again, which is the failure being fixed. */
+  .home-side-card { display: flex; flex-direction: column; min-height: 0; width: 100%; margin-bottom: 0; }
+  .home-side-card .attention-list { overflow-y: auto; min-height: 0; }
+  /* The existing stacking fix for a cramped attention row keys off the
+     VIEWPORT width (@media max-width:700px, further down) — which never
+     fires here: the column is 340px wide on a 1440px screen, so the row
+     stayed horizontal and squeezed the client name into a wrapped
+     two-character column, the exact failure that media query exists to
+     prevent. Same fix, applied by container instead of by screen. */
+  .home-side-card .attention-item { flex-wrap: wrap; gap: 4px 8px; }
+  .home-side-card .attention-item .attn-flag { flex: 0 0 auto; }
+  .home-side-card .attention-item .attn-detail { flex: 1 1 55%; margin-left: 0; }
+  /* Tighter tiles on Home only (not .tile everywhere) — with a column
+     taken by the personal list, this is what keeps the whole tile grid
+     visible without scrolling on a normal laptop screen. */
+  .home-welcome { margin-bottom: 14px; }
+  .home-main .tile-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+  .home-main .tile { min-height: 68px; padding: 12px 14px; }
+  .home-main .tile h3 { font-size: 14px; margin: 0 0 3px; }
+  .home-main .tile p { font-size: 11.5px; line-height: 1.35; }
+  /* Stacked below the two-column breakpoint — on a phone the personal
+     list belongs first, exactly where it was before this change. */
+  @media (max-width: 900px) {
+    .home-side { flex: 1 1 100%; position: static; max-height: none; display: block; }
+    .home-side-card .attention-list { overflow-y: visible; }
+  }
   .tile {
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 18px; cursor: pointer; transition: transform 0.1s, box-shadow 0.1s;
