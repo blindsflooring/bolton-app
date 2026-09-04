@@ -229,6 +229,28 @@ function renderOrderIndexTable(searchTerm) {
   // browser this app supports) keeps each bucket's own relative order
   // exactly as the backend returned it — no secondary sort invented
   // beyond what the brief actually asked for.
+  // Order Index visual grouping (confirmed Sept 2026, "Manual Quoting
+  // Categories, Lead Conversion, Order Index Clarity" brief §3) — real
+  // section headers, not just colour, so a long list reads as a few
+  // distinct stages instead of one wall of rows.
+  //
+  // Sections follow the brief's own pipeline order (quote -> accept ->
+  // install -> paid). NOTE this changes the TOP-LEVEL order from the
+  // earlier Priority Ordering decision, which put Scheduled first and
+  // Completed last across the whole list; that ordering is preserved
+  // exactly WITHIN each section (orderIndexPriorityBucket below is
+  // still the secondary sort), which is what this brief asked for.
+  //
+  // The fourth section is not in the brief but is required for the
+  // third one to be true: a completed job that HAS been paid is not
+  // "awaiting final payment", and lumping it there would mislabel
+  // finished work.
+  function orderIndexStage(q) {
+    if (q.workflow_status === 'quoted') return 0;
+    if (q.workflow_status === 'accepted' || q.workflow_status === 'scheduled') return 1;
+    if (q.workflow_status === 'completed') return q.final_payment_date ? 3 : 2;
+    return 4;
+  }
   function orderIndexPriorityBucket(q) {
     if (q.workflow_status === 'scheduled') return 0;
     if (q.workflow_status === 'accepted') return 1;
@@ -237,7 +259,8 @@ function renderOrderIndexTable(searchTerm) {
     return 5;   // safety fallback — no real workflow_status value reaches this today
   }
   const shown = orderIndexActiveTab === 'all'
-    ? [...quotes].sort((a, b) => orderIndexPriorityBucket(a) - orderIndexPriorityBucket(b))
+    ? [...quotes].sort((a, b) => (orderIndexStage(a) - orderIndexStage(b))
+                                 || (orderIndexPriorityBucket(a) - orderIndexPriorityBucket(b)))
     : quotes.filter(q => q.workflow_status === orderIndexActiveTab);
 
   // Needs Attention (confirmed Aug 2026, brief §7 + addendum's priority
@@ -257,7 +280,11 @@ function renderOrderIndexTable(searchTerm) {
       ${nextActionButton(q)}
     </div>`).join('') : '<p class="muted" style="margin:0;">Nothing needs attention right now.</p>';
 
-  const rows = shown.length ? buildOrderIndexRowsHtml(shown, isOwner, money, !!searchTerm) : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match.</td></tr>`;
+  // Headers only on the "All" view — a single-status tab is already one
+  // stage by definition, so a lone header above it would be noise.
+  const rows = shown.length
+    ? buildOrderIndexRowsHtml(shown, isOwner, money, !!searchTerm, orderIndexActiveTab === 'all' ? orderIndexStage : null)
+    : `<tr><td colspan="${isOwner ? 8 : 7}" class="muted">No jobs match.</td></tr>`;
 
   const tab = (key, label, count) => `<button onclick="setOrderIndexTab('${key}')" style="${orderIndexActiveTab===key ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">${label}${count !== undefined ? ` (${count})` : ''}</button>`;
 
@@ -513,7 +540,23 @@ function toggleQuickView(quoteId) {
   loadDocumentPreview(previewId, quoteId);
 }
 
-function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
+const ORDER_INDEX_STAGE_LABELS = [
+  'Quoted — awaiting acceptance',
+  'Accepted — not yet installed',
+  'Installed — awaiting final payment',
+  'Completed & paid',
+  'Other',
+];
+
+function orderIndexStageHeaderHtml(stage, count, isOwner) {
+  return `<tr class="oi-stage-header"><td colspan="${isOwner ? 8 : 7}" style="background:var(--navy,#1a2b3c); color:#fff; font-weight:800; padding:8px 10px; letter-spacing:0.02em;">
+    ${ORDER_INDEX_STAGE_LABELS[stage]} <span style="opacity:0.75; font-weight:600;">(${count})</span>
+  </td></tr>`;
+}
+
+// stageOf (confirmed Sept 2026) — null on a single-status tab, where
+// every row is the same stage and a header would say nothing.
+function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching, stageOf) {
   // Group Multi-Job Client Fix (confirmed Sept 2026) — real risk found
   // by Burgert, not just tidiness: a client with, say, 2 still-Quoted
   // jobs and 1 that had progressed to Scheduled used to group ALL 3
@@ -533,12 +576,27 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
   shown.forEach(q => { if (q.client_id && q.workflow_status === 'quoted') (byClient[q.client_id] = byClient[q.client_id] || []).push(q); });
   const groupClientIds = new Set(Object.keys(byClient).filter(cid => byClient[cid].length > 1).map(Number));
 
+  // Counted up front so each header can state its own size — `shown` is
+  // already sorted by stage, so the headers themselves are emitted in
+  // one pass below as the stage changes.
+  const stageCounts = {};
+  if (stageOf) shown.forEach(q => { const st = stageOf(q); stageCounts[st] = (stageCounts[st] || 0) + 1; });
+  let lastStage = null;
+  const stageHeaderFor = (q) => {
+    if (!stageOf) return '';
+    const st = stageOf(q);
+    if (st === lastStage) return '';
+    lastStage = st;
+    return orderIndexStageHeaderHtml(st, stageCounts[st], isOwner);
+  };
+
   const seenGroup = new Set();
   return shown.map(q => {
     if (!q.client_id || q.workflow_status !== 'quoted' || !groupClientIds.has(q.client_id)) {
-      return orderIndexRowHtml(q, isOwner, money, false);
+      return stageHeaderFor(q) + orderIndexRowHtml(q, isOwner, money, false);
     }
     if (seenGroup.has(q.client_id)) return '';   // absorbed into the group row already emitted below
+    const stageHeader = stageHeaderFor(q);
     seenGroup.add(q.client_id);
     const groupQuotes = byClient[q.client_id];
     // Search auto-expands every group in the (already search-filtered)
@@ -607,7 +665,7 @@ function buildOrderIndexRowsHtml(shown, isOwner, money, isSearching) {
         <td class="card-actions-cell" data-label="" onclick="event.stopPropagation();"><a href="#" onclick="openClientDetail(${q.client_id}, true); return false;" style="font-size:12px;" title="Edit this client's details">Edit client</a></td>
       </tr>`;
     const childRows = expanded ? groupQuotes.map(g => orderIndexRowHtml(g, isOwner, money, true)).join('') : '';
-    return headerRow + childRows;
+    return stageHeader + headerRow + childRows;
   }).join('');
 }
 

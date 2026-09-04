@@ -74,6 +74,31 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-06
+
+"Manual Quoting Categories, Lead Conversion, Order Index Clarity" brief. §2 (Lead-to-Quote linking + Past Leads) was already built and live — see 2026-09-05 — so this covers §1, §3 and §4.
+
+### What shipped
+- **Manual quoting categories: Engineered Wood and Laminate.** Two real tabs in the Quote Builder opening a plain line-item form — description, colour, supplier, unit (m² / linear m / each), quantity, unit price, optional unit cost, notes — with the line total calculated live as you type and recalculated server-side on save. `POST`/`PUT /quotes/{id}/lines/manual`, edit-in-place like every other category.
+- **Manual lines are ordinary flooring lines.** They store `category="flooring"`, `flooring_pricing_type="material"`, and put the quantity into `quantity_m2` when the unit is m². That is what makes the brief's "must count toward the same KPIs, not excluded or flagged separately" true by construction: m² quoted/sold/installed, top sellers and revenue all already filter on exactly those two fields, and pick these up with no aggregation change at all. `manual_category` is the only marker, and nothing client-facing reads it — printed quotes and the builder portal render them identically, so there is no visible "manual mode".
+- **Manual order sheets.** A manual line has no price-book product to read a supplier off, so it carries its own (`manual_supplier`), captured on the form. Verified in disposable that a job mixing a manual Belgotex line and a calculated Azura line produces two correctly separated sheets.
+- **Order Index section headers** (§3) — real header rows, not just colour: *Quoted — awaiting acceptance*, *Accepted — not yet installed*, *Installed — awaiting final payment*, plus *Completed & paid*. Each states its own count. Only on the "All" view; a single-status tab is already one stage.
+- **Quoted value per day, by branch** (§4) — a 14-day stacked bar chart on the Business Overview, one segment per branch, branch keys read from the backend so a third branch needs no code change.
+
+### Why (root causes, decisions, rejected alternatives)
+- **No calculator for the new categories, deliberately.** Pricing for Engineered Wood and Laminate is still being learned; a formula with placeholder rates would produce confident wrong numbers, which is worse than typing the figure you were actually quoted.
+- **The fourth Order Index section is not in the brief but is required for the third to be true.** A completed job that HAS been paid is not "awaiting final payment", and filing it there would mislabel finished work.
+- **Section order follows the brief's pipeline order, which changes the previous top-level priority sort.** The earlier Priority Ordering decision put Scheduled first and Completed last across the whole list; that ordering is preserved exactly *within* each section (the same `orderIndexPriorityBucket()` is still the secondary sort), which is what this brief asked for. Flagged to Burgert rather than changed silently.
+- **The daily chart measures something genuinely different from the weekly one, and says so.** The weekly graph is value WON dated by acceptance; this is value QUOTED dated by creation, including declined and still-open quotes. "Total quoted value per day" is a measure of output, so dating it by acceptance would make a quote written today invisible until the client says yes.
+
+### Verified
+- 39 checks: manual lines calculate their own total and margin, store as real flooring material lines, refuse an unknown category/unit/blank description/zero quantity with readable reasons, edit in place, and can't be hijacked into editing a calculator line; manual m² appears in the m² KPIs and manual products in top sellers alongside calculated ones; a mixed job produces correctly separated Belgotex and Azura order sheets; the daily chart covers 14 days, splits by real branch key, counts declined quotes, and picks up a second branch with no code change; and the Order Index stage/header wiring is in place including on grouped multi-job client rows.
+
+### Open going into next session
+- Section order in the Order Index (pipeline order vs. the earlier operational-priority order) — flagged for Burgert to confirm or flip.
+
+---
+
 ## 2026-09-05
 
 Link Leads to Quotes + Past Leads archive (brief, confirmed Sept 2026).

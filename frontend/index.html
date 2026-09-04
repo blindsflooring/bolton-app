@@ -488,6 +488,13 @@ itself is). -->
           <button type="button" class="line-category-tab" data-tab="skirting" onclick="selectLineCategoryTab('skirting')">Skirting<span class="tab-line-indicator"></span></button>
           <button type="button" class="line-category-tab" data-tab="trim" onclick="selectLineCategoryTab('trim')">Trim<span class="tab-line-indicator"></span></button>
           <button type="button" class="line-category-tab" data-tab="stairwell" onclick="selectLineCategoryTab('stairwell')">Stairwell<span class="tab-line-indicator"></span></button>
+          <!-- Manual quoting categories (confirmed Sept 2026) — real
+          tabs alongside the calculator ones, not a sub-mode of Misc:
+          these are genuine flooring categories whose pricing is still
+          being learned, and their lines count toward every m²/revenue
+          KPI exactly like a calculated flooring line does. -->
+          <button type="button" class="line-category-tab" data-tab="engineered_wood" onclick="selectLineCategoryTab('engineered_wood')">Engineered Wood<span class="tab-line-indicator"></span></button>
+          <button type="button" class="line-category-tab" data-tab="laminate" onclick="selectLineCategoryTab('laminate')">Laminate<span class="tab-line-indicator"></span></button>
           <button type="button" class="line-category-tab" data-tab="misc" onclick="selectLineCategoryTab('misc')">Misc<span class="tab-line-indicator"></span></button>
         </div>
         <!-- URGENT: Adding a Line Destroys an Existing Line (confirmed
@@ -518,6 +525,8 @@ itself is). -->
           <option value="skirting">Skirting</option>
           <option value="trim">Trim</option>
           <option value="stairwell">Stairwell</option>
+          <option value="engineered_wood">Engineered Wood</option>
+          <option value="laminate">Laminate</option>
           <option value="misc">Miscellaneous</option>
         </select>
       </div>
@@ -879,6 +888,41 @@ itself is). -->
     </div>
 
     <!-- ===== BLINDS / TRIM / STAIRWELL: existing simpler forms ===== -->
+    <!-- Manual quoting categories (confirmed Sept 2026, "Manual Quoting
+    Categories" brief §1). A plain line-item form, deliberately NOT a
+    calculator with placeholder rates: pricing for these two categories
+    is still being learned, and a made-up formula would produce
+    confident wrong numbers, which is worse than typing the real figure
+    you were actually quoted. Supplier/colour are captured here because
+    a manual line has no price-book product to read them off, and the
+    Materials order sheet needs both. -->
+    <div class="card" id="manualLineCard" style="display:none;">
+      <h2 id="manualLineHeading">Add Line Item</h2>
+      <p class="muted" style="margin-top:-8px;">Priced by hand — enter what you were quoted. This line counts toward m² and revenue exactly like any other floor, and prints on the client's quote the same way.</p>
+      <div class="grid">
+        <div class="field"><label>Description <span class="adj">(what the client sees)</span></label><input id="man_description" placeholder="e.g. Oak Engineered 14mm, Natural"></div>
+        <div class="field"><label>Colour <span class="adj">(optional)</span></label><input id="man_colour" placeholder="e.g. Natural Oak"></div>
+        <div class="field"><label>Supplier <span class="adj">(for the order sheet)</span></label><input id="man_supplier" placeholder="e.g. Belgotex"></div>
+        <div class="field"><label>Unit</label>
+          <select id="man_unit" onchange="renderManualLineTotal()">
+            <option value="m2">m²</option>
+            <option value="lm">linear m</option>
+            <option value="each">each</option>
+          </select>
+        </div>
+        <div class="field"><label>Quantity</label><input id="man_quantity" type="number" step="0.01" min="0" oninput="renderManualLineTotal()"></div>
+        <div class="field"><label>Unit price (ex VAT)</label><input id="man_unit_price" type="number" step="0.01" min="0" oninput="renderManualLineTotal()"></div>
+        <div class="field owner-only"><label>Unit cost (ex VAT) <span class="adj">(optional — 0 if unknown)</span></label><input id="man_unit_cost" type="number" step="0.01" min="0" value="0" oninput="renderManualLineTotal()"></div>
+        <div class="field" style="grid-column:1/-1;"><label>Notes <span class="adj">(optional, internal)</span></label><input id="man_notes" placeholder="e.g. lead time 3 weeks"></div>
+      </div>
+      <p id="manualLineTotal" style="font-weight:800; font-size:16px; margin:6px 0 0;">Line total: R0.00</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <button class="primary" id="manualLineSaveBtn" onclick="addManualLine()">Add Line</button>
+        <button class="secondary" id="manualLineCancelBtn" style="display:none;" onclick="cancelLineEdit()">Cancel</button>
+      </div>
+      <div id="manualLineError" class="error"></div>
+    </div>
+
     <div class="card" id="genericLineCard" style="display:none;">
       <h2>Add Line Item</h2>
       <div class="grid">
@@ -1943,6 +1987,7 @@ let topSellersRange = 'month';   // 'month' | 'year' — New KPI Metrics brief (
 function toggleWeeklyGraphMetric(metric) {
   weeklyGraphMetric = metric;
   renderWeeklyGraphCard();
+  renderDailyQuotedByBranchCard();
 }
 
 function renderWeeklyGraphCard() {
@@ -1974,6 +2019,58 @@ function renderWeeklyGraphCard() {
     </div>
     <p class="muted" style="margin-top:0;">Monday to today, by acceptance date — the day a quote became Won, same basis as every other figure on this page. Today's bar is outlined.</p>
     <div style="display:flex; gap:10px; align-items:flex-end; padding-top:8px;">${bars}</div>
+  `;
+}
+
+// Daily quoted value by branch (confirmed Sept 2026, "Manual Quoting
+// Categories, Lead Conversion, Order Index Clarity" brief §4). A
+// stacked bar per day, one segment per branch.
+//
+// Deliberately a DIFFERENT measure from the weekly graph above, and the
+// card says so out loud rather than leaving two similar-looking charts
+// to be read as the same thing:
+//   weekly graph = value WON, dated by acceptance.
+//   this         = value QUOTED, dated by creation, won or not.
+// Branch keys come from the backend (data.branches) rather than a
+// hardcoded Gansbaai/Hermanus pair, so a third branch opening needs no
+// change here.
+const BRANCH_CHART_COLOURS = ['var(--teal)', 'var(--coral)', '#8a6d00', '#6b7280'];
+function renderDailyQuotedByBranchCard() {
+  const container = document.getElementById('dailyQuotedByBranchCard');
+  if (!container || !lastAnalyticsData) return;
+  const rows = lastAnalyticsData.daily_quoted_by_branch || [];
+  const branches = lastAnalyticsData.branches || [];
+  if (!rows.length) { container.innerHTML = ''; return; }
+  const maxVal = Math.max(1, ...rows.map(d => d.total));
+  const branchLabel = (b) => b.charAt(0).toUpperCase() + b.slice(1);
+  const legend = branches.map((b, i) => `
+    <span style="display:inline-flex; align-items:center; gap:5px; font-size:12px;">
+      <span style="width:11px; height:11px; border-radius:2px; background:${BRANCH_CHART_COLOURS[i % BRANCH_CHART_COLOURS.length]};"></span>${branchLabel(b)}
+    </span>`).join('');
+  const bars = rows.map(d => {
+    // Each branch's own share of this day's height. A day with real
+    // value always shows at least a sliver so an empty-looking column
+    // is genuinely empty, never just too small to see.
+    const segments = branches.map((b, i) => {
+      const v = d[b] || 0;
+      if (!v) return '';
+      const pct = Math.max(2, Math.round((v / maxVal) * 100));
+      return `<div title="${branchLabel(b)}: ${R(v)}" style="width:100%; height:${pct}%; background:${BRANCH_CHART_COLOURS[i % BRANCH_CHART_COLOURS.length]};"></div>`;
+    }).join('');
+    return `
+      <div style="display:flex; flex-direction:column; align-items:center; flex:1; gap:5px; min-width:0;">
+        <div class="muted" style="font-size:10px; font-family:'Poppins',sans-serif; font-weight:700; white-space:nowrap;">${d.total ? R(d.total) : ''}</div>
+        <div style="width:100%; max-width:34px; height:110px; display:flex; flex-direction:column; justify-content:flex-end; background:var(--bg); border-radius:4px; overflow:hidden;">${segments}</div>
+        <div class="muted" style="font-size:10px; white-space:nowrap;">${d.label}</div>
+      </div>`;
+  }).join('');
+  container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <h2 style="margin:0;">Quoted Value per Day, by Branch</h2>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">${legend}</div>
+    </div>
+    <p class="muted" style="margin-top:0;">Last 14 days, by the day each quote was <b>created</b> — everything quoted, whether it was won, lost or is still open. Different from "This Week at a Glance" above, which counts value <b>won</b> on the day it was accepted.</p>
+    <div style="display:flex; gap:6px; align-items:flex-end; padding-top:8px; overflow-x:auto;">${bars}</div>
   `;
 }
 
@@ -2094,6 +2191,8 @@ async function renderBusinessOverview(el) {
     </div>
 
     <div class="card" id="weeklyGraphCard"></div>
+    <!-- Daily quoted value by branch (confirmed Sept 2026, brief §4) -->
+    <div class="card" id="dailyQuotedByBranchCard"></div>
 
     <div class="tile-grid" style="margin-bottom:16px;">
       ${kpiCard('Total quotes', data.overall.total_quotes)}
@@ -2155,6 +2254,7 @@ async function renderBusinessOverview(el) {
     </div>
   `;
   renderWeeklyGraphCard();
+  renderDailyQuotedByBranchCard();
   renderTopSellersCard();
   });
 }

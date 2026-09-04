@@ -1468,6 +1468,30 @@ class QuoteLineItem(SQLModel, table=True):
     drop_mm: Optional[float] = None      # blinds only
     quantity_m2: Optional[float] = None  # flooring only
     length_m: Optional[float] = None     # trims only
+    # Manual quoting categories (confirmed Sept 2026, "Manual Quoting
+    # Categories" brief) — Engineered Wood and Laminate are quoted by
+    # hand because their pricing is still being learned; there is no
+    # calculator and deliberately no price book product behind them yet.
+    #
+    # A manual line is still a REAL flooring line: category="flooring",
+    # flooring_pricing_type="material", and quantity_m2 populated when
+    # the unit is m². That is not incidental — it is exactly what makes
+    # the brief's "must count toward the same KPIs, not excluded or
+    # flagged separately" true by construction rather than by
+    # remembering to add these to each aggregation: m² quoted/sold/
+    # installed, top sellers and revenue by category all already filter
+    # on those two fields (analytics_overview(), main.py) and pick these
+    # up with no change at all.
+    #
+    # manual_category is therefore the ONLY thing marking a line as
+    # manual, and nothing client-facing reads it — the printed quote
+    # and the builder portal render these identically to any other
+    # line, per the brief's "no visible manual mode".
+    manual_category: Optional[str] = None   # "engineered_wood" | "laminate"; None = an ordinary calculated line
+    manual_unit: Optional[str] = None       # "m2" | "lm" | "each" — what quantity actually means on this line
+    manual_quantity: Optional[float] = None # as entered, whatever the unit; quantity_m2/length_m mirror it for the m2/lm cases so existing aggregations see it
+    manual_supplier: Optional[str] = None   # who it gets ordered from — normally read off the FlooringProduct, which a manual line has no record of (generate_order_sheets(), main.py)
+    line_notes: str = ""                    # free text about this one line; deliberately not `notes`, which is already a Quote-level field
     discount_pct: float = 0.0
     unit_cost: float = 0.0     # material cost per unit — never shown to Sales role
     unit_price: float = 0.0    # what the client sees

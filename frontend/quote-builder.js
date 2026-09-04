@@ -383,13 +383,108 @@ async function previewGenericLine() {
 document.getElementById('genericLineCard').addEventListener('input', scheduleGenericLinePreview);
 document.getElementById('genericLineCard').addEventListener('change', scheduleGenericLinePreview);
 
+// Manual quoting categories (confirmed Sept 2026) — Engineered Wood and
+// Laminate. One place decides what counts as manual, so the tab, the
+// form and the edit-prefill can never disagree about it.
+const MANUAL_LINE_CATEGORIES = { engineered_wood: 'Engineered Wood', laminate: 'Laminate' };
+function isManualLineCategory(cat) { return Object.prototype.hasOwnProperty.call(MANUAL_LINE_CATEGORIES, cat); }
+
+function manualLineInputs() {
+  return {
+    category: document.getElementById('line_category').value,
+    description: document.getElementById('man_description').value.trim(),
+    colour: document.getElementById('man_colour').value.trim(),
+    supplier: document.getElementById('man_supplier').value.trim(),
+    unit: document.getElementById('man_unit').value,
+    quantity: parseFloat(document.getElementById('man_quantity').value) || 0,
+    unit_price_ex_vat: parseFloat(document.getElementById('man_unit_price').value) || 0,
+    unit_cost_ex_vat: parseFloat(document.getElementById('man_unit_cost').value) || 0,
+    notes: document.getElementById('man_notes').value.trim(),
+  };
+}
+
+// Line total is shown as it's typed, never entered — the brief's own
+// "line total (auto-calculated)". It is also recomputed server-side on
+// save, so what's stored can never be whatever happened to be on screen.
+function renderManualLineTotal() {
+  const el = document.getElementById('manualLineTotal');
+  if (!el) return;
+  const v = manualLineInputs();
+  el.textContent = `Line total: R${(v.quantity * v.unit_price_ex_vat).toFixed(2)}`;
+}
+
+function clearManualLineForm() {
+  ['man_description', 'man_colour', 'man_supplier', 'man_quantity', 'man_unit_price', 'man_notes']
+    .forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  document.getElementById('man_unit').value = 'm2';
+  document.getElementById('man_unit_cost').value = '0';
+  renderManualLineTotal();
+}
+
+async function addManualLine() {
+  const errEl = document.getElementById('manualLineError');
+  errEl.textContent = '';
+  const v = manualLineInputs();
+  if (!v.description) { errEl.textContent = 'Enter a description — it is what the client sees on the quote.'; return; }
+  if (!v.quantity || v.quantity <= 0) { errEl.textContent = 'Enter a real quantity.'; return; }
+  if (!v.unit_price_ex_vat || v.unit_price_ex_vat <= 0) { errEl.textContent = 'Enter a unit price.'; return; }
+  const btn = document.getElementById('manualLineSaveBtn');
+  btn.disabled = true;
+  try {
+    // Editing goes to the PUT sibling, same add-vs-edit split every
+    // other category already follows (editingLineId, this file).
+    const url = editingLineId
+      ? `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/manual?${new URLSearchParams(v)}`
+      : `${API}/quotes/${currentQuoteId}/lines/manual?${new URLSearchParams(v)}`;
+    const res = await fetch(url, { method: editingLineId ? 'PUT' : 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = body.detail || 'Could not save this line.';
+      return;
+    }
+    if (editingLineId) cancelLineEdit();
+    clearManualLineForm();
+    await loadQuoteLines();
+  } catch (e) {
+    errEl.textContent = 'Could not reach the server — try again.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function prefillManualLineEdit(line) {
+  document.getElementById('man_description').value = line.product_name || '';
+  document.getElementById('man_colour').value = line.colour || '';
+  document.getElementById('man_supplier').value = line.manual_supplier || '';
+  document.getElementById('man_unit').value = line.manual_unit || 'm2';
+  document.getElementById('man_quantity').value = line.manual_quantity ?? '';
+  document.getElementById('man_unit_price').value = line.unit_price ?? '';
+  document.getElementById('man_unit_cost').value = line.unit_cost ?? 0;
+  document.getElementById('man_notes').value = line.line_notes || '';
+  document.getElementById('manualLineSaveBtn').textContent = 'Save Changes';
+  document.getElementById('manualLineCancelBtn').style.display = '';
+  renderManualLineTotal();
+}
+
 async function toggleLineFields() {
   const cat = document.getElementById('line_category').value;
   const isFlooring = cat === 'flooring';
   const isCarpet = cat === 'carpet';
+  const isManual = isManualLineCategory(cat);
   document.getElementById('fjMain').style.display = isFlooring ? '' : 'none';
   document.getElementById('carpetLineCard').style.display = isCarpet ? '' : 'none';
-  document.getElementById('genericLineCard').style.display = (isFlooring || isCarpet) ? 'none' : '';
+  document.getElementById('manualLineCard').style.display = isManual ? '' : 'none';
+  document.getElementById('genericLineCard').style.display = (isFlooring || isCarpet || isManual) ? 'none' : '';
+  if (isManual) {
+    // No price-book fetch at all — a manual line has no product record
+    // behind it by design, so there is nothing to load or race against.
+    document.getElementById('manualLineHeading').textContent =
+      `${editingLineId ? 'Edit' : 'Add'} ${MANUAL_LINE_CATEGORIES[cat]} Line`;
+    renderManualLineTotal();
+    syncActiveCategoryTab();
+    renderQuoteSummaryPanel();
+    return;
+  }
   if (isCarpet) {
     await loadFlooring();
     // Default to the first type (Stretch) on a fresh arrival at this tab
@@ -2238,7 +2333,13 @@ function editQuoteLine(lineId) {
   // must open the Carpet tab/card, never Vinyl's #fjMain — the exact
   // routing mistake this whole brief exists to fix, now closed for the
   // Edit path too, not just Add.
-  document.getElementById('line_category').value = line.carpet_category ? 'carpet' : line.category;
+  // manual_category first: a manual line stores category="flooring" on
+  // purpose (so every KPI counts it), which would otherwise open the
+  // vinyl calculator with nothing to prefill it from.
+  document.getElementById('line_category').value =
+    line.manual_category ? line.manual_category
+    : line.carpet_category ? 'carpet'
+    : line.category;
   toggleLineFields().then(() => {
     if (line.carpet_category) {
       prefillCarpetEdit(line);
@@ -2291,14 +2392,15 @@ function editQuoteLine(lineId) {
     // flooring (its own live preview already runs via
     // prefillFlooringEdit()'s fjOnIncludeChange()/fjCalc()) and misc
     // (no preview box exists for it).
+    if (line.manual_category) prefillManualLineEdit(line);
     previewGenericLine();
     editingLineId = lineId;
     const banner = document.getElementById('editLineBanner');
     if (banner) {
       banner.style.display = '';
-      banner.querySelector('span').textContent = line.category === 'flooring'
+      banner.querySelector('span').textContent = (line.category === 'flooring' && !line.manual_category)
         ? 'Editing this line — adjust the fields, then click "Add Floor Job to Quote" to save your changes, or Cancel.'
-        : 'Editing this line — adjust the fields, then click "Add Line" to save your changes, or Cancel.';
+        : 'Editing this line — adjust the fields, then click "Save Changes" to save, or Cancel.';
     }
     document.getElementById('addLineCard').scrollIntoView({ behavior: 'smooth' });
   });
@@ -2362,6 +2464,18 @@ function cancelLineEdit() {
   editingLineId = null;
   const banner = document.getElementById('editLineBanner');
   if (banner) banner.style.display = 'none';
+  // Manual quoting categories (confirmed Sept 2026) — its Save/Cancel
+  // buttons are the one bit of edit state that lives on the form itself
+  // rather than in the shared banner, so they get reset here too.
+  const manualSave = document.getElementById('manualLineSaveBtn');
+  if (manualSave) manualSave.textContent = 'Add Line';
+  const manualCancel = document.getElementById('manualLineCancelBtn');
+  if (manualCancel) manualCancel.style.display = 'none';
+  const manualHeading = document.getElementById('manualLineHeading');
+  const cat = document.getElementById('line_category');
+  if (manualHeading && cat && isManualLineCategory(cat.value)) {
+    manualHeading.textContent = `Add ${MANUAL_LINE_CATEGORIES[cat.value]} Line`;
+  }
 }
 
 // Revert to Original (confirmed Aug 2026, Add-Line Data-Loss brief §5)

@@ -518,6 +518,15 @@ def _ensure_new_columns():
         ("businesssettings", "builder_portal_screed_off", "BOOLEAN", "FALSE"),
         ("businesssettings", "builder_portal_trim_off", "BOOLEAN", "FALSE"),
         ("builder", "logo_base64", "TEXT", "''"),
+        # Manual quoting categories (confirmed Sept 2026) — NULL/'' on
+        # every existing line is the literal truth: every line quoted
+        # before this came from a real calculator with a real price-book
+        # product behind it, so none of them is a manual line.
+        ("quotelineitem", "manual_category", "VARCHAR", "NULL"),
+        ("quotelineitem", "manual_unit", "VARCHAR", "NULL"),
+        ("quotelineitem", "manual_quantity", "FLOAT", "NULL"),
+        ("quotelineitem", "manual_supplier", "VARCHAR", "NULL"),
+        ("quotelineitem", "line_notes", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -2493,6 +2502,49 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
                 **day_figures,
             })
 
+        # Daily quoted value by branch (confirmed Sept 2026, "Manual
+        # Quoting Categories, Lead Conversion, Order Index Clarity"
+        # brief §4). Deliberately a different measure from
+        # weekly_graph above, not a variant of it, and the difference
+        # matters when reading them side by side:
+        #
+        #   weekly_graph  = value WON, dated by when it was ACCEPTED.
+        #   this          = value QUOTED, dated by when the quote was
+        #                   CREATED, whether or not it was ever won.
+        #
+        # "Total quoted value per day" is a measure of output — how
+        # much work went out the door — so it has to count quotes that
+        # were later declined or are still open, and it has to be dated
+        # by creation. Dating it by acceptance would make a quote
+        # written today invisible until the client says yes, which is
+        # the opposite of what this chart is for.
+        #
+        # 14 days, not the Monday-to-today window: a split-by-branch
+        # bar chart needs enough bars for a pattern to be visible at
+        # all, and a Monday reading would otherwise show one bar.
+        # created_date_sast() is defined just below for the m² metrics;
+        # inlined equivalently here rather than moved, to keep this
+        # block self-contained.
+        branches_seen = sorted({q.branch for q in quotes if q.branch})
+        daily_quoted_by_branch = []
+        for i in range(13, -1, -1):
+            day = today_sast - timedelta(days=i)
+            day_quotes = [q for q in quotes if (q.created_at + SAST_OFFSET).date() == day]
+            row = {
+                "date": day.isoformat(),
+                "label": day.strftime("%d %b"),
+                "total": round(sum(value_by_quote.get(q.id, 0.0) for q in day_quotes), 2),
+                "count": len(day_quotes),
+            }
+            # One key per real branch, so a third branch opening needs no
+            # code change here or in the chart — same reasoning
+            # by_branch above already follows (it never hardcodes
+            # Gansbaai/Hermanus either).
+            for branch in branches_seen:
+                row[branch] = round(sum(value_by_quote.get(q.id, 0.0)
+                                        for q in day_quotes if q.branch == branch), 2)
+            daily_quoted_by_branch.append(row)
+
         # ---------- New KPI Metrics (confirmed Sept 2026, "m², Top
         # Sellers, Quotes Per Person" brief) ----------
         # m² Quoted/Sold/Installed, by week (Monday-to-today, same
@@ -2598,6 +2650,11 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             "today": sales_profit_for(today_quotes),
             "month": sales_profit_for(month_quotes),
             "weekly_graph": weekly_graph,
+            # Daily quoted value by branch (confirmed Sept 2026) —
+            # branches shipped alongside the rows so the chart can build
+            # its series/legend without re-deriving them from the data.
+            "daily_quoted_by_branch": daily_quoted_by_branch,
+            "branches": branches_seen,
             "m2_metrics": m2_metrics,
             "top_sellers": top_sellers,
             "quotes_per_person": quotes_per_person,
@@ -2946,7 +3003,16 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
         lines_by_merge_key: dict = {}   # merge_key -> {"display_supplier": str, "items": [dict, ...]}
         for l in material_lines:
             product = session.get(FlooringProduct, l.product_id)
-            supplier = product.supplier if product else "Unknown supplier"
+            # Manual quoting categories (confirmed Sept 2026) — a manual
+            # Engineered Wood/Laminate line has no price-book product to
+            # read a supplier off, so it carries its own (manual_supplier,
+            # captured when the line is entered). Without this it would
+            # land under "Unknown supplier" and quietly merge with any
+            # other supplier-less line, which is the one thing an order
+            # sheet must never do. material_line_data() already handles
+            # the missing product correctly on its own — it falls back to
+            # the m² basis rather than fabricating a box count.
+            supplier = (product.supplier if product else None) or l.manual_supplier or "Unknown supplier"
             entry = lines_by_merge_key.setdefault(_merge_supplier_key(supplier), {"display_supplier": supplier, "items": []})
             entry["items"].append(material_line_data(l))
 
@@ -9932,6 +9998,126 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
         if combined_warning and role == UserRole.owner:
             result["warning"] = combined_warning
         return result
+
+
+# ---------- Manual quoting categories (confirmed Sept 2026, "Manual
+# Quoting Categories, Lead Conversion, Order Index Clarity" brief §1) ----
+# Engineered Wood and Laminate, quoted line by line by hand because
+# their pricing is still being learned. Deliberately NOT a calculator
+# with placeholder rates: a made-up formula would produce confident
+# wrong numbers, which is worse than typing the real one you were
+# quoted. See QuoteLineItem.manual_category (models.py) for why these
+# still land as ordinary flooring lines.
+
+MANUAL_LINE_CATEGORIES = {"engineered_wood": "Engineered Wood", "laminate": "Laminate"}
+MANUAL_LINE_UNITS = {"m2": "m²", "lm": "linear m", "each": "each"}
+
+
+def _validate_manual_line(category: str, unit: str, quantity: float, unit_price_ex_vat: float):
+    """Every one of these is typed by hand, so each gets a real, readable
+    rejection rather than a 422 from FastAPI's own validator or a
+    silently stored nonsense line."""
+    if category not in MANUAL_LINE_CATEGORIES:
+        raise HTTPException(400, f"'{category}' isn't a manual quoting category — use {' or '.join(MANUAL_LINE_CATEGORIES)}.")
+    if unit not in MANUAL_LINE_UNITS:
+        raise HTTPException(400, f"'{unit}' isn't a valid unit — use m2, lm or each.")
+    if quantity <= 0:
+        raise HTTPException(400, "Enter a real quantity.")
+    if unit_price_ex_vat < 0:
+        raise HTTPException(400, "A unit price can't be negative.")
+
+
+def _apply_manual_line_fields(line: "QuoteLineItem", category: str, description: str, unit: str,
+                               quantity: float, unit_price_ex_vat: float, unit_cost_ex_vat: float,
+                               colour: str, supplier: str, notes: str) -> None:
+    """Shared by add and edit so the two can never write a
+    partially-different set of fields — the same reasoning as
+    _apply_builder_estimate_pricing() elsewhere in this file."""
+    line_total = round(quantity * unit_price_ex_vat, 2)
+    cost_total = round(quantity * unit_cost_ex_vat, 2)
+    line.category = "flooring"
+    line.product_id = 0                       # no price-book record behind a manual line, by design
+    line.product_name = description
+    line.colour = colour
+    line.flooring_pricing_type = "material"   # see models.py: this is what makes the KPIs count it
+    line.manual_category = category
+    line.manual_unit = unit
+    line.manual_quantity = quantity
+    line.manual_supplier = supplier
+    line.line_notes = notes
+    # Mirrored into the fields every existing aggregation already reads,
+    # so nothing downstream has to learn what a manual line is.
+    line.quantity_m2 = quantity if unit == "m2" else None
+    line.length_m = quantity if unit == "lm" else None
+    line.unit_cost = unit_cost_ex_vat
+    line.unit_price = unit_price_ex_vat
+    line.line_total = line_total
+    line.margin_pct = ((line_total - cost_total) / line_total) if line_total else 0.0
+
+
+def _manual_line_audit_desc(category: str, description: str, quantity: float, unit: str) -> str:
+    return f"{MANUAL_LINE_CATEGORIES[category]} — {description}, {quantity}{MANUAL_LINE_UNITS[unit]}"
+
+
+@app.post("/quotes/{quote_id}/lines/manual")
+def add_manual_line(quote_id: int, category: str, description: str, unit: str, quantity: float,
+                     unit_price_ex_vat: float, unit_cost_ex_vat: float = 0.0,
+                     colour: str = "", supplier: str = "", notes: str = "",
+                     role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                     username: str = Depends(get_current_username)):
+    """One hand-priced line on a quote. unit_cost_ex_vat defaults to 0
+    (pure margin) exactly like add_misc_line() — real cost often isn't
+    known at quoting time for these categories yet, and a guessed cost
+    would put a fabricated margin on the quote."""
+    _validate_manual_line(category, unit, quantity, unit_price_ex_vat)
+    if not description.strip():
+        raise HTTPException(400, "Give this line a description — it's what the client sees on the quote.")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
+        line = QuoteLineItem(quote_id=quote_id, tenant_id=tenant_id, category="flooring",
+                              product_id=0, product_name=description, discount_pct=0.0)
+        _apply_manual_line_fields(line, category, description.strip(), unit, quantity,
+                                   unit_price_ex_vat, unit_cost_ex_vat, colour, supplier, notes)
+        session.add(line)
+        _log_quote_line_audit(session, quote, username, "added",
+                              _manual_line_audit_desc(category, description.strip(), quantity, unit))
+        session.commit()
+        session.refresh(line)
+        return strip_sensitive_fields(line.dict(), role, settings)
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/manual")
+def edit_manual_line(quote_id: int, line_id: int, category: str, description: str, unit: str, quantity: float,
+                      unit_price_ex_vat: float, unit_cost_ex_vat: float = 0.0,
+                      colour: str = "", supplier: str = "", notes: str = "",
+                      role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
+                      username: str = Depends(get_current_username)):
+    """Edit in place, same as every other category's own edit endpoint
+    (see that section's header comment above) rather than delete +
+    re-add, so the line keeps its identity and its position."""
+    _validate_manual_line(category, unit, quantity, unit_price_ex_vat)
+    if not description.strip():
+        raise HTTPException(400, "Give this line a description — it's what the client sees on the quote.")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = get_or_404(session, QuoteLineItem, line_id, tenant_id, "Quote line")
+        if line.quote_id != quote_id:
+            raise HTTPException(400, "That line doesn't belong to this quote.")
+        if not line.manual_category:
+            raise HTTPException(400, "That line was priced by a calculator — edit it through its own category, not as a manual line.")
+        settings = get_settings(session, tenant_id)
+        old_desc = _manual_line_audit_desc(line.manual_category, line.product_name,
+                                            line.manual_quantity or 0, line.manual_unit or "each")
+        _apply_manual_line_fields(line, category, description.strip(), unit, quantity,
+                                   unit_price_ex_vat, unit_cost_ex_vat, colour, supplier, notes)
+        session.add(line)
+        new_desc = _manual_line_audit_desc(category, description.strip(), quantity, unit)
+        if old_desc != new_desc:
+            _log_quote_line_audit(session, quote, username, "edited", f"{old_desc} -> {new_desc}")
+        session.commit()
+        session.refresh(line)
+        return strip_sensitive_fields(line.dict(), role, settings)
 
 
 @app.post("/quotes/{quote_id}/lines/misc")
