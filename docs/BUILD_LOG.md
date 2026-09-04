@@ -74,6 +74,25 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-09 (3)
+
+Business Overview card order, and a new standing UI convention.
+
+### What shipped
+- **The four summary cards now read This Month — Sales, This Month — Profit, Today — Sales, Today — Profit.** The Sales-then-Profit pairing inside each period is unchanged; only the Today/This Month grouping order swapped, exactly as the brief asked.
+- **The same rule applied to the two other places on that screen with the identical pattern**: the six m² tiles now put Month before Week in every pair, and the Top Sellers toggle reads This Year then This Month.
+- **Recorded as a standing convention**, not just a one-off fix — Burgert's own words: "read left to right, biggest to smallest", confirmed explicitly so it is "not re-litigated each time". Saved to project memory so it survives past this session, and stated in the code comments at each site.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Fixed all four instances, not just the reported one.** Swapping only the cards that were reported would have left the m² tiles directly beneath them contradicting the very rule being introduced — which is exactly how a convention dies.
+- **The rule is about ORDER, not emphasis or defaults, and the difference matters at two points.** The Top Sellers toggle's button order changed but *This Month stays the selected default* — that's what someone opens the card to see. And on the Quotes-Created-By-Person cards the sub-line was reordered (month before week) while the headline figure was left as today's count: which number gets the big type is emphasis, not ordering, and that card exists to answer "what has each person done today". Flagged rather than changed silently, since making it the month would change what the card says at a glance.
+- **Sales-then-Profit is a pair, not a scope hierarchy**, so it keeps its own order — the brief says so explicitly and the distinction is worth keeping straight for future screens.
+
+### Verified
+- Real-browser check of the rendered DOM order: the four money cards read Month/Month/Today/Today with the Sales→Profit pairing intact; all six m² tiles put Month before Week; the Top Sellers toggle reads Year then Month with Month still selected; and the per-person sub-line reads month before week. 6 checks.
+
+---
+
 ## 2026-09-09 (2)
 
 Installation Calendar §0 — header/layout restructure (the revised brief, which added this section to the density/colour work shipped earlier today).

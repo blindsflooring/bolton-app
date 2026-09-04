@@ -2158,9 +2158,12 @@ function renderTopSellersCard() {
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
       <h2 style="margin:0;">Top-Selling Floors &amp; Colours</h2>
+      <!-- Same standing rule: Year before Month. Only the button ORDER
+           changes — the default selection stays This Month, which is
+           what someone actually opens this card to see. -->
       <div class="toggle-row" style="margin:0;">
-        <button onclick="toggleTopSellersRange('month')" style="${topSellersRange==='month' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Month</button>
         <button onclick="toggleTopSellersRange('year')" style="${topSellersRange==='year' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Year</button>
+        <button onclick="toggleTopSellersRange('month')" style="${topSellersRange==='month' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Month</button>
       </div>
     </div>
     <p class="muted" style="margin-top:0;">Ranked by m² sold (accepted quotes only) — a colour that's often quoted but rarely bought won't outrank a real sale.</p>
@@ -2226,11 +2229,17 @@ async function renderBusinessOverview(el) {
          as the same pair everywhere on this screen. Profit is real
          GP Rand (sell minus true cost, Manual-Override-aware), not
          sell price -- same standard as Won Value elsewhere here. -->
+    <!-- BIGGEST TO SMALLEST, LEFT TO RIGHT (standing rule, confirmed
+         Sept 2026, Burgert's own words: "read left to right, biggest to
+         smallest"). This Month comes before Today; the Sales-then-Profit
+         pairing inside each period is unchanged, since that is a pair,
+         not a scope. See the same rule applied to the m² tiles and the
+         Top Sellers toggle further down this screen. -->
     <div class="tile-grid" style="margin-bottom:16px;">
-      ${kpiCard('Today — Sales', money(data.today.sales))}
-      ${kpiCard('Today — Profit', money(data.today.profit))}
       ${kpiCard('This Month — Sales', money(data.month.sales))}
       ${kpiCard('This Month — Profit', money(data.month.profit))}
+      ${kpiCard('Today — Sales', money(data.today.sales))}
+      ${kpiCard('Today — Profit', money(data.today.profit))}
     </div>
 
     <div class="card" id="weeklyGraphCard"></div>
@@ -2272,13 +2281,18 @@ async function renderBusinessOverview(el) {
     established above, not a new component. -->
     <h2 style="margin-bottom:8px;">m² Quoted, Sold &amp; Installed</h2>
     <p class="muted" style="margin-top:0;">Material flooring area only — a screed line always carries the exact same area as its paired material line (confirmed against real data), so it's excluded here to avoid double-counting. Sold = accepted date; Installed = completion date, same basis as every other figure on this page.</p>
+    <!-- Same standing rule as the Sales/Profit cards above: the broader
+         scope first in each pair, so Month reads before Week. Applied
+         here as well as where it was actually reported, since it is the
+         identical pattern on the identical screen — fixing only the
+         reported instance would have left this one contradicting it. -->
     <div class="tile-grid" style="margin-bottom:16px;">
-      ${kpiCard('Quoted — This Week', `${data.m2_metrics.quoted.week} m²`)}
       ${kpiCard('Quoted — This Month', `${data.m2_metrics.quoted.month} m²`)}
-      ${kpiCard('Sold — This Week', `${data.m2_metrics.sold.week} m²`)}
+      ${kpiCard('Quoted — This Week', `${data.m2_metrics.quoted.week} m²`)}
       ${kpiCard('Sold — This Month', `${data.m2_metrics.sold.month} m²`)}
-      ${kpiCard('Installed — This Week', `${data.m2_metrics.installed.week} m²`)}
+      ${kpiCard('Sold — This Week', `${data.m2_metrics.sold.week} m²`)}
       ${kpiCard('Installed — This Month', `${data.m2_metrics.installed.month} m²`)}
+      ${kpiCard('Installed — This Week', `${data.m2_metrics.installed.week} m²`)}
     </div>
 
     <div id="topSellersCard"></div>
@@ -2288,7 +2302,14 @@ async function renderBusinessOverview(el) {
     <div class="tile-grid" style="margin-bottom:16px;">
       ${Object.keys(data.quotes_per_person).sort().map(r => {
         const s = data.quotes_per_person[r];
-        return kpiCard(r.charAt(0).toUpperCase() + r.slice(1), s.today, `This week: ${s.week} · This month: ${s.month}`);
+        // Standing rule (biggest to smallest, left to right) applied to
+        // the sub-line: month before week. The HEADLINE figure is left
+        // as today's count deliberately — which number gets the big
+        // type is emphasis, not ordering, and this card exists to
+        // answer "what has each person done today". Flagged to Burgert
+        // rather than changed silently, since making it the month would
+        // change what the card says at a glance, not just its order.
+        return kpiCard(r.charAt(0).toUpperCase() + r.slice(1), s.today, `This month: ${s.month} · This week: ${s.week}`);
       }).join('') || '<div class="muted">No quotes yet.</div>'}
     </div>
 
