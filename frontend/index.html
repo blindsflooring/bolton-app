@@ -2025,7 +2025,11 @@ async function printInvoiceForQuote(quoteId) {
 // analytics_overview()'s own comment in main.py for why that matters.
 let lastAnalyticsData = null;
 let weeklyGraphMetric = 'sales';   // 'sales' | 'profit'
-let topSellersRange = 'month';   // 'month' | 'year' — New KPI Metrics brief (confirmed Sept 2026)
+// Opens on the YEAR (confirmed Sept 2026, Burgert: "yes make it open on
+// the year too"). The standing biggest-to-smallest rule governs the
+// default SELECTION as well as order and emphasis — the broadest scope
+// is what a screen should show before you touch anything.
+let topSellersRange = 'year';    // 'year' | 'month'
 
 function toggleWeeklyGraphMetric(metric) {
   weeklyGraphMetric = metric;
@@ -2158,9 +2162,8 @@ function renderTopSellersCard() {
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
       <h2 style="margin:0;">Top-Selling Floors &amp; Colours</h2>
-      <!-- Same standing rule: Year before Month. Only the button ORDER
-           changes — the default selection stays This Month, which is
-           what someone actually opens this card to see. -->
+      <!-- Same standing rule, now applied to the default too: Year
+           before Month in the order, and This Year selected on open. -->
       <div class="toggle-row" style="margin:0;">
         <button onclick="toggleTopSellersRange('year')" style="${topSellersRange==='year' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Year</button>
         <button onclick="toggleTopSellersRange('month')" style="${topSellersRange==='month' ? 'background:var(--teal); color:white; border-color:var(--teal);' : ''}">This Month</button>
@@ -2417,7 +2420,12 @@ function renderSessionLogTable() {
 
     <div class="card">
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        ${btn('all', 'All time')} ${btn('week', 'This week')} ${btn('month', 'This month')}
+        <!-- Biggest to smallest (standing rule): All time, then month,
+             then week. This had week before month, which is the same
+             slip the Business Overview tiles had — fixed here while the
+             rule was being applied rather than left to contradict it.
+             The default is already the broadest ('all'). -->
+        ${btn('all', 'All time')} ${btn('month', 'This month')} ${btn('week', 'This week')}
         <span style="margin-left:16px;">User:
           <select id="sessionLogUserFilter" onchange="renderSessionLogTable()">
             <option value="">All users</option>

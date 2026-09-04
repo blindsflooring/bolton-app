@@ -85,12 +85,13 @@ Business Overview card order, and a new standing UI convention.
 
 ### Why (root causes, decisions, rejected alternatives)
 - **Fixed all four instances, not just the reported one.** Swapping only the cards that were reported would have left the m² tiles directly beneath them contradicting the very rule being introduced — which is exactly how a convention dies.
-- **The rule turned out to cover emphasis too, not just reading order.** The Quotes-Created-By-Person headline was initially left as today's count and flagged as the one place the rule hadn't been extended; asked directly, Burgert confirmed "yes make the headline the month". The big figure is now the month, with week and today below it, and the card's caption says so. Default *selection* remains genuinely separate: the Top Sellers toggle reads Year-then-Month but still opens on This Month, which is what someone goes there to see.
+- **The rule turned out to cover emphasis too, not just reading order.** The Quotes-Created-By-Person headline was initially left as today's count and flagged as the one place the rule hadn't been extended; asked directly, Burgert confirmed "yes make the headline the month". The big figure is now the month, with week and today below it, and the card's caption says so. Asked next whether the default selection should follow too, he confirmed again ("yes make it open on the year too") — so Top Sellers now opens on This Year. **The rule therefore governs order, emphasis AND default, all three**, which is now recorded in project memory so none of the three gets missed on a future screen. Fixing the default also surfaced the Login Activity filters reading "All time · This week · This month" — the same week-before-month slip, corrected while the rule was being applied rather than left to contradict it.
 - **Sales-then-Profit is a pair, not a scope hierarchy**, so it keeps its own order — the brief says so explicitly and the distinction is worth keeping straight for future screens.
 
 ### Verified
 - Real-browser check of the rendered DOM order: the four money cards read Month/Month/Today/Today with the Sales→Profit pairing intact; all six m² tiles put Month before Week; the Top Sellers toggle reads Year then Month with Month still selected. 6 checks.
 - Headline change verified separately against data where the figures genuinely differ — 3 quotes this month, only 1 of them today — confirming the big number reads 3 (the month) rather than 1, that today's real figure is still shown below it, and that the caption states which period the big number is. 4 checks.
+- Default-selection change verified against two sales in the same year but different months, so month and year totals genuinely differ: Top Sellers opens on This Year and really shows the year's 100m², not the month's 50 — proving the default changed the figure on screen, not just which button is highlighted. Login Activity's filter order checked in the same pass. 4 checks.
 
 ---
 
