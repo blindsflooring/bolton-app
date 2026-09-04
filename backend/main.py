@@ -176,10 +176,45 @@ async def require_auth(request: Request, call_next):
     # catch an endpoint that forgets its own auth check — it caught this
     # one too, except this one was SUPPOSED to have none. The other
     # staff-facing builder management endpoints live entirely under
-    # /admin/builders and /admin/builder-estimates (confirmed by
-    # grepping every @app route under /builder — only these four exist),
-    # a genuinely different prefix, so this exemption can't accidentally
-    # expose anything that should stay behind a real session.
+    # /admin/builders and /admin/builder-estimates, a genuinely different
+    # prefix, so this exemption can't accidentally expose anything that
+    # should stay behind a real session.
+    #
+    # RE-AUDITED Sept 2026 (Burgert: "check the builders links, I dont
+    # want them to be able to gain access to the main site and app from
+    # a backdoor"). The comment here used to say "only these four
+    # exist"; it is now EIGHT — print/confirm/logo-upload/logo-delete
+    # were all added after that line was written. A stale count is
+    # exactly how a prefix exemption quietly grows past what anyone last
+    # checked, so this was enumerated from app.routes rather than from
+    # memory. Every one is a genuinely public portal endpoint, each
+    # scoped to a single builder resolved from the slug:
+    #   GET    /builder/{slug}
+    #   POST   /builder/{slug}/estimate
+    #   GET    /builder/{slug}/estimate/{id}/print
+    #   POST   /builder/{slug}/estimate/{id}/confirm
+    #   POST   /builder/{slug}/estimate/{id}/photos
+    #   GET    /builder/{slug}/statement
+    #   POST   /builder/{slug}/logo
+    #   DELETE /builder/{slug}/logo
+    #
+    # Verified by probing, not by reading: every staff endpoint
+    # (/quotes, /clients, /leads, /employees, /hours-worked,
+    # /analytics/overview, /admin/*) returns 401 to an unauthenticated
+    # caller, and path traversal through this exemption
+    # (/builder/../quotes, /builder/..%2fquotes,
+    # /builder/{slug}/../../quotes) is rejected in every form tried.
+    # "/builders/..." does not match this prefix either — the character
+    # after "/builder" is "s", not "/".
+    #
+    # KNOWN, ACCEPTED WEAKNESS, flagged rather than silently carried:
+    # the slug IS the entire access control here, and slugs are derived
+    # from the builder's own name (_slugify_builder_name), so a link is
+    # guessable by anyone who knows that name. Contained — a slug only
+    # ever reaches that one builder's portal, which exposes no cost,
+    # margin, supplier or staff data — but it is the weakest point in
+    # this pilot, and worth replacing with a random token if the portal
+    # ever carries anything more sensitive.
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS or request.url.path.startswith("/builder/"):
         return await call_next(request)
     if _resolve_session(request) is None:
@@ -2385,6 +2420,21 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
     quote must never inflate real Won Value even from Burgert's own
     view of it.
     """
+    # CLOSED Sept 2026 — Owner only. The old comment in this docstring
+    # admitted the gap in writing ("Sales could already reach it via a
+    # direct API call despite the frontend hiding the tile; that
+    # pre-existing gap is untouched here") and an audit confirmed it was
+    # still open: Ryno and Madri both got a 200 carrying the whole
+    # business's won value, top sellers and per-rep performance.
+    # Exactly what Burgert means by "not visa versa".
+    #
+    # Checked in the body rather than via Depends(require_owner) for a
+    # boring but real reason: require_owner is defined further down this
+    # file, and a default argument is evaluated at import time, so
+    # depending on it here would crash the app at startup. Same
+    # enforcement, same place in the request, no import-order trap.
+    if role != UserRole.owner:
+        raise HTTPException(403, "The Business Overview is only available to the Owner.")
     if role == UserRole.trusted_tester:
         raise HTTPException(403, "Business Overview Dashboard is not available on a Trusted Tester account.")
     with Session(engine) as session:
@@ -3787,6 +3837,24 @@ def strip_employee_notes(emp_dict: dict, role: str) -> dict:
     return emp_dict
 
 
+def _restrict_employee_id(session: Session, request: Request, tenant_id: str, requested_id):
+    """Forces a person-scoped role's HR queries onto their OWN employee
+    record, whatever employee_id they asked for.
+
+    Returns an id that can never match anything when the person has no
+    linked Employee row — deliberately "see nothing" rather than "see
+    everything", the safe direction for a staff member with no HR record
+    on file. Owner/Admin are unaffected and keep whatever filter they
+    passed (see PERSON_SCOPED_ROLES)."""
+    only_mine = scoped_username(request)
+    if not only_mine:
+        return requested_id
+    me = session.exec(
+        select(Employee).where(Employee.tenant_id == tenant_id, Employee.sales_owner_key == only_mine)
+    ).first()
+    return me.id if me else -1
+
+
 @app.get("/employees")
 def list_employees(role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
@@ -3836,6 +3904,57 @@ def delete_employee(employee_id: int, tenant_id: str = Depends(get_current_tenan
 # existed. Real auth now exists (see get_current_role above) — this was
 # a genuine gap until now, closed here with the same require_owner
 # dependency used elsewhere.
+
+# ---------- Per-person visibility (confirmed Sept 2026, Burgert:
+# "Make sure that Ryno can only see what is destined to him and also for
+# madri. I need to be able to [see] what they see but not visa versa")
+# ----------
+# Found by auditing rather than assuming: role-based FIELD stripping
+# already worked (cost/margin correctly hidden from Ryno and Madri, and
+# the Owner-Preview header cannot be abused to unhide it), but there was
+# no ROW-level scoping at all — every logged-in person could list every
+# other person's quotes, leads and to-dos.
+#
+# PERSON_SCOPED_ROLES is deliberately ONE constant rather than a check
+# repeated per endpoint: that is what makes "who is restricted" a single
+# decision that can be read, tested and changed in one place instead of
+# a rule that drifts as endpoints are added.
+#
+# Admin (Madri) is deliberately NOT in this set yet. She is the one who
+# invoices and orders materials for OTHER people's jobs, so scoping her
+# out of them would stop real daily work; adding "admin" here is a
+# one-word change once Burgert confirms that is what he wants. Flagged
+# rather than guessed, because guessing wrong in this direction breaks
+# the business rather than leaking anything.
+PERSON_SCOPED_ROLES = {UserRole.sales}
+
+
+def scoped_username(request: Request) -> Optional[str]:
+    """The username a person's own records must be filtered to, or None
+    for a role that legitimately sees everything (Owner, and Admin for
+    now — see PERSON_SCOPED_ROLES).
+
+    Reads the REAL role from the session, never the client. Deliberately
+    checks the real role and not the Owner-Preview-swapped one: preview
+    exists so Burgert can see what a lesser role's screen looks like,
+    and it correctly narrows what he sees — but it must never be able
+    to WIDEN anyone's access, and a non-owner sending the header already
+    can't change their role (get_current_role only honours it when the
+    real role is owner)."""
+    session_data = _resolve_session(request)
+    if session_data is None:
+        raise HTTPException(401, "Not logged in — please log in again")
+    real_role = session_data["role"]
+    if real_role in PERSON_SCOPED_ROLES:
+        return session_data["username"]
+    # Owner previewing as sales sees the sales-shaped view of his OWN
+    # records, which is the honest preview: it shows the shape of the
+    # screen without pretending to be somebody else's data.
+    preview = request.headers.get("X-Preview-Role")
+    if real_role == UserRole.owner and preview in PERSON_SCOPED_ROLES:
+        return session_data["username"]
+    return None
+
 
 def require_owner(role: str = Depends(get_current_role)) -> str:
     if role != UserRole.owner:
@@ -6923,8 +7042,14 @@ def log_hours(entry: HoursWorked, tenant_id: str = Depends(get_current_tenant)):
 
 
 @app.get("/hours-worked")
-def list_hours(employee_id: Optional[int] = None, year: Optional[int] = None, month: Optional[int] = None, tenant_id: str = Depends(get_current_tenant)):
+def list_hours(request: Request, employee_id: Optional[int] = None, year: Optional[int] = None, month: Optional[int] = None, tenant_id: str = Depends(get_current_tenant)):
+    """Per-person visibility (confirmed Sept 2026) — a sales account
+    could read every colleague's logged hours here. Scoped to the
+    Employee row linked to the logged-in person (Employee.sales_owner_key,
+    the existing link between a staff account and their employee
+    record), so Ryno sees his own hours and nobody else's."""
     with Session(engine) as session:
+        employee_id = _restrict_employee_id(session, request, tenant_id, employee_id)
         stmt = select(HoursWorked).where(HoursWorked.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(HoursWorked.employee_id == employee_id)
@@ -7117,8 +7242,10 @@ def submit_leave_request(request: LeaveRequest, tenant_id: str = Depends(get_cur
 
 
 @app.get("/leave-requests")
-def list_leave_requests(employee_id: Optional[int] = None, status: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+def list_leave_requests(request: Request, employee_id: Optional[int] = None, status: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
+    """Scoped exactly like list_hours() above, and for the same reason."""
     with Session(engine) as session:
+        employee_id = _restrict_employee_id(session, request, tenant_id, employee_id)
         stmt = select(LeaveRequest).where(LeaveRequest.tenant_id == tenant_id)
         if employee_id:
             stmt = stmt.where(LeaveRequest.employee_id == employee_id)
@@ -8603,7 +8730,7 @@ def create_lead(lead: Lead, tenant_id: str = Depends(get_current_tenant), userna
 
 
 @app.get("/leads")
-def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None,
+def list_leads(request: Request, lead_status: Optional[str] = None, search: Optional[str] = None,
                 assigned_to: Optional[str] = None, tenant_id: str = Depends(get_current_tenant)):
     """Leads screen (Master Workflow proposal §06) — same table-with-
     Next-Action pattern as the Order Index (list_quotes() above), each
@@ -8618,6 +8745,12 @@ def list_leads(lead_status: Optional[str] = None, search: Optional[str] = None,
     "one source of truth" as everywhere else in this app."""
     with Session(engine) as session:
         stmt = select(Lead).where(Lead.tenant_id == tenant_id)
+        # Per-person visibility (confirmed Sept 2026) — same reasoning
+        # as list_quotes(). Overrides any client-supplied assigned_to:
+        # asking for somebody else's leads must not be a way around it.
+        only_mine = scoped_username(request)
+        if only_mine:
+            stmt = stmt.where(Lead.assigned_to == only_mine)
         if lead_status:
             stmt = stmt.where(Lead.lead_status == lead_status)
         if assigned_to:
@@ -8719,9 +8852,14 @@ def leads_day_list(day: Optional[str] = None, tenant_id: str = Depends(get_curre
 
 
 @app.get("/leads/{lead_id}")
-def get_lead(lead_id: int, tenant_id: str = Depends(get_current_tenant)):
+def get_lead(lead_id: int, request: Request, tenant_id: str = Depends(get_current_tenant)):
     with Session(engine) as session:
         lead = get_or_404(session, Lead, lead_id, tenant_id, "Lead")
+        # Same id-guessing guard as get_quote(), same 404-not-403
+        # reasoning — see that endpoint's own docstring.
+        only_mine = scoped_username(request)
+        if only_mine and lead.assigned_to != only_mine:
+            raise HTTPException(404, "Lead not found")
         last_outcome_at = _lead_last_outcome_at(session, lead, tenant_id)
         history = session.exec(
             select(AuditLog)
@@ -9090,13 +9228,20 @@ def create_todo(body: ToDoCreate, tenant_id: str = Depends(get_current_tenant), 
 
 
 @app.get("/todos")
-def list_todos(assigned_to: Optional[str] = None, done: Optional[bool] = None, tenant_id: str = Depends(get_current_tenant)):
+def list_todos(request: Request, assigned_to: Optional[str] = None, done: Optional[bool] = None, tenant_id: str = Depends(get_current_tenant)):
     """assigned_to (same convention as GET /leads' own filter) is the
     ONE query powering both the personal Home view and the team's own
     "By Person" grouping — no second, parallel query for either."""
     with Session(engine) as session:
         stmt = select(ToDo).where(ToDo.tenant_id == tenant_id)
-        if assigned_to:
+        # Per-person visibility (confirmed Sept 2026) — same reasoning
+        # as list_quotes()/list_leads(); overrides any client-supplied
+        # assigned_to so asking for somebody else's list isn't a way
+        # around it.
+        only_mine = scoped_username(request)
+        if only_mine:
+            stmt = stmt.where(ToDo.assigned_to == only_mine)
+        elif assigned_to:
             stmt = stmt.where(ToDo.assigned_to == assigned_to)
         if done is not None:
             stmt = stmt.where(ToDo.done == done)
@@ -10871,9 +11016,19 @@ def preview_line(category: str,
 
 
 @app.get("/quotes/{quote_id}")
-def get_quote(quote_id: int, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+    """Per-person visibility (confirmed Sept 2026) — the list endpoint
+    filtering isn't enough on its own: a person-scoped role could
+    otherwise still open any quote by guessing its id in the URL, which
+    is the whole point of enforcing this server-side rather than by
+    hiding rows in the UI. 404, deliberately not 403 — a "you're not
+    allowed to see this" tells you the record exists, which is itself
+    information a rep shouldn't get about another rep's client."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        only_mine = scoped_username(request)
+        if only_mine and quote.sales_owner != only_mine:
+            raise HTTPException(404, "Quote not found")
         settings = get_settings(session, tenant_id)
         lines = session.exec(
             select(QuoteLineItem).where(QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id)
@@ -11425,7 +11580,7 @@ FLOORING_TYPE_LABELS = {
 
 
 @app.get("/quotes")
-def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
+def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Optional[str] = None,
                  status: Optional[str] = None, workflow_status: Optional[str] = None,
                  search: Optional[str] = None, include_price_checks: bool = False,
                  include_declined: bool = False,
@@ -11457,6 +11612,14 @@ def list_quotes(sales_owner: Optional[str] = None, branch: Optional[str] = None,
         # exists for future callers that genuinely need to see them
         # (e.g. a dedicated Price Checks view, not built this round) —
         # not wired to anything in the frontend yet.
+        # Per-person visibility (confirmed Sept 2026) — applied HERE,
+        # in the query, not by filtering the response afterwards: a
+        # person-scoped role must never have another rep's quote in
+        # memory on the server at all, let alone returned. See
+        # scoped_username() for who this applies to and why.
+        only_mine = scoped_username(request)
+        if only_mine:
+            stmt = stmt.where(Quote.sales_owner == only_mine)
         if not include_price_checks:
             stmt = stmt.where(Quote.is_price_check == False)  # noqa: E712 — SQLAlchemy needs == for a WHERE clause, `is False` doesn't build a comparison expression
         # Exclude Declined Alternative Quotes (confirmed Sept 2026) — a

@@ -74,6 +74,36 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-08
+
+Security audit of per-person visibility and the builder-portal links, plus the fixes it found (Burgert: "Make sure that Ryno can only see what is destined to him and also for madri. I need to be able to [see] what they see but not visa versa... check the builders links, I dont want them to be able to gain access to the main site and app from a backdoor").
+
+### What the audit found
+Probed with real sessions as all three roles rather than read. **Already correct:** cost/margin/breakdown fields were properly stripped from Ryno and Madri, and the Owner-Preview header could not be abused to unhide them; Owner-only writes (delete quote/lead/builder, settings changes) all returned 403; and the builder links were genuinely sealed off — every staff endpoint returned 401 to an anonymous caller and every path-traversal attempt through the `/builder/` exemption was rejected.
+
+**Three real gaps, all now closed:**
+- **No row-level scoping existed at all.** Ryno and Madri could list every other person's quotes, leads and to-dos. Fixed at the query, not by filtering the response afterwards, and enforced on single-record fetches too — a scoped role guessing an id in the URL now gets a 404, deliberately not a 403, since "you're not allowed to see this" itself confirms the record exists.
+- **`/analytics/overview` was reachable by Ryno and Madri (200).** The whole business's won value, top sellers and per-rep performance, one direct API call away. The code's own comment had admitted this in writing ("Sales could already reach it via a direct API call despite the frontend hiding the tile; that pre-existing gap is untouched here") — it was still open. Owner only now.
+- **HR: Ryno could read every colleague's logged hours and leave requests.** Now scoped to his own employee record via the existing `Employee.sales_owner_key` link. Owner and Admin are unaffected — Madri runs payroll.
+
+### Why (root causes, decisions, rejected alternatives)
+- **`PERSON_SCOPED_ROLES` is one constant, not a check repeated per endpoint.** That makes "who is restricted" a single decision that can be read, tested and changed in one place, rather than a rule that drifts as endpoints get added — which is exactly how the analytics gap survived being written down.
+- **Admin (Madri) is deliberately NOT scoped yet**, and this is flagged rather than guessed. She invoices and orders materials for other people's jobs, so scoping her out of them would stop real daily work. Adding `admin` to that set is a one-word change once Burgert confirms. Guessing wrong in that direction breaks the business rather than leaking anything.
+- **Client-supplied filters can't be used as a way around it**: asking for another person's `assigned_to`/`sales_owner`/`employee_id` is overridden, not honoured.
+- **The Owner-Preview header can narrow but never widen.** Verified directly: Ryno sending `X-Preview-Role: owner` still gets 403 on the Overview, still sees only his own quotes, still gets no cost fields.
+- **A stale comment was the real risk on the builder side.** The middleware said "only these four exist" under `/builder/`; there are now eight, since print/confirm/logo-upload/logo-delete were added after that line was written. All eight are genuinely public and correctly scoped, but the count is now enumerated from `app.routes` rather than from memory, and the comment records what was actually probed.
+
+### Known, accepted weakness (flagged, not fixed)
+- **Builder slugs are guessable** — derived from the builder's name, and the slug is the entire access control for the portal. Contained: a slug only ever reaches that one builder's own portal, which exposes no cost, margin, supplier or staff data. Worth replacing with a random token if the portal ever carries anything more sensitive.
+
+### Verified
+- 29 checks: Ryno's lists contain only his own rows while Burgert still sees everyone's; Ryno cannot open another person's quote or lead by id but can still open his own; filters asking for someone else's rows never return them; HR hours and leave are scoped while Owner and Admin are unaffected; the Business Overview is Owner-only and the preview header cannot reach it; and anonymous callers are still refused everywhere.
+
+### Open going into next session
+- **Should Madri be person-scoped too?** One-word change; needs Burgert's call on whether she still needs to see other people's jobs to invoice and order for them.
+
+---
+
 ## 2026-09-07
 
 Order Index Redesign (stage tiles + filterable client list), plus auto-scroll on New Quote / Price Check.
