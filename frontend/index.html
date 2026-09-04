@@ -1663,13 +1663,29 @@ async function loadMyLeadsToday() {
     const needsAction = leads.filter(l => l.attention_priority);
     const todayStr = new Date().toISOString().slice(0, 10);
     const dueTodos = todos.filter(t => !t.due_date || t.due_date <= todayStr);
-    if (!needsAction.length && !dueTodos.length) return;   // nothing due — no empty card cluttering the one screen everyone lands on
+    // Cleared, not just skipped (fixed Sept 2026): this function is now
+    // re-run after closing a lead from this very card
+    // (refreshAfterLeadChange(), leads.js), so an early `return` on an
+    // empty result would leave the last-closed lead sitting on screen
+    // looking like it hadn't worked.
+    if (!needsAction.length && !dueTodos.length) { container.innerHTML = ''; return; }
+    // Link / Lost inline on the feed (confirmed Sept 2026, Burgert:
+    // "yes add the link and lost actions inline on the home feed").
+    // Both were already one tap away via the lead's own screen, but the
+    // whole point of this card is closing the day's work without
+    // navigating off Home. stopPropagation on each, since the row
+    // itself opens the lead. The quote picker renders into this row's
+    // OWN container — several leads show here at once, so a single
+    // shared picker div would collide.
     const leadItems = needsAction.map(l => `
       <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
         <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
         <span class="attn-detail">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
         ${leadNextActionButton(l)}
-      </div>`).join('');
+        <button onclick="event.stopPropagation(); openLinkQuotePicker(${l.id}, 'homeLeadPicker${l.id}')" style="font-size:11px; padding:2px 6px;">Link to Quote</button>
+        <button onclick="event.stopPropagation(); markLeadLostFromList(${l.id}, '${l.name.replace(/'/g,"\\'")}')" style="font-size:11px; padding:2px 6px; color:var(--coral); border-color:var(--coral);">Lost</button>
+      </div>
+      <div id="homeLeadPicker${l.id}" onclick="event.stopPropagation();"></div>`).join('');
     const todoItems = dueTodos.map(t => `
       <div class="attention-item ${t.due_date && t.due_date < todayStr ? 'priority-critical' : 'priority-notice'}" onclick="landingView='todos'; renderLanding();">
         <span class="attn-flag">${t.due_date && t.due_date < todayStr ? '🔴 Overdue' : '🟡 To-Do'}</span>

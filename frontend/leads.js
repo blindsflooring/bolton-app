@@ -419,7 +419,7 @@ async function renderLeadDetail(el) {
       Convert CREATES a quote, this ATTACHES the one already raised in
       the Order Index. Without it, closing a lead whose quote already
       existed meant converting anyway and ending up with a duplicate. -->
-      <button onclick="openLinkQuotePicker(${l.id})">Link to Existing Quote</button>
+      <button onclick="openLinkQuotePicker(${l.id}, 'linkQuotePicker')">Link to Existing Quote</button>
       <button style="color:var(--coral); border-color:var(--coral);" onclick="changeLeadStatusAction(${l.id}, 'lost')">Mark Lost / No Result</button>
     </div>
     <div id="linkQuotePicker"></div>`;
@@ -476,12 +476,29 @@ async function renderLeadDetail(el) {
 // action row rather than as a prompt(): unlike an outcome note, this is
 // a CHOICE between real records, and typing an id from memory is exactly
 // the free-text guessing the brief rules out.
-async function openLinkQuotePicker(leadId) {
-  const box = document.getElementById('linkQuotePicker');
+// Lead actions inline on the home feed (confirmed Sept 2026, Burgert:
+// "yes add the link and lost actions inline on the home feed"). The
+// same two actions now fire from three different screens, so where to
+// redraw afterwards is decided here, once, rather than each call site
+// hardcoding a re-render that's wrong on the other two.
+function refreshAfterLeadChange() {
+  const el = document.getElementById('landing');
+  if (landingView === 'leadDetail') renderLeadDetail(el);
+  else if (landingView === 'leads') renderLeads(el);
+  else if (typeof loadMyLeadsToday === 'function') loadMyLeadsToday();   // home feed
+}
+
+// containerId (Sept 2026) — the picker used to render into the lead
+// detail's own fixed #linkQuotePicker div. The home feed shows several
+// leads at once, so each row passes its own container and the pickers
+// can't collide.
+async function openLinkQuotePicker(leadId, containerId) {
+  const box = document.getElementById(containerId || 'linkQuotePicker');
   if (!box) return;
   if (box.dataset.open === String(leadId)) { box.dataset.open = ''; box.innerHTML = ''; return; }
   box.dataset.open = String(leadId);
   box.innerHTML = '<p class="muted">Loading quotes...</p>';
+  const reopen = `openLinkQuotePicker(${leadId}, '${containerId || 'linkQuotePicker'}')`;
   const res = await fetch(`${API}/leads/${leadId}/linkable-quotes`);
   if (!res.ok) { box.innerHTML = '<p class="error">Could not load quotes — try again.</p>'; return; }
   const d = await res.json();
@@ -505,7 +522,7 @@ async function openLinkQuotePicker(leadId) {
         <p class="muted" style="margin-top:0;">No quote is on file under this exact client name yet. If the quote was raised under a slightly different name, pick it from the recent list below — otherwise use "Convert to New Quote" instead.</p>`}
       <p class="muted" style="margin:14px 0 0;">Recent quotes${d.matched.length ? ' (other clients)' : ''}:</p>
       ${d.other_recent.length ? d.other_recent.map(row).join('') : '<p class="muted">No other quotes on file.</p>'}
-      <button class="secondary" style="margin-top:10px;" onclick="openLinkQuotePicker(${leadId})">Cancel</button>
+      <button class="secondary" style="margin-top:10px;" onclick="${reopen}">Cancel</button>
     </div>`;
 }
 
@@ -521,7 +538,7 @@ async function linkLeadToQuoteAction(leadId, quoteId, clientName) {
     res = await fetch(`${API}/leads/${leadId}/link-quote?quote_id=${quoteId}&force=true`, {method: 'POST'});
     if (!res.ok) { alert('Could not link this quote.'); return; }
   }
-  renderLanding();
+  refreshAfterLeadChange();
 }
 
 async function changeLeadStatusAction(leadId, newStatus) {
@@ -552,7 +569,7 @@ Marking "${name}" as: Lost / No result`);
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({new_status: 'lost', note: note.trim()}),
   });
   if (!res.ok) { const body = await res.json().catch(() => ({})); alert(body.detail || 'Could not update this lead.'); return; }
-  renderLeads(document.getElementById('landing'));
+  refreshAfterLeadChange();
 }
 
 async function convertLeadAction(leadId) {
