@@ -1607,6 +1607,54 @@ def on_startup():
     except Exception as e:
         print(f"Migration: builder estimate breakdown backfill failed ({e}) — older estimates show a R0 material line on their breakdown until this is retried")
 
+    # Invoices that went out but were never recorded (BUG FIX, confirmed
+    # Sept 2026 — J-0003 and J-0002 sat in Needs Attention still asking
+    # to be invoiced long after their invoices had been sent). The fix
+    # itself is at the point of action (mark_quote_invoiced(), called by
+    # printInvoiceForQuote()), but that only helps invoices produced
+    # from now on — the already-sent ones stay wrong until someone
+    # types a date in by hand, which is exactly the manual step this
+    # whole thing was supposed to remove.
+    #
+    # Repaired here from real evidence, not a guess: every Print Invoice
+    # click already archived a real PDF (DocumentArchive,
+    # entity_type="Invoice", one row per generation with its own
+    # created_at). The EARLIEST such row for a quote is the day that
+    # quote was first invoiced. Only fills a genuinely empty
+    # invoice_sent_date — a date already on record is never touched,
+    # since a hand-entered one is someone's real statement about when
+    # it went out and outranks anything inferred here.
+    try:
+        with Session(engine) as session:
+            uninvoiced = session.exec(
+                select(Quote).where(Quote.invoice_sent_date == None, Quote.workflow_status == "completed")
+            ).all()
+            fixed = 0
+            for quote in uninvoiced:
+                first_invoice = session.exec(
+                    select(DocumentArchive).where(
+                        DocumentArchive.entity_type == "Invoice",
+                        DocumentArchive.entity_id == quote.id,
+                        DocumentArchive.tenant_id == quote.tenant_id,
+                    ).order_by(DocumentArchive.created_at)
+                ).first()
+                if not first_invoice:
+                    continue   # genuinely never invoiced — must keep prompting
+                quote.invoice_sent_date = (first_invoice.created_at + timedelta(hours=2)).date()   # SAST, same basis as every other date shown in this app
+                session.add(quote)
+                session.add(AuditLog(
+                    tenant_id=quote.tenant_id, username="system", entity_type="Quote", entity_id=quote.id,
+                    field="invoice_sent_date", old_value="(not recorded)",
+                    new_value=f"{quote.invoice_sent_date.isoformat()} (backfilled from the archived invoice PDF)",
+                ))
+                fixed += 1
+            if fixed:
+                session.commit()
+                print(f"Migration: recorded invoice_sent_date for {fixed} job(s) whose invoice PDF was archived but never logged as sent — see mark_quote_invoiced() for the underlying fix")
+    except Exception as e:
+        print(f"Migration: invoice_sent_date backfill failed ({e}) — already-sent invoices keep prompting in Needs Attention until this is retried or the date is set by hand")
+
+
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render
     # Cron Job service: confirmed bolton-backend is on an always-on
@@ -8319,6 +8367,63 @@ def complete_quote(quote_id: int, completion_date: str = None, tenant_id: str = 
         session.commit()
         session.refresh(quote)
         return quote
+
+
+@app.post("/quotes/{quote_id}/mark-invoiced")
+def mark_quote_invoiced(quote_id: int, invoice_sent_date: str = None,
+                         tenant_id: str = Depends(get_current_tenant),
+                         username: str = Depends(get_current_username)):
+    """Record that an invoice actually went out (BUG FIX, confirmed Sept
+    2026 — Burgert: "Jobs J-0003 and J-0002 had invoices created and
+    sent, but the Needs Attention feed still shows them as 'Invoice'
+    outstanding with a 'Create Invoice' button — as if nothing
+    happened").
+
+    Root cause, confirmed by reading the code rather than guessing:
+    _job_workflow_info() was already correct — it stops prompting
+    "Invoice customer" the moment invoice_sent_date is set, and drops
+    the job out of Needs Attention entirely (the "Receive payment"
+    branch deliberately carries NO attention_priority, because the
+    outstanding step there is the client paying, not something Burgert
+    does). The defect was that NOTHING set that field. Clicking "CREATE
+    INVOICE" ran printInvoiceForQuote() (index.html), which rendered the
+    document and archived a PDF to Dropbox but recorded no state at
+    all; the only way invoice_sent_date ever got a value was somebody
+    typing a date by hand into Job Detail's own field.
+
+    That is precisely the action/outcome confusion the standing rule
+    warns about: performing the action was never the same thing as
+    recording the outcome, so the job kept asking to be invoiced
+    forever. Fixed here, at a real endpoint that writes real state, NOT
+    by filtering the prompt out in the UI — the field genuinely was
+    empty, and hiding a prompt for a job whose invoice status is
+    unknown would have made the feed lie in the other direction.
+
+    Idempotent by design: an existing date is never overwritten, so
+    reprinting an invoice months later (a real thing — the Print
+    Invoice screen exists for exactly that) can't quietly move the date
+    the books were closed on. Audit-logged either way, so the record
+    shows who invoiced it and when."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        if quote.invoice_sent_date:
+            # Not an error: the caller is a Print/Create Invoice click,
+            # and reprinting is legitimate. Reports what's already on
+            # record rather than pretending something changed.
+            return {"quote_id": quote.id, "invoice_sent_date": quote.invoice_sent_date.isoformat(), "changed": False}
+        try:
+            new_date = date.fromisoformat(invoice_sent_date) if invoice_sent_date else date.today()
+        except ValueError:
+            raise HTTPException(400, "That invoice date isn't valid.")
+        quote.invoice_sent_date = new_date
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="invoice_sent_date", old_value="(not invoiced)", new_value=new_date.isoformat(),
+        ))
+        session.commit()
+        session.refresh(quote)
+        return {"quote_id": quote.id, "invoice_sent_date": quote.invoice_sent_date.isoformat(), "changed": True}
 
 
 class HoldQuoteRequest(BaseModel):

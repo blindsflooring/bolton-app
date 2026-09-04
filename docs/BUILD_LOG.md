@@ -74,6 +74,25 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-06 (2)
+
+Bug: jobs whose invoices had already gone out kept demanding to be invoiced.
+
+### What shipped
+- **`POST /quotes/{id}/mark-invoiced`, called by every Create/Print Invoice click.** Root cause, found by reading the code rather than guessing: `_job_workflow_info()` was already correct — it stops prompting "Invoice customer" the moment `invoice_sent_date` is set, and the "Receive payment" branch it moves to deliberately carries no `attention_priority`, so the job leaves Needs Attention entirely. The defect was that **nothing ever set that field**. `printInvoiceForQuote()` rendered the document and archived a PDF to Dropbox but recorded no state at all; the only way the date was ever populated was somebody typing it by hand into Job Detail. Exactly the action/outcome confusion the standing rule warns about — performing the action was never the same as recording the outcome.
+- **Idempotent and audit-logged.** An existing date is never overwritten, so reprinting an invoice months later (which the Print Invoice screen exists for) can't move the date the books were closed on. Every write logs who invoiced it and when.
+- **The already-broken jobs are repaired, not left to be fixed by hand.** A startup backfill sets `invoice_sent_date` from the *earliest* archived Invoice PDF for any completed job that has one but no date — real evidence, since every Print Invoice click already wrote a `DocumentArchive` row with its own `created_at`. A hand-entered date is never overwritten; a job that genuinely was never invoiced keeps prompting.
+- **Money tile split into Deposit and Final payment** (Burgert: "The split money tile still isnt split"). One tile had to describe two independent things, so it could only show the more urgent — "Deposit received" said nothing about whether the balance had been invoiced or paid. "Invoiced — awaiting payment" is deliberately a green/done state, not a needs-action one: once the invoice is out, the outstanding step is the client paying, which is not something anyone here can act on.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Fixed at a real endpoint that writes real state, not with a UI filter.** Hiding the prompt would have been wrong in the other direction: the field genuinely was empty, so the feed would then be lying about jobs whose invoice status was actually unknown.
+- **The two reported symptoms were separate problems, and the split tile does not fix the feed.** Needs Attention reads `_job_workflow_info()`, not the tiles — splitting Money would have changed nothing about the prompt. Confirmed by reading both before building either.
+
+### Verified
+- 16 checks. The bug was **reproduced first** against a job with an archived invoice and no recorded date (still showing "Invoice customer", priority "warning"), then confirmed fixed: the job drops out of Needs Attention, moves to "Receive payment", stops offering a Create Invoice button, and a reprint leaves the date untouched. The backfill repairs from the earliest archive (not the latest reprint), leaves a hand-entered date alone, and leaves a genuinely-uninvoiced job still prompting.
+
+---
+
 ## 2026-09-06
 
 "Manual Quoting Categories, Lead Conversion, Order Index Clarity" brief. §2 (Lead-to-Quote linking + Past Leads) was already built and live — see 2026-09-05 — so this covers §1, §3 and §4.

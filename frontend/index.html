@@ -1938,6 +1938,19 @@ async function renderPrintInvoicePicker(el, searchTerm) {
 
 async function printInvoiceForQuote(quoteId) {
   await renderPrintDoc(quoteId, 'invoice');
+  // BUG FIX (confirmed Sept 2026) — "invoices created and sent, but the
+  // Needs Attention feed still shows them as 'Invoice' outstanding".
+  // This function produced the invoice and filed the PDF but recorded
+  // no state, so invoice_sent_date stayed empty and _job_workflow_info()
+  // (main.py) correctly went on prompting "Invoice customer" forever.
+  // Doing the action now records the outcome. Idempotent server-side —
+  // reprinting never moves an existing date. Best-effort like the
+  // archive call below: the invoice has already been produced on screen
+  // by this point, and a failed status write must not undo that or
+  // block the print.
+  try {
+    await fetch(`${API}/quotes/${quoteId}/mark-invoiced`, { method: 'POST' });
+  } catch (e) { /* the print above already happened; the date can still be set by hand on Job Detail */ }
   // Dropbox Document Archive brief v2 (confirmed Aug 2026, §2) — "invoice"
   // has no standalone PDF of its own; confirmed by inspecting
   // buildPrintDocHtml() (shared.js) before building anything here, per

@@ -936,21 +936,42 @@ function renderStatusTilesHtml(q, jobSteps) {
     bookingTile = { cls: 'progress', text: 'Not yet', sub: 'No date set' };
   }
 
-  // Money — final_payment_date is the same "fully paid" signal the
-  // primary status strip's own 🟢 "closed out" case already uses;
+  // Split Money Tile (confirmed Sept 2026, Burgert: "The split money
+  // tile still isnt split"). One "Money" tile had to describe two
+  // genuinely independent things — the deposit up front and the final
+  // payment at the end — so it could only ever show the more urgent of
+  // them, and "Deposit received" told you nothing about whether the
+  // balance had been invoiced or paid. Two tiles, each answering its
+  // own question.
+  //
   // deposit_pct === 0 is the real, tolerated "no deposit required"
-  // shape confirmed against _quote_totals() during investigation, now
-  // actually settable per job (Decision Q3) rather than only via a
-  // global Business Settings change.
-  let moneyTile;
-  if (q.final_payment_date) {
-    moneyTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
-  } else if (q.deposit_paid_date) {
-    moneyTile = { cls: 'progress', text: 'Deposit received', sub: 'Balance due on completion' };
+  // shape confirmed against _quote_totals(), settable per job
+  // (Decision Q3) rather than only via a global Business Settings
+  // change.
+  let depositTile;
+  if (q.deposit_paid_date) {
+    depositTile = { cls: 'done', text: 'Received', sub: new Date(q.deposit_paid_date).toLocaleDateString('en-ZA') };
   } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
-    moneyTile = { cls: 'progress', text: 'No deposit required', sub: 'Balance due on completion' };
+    depositTile = { cls: 'done', text: 'Not required', sub: 'No deposit on this job' };
   } else {
-    moneyTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
+    depositTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
+  }
+
+  // Final payment. "Invoiced — awaiting payment" is deliberately a DONE
+  // (green) state, not a progress one (confirmed Sept 2026, same report
+  // as the Needs Attention invoice bug): once the invoice has gone out,
+  // the outstanding step is the client paying, which is not something
+  // anyone here can act on. Showing it as needs-action made two real
+  // jobs look neglected when nothing was owed by us at all.
+  let finalTile;
+  if (q.final_payment_date) {
+    finalTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
+  } else if (q.invoice_sent_date) {
+    finalTile = { cls: 'done', text: 'Awaiting payment', sub: `Invoiced ${new Date(q.invoice_sent_date).toLocaleDateString('en-ZA')}` };
+  } else if (q.workflow_status === 'completed') {
+    finalTile = { cls: 'progress', text: 'Not yet invoiced', sub: 'Installation complete' };
+  } else {
+    finalTile = { cls: 'progress', text: 'Due on completion', sub: 'Not invoiced yet' };
   }
 
   const tile = (label, t) => `
@@ -960,7 +981,7 @@ function renderStatusTilesHtml(q, jobSteps) {
       <div class="status-tile-sub">${t.sub}</div>
     </div>`;
 
-  return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Money', moneyTile)}</div>`;
+  return `<div class="status-tiles">${tile('Materials', materialsTile)}${tile('Booking', bookingTile)}${tile('Deposit', depositTile)}${tile('Final payment', finalTile)}</div>`;
 }
 
 // Materials section (Job Control Panel §6, revised Sept 2026 — Materials
