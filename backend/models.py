@@ -148,8 +148,8 @@ class UserSession(SQLModel, table=True):
     token: str = Field(unique=True, index=True)
     user_id: int = Field(foreign_key="app_user.id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: datetime   # confirmed Aug 2026: fixed 24h session length from login — not permanent, not aggressive re-login mid-shift
-    ended_at: Optional[datetime] = None   # Login & Session Activity Log Phase 1 (confirmed Aug 2026): real logout time. NULL means either still active, OR ended by natural 24h expiry (no explicit logout call) — the session-log endpoint tells the two apart by comparing expires_at to now at read time, no background job needed. A real logout now sets this instead of deleting the row, so the log has real history — see /auth/logout and _resolve_session()'s corresponding check that an ended_at session is no longer valid even if expires_at hasn't passed yet.
+    expires_at: datetime   # session length from login. Was a fixed 24h (confirmed Aug 2026); now BusinessSettings.session_hours, default 4h (confirmed Sept 2026, "Get all logins to reset every few hours") — the stored value here is always the real one for THIS session, so changing the setting never retroactively moves an existing session's expiry.
+    ended_at: Optional[datetime] = None   # Login & Session Activity Log Phase 1 (confirmed Aug 2026): real logout time. NULL means either still active, OR ended by natural expiry (no explicit logout call) — the session-log endpoint tells the two apart by comparing expires_at to now at read time, no background job needed. A real logout now sets this instead of deleting the row, so the log has real history — see /auth/logout and _resolve_session()'s corresponding check that an ended_at session is no longer valid even if expires_at hasn't passed yet.
     # Single Active Session per User (confirmed Aug 2026) — a REAL
     # stored field this time, unlike ended_reason's own read-time-only
     # computation elsewhere (session_log(), main.py): that approach
@@ -1127,6 +1127,15 @@ class BusinessSettings(SQLModel, table=True):
     # which is also the same 900mm figure STAIRWELL_NOSING_MM already
     # uses for a closed-side tread width.
     builder_portal_door_width_m: float = 0.9
+    # How long a login lasts before it has to be repeated (confirmed
+    # Sept 2026, Burgert: "Get all logins to reset every few hours").
+    # Was a hardcoded 24 hours in auth.py, so a session survived
+    # overnight into the next working day. A real setting rather than a
+    # new constant, because "a few hours" is a judgement about how the
+    # working day actually runs, and Burgert should be able to tighten
+    # or relax it himself after living with it — same reasoning as
+    # every other rate on this model.
+    session_hours: float = 4.0
     # Screed/trim resolve AUTOMATICALLY now (confirmed Sept 2026,
     # Burgert: "screed and trims stoill arent on the builders quote
     # form, its nowhere to be seen. Screed needs to be automatically

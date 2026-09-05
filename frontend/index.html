@@ -1471,14 +1471,29 @@ async function checkConsistencyAlerts() {
 }
 
 function showLogin() {
-  document.getElementById('loginScreen').style.display = 'flex';
-  document.querySelector('header').style.display = 'none';
-  document.querySelector('nav').style.display = 'none';
-  document.querySelector('main').style.display = 'none';
-  document.getElementById('previewBanner').style.display = 'none';
-  document.getElementById('consistencyAlertBanner').style.display = 'none';
-  document.getElementById('mobileBackBtn').style.display = 'none';
-  document.getElementById('login_error').textContent = '';
+  // Every lookup is guarded (BUG FIXED Sept 2026, caught by a real
+  // browser check while verifying an unrelated screen — a genuine
+  // TypeError thrown on every fresh page load, not a hypothetical).
+  //
+  // Root cause: checkAuthOnLoad() calls this DURING page parse, and
+  // #mobileBackBtn is the very last element in <body>, after this
+  // script tag — so it does not exist yet and this function threw on
+  // it. Everything below that line, including clearing login_error,
+  // simply never ran, and the thrown error silently rejected
+  // checkAuthOnLoad()'s own promise. The login screen still appeared
+  // (it is the first line here, and visible by default anyway), which
+  // is why this went unnoticed.
+  const hide = (el) => { if (el) el.style.display = 'none'; };
+  const loginScreen = document.getElementById('loginScreen');
+  if (loginScreen) loginScreen.style.display = 'flex';
+  hide(document.querySelector('header'));
+  hide(document.querySelector('nav'));
+  hide(document.querySelector('main'));
+  hide(document.getElementById('previewBanner'));
+  hide(document.getElementById('consistencyAlertBanner'));
+  hide(document.getElementById('mobileBackBtn'));
+  const loginError = document.getElementById('login_error');
+  if (loginError) loginError.textContent = '';
   // Deliberately does NOT clear login_username (fixed Sept 2026,
   // Burgert's own words: "When i am on the login page and pre populate
   // my name and password i have to enter twice because the first time
@@ -2334,6 +2349,11 @@ async function renderBusinessOverview(el) {
 // screen, per the brief ("an accurate record only means something if
 // it can't be quietly changed").
 let sessionLogRows = [];        // last-fetched (date-filtered) rows, cached so the user-filter dropdown doesn't need a round-trip
+// Builder-network access (confirmed Sept 2026, Burgert: "see who logged
+// on from my builders network"). Fetched alongside the sessions and
+// filtered by the same date range, so both halves of this page always
+// describe the same window.
+let builderAccessData = null;
 let sessionLogRange = 'all';    // 'all' | 'week' | 'month' — which quick filter is active, purely for highlighting the active button
 
 // Builder Referral Portal, Phase 1 pilot (confirmed Aug 2026) — Owner-only
@@ -2382,8 +2402,15 @@ async function loadSessionLog(range) {
   await renderWithRetry(document.getElementById('landing'), 'Login Activity', async () => {
     sessionLogRange = range;
     const params = new URLSearchParams(sessionLogDateRange(range));
-    const res = await fetch(`${API}/admin/session-log?${params}`);
+    // Both fetched together and against the SAME range — a page showing
+    // "this week" for staff and all-time for builders would be quietly
+    // lying about one of them.
+    const [res, bRes] = await Promise.all([
+      fetch(`${API}/admin/session-log?${params}`),
+      fetch(`${API}/admin/builder-access-log?${params}`),
+    ]);
     sessionLogRows = res.ok ? await res.json() : [];
+    builderAccessData = bRes.ok ? await bRes.json() : { events: [], visit_count: 0, estimate_count: 0 };
     renderSessionLogTable();
   });
 }
@@ -2437,8 +2464,43 @@ function renderSessionLogTable() {
         <thead><tr><th>User</th><th>Login time</th><th>Logout time</th><th>Duration</th></tr></thead>
         <tbody>${tableRows || '<tr><td colspan="4" class="muted">No sessions in this range.</td></tr>'}</tbody>
       </table>
+      <p class="muted" style="margin:10px 0 0; font-size:11.5px;">Trusted Tester accounts are marked 🧪 above — they log in like anyone else, their activity is just excluded from the Business Overview figures.</p>
     </div>
+
+    ${renderBuilderAccessCard()}
   `;
+}
+
+// Builder-network access (confirmed Sept 2026). Its own card rather than
+// extra rows in the table above, because a builder has no login at all —
+// the portal is a slug in a URL by design — so a portal visit has no
+// account, no logout and no duration. Folding it into rows built around
+// those three would mean three empty columns and an implied "login"
+// that never happened.
+function renderBuilderAccessCard() {
+  const d = builderAccessData;
+  if (!d) return '';
+  const when = (iso) => new Date(iso + 'Z').toLocaleString('en-ZA', {dateStyle: 'medium', timeStyle: 'short'});
+  return `
+    <div class="card">
+      <h2 style="margin-top:0;">Builder Network Access</h2>
+      <p class="muted" style="margin-top:-6px;">Who came in through a builder link, over the same date range as above. Builders have no login of their own — this pilot works off a shared link — so "opened their portal link" is the closest real equivalent to a login, and what they actually submitted is listed alongside it.</p>
+      <div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:10px; font-size:12px;">
+        <span><b>${d.visit_count}</b> portal visit${d.visit_count === 1 ? '' : 's'}</span>
+        <span><b>${d.estimate_count}</b> estimate${d.estimate_count === 1 ? '' : 's'} submitted</span>
+        <span><b>${(d.builders || []).length}</b> builder${(d.builders || []).length === 1 ? '' : 's'} active</span>
+      </div>
+      ${d.events.length ? `
+        <table>
+          <thead><tr><th>Builder</th><th>What they did</th><th>When</th></tr></thead>
+          <tbody>${d.events.map(ev => `
+            <tr>
+              <td><b>${ev.builder_name}</b>${ev.active === false ? ' <span class="muted" style="font-size:10.5px;">(link revoked)</span>' : ''}</td>
+              <td>${ev.type === 'visit' ? '👁️' : '📋'} ${ev.detail}</td>
+              <td class="muted" style="white-space:nowrap;">${when(ev.at)}</td>
+            </tr>`).join('')}</tbody>
+        </table>` : '<p class="muted" style="margin:0;">No builder activity in this range.</p>'}
+    </div>`;
 }
 
 // ===== Supplier & Price Book Management Console (confirmed Aug 2026) =====
@@ -5160,6 +5222,13 @@ async function renderBusinessSettings(el) {
         <div class="field"><label>Screed bag overage rate (R, incl. VAT)</label><input id="bs_bag_overage" type="number" step="0.01" value="${s.bag_overage_rate}" ${ro}></div>
         <div class="field"><label>Default labour rate (R/m²)</label><input id="bs_labour_rate" type="number" step="0.01" value="${s.default_labour_rate_per_m2}" ${ro}></div>
         <div class="field"><label>Order Index overdue threshold (days)</label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
+        <!-- Sessions reset every few hours (confirmed Sept 2026, Burgert:
+        "Get all logins to reset every few hours"). A setting rather than
+        a constant because "a few hours" is a judgement about how the
+        working day actually runs — tighten or relax it here after
+        living with it, no code change. Applies to the NEXT login;
+        sessions already open keep the length they were issued with. -->
+        <div class="field"><label>Login session length (hours) <span class="adj">everyone is signed out after this</span></label><input id="bs_session_hours" type="number" step="0.5" min="0.5" value="${s.session_hours}" ${ro}></div>
         <div class="field"><label>Pricing Zone <span class="adj">(fallback default for a brand-new zone-priced supplier only — Azura, Como Flooring, and any other zone-priced supplier now each set their own zone independently in the Supplier Console, not here)</span></label>
           <select id="bs_pricing_zone" ${ro}>
             <option value="A" ${s.pricing_zone==='A'?'selected':''}>Zone A</option>
@@ -5247,6 +5316,7 @@ async function saveBusinessSettings() {
     bag_overage_rate: parseFloat(document.getElementById('bs_bag_overage').value),
     default_labour_rate_per_m2: parseFloat(document.getElementById('bs_labour_rate').value),
     order_overdue_days: parseInt(document.getElementById('bs_overdue_days').value),
+    session_hours: parseFloat(document.getElementById('bs_session_hours').value),
     // Multi-tenant groundwork Part 2 (confirmed Aug 2026) — stairwell/screed defaults, now settings-driven:
     flooring_margin_warn_threshold: parseFloat(document.getElementById('bs_margin_threshold').value) / 100,
     stairwell_labour_closed: parseFloat(document.getElementById('bs_stair_labour_closed').value),

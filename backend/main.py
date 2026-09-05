@@ -545,6 +545,12 @@ def _ensure_new_columns():
         ("builderestimate", "trim_price_ex_vat", "FLOAT", "0.0"),
         ("trimproduct", "available_to_builder_portal", "BOOLEAN", "FALSE"),
         ("businesssettings", "builder_portal_door_width_m", "FLOAT", "0.9"),
+        # Sessions reset every few hours (confirmed Sept 2026) — 4.0 is
+        # the new real default, deliberately NOT 24: the point of the
+        # change is that existing behaviour was too long, so carrying
+        # the old value forward on migration would ship the setting
+        # while changing nothing.
+        ("businesssettings", "session_hours", "FLOAT", "4.0"),
         # Screed/trim auto-resolution + the builder's own logo (confirmed
         # Sept 2026) — see the models.py field comments. FALSE on both
         # switches is the real intent for every existing tenant: nobody
@@ -686,7 +692,7 @@ def _post_rls_security_precaution():
        this deploy). _resolve_session() already treats ended_at as an
        immediate hard invalidation (same as a real logout), confirmed
        by reading that function before writing this — so this forces
-       everyone off immediately regardless of a token's original 24h
+       everyone off immediately regardless of a token's original
        expires_at.
     2) Reset the three staff passwords (password_hash was exposed
        too). Guarded by comparing against the EXACT original seed hash
@@ -1769,7 +1775,7 @@ def _resolve_session(request: Request) -> Optional[dict]:
             # instead of deleting the row, so the log has real history —
             # but that means expires_at alone is no longer enough to prove
             # a session is still valid. An ended session must stop working
-            # immediately, not linger until its original 24h expiry.
+            # immediately, not linger until its own natural expiry.
             if sess and sess.ended_at is None and sess.expires_at >= datetime.utcnow():
                 user = session.get(User, sess.user_id)
                 if user and user.active:
@@ -1858,7 +1864,7 @@ def login(body: LoginRequest):
         # cause of multiple simultaneous "Still active" sessions for the
         # same person: staff close the browser/app instead of clicking
         # Log out, so the old session never gets an ended_at and just
-        # sits active until its own 24h natural expiry, while a fresh
+        # sits active until its own natural expiry, while a fresh
         # login later that day creates another on top of it. Every OTHER
         # currently-active session for this user is now ended here,
         # immediately, the moment a new login succeeds — "currently
@@ -1877,7 +1883,12 @@ def login(body: LoginRequest):
             old_sess.ended_reason = "superseded"
             session.add(old_sess)
         token = new_session_token()
-        sess = UserSession(token=token, user_id=user.id, expires_at=new_expiry())
+        # The tenant's own configured session length (Sept 2026) rather
+        # than auth.py's fallback — read here because this is the one
+        # place a session is created, so there is no second path that
+        # could quietly keep using a different length.
+        sess = UserSession(token=token, user_id=user.id,
+                            expires_at=new_expiry(get_settings(session, user.tenant_id).session_hours))
         session.add(sess)
         session.commit()
         # Returned in the body, not set as a cookie (changed Aug 2026 —
@@ -4185,6 +4196,83 @@ def delete_order_sheet(order_sheet_id: int, tenant_id: str = Depends(get_current
 
 # ---------- Login & Session Activity Log, Phase 1 (confirmed Aug 2026) ----------
 
+@app.get("/admin/builder-access-log")
+def builder_access_log(start_date: Optional[str] = None, end_date: Optional[str] = None,
+                        role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Who came in through a builder link (confirmed Sept 2026, Burgert:
+    "I would also like to be able to see who logged on from my builders
+    network or trusted testers. It needs to show up in the login detail
+    page").
+
+    Trusted testers needed nothing — they are real staff accounts, so
+    their logins were already in the session log, already badged
+    (is_test_data/test_data_label, see session_log() below). Verified
+    before building rather than assumed.
+
+    Builders genuinely did need this. They have no login at all — the
+    portal is a slug in a URL, by design (see Builder's own docstring,
+    models.py) — so nothing they do could ever appear in a log of
+    SESSIONS. This is the honest equivalent, and it is deliberately
+    presented as its own thing rather than merged into the session
+    table: a portal visit has no logout, no duration and no account, so
+    folding it into rows built around those three would mean three empty
+    columns and an implied "login" that never happened.
+
+    Two kinds of event, merged into one timeline, both read from the
+    real records rather than a second event log:
+      - visits   — BuilderPortalVisit, one row per real portal load
+      - submits  — a BuilderEstimate they actually sent through
+    Same "derive, don't duplicate" approach builder_activity() already
+    uses for the per-builder view; this is the whole-business version of
+    it, filtered by the same date range as the session log beside it."""
+    with Session(engine) as session:
+        builders = {b.id: b for b in session.exec(select(Builder).where(Builder.tenant_id == tenant_id)).all()}
+
+        def in_range(when):
+            d = when.date()
+            if start_date and d < date.fromisoformat(start_date):
+                return False
+            if end_date and d > date.fromisoformat(end_date):
+                return False
+            return True
+
+        events = []
+        for v in session.exec(select(BuilderPortalVisit).where(BuilderPortalVisit.tenant_id == tenant_id)).all():
+            if not in_range(v.created_at):
+                continue
+            b = builders.get(v.builder_id)
+            events.append({
+                "at": v.created_at.isoformat(), "type": "visit",
+                "builder_id": v.builder_id,
+                # A visit logged before a builder was deleted still
+                # belongs in the record — the name is gone, the access
+                # is not, and silently dropping the row would make the
+                # log quietly incomplete.
+                "builder_name": b.name if b else "(deleted builder)",
+                "active": b.active if b else False,
+                "detail": "Opened their portal link",
+            })
+        for e in session.exec(select(BuilderEstimate).where(BuilderEstimate.tenant_id == tenant_id)).all():
+            if not in_range(e.created_at):
+                continue
+            b = builders.get(e.builder_id)
+            events.append({
+                "at": e.created_at.isoformat(), "type": "estimate",
+                "builder_id": e.builder_id,
+                "builder_name": b.name if b else "(deleted builder)",
+                "active": b.active if b else False,
+                "detail": f"Submitted an estimate for {e.client_name}"
+                          + (" \u2014 confirmed as a real order" if e.confirmed_by_builder else ""),
+            })
+        events.sort(key=lambda ev: ev["at"], reverse=True)
+        return {
+            "events": events[:500],
+            "visit_count": sum(1 for ev in events if ev["type"] == "visit"),
+            "estimate_count": sum(1 for ev in events if ev["type"] == "estimate"),
+            "builders": sorted({ev["builder_name"] for ev in events}),
+        }
+
+
 @app.get("/admin/session-log")
 def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None,
                  role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
@@ -4200,7 +4288,7 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
     that.
 
     still_active / logout_time distinguishes a real logout (ended_at
-    set) from a session nobody explicitly logged out of but whose 24h
+    set) from a session nobody explicitly logged out of but whose
     window has since passed (expires_at used as the approximate end
     time in that case) — computed here at read time, no background job
     needed. duration_minutes covers both: elapsed time up to the real
@@ -4260,7 +4348,7 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
                 # silently relabeled.
                 ended_reason = sess.ended_reason or "logout"
             elif sess.expires_at < now:
-                logout_time = sess.expires_at   # natural 24h expiry, no explicit logout — approximate end time
+                logout_time = sess.expires_at   # natural expiry, no explicit logout — approximate end time
                 still_active = False
                 ended_reason = "expired"
             else:

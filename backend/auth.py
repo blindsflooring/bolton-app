@@ -39,7 +39,17 @@ import secrets
 from datetime import datetime, timedelta
 
 PBKDF2_ITERATIONS = 260_000
-SESSION_LENGTH = timedelta(hours=24)
+# Sessions reset every few hours (confirmed Sept 2026, Burgert: "Get
+# all logins to reset every few hours"). Was a fixed 24 hours, i.e. a
+# login survived overnight and into the next day.
+#
+# This stays as the FALLBACK only — the real length is a Business
+# Setting (BusinessSettings.session_hours), so Burgert can tune it
+# without a code change once he sees how it feels in a working day.
+# new_expiry() takes it as an argument; this default only applies to a
+# caller that hasn't got settings to hand.
+DEFAULT_SESSION_HOURS = 4
+SESSION_LENGTH = timedelta(hours=DEFAULT_SESSION_HOURS)
 
 
 def hash_password(password: str) -> str:
@@ -64,5 +74,15 @@ def new_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def new_expiry() -> datetime:
-    return datetime.utcnow() + SESSION_LENGTH
+def new_expiry(hours: float = None) -> datetime:
+    """hours (Sept 2026) — the tenant's own configured session length,
+    passed in by the caller that has BusinessSettings to hand. Falls
+    back to DEFAULT_SESSION_HOURS when not given, so this stays safe for
+    any caller that doesn't.
+
+    Guarded against a nonsense value: a 0 or negative setting would
+    expire every session the instant it was created and lock everybody
+    out of the app with no way back in through the UI to fix it."""
+    if not hours or hours <= 0:
+        hours = DEFAULT_SESSION_HOURS
+    return datetime.utcnow() + timedelta(hours=hours)

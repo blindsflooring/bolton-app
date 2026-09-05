@@ -74,6 +74,30 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-10 (2)
+
+Shorter login sessions, and builder-network access on the Login Activity page (Burgert: "Get all logins to reset every few hours. I would also like to be able to see who logged on from my builders network or trusted testers. It needs to show up in the login detail page").
+
+### What shipped
+- **Sessions now last 4 hours, not 24** — and it is a real Business Setting (`session_hours`), editable on the Business Settings screen, not a constant. Applies to the next login; sessions already open keep the length they were issued with.
+- **A "Builder Network Access" card on the Login Activity page**, over the same date range as the sessions above it: who opened a builder link, what they submitted, newest first, with revoked links still shown and flagged.
+- **Trusted testers needed nothing.** Checked before building: they are real staff accounts, so their logins were already in the session log and already badged 🧪 "TEST — [name]". Verified rather than assumed, and a line was added under the table saying what the badge means.
+
+### Why (root causes, decisions, rejected alternatives)
+- **A setting, not a constant.** "A few hours" is a judgement about how a working day actually runs — 4 hours signs someone out mid-afternoon, which may be right or may be irritating. Burgert can now tighten or relax it himself after living with it. The default migrates to 4.0 rather than carrying 24 forward, since shipping the setting while changing nothing would have missed the point.
+- **Guarded against a nonsense value.** A 0 or negative setting would expire every session the instant it was created and lock everyone out of the app — with no way back in through the UI to fix it. `new_expiry()` falls back rather than trusting the number.
+- **Builder access is its own card, not extra rows in the session table.** Builders have no login at all — the portal is a slug in a URL by design — so a portal visit has no account, no logout and no duration. Folding it into rows built around those three would mean three empty columns and an implied "login" that never happened.
+- **A revoked builder's past access is still listed**, flagged "(link revoked)", and a deleted builder's events read "(deleted builder)" rather than vanishing — dropping them would make the access log quietly incomplete, which is the one thing an access log must not be.
+
+### A real bug caught in passing
+- **`showLogin()` threw a TypeError on every fresh page load.** Found by a browser check listening for page errors while verifying this screen, not by looking for it. `checkAuthOnLoad()` calls `showLogin()` *during page parse*, and `#mobileBackBtn` is the last element in `<body>` — after the script tag — so it did not exist yet and the function threw on it. Everything below that line never ran, including clearing `login_error`, and the throw silently rejected `checkAuthOnLoad()`'s promise. It went unnoticed because the login screen still appeared: it is the first line of the function, and that element is visible by default anyway. Every lookup in it is now guarded.
+
+### Verified
+- 18 backend checks: a new login expires in ~4h not 24; changing the setting changes the next login's length while an open session keeps its own; a zero or negative setting falls back instead of locking everyone out; an expired token is genuinely refused with a 401; builder visits and submissions are both reported, newest first, date-filtered on the same range as the sessions, Owner-only, with revoked builders flagged; and a trusted tester's login is present and labelled.
+- 5 real-browser checks: the card renders with the real builder and what they did, the counts line renders, the tester badge shows — and the page now raises no JavaScript errors at all.
+
+---
+
 ## 2026-09-10
 
 Quote expiry after 30 days (Burgert: "add quote expiry after 30 days") — closing the last gap the Order Index Redesign brief named.
