@@ -74,6 +74,29 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-10
+
+Quote expiry after 30 days (Burgert: "add quote expiry after 30 days") — closing the last gap the Order Index Redesign brief named.
+
+### What shipped
+- **A quote goes "expired" after 30 days of silence.** It stops appearing in Needs Attention, is badged `(expired)` on its row, sinks below every live quote in the sort, and groups with the finished work rather than with quotes still awaiting an answer. The Order Index section header reads "Completed, expired & closed" and the fifth stage tile is now "Closed — Paid & expired".
+- It still carries a real next action — *"Quote expired (N days quiet) — re-quote or decline"* — so the row says what it is, states how long it's been quiet, and stays actionable when someone does look at it.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Derived, never stored, and no background job.** Expiry is purely a function of a date and a status, so a column would be a second copy of something already knowable — one that would then be wrong between whenever a job last ran and now. Same "derive, don't duplicate state that could drift" rule the rest of the workflow engine follows.
+- **Counted from the last real ACTIVITY, not blindly from creation.** It reuses the exact `stale_since` the existing 7-day follow-up prompt already uses (created date, or the last logged follow-up, whichever is later). A quote chased last week is not a month-dead quote just because it was written five weeks ago — expiring it would have punished the person doing the follow-ups. Verified directly: a 60-day-old quote followed up 3 days ago is not expired.
+- **No `attention_priority` on an expired quote.** After a month of silence it is not something anyone needs prompting about today, and leaving it in Needs Attention is precisely the forever-nagging row this concept exists to retire.
+- **Three states are explicitly never "expired"**, each for its own reason: a **declined** quote was closed by a real decision, which is a stronger and different fact than having gone quiet; an **On Hold** job's clock is deliberately paused; and anything past the quoted stage has been answered. All three are asserted in the tests, not just intended.
+- **Expired quotes are not hidden.** They stay in the list, badged and sunk — they are real quotes someone may want to re-quote, and filtering them out of view would repeat the "+N more" mistake of solving clutter by hiding information.
+
+### Verified
+- 19 checks, including the boundary from both sides (29 days not expired, 30 days expired), that a stale-but-not-expired quote still raises its follow-up, that a recently-chased old quote is exempt, and that declined / On Hold / accepted / completed are each never labelled expired.
+
+### Open going into next session
+- The calendar palette is still a first pass, worth living with for a week or two before tuning.
+
+---
+
 ## 2026-09-09 (3)
 
 Business Overview card order, and a new standing UI convention.

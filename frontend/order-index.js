@@ -38,13 +38,18 @@ const WORKFLOW_STATUS_META = {
 function workflowStatusBadge(q) {
   const meta = WORKFLOW_STATUS_META[q.workflow_status] || WORKFLOW_STATUS_META.quoted;
   const declined = q.declined_at ? ' <span class="muted" style="font-size:10.5px;">(declined)</span>' : '';
+  // Quote expiry (confirmed Sept 2026) — same quiet suffix treatment as
+  // declined: the row still reads as Quoted, because it is, with the
+  // reason it has stopped being chased stated next to it rather than
+  // left to be inferred from an absent follow-up prompt.
+  const expired = (q.expired && !q.declined_at) ? ' <span class="muted" style="font-size:10.5px;">(expired)</span>' : '';
   // On Hold (Job Workflow Design Proposal Phase 1, confirmed Aug 2026)
   // -- an overlay, same reasoning as declined above: workflow_status
   // itself is untouched while on hold, so the badge still shows
   // Accepted/Scheduled underneath, with this appended for visibility
   // at a glance -- never a 5th status value of its own.
   const onHold = q.on_hold_reason ? ' <span style="font-size:10.5px; font-weight:700; color:var(--coral);">⏸ On Hold</span>' : '';
-  return `<span class="status-badge" style="background:${meta.bg}; color:${meta.color};">${meta.label}</span>${declined}${onHold}`;
+  return `<span class="status-badge" style="background:${meta.bg}; color:${meta.color};">${meta.label}</span>${declined}${expired}${onHold}`;
 }
 // Next Action button — action_target from _job_workflow_info() (main.py)
 // decides where it goes: 'print_invoice' opens the existing Print
@@ -246,6 +251,10 @@ function renderOrderIndexTable(searchTerm) {
   // "awaiting final payment", and lumping it there would mislabel
   // finished work.
   function orderIndexStage(q) {
+    // Expired quotes are grouped with the finished work, not with live
+    // quotes awaiting an answer — checked first for the same reason
+    // orderStageOf() does it: they are still workflow_status "quoted".
+    if (q.expired) return 3;
     if (q.workflow_status === 'quoted') return 0;
     if (q.workflow_status === 'accepted' || q.workflow_status === 'scheduled') return 1;
     if (q.workflow_status === 'completed') return q.final_payment_date ? 3 : 2;
@@ -254,9 +263,13 @@ function renderOrderIndexTable(searchTerm) {
   function orderIndexPriorityBucket(q) {
     if (q.workflow_status === 'scheduled') return 0;
     if (q.workflow_status === 'accepted') return 1;
+    // Expired sinks below every live quote but above nothing else —
+    // it is not urgent, but it is still a real quote someone may want
+    // to re-quote, so it stays visible rather than being filtered out.
+    if (q.expired) return 4;
     if (q.workflow_status === 'quoted') return q.attention_priority ? 2 : 3;
-    if (q.workflow_status === 'completed') return 4;
-    return 5;   // safety fallback — no real workflow_status value reaches this today
+    if (q.workflow_status === 'completed') return 5;
+    return 6;   // safety fallback — no real workflow_status value reaches this today
   }
   const shown = orderIndexActiveTab === 'all'
     ? [...quotes].sort((a, b) => (orderIndexStage(a) - orderIndexStage(b))
@@ -448,13 +461,19 @@ const ORDER_STAGES = [
   { key: 'accepted', label: 'Accepted', sub: 'Not yet installed' },
   { key: 'installing', label: 'Being Installed', sub: 'In progress' },
   { key: 'awaiting_payment', label: 'Awaiting Payment', sub: 'Installed, unpaid' },
-  { key: 'archive', label: 'Completed', sub: 'Finished & paid' },
+  { key: 'archive', label: 'Closed', sub: 'Paid & expired' },
 ];
 function orderStageOf(q) {
   // declined_at BEFORE workflow_status: a declined quote's own status
   // stays "quoted" forever (decline_quote(), main.py), so without this
   // check a declined quote would count as Work Quoted.
   if (q.declined_at) return 'declined';
+  // Expiry, same reasoning (confirmed Sept 2026): an expired quote is
+  // still workflow_status "quoted", so without this it would inflate
+  // Work Quoted with month-dead quotes — which is the exact clutter
+  // expiry exists to clear. q.expired is derived server-side
+  // (_job_workflow_info(), main.py), never recomputed here.
+  if (q.expired) return 'archive';
   if (q.workflow_status === 'quoted') return 'quoted';
   if (q.workflow_status === 'accepted') return 'accepted';
   if (q.workflow_status === 'scheduled') return 'installing';
@@ -598,7 +617,7 @@ const ORDER_INDEX_STAGE_LABELS = [
   'Quoted — awaiting acceptance',
   'Accepted — not yet installed',
   'Installed — awaiting final payment',
-  'Completed & paid',
+  'Completed, expired & closed',
   'Other',
 ];
 

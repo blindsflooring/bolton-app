@@ -7448,11 +7448,25 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     and resumes there once taken off hold, with nothing else about its
     state touched."""
     QUOTE_STALE_DAYS = 7
+    # Quote expiry (confirmed Sept 2026, Burgert: "add quote expiry
+    # after 30 days"). Closes the gap the Order Index Redesign brief
+    # named — its Archive stage was meant to hold "completed jobs,
+    # expired quotes, and declined quotes", but quotes had no expiry
+    # concept at all, so an unanswered quote nagged for a follow-up
+    # forever.
+    #
+    # DERIVED, never stored, and no background job: expiry is purely a
+    # function of a date and a status, so a column would be a second
+    # copy of something already knowable that could then drift out of
+    # date between whenever the job last ran and now. Same "derive,
+    # don't duplicate state" rule the rest of this engine follows.
+    QUOTE_EXPIRY_DAYS = 30
     ws = quote.workflow_status
     invoiced = bool(quote.invoice_sent_date)
     paid = bool(quote.final_payment_date)
     next_action = action_button = action_target = None
     attention_priority = attention_label = None
+    expired = False
 
     # A declined quote has nothing left to do (found Sept 2026, Order
     # Index Redesign — declined quotes now appear in the main table as
@@ -7467,19 +7481,44 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
         return {
             "next_action": None, "action_button": None, "action_target": None,
             "attention_priority": None, "attention_label": None,
+            # A declined quote is closed by a real decision, which is a
+            # different and stronger fact than having gone quiet — it is
+            # never additionally labelled "expired".
+            "expired": False,
         }
 
     if quote.on_hold_reason:
         return {
             "next_action": f"On Hold — {quote.on_hold_reason}", "action_button": "VIEW HOLD", "action_target": "job_detail",
             "attention_priority": "critical", "attention_label": "On Hold",
+            # A job deliberately paused is not an expired quote — On Hold
+            # is a real, explicit state someone chose, and its clock is
+            # frozen on purpose.
+            "expired": False,
         }
 
     if ws == "quoted":
-        next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
+        # Counted from the last real ACTIVITY, not blindly from creation
+        # — the same stale_since the 7-day follow-up prompt already uses.
+        # A quote someone chased last week is not a month-dead quote just
+        # because it was written five weeks ago, and expiring it would
+        # punish the person doing the follow-ups.
         stale_since = max(quote.created_at.date(), last_follow_up_date) if last_follow_up_date else quote.created_at.date()
-        if (today - stale_since).days >= QUOTE_STALE_DAYS:
-            attention_priority, attention_label = "notice", "Follow up"
+        days_quiet = (today - stale_since).days
+        if days_quiet >= QUOTE_EXPIRY_DAYS:
+            # Deliberately NO attention_priority: after a month of
+            # silence this is not something anyone needs prompting about
+            # today, and leaving it in Needs Attention is exactly the
+            # forever-nagging row this expiry concept exists to retire.
+            # It still carries a real next_action, so the row says what
+            # it is and stays actionable when someone does look.
+            expired = True
+            next_action, action_button, action_target = (
+                f"Quote expired ({days_quiet} days quiet) — re-quote or decline", "REVIEW", "job_detail")
+        else:
+            next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
+            if days_quiet >= QUOTE_STALE_DAYS:
+                attention_priority, attention_label = "notice", "Follow up"
     elif ws == "accepted":
         # Booking visibility fix (confirmed Aug 2026, Master Workflow
         # proposal §01/§05/§07) — REAL GAP FIXED, not a new field.
@@ -7557,6 +7596,10 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     return {
         "next_action": next_action, "action_button": action_button, "action_target": action_target,
         "attention_priority": attention_priority, "attention_label": attention_label,
+        # One place computes expiry (here), so the Order Index badge,
+        # the stage tiles and the sort order can never disagree about
+        # which quotes are dead.
+        "expired": expired,
     }
 
 
