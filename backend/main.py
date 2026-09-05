@@ -3920,12 +3920,22 @@ def delete_employee(employee_id: int, tenant_id: str = Depends(get_current_tenan
 # decision that can be read, tested and changed in one place instead of
 # a rule that drifts as endpoints are added.
 #
-# Admin (Madri) is deliberately NOT in this set yet. She is the one who
-# invoices and orders materials for OTHER people's jobs, so scoping her
-# out of them would stop real daily work; adding "admin" here is a
-# one-word change once Burgert confirms that is what he wants. Flagged
-# rather than guessed, because guessing wrong in this direction breaks
-# the business rather than leaking anything.
+# Admin (Madri) is deliberately NOT in this set, and this is a SETTLED
+# decision, not an oversight — confirmed directly Sept 2026, Burgert's
+# own words: "leave madri as is, she needs to see everything."
+#
+# The reasoning behind asking: she invoices and orders materials for
+# OTHER people's jobs, so scoping her the way Ryno is scoped would stop
+# real daily work rather than protect anything. Field-level protection
+# still applies to her exactly as before — cost, margin and the full
+# calculation breakdown remain Owner-only (strip_sensitive_fields()),
+# and the Owner-only endpoints stay closed to her. "Sees everything"
+# here means every ROW, never every FIELD.
+#
+# Do not add UserRole.admin here without a fresh, explicit instruction:
+# it would silently break invoicing and ordering, which is the one
+# direction where guessing wrong damages the business rather than
+# leaking data.
 PERSON_SCOPED_ROLES = {UserRole.sales}
 
 

@@ -185,7 +185,7 @@ Probed with real sessions as all three roles rather than read. **Already correct
 - 29 checks: Ryno's lists contain only his own rows while Burgert still sees everyone's; Ryno cannot open another person's quote or lead by id but can still open his own; filters asking for someone else's rows never return them; HR hours and leave are scoped while Owner and Admin are unaffected; the Business Overview is Owner-only and the preview header cannot reach it; and anonymous callers are still refused everywhere.
 
 ### Open going into next session
-- **Should Madri be person-scoped too?** One-word change; needs Burgert's call on whether she still needs to see other people's jobs to invoice and order for them.
+- ~~Should Madri be person-scoped too?~~ **Settled 2026-09-05** — Burgert: "leave madri as is, she needs to see everything." She invoices and orders materials for other people's jobs, so scoping her would stop real daily work rather than protect anything. Recorded in the code at `PERSON_SCOPED_ROLES` as a settled decision, not an oversight, with an explicit "do not add admin here without a fresh instruction" — the one direction where guessing wrong damages the business rather than leaking data. Worth restating: "sees everything" means every ROW, never every FIELD — cost, margin and the full breakdown remain Owner-only for her exactly as before.
 
 ---
 
