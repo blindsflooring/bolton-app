@@ -1648,6 +1648,51 @@ def on_startup():
     except Exception as e:
         print(f"Migration: builder estimate breakdown backfill failed ({e}) — older estimates show a R0 material line on their breakdown until this is retried")
 
+    # Duplicate supplier merged in the DATA (confirmed Sept 2026,
+    # stairwell round 3, Burgert with screenshots: the stairwell vinyl
+    # dropdown showed TWO "Azura" groups, each listing the same deZIGN
+    # series 120/200/250/Herringbone/XL). His own instruction was
+    # explicit — merge the underlying data, "not filtered at display
+    # time, since that would just mask the duplicate rather than fix
+    # it."
+    #
+    # "Azura Distributors" is the canonical name, chosen from real
+    # evidence rather than preference: it is the name SupplierDefault
+    # carries (so it is the row holding this supplier's real trade
+    # discount and delivery defaults), and the name almost every
+    # existing OrderSheet was raised under. The rows spelled plain
+    # "Azura" are the duplicates.
+    #
+    # SCOPED TO FlooringProduct ON PURPOSE. Two other uses of "Azura"
+    # are deliberate and must not be swept up:
+    #   - FloorPrepProduct.supplier is "Azura" by design — this
+    #     codebase's own comment says the three spellings are three
+    #     different exact names for three different categories, and
+    #     _floor_prep_supplier() reads that one.
+    #   - "Azura Distributors (iTe)" is the screed line, a genuinely
+    #     separate supplier entry, left completely alone.
+    # OrderSheet.supplier is also left alone: a placed order is a
+    # historical record of what was actually sent, and rewriting it
+    # would be falsifying that. New sheets pick up the merged name
+    # naturally, and _merge_supplier_key() already groups the old ones.
+    try:
+        with Session(engine) as session:
+            dupes = session.exec(
+                select(FlooringProduct).where(FlooringProduct.supplier == "Azura")
+            ).all()
+            for prod in dupes:
+                session.add(AuditLog(
+                    tenant_id=prod.tenant_id, username="system", entity_type="FlooringProduct", entity_id=prod.id,
+                    field="supplier", old_value="Azura", new_value="Azura Distributors",
+                ))
+                prod.supplier = "Azura Distributors"
+                session.add(prod)
+            if dupes:
+                session.commit()
+                print(f"Migration: merged {len(dupes)} flooring product(s) from supplier 'Azura' into 'Azura Distributors' \u2014 one supplier group, not two (stairwell round 3)")
+    except Exception as e:
+        print(f"Migration: Azura supplier merge failed ({e}) \u2014 the vinyl dropdowns keep showing two Azura groups until this is retried")
+
     # Invoices that went out but were never recorded (BUG FIX, confirmed
     # Sept 2026 — J-0003 and J-0002 sat in Needs Attention still asking
     # to be invoiced long after their invoices had been sent). The fix
@@ -9951,6 +9996,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
                        own_staff: bool = True, markup_override: float = None,
                        include_tile_removal_fee: bool = False,
                        apply_delivery_fee: bool = True,
+                       colour_tbc: bool = False,
                        role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
                        username: str = Depends(get_current_username)):
     """
@@ -9986,7 +10032,21 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
         )
         line = QuoteLineItem(
             quote_id=quote_id, category="flooring", product_id=product_id, tenant_id=tenant_id,
-            product_name=product.product_name, colour=product.colour, original_colour=product.colour,
+            # colour_tbc (confirmed Sept 2026, round 3) — the universal
+            # "colour can be added later" rule, now on this calculator
+            # too and not just the stairwell. product_id still points at
+            # a real price-book row so the line is priced correctly;
+            # what TBC changes is that the line stores NO colour rather
+            # than silently inheriting that row's colour. Storing the
+            # representative row's colour would recreate the exact Aug
+            # 2026 "Colour Default Risk" bug — a colour on the quote
+            # that nobody picked — which is the one thing this must not
+            # do. Filled in later via change_line_colour(), the same
+            # path the stairwell uses. original_colour is left blank
+            # too: there was no original choice to record.
+            product_name=product.product_name,
+            colour="" if colour_tbc else product.colour,
+            original_colour="" if colour_tbc else product.colour,
             job_type=job_type, flooring_pricing_type=product.pricing_type,
             carpet_category=product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None,
             quantity_m2=quantity_m2, discount_pct=discount_pct,
@@ -10006,7 +10066,7 @@ def add_flooring_line(quote_id: int, product_id: int, quantity_m2: float,
             total_job_cost=calc["total_job_cost"],
         )
         session.add(line)
-        _log_quote_line_audit(session, quote, username, "added", f"Flooring — {product.product_name}{', ' + product.colour if product.colour else ''}, {quantity_m2}m²")
+        _log_quote_line_audit(session, quote, username, "added", f"Flooring — {product.product_name}{', colour TBC' if colour_tbc else (', ' + product.colour if product.colour else '')}, {quantity_m2}m²")
         session.commit()
         session.refresh(line)
 
@@ -10707,6 +10767,7 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
                         own_staff: bool = True, markup_override: float = None,
                         include_tile_removal_fee: bool = False,
                         apply_delivery_fee: bool = True,
+                        colour_tbc: bool = False,
                         role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
                         username: str = Depends(get_current_username)):
     """Covers both vinyl and screed (job_type/pricing_type distinguishes
@@ -10738,7 +10799,12 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
         )
         line.product_id = product_id
         line.product_name = product.product_name
-        line.colour = product.colour   # original_colour is set once at creation, permanently — never touched by an edit, same rule change_line_colour() already follows
+        # colour_tbc (confirmed Sept 2026, round 3) — same rule as the
+        # add path: TBC clears the colour rather than inheriting the
+        # priced row's. Editing back TO TBC is deliberately allowed, the
+        # same way the stairwell's edit path treats an empty colour as a
+        # real "back to TBC" value rather than "unchanged".
+        line.colour = "" if colour_tbc else product.colour   # original_colour is set once at creation, permanently — never touched by an edit, same rule change_line_colour() already follows
         line.job_type = job_type
         line.flooring_pricing_type = product.pricing_type
         line.carpet_category = product.flooring_category if product.flooring_category in CARPET_ONLY_CATEGORIES else None

@@ -997,15 +997,16 @@ function toggleFloorPrepRoomCard(headerEl) {
 //     Now grouped: <optgroup> per supplier, one option per real
 //     pricing unit (range, plus product_variant where a range has
 //     them — the 3-level case the vinyl calculator already handles).
-//  2. Aspen was missing entirely. Root cause was NOT this list: the
-//     old filter required a stored tiles_per_pack, which Aspen has
-//     never had, because that field is only written when the Supplier
-//     Console commits a dimensions edit. The backend now derives it
-//     from the plank dimensions Aspen does carry
-//     (_stairwell_tiles_per_pack(), main.py), so the filter here can
-//     simply ask "does this have a plank size we can work out" and
-//     Aspen passes honestly rather than being waved through into a
-//     calculation that would divide by nothing.
+//  2. Aspen was missing entirely. CORRECTED Sept 2026 (round 3) — the
+//     round-2 note here claimed the backend could derive Aspen's
+//     planks-per-box from plank dimensions. It cannot: every Aspen row
+//     has tiles_per_pack, tile_length_mm AND tile_width_mm all unset,
+//     carrying only an m2 per box. There was nothing to derive from,
+//     which is why Aspen was still absent after that "fix". Aspen is
+//     now listed but disabled with the reason shown — see
+//     stairwellVinylUsable() below. It becomes selectable the moment
+//     either number is entered in the Supplier Console; it is NOT
+//     waved through into a calculation that would divide by nothing.
 //  3. No colour choice at all. Now its own picker below, TBC-able.
 //
 // Grouping by (supplier, range, variant) rather than by range alone is
@@ -1013,16 +1014,37 @@ function toggleFloorPrepRoomCard(headerEl) {
 // pricing a TBC line off the group's first row is safe. Grouping by
 // range alone would fold a 3-level range's variants together, whose
 // costs really do differ, and a TBC quote could then go out mispriced.
-function stairwellVinylCandidates() {
+// Every real vinyl product, INCLUDING ones that can't be priced on
+// stairs yet (confirmed Sept 2026, round 3).
+//
+// Round 2 filtered those out entirely, which is why Aspen was still
+// absent from the dropdown after being "fixed": Aspen Flooring's 35
+// products carry an m² per box but NO plank dimensions and NO
+// planks-per-box at all, so there was nothing to derive from and
+// nothing to show. Silently absent for a third round is the worst
+// outcome — it looks like the app has forgotten the supplier exists.
+// They are listed now, and disabled with the reason attached, so the
+// gap is visible and fixable instead of invisible.
+function stairwellAllVinyl() {
   return flooringProducts.filter(p =>
     p.pricing_type === 'material'
     && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category)
     && p.flooring_category !== 'uncategorized_pending'
-    && !p.pending_review
-    // Either a stored planks-per-box, or the dimensions the backend can
-    // derive one from — mirrors _stairwell_tiles_per_pack() exactly, so
-    // this list never offers something the calculator will then refuse.
-    && (p.tiles_per_pack || (p.tile_length_mm && p.tile_width_mm && p.m2_per_pack)));
+    && !p.pending_review);
+}
+
+// Can the stairwell actually price this product? Mirrors
+// _stairwell_tiles_per_pack() (main.py) exactly: a stored
+// planks-per-box, or the plank dimensions to work one out. The
+// stairwell bills vinyl by tile count (3 planks per stair), so without
+// one of those there is no honest number — this is a real data gap, not
+// a display rule to relax.
+function stairwellVinylUsable(p) {
+  return !!(p.tiles_per_pack || (p.tile_length_mm && p.tile_width_mm && p.m2_per_pack));
+}
+
+function stairwellVinylCandidates() {
+  return stairwellAllVinyl().filter(stairwellVinylUsable);
 }
 
 function stairwellVinylGroupKey(p) {
@@ -1030,27 +1052,48 @@ function stairwellVinylGroupKey(p) {
 }
 
 function populateStairwellVinylDropdown(preselectProductId) {
-  const products = stairwellVinylCandidates();
+  const all = stairwellAllVinyl();
+  const products = all.filter(stairwellVinylUsable);
   const select = document.getElementById('line_stair_vinyl');
-  if (!products.length) {
+  const note = document.getElementById('line_stair_vinyl_note');
+  if (!all.length) {
     // A real data problem said out loud, not a silently empty dropdown.
-    select.innerHTML = '<option value="">No vinyl with plank dimensions in the price book</option>';
+    select.innerHTML = '<option value="">No vinyl products in the price book</option>';
     document.getElementById('line_stair_colour').innerHTML = '';
+    if (note) note.style.display = 'none';
     return;
   }
   const groups = {};
-  products.forEach(p => {
+  all.forEach(p => {
     const key = stairwellVinylGroupKey(p);
-    (groups[key] = groups[key] || { supplier: p.supplier, label: p.product_name + (p.product_variant ? ' — ' + p.product_variant : ''), order: p.display_order ?? 100, products: [] }).products.push(p);
+    const g = groups[key] = groups[key] || {
+      supplier: p.supplier,
+      label: p.product_name + (p.product_variant ? ' — ' + p.product_variant : ''),
+      order: p.display_order ?? 100, products: [], usable: false,
+    };
+    g.products.push(p);
+    if (stairwellVinylUsable(p)) g.usable = true;
   });
   const bySupplier = {};
   Object.entries(groups).forEach(([key, g]) => { (bySupplier[g.supplier] = bySupplier[g.supplier] || []).push({ key, ...g }); });
   select.innerHTML = Object.keys(bySupplier).sort().map(supplier => {
     const opts = bySupplier[supplier]
       .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
-      .map(g => `<option value="${g.key}">${g.label}</option>`).join('');
+      // A range with no plank size is SHOWN but not selectable, with the
+      // reason on the option itself — so "why isn't Aspen here" becomes
+      // "Aspen needs a plank size", which is a question with an answer.
+      .map(g => g.usable
+        ? `<option value="${g.key}">${g.label}</option>`
+        : `<option value="${g.key}" disabled>${g.label} — needs plank size</option>`).join('');
     return `<optgroup label="${supplier}">${opts}</optgroup>`;
   }).join('');
+  const blocked = [...new Set(Object.values(groups).filter(g => !g.usable).map(g => g.supplier))];
+  if (note) {
+    note.style.display = blocked.length ? '' : 'none';
+    note.innerHTML = blocked.length
+      ? `<b>${blocked.join(', ')}</b> ${blocked.length === 1 ? 'is' : 'are'} listed but not selectable yet: the stairwell prices vinyl by plank count (3 planks per stair), and ${blocked.length === 1 ? 'this supplier\'s' : 'these suppliers\''} products have no plank length/width or planks-per-box on file. Add either in the Supplier Console and they become selectable here immediately.`
+      : '';
+  }
   // Pre-population (confirmed Sept 2026) — default to whatever this job
   // already quoted on its main floor, so the common case (stairs in the
   // same vinyl as the rest of the house) needs no choice at all. Still
@@ -1204,6 +1247,42 @@ function onVinylRangeChange() {
 // onVinylRangeChange() so onVinylVariantChange() below (the genuine
 // 3-level case) can reuse the exact same placeholder/behaviour rather
 // than a second, slightly-different colour list built inline.
+// The product row to price a main-calculator flooring line against,
+// whether or not a colour was picked (confirmed Sept 2026, round 3).
+//
+// With a colour chosen that IS the row. With colour left TBC, the
+// first row of the current range (or range+variant, when the range has
+// variants) prices it — the same reasoning stairwellVinylSelection()
+// already relies on: colours inside one range/variant share a cost, so
+// pricing off any of them is honest, whereas folding variants together
+// would not be, because their costs genuinely differ.
+//
+// The caller pairs this with colour_tbc=true so the saved line carries
+// NO colour. Pricing off a row and displaying that row's colour are
+// two different things, and only the first one is safe.
+function flooringProductIdOrTbc() {
+  const chosen = document.getElementById('fj_vinyl_colour').value;
+  if (chosen) return chosen;
+  const range = document.getElementById('fj_vinyl_range').value;
+  const variant = document.getElementById('fj_vinyl_variant_field').style.display === 'none'
+    ? null : document.getElementById('fj_vinyl_variant').value;
+  const inGroup = flooringProducts.filter(p =>
+    p.pricing_type === 'material'
+    && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category)
+    && p.flooring_category !== 'uncategorized_pending'
+    && !p.pending_review
+    && p.product_name === range
+    && (!variant || p.product_variant === variant));
+  return inGroup.length ? String(inGroup[0].id) : '';
+}
+
+// Is this line's colour still TBC? True whenever no colour option is
+// actually selected — the "— Choose a colour (TBC) —" placeholder has
+// an empty value, so this is exactly the placeholder still standing.
+function flooringColourIsTbc() {
+  return !document.getElementById('fj_vinyl_colour').value;
+}
+
 function populateVinylColourOptions(products) {
   const colours = sortByPriority(products);
   const colourSelect = document.getElementById('fj_vinyl_colour');
@@ -1253,8 +1332,15 @@ function onVinylVariantChange() {
 }
 
 function onVinylColourChange() {
-  const productId = document.getElementById('fj_vinyl_colour').value;
-  document.getElementById('fj_vinyl_product').value = productId;
+  // CHANGED Sept 2026 (round 3) — fj_vinyl_product is now "the price
+  // book row this line is priced against" and fj_vinyl_colour is "the
+  // colour the client actually chose". They are the same row once a
+  // colour is picked; with colour left TBC the range's representative
+  // row fills this in, so the live preview, the box/wastage/discount
+  // pre-fill and the saved line all price off ONE row instead of the
+  // preview going blank the moment TBC is selected. flooringColourIsTbc()
+  // still reads the colour field, so TBC stays correctly reported.
+  document.getElementById('fj_vinyl_product').value = flooringProductIdOrTbc();
   onVinylProductChange();
 }
 
@@ -1582,12 +1668,12 @@ async function addFloorJob() {
         role,
       });
     } else {
-      const productId = document.getElementById('fj_vinyl_product').value;
-      // Colour Default Risk (confirmed Aug 2026) — same hard block as
-      // the fresh-add path below: a line can never be saved with
-      // colour still left as TBC, not just flagged after the fact.
+      // CHANGED Sept 2026 (round 3) — colour may now be left TBC here
+      // too, matching the stairwell. See the fresh-add path below for
+      // the full reasoning and where the block moved to.
       if (!document.getElementById('fj_vinyl_range').value) { alert('Choose a range first.'); return; }
-      if (!productId) { alert('Choose a colour first.'); return; }
+      const productId = document.getElementById('fj_vinyl_product').value;
+      if (!productId) { alert('This range has no products in the price book — nothing to price.'); return; }
       const materialOnly = document.getElementById('fj_material_only').checked;
       const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
       params = new URLSearchParams({
@@ -1597,6 +1683,7 @@ async function addFloorJob() {
         own_staff: document.getElementById('fj_own_staff').value,
         markup_override: 1 + (parseFloat(document.getElementById('fj_markup').value) / 100 || 0),
         apply_delivery_fee: document.getElementById('fj_courier_toggle')?.checked ?? false,
+        colour_tbc: flooringColourIsTbc(),
         role,
       });
     }
@@ -1610,15 +1697,24 @@ async function addFloorJob() {
   }
 
   if (includeVinyl) {
-    const productId = document.getElementById('fj_vinyl_product').value;
-    // Colour Default Risk (confirmed Aug 2026) — "confirm a quote
-    // cannot be finalized/sent with colour still left as TBC": enforced
-    // here, at the moment a line is actually added, not just flagged
-    // afterward — a TBC-coloured line can never be saved in the first
-    // place, matching the exact "Pick a screed product first" guard
-    // Screed's own equivalent branch already has.
+    // TBC colour, now UNIVERSAL across the flooring calculators
+    // (confirmed Sept 2026, round 3 — Burgert: "make it so that the
+    // colour can be added later. TBC", stated as a rule for all
+    // flooring types, and flagged again in round 3 as still needing
+    // confirmation "on the other calculators, not just stairwell").
+    // It genuinely wasn't: only the stairwell allowed it, and this
+    // calculator refused to save at all.
+    //
+    // This does NOT drop the Aug 2026 requirement — that brief's actual
+    // words were "a quote cannot be finalized/sent with colour still
+    // left as TBC". Blocking at ADD time was stricter than what was
+    // asked, and is what made TBC impossible. The block moves to the
+    // send moment instead (printQuote()), which is where the brief put
+    // it, and which also closes a real hole: the stairwell already
+    // allowed TBC and nothing stopped that quote going out.
     if (!document.getElementById('fj_vinyl_range').value) { alert('Choose a range first.'); return; }
-    if (!productId) { alert('Choose a colour first.'); return; }
+    const productId = document.getElementById('fj_vinyl_product').value;
+    if (!productId) { alert('This range has no products in the price book — nothing to price.'); return; }
     const jobType = document.getElementById('fj_jobtype').value;
     const materialOnly = document.getElementById('fj_material_only').checked;
     const glueRate = materialOnly ? 0 : (parseFloat(document.getElementById('fj_glue_rate').value) || 0);
@@ -1634,6 +1730,7 @@ async function addFloorJob() {
       // line; the product's own delivery_fee_per_m2 is never modified by
       // this, only whether THIS line applies it.
       apply_delivery_fee: document.getElementById('fj_courier_toggle')?.checked ?? false,
+      colour_tbc: flooringColourIsTbc(),
       role,
     });
     const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/flooring?${params}`, {method:'POST'});
@@ -2257,8 +2354,29 @@ async function saveQuote() {
   renderLanding();
 }
 
+// TBC colours are blocked HERE, at the send moment — the Aug 2026
+// requirement in its own words: "a quote cannot be finalized/sent with
+// colour still left as TBC" (confirmed Sept 2026, round 3). Enforcing
+// it at add time instead was what made TBC impossible on this
+// calculator, and it left a real hole the other way: the stairwell
+// always allowed TBC and nothing checked it before the document went
+// out. One check, covering every category, at the one moment it
+// actually matters.
+function tbcColourLines() {
+  return (currentQuoteLinesCache || []).filter(l =>
+    (l.category === 'flooring' || l.category === 'stairwell') && !l.colour);
+}
+
 async function printQuote() {
   if (!currentQuoteId) return;
+  const tbc = tbcColourLines();
+  if (tbc.length) {
+    alert(
+      `This quote still has ${tbc.length} line${tbc.length === 1 ? '' : 's'} with the colour left as TBC:\n\n` +
+      tbc.map(l => '  • ' + l.product_name).join('\n') +
+      `\n\nSet the colour on each (Change colour on the line) before sending the quote.`);
+    return;
+  }
   await renderPrintDoc(currentQuoteId, 'quote');
 }
 

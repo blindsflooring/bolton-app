@@ -493,6 +493,16 @@
   .adj-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; background: var(--cream); color: #8a6d00; margin-left: 6px; }
   input.adjustable { border-color: var(--coral); background: #fff8f5; }
   label .adj { color: var(--coral); font-weight: 600; }
+  /* Why a supplier is listed but not selectable (stairwell round 3,
+     Sept 2026). Aspen sat invisibly filtered out of the vinyl dropdown
+     for two rounds because it has no plank size on file; the fix is to
+     show it greyed with the reason, so the gap reads as a missing
+     number to go and enter rather than as a bug. */
+  .stair-vinyl-note {
+    margin-top: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.45;
+    color: var(--navy); background: #FDF1EC;
+    border-left: 3px solid var(--coral); border-radius: 4px;
+  }
 
   /* Quote Photo Attachments, Phase 1 pilot (confirmed Aug 2026) */
   .quote-photo-gallery { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }

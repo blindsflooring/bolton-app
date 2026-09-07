@@ -24,3 +24,6 @@ backend/uploads/
 
 # Claude Code local settings — machine-specific, not shared config.
 .claude/settings.local.json
+
+# Local verification scratch (throwaway scripts, temp DBs, screenshots)
+.claude/
