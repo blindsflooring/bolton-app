@@ -426,6 +426,7 @@ def calculate_stairwell_line(
     num_stairs: int,
     stairwell_type: StairwellType,
     tiles_per_stair: int = TILES_PER_STAIR,
+    tiles_per_pack: float = None,   # confirmed Sept 2026 — the caller's own resolved planks-per-box, derived from plank dimensions when the product has no stored value (_stairwell_tiles_per_pack(), main.py). None keeps the pre-existing behaviour of reading it off the product.
     stair_area_m2: float = STAIR_AREA_M2,
     glue_cost_per_unit: float = 1193.50,   # multi-tenant groundwork (confirmed Aug 2026): now settings-driven — main.py passes BusinessSettings.stairwell_default_glue_cost_per_unit; this default is only a safety net
     glue_coverage_m2: float = 70.0,        # settings-driven — see above (stairwell_default_glue_coverage_m2)
@@ -470,18 +471,26 @@ def calculate_stairwell_line(
     - Landing is NOT part of this calculation — priced as a normal flooring
       material line at m² rate, per Burgert's confirmation.
     """
-    if not vinyl_product.tiles_per_pack:
+    # Passed in by the caller where it had to be derived, rather than
+    # read off the product — deliberately NOT set onto the product
+    # first: resolve_zone_price() returns the session-tracked row
+    # itself for any supplier without zone pricing (its own early
+    # return), so assigning there would have quietly written a derived
+    # value into the real price book as a side effect of quoting.
+    # Caught by a test asserting the product row was untouched.
+    tiles_per_pack = tiles_per_pack or vinyl_product.tiles_per_pack
+    if not tiles_per_pack:
         raise ValueError("Vinyl product has no tiles_per_pack set — needed for stairwell tile-count billing")
 
     import math
 
     # Vinyl: TILE-COUNT basis, not geometric area — confirmed billed amount
     total_tiles_needed = tiles_per_stair * num_stairs
-    boxes_needed = math.ceil(total_tiles_needed / vinyl_product.tiles_per_pack)
+    boxes_needed = math.ceil(total_tiles_needed / tiles_per_pack)
     net_cost_per_m2 = vinyl_product.base_cost_ex_vat * (1 - vinyl_product.trade_discount_pct)
     box_cost = net_cost_per_m2 * vinyl_product.m2_per_pack
     vinyl_cost_total = boxes_needed * box_cost
-    tile_area_m2 = vinyl_product.m2_per_pack / vinyl_product.tiles_per_pack
+    tile_area_m2 = vinyl_product.m2_per_pack / tiles_per_pack
     billed_vinyl_area_m2 = total_tiles_needed * tile_area_m2   # e.g. 5.58m² — confirmed billed figure
     # BUG FIXED Aug 2026: this was selling at raw base_cost_ex_vat with no
     # markup applied at all — the same sell_markup_multiplier used on

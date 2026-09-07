@@ -930,7 +930,12 @@ itself is). -->
         <div class="field misc-field" style="display:none;"><label>Description</label><input id="line_misc_desc" placeholder="e.g. Extra Saturday labour"></div>
         <div class="field misc-field" style="display:none;"><label>Amount (ex VAT)</label><input id="line_misc_amount" type="number" step="0.01"></div>
         <div class="field misc-field" style="display:none;"><label>Cost (ex VAT, optional — 0 if pure margin)</label><input id="line_misc_cost" type="number" step="0.01" value="0"></div>
-        <div class="field stairwell-field" style="display:none;"><label>Vinyl product</label><select id="line_stair_vinyl"></select></div>
+        <!-- Stairwell vinyl selection overhaul (confirmed Sept 2026) —
+        grouped by supplier then range (populateStairwellVinylDropdown(),
+        quote-builder.js), with colour as its own picker below so it can
+        be left TBC and confirmed later. -->
+        <div class="field stairwell-field" style="display:none;"><label>Vinyl range <span class="adj">(grouped by supplier)</span></label><select id="line_stair_vinyl" onchange="onStairwellVinylChange()"></select></div>
+        <div class="field stairwell-field" style="display:none;"><label>Colour <span class="adj">(can be left TBC and set later)</span></label><select id="line_stair_colour"></select></div>
         <div class="field stairwell-field" style="display:none;"><label>Nosing product</label><select id="line_nosing_product"></select></div>
         <div class="field blinds-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number"></div>
         <div class="field blinds-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number"></div>

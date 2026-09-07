@@ -10098,6 +10098,36 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         return result
 
 
+def _stairwell_tiles_per_pack(product: "FlooringProduct"):
+    """Planks per box for the stairwell calculation, derived on demand
+    when the stored value is missing (confirmed Sept 2026, "Stairwell
+    Calculator — vinyl selection overhaul").
+
+    This is the ACTUAL reason Aspen was absent from the stairwell vinyl
+    dropdown — not an oversight in the list, a filter doing its job:
+    the dropdown only offered products with a stored tiles_per_pack,
+    because the stairwell prices vinyl on a TILE-COUNT basis (3 planks
+    per stair) and genuinely cannot compute without knowing a plank's
+    size. Aspen carries real plank dimensions but no stored
+    tiles_per_pack, since that field is only written when the Supplier
+    Console commits an edit touching the dimensions
+    (recompute_tiles_per_pack()) — a product imported before that, or
+    never re-edited since, simply never got one.
+
+    So the fix is to derive it the same way the Console does, from the
+    dimensions already on the product, rather than to relax the filter
+    and let a product through that would then divide by nothing. Same
+    formula, same single source (recompute_tiles_per_pack) — not a
+    second copy that could drift.
+
+    Returns None only when the product genuinely has no dimensions to
+    work from, which stays a real, explainable "can't be used on stairs
+    yet" rather than a silent wrong answer."""
+    if product.tiles_per_pack:
+        return product.tiles_per_pack
+    return recompute_tiles_per_pack(product)
+
+
 def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: int, nosing_product_id: int,
                              num_stairs: int, stairwell_type: StairwellType,
                              stair_area_m2: float = 0.45, own_staff: bool = True,
@@ -10135,8 +10165,16 @@ def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: 
     line's fields instead of becoming its own QuoteLineItem row."""
     vinyl_product = _require_active_flooring_product(get_or_404(session, FlooringProduct, vinyl_product_id, tenant_id, "Vinyl product"))
     nosing_product = get_or_404(session, TrimProduct, nosing_product_id, tenant_id, "Nosing product")
-    if not vinyl_product.tiles_per_pack:
-        raise HTTPException(400, "Selected vinyl product has no tiles_per_pack set — required for stairwell vinyl billing")
+    # Planks per box, derived from the product's own dimensions when it
+    # has no stored value (confirmed Sept 2026) — see
+    # _stairwell_tiles_per_pack() for why this is what was actually
+    # keeping Aspen out of the stairwell dropdown. Still a hard, clear
+    # error when the product genuinely has no dimensions either: the
+    # stairwell bills vinyl by tile count, so without a plank size there
+    # is no honest number to produce.
+    tiles_per_pack = _stairwell_tiles_per_pack(vinyl_product)
+    if not tiles_per_pack:
+        raise HTTPException(400, f"{vinyl_product.product_name} has no plank dimensions on file, so planks-per-box can't be worked out — the stairwell prices vinyl by tile count, so it needs those before it can be used here. Add the plank length and width in the Supplier Console.")
     settings = get_settings(session, tenant_id)
 
     stairwell_labour_by_type = {
@@ -10145,8 +10183,15 @@ def _compute_stairwell_calc(session: Session, tenant_id: str, vinyl_product_id: 
         StairwellType.both_sides_open: settings.stairwell_labour_both_sides_open,
     }
     effective_vinyl = resolve_zone_price(session, tenant_id, vinyl_product, settings)   # per-supplier zone pricing — see resolve_zone_price(); no-op for non-zone-priced suppliers
+    # PASSED, never assigned onto the product. resolve_zone_price()
+    # returns the session-tracked row ITSELF for any supplier without
+    # zone pricing (its own early return), so setting it there would
+    # have written a derived value straight into the real price book as
+    # a side effect of quoting — which a test caught doing exactly that
+    # on Aspen before this was changed.
     calc = calculate_stairwell_line(
         effective_vinyl, nosing_product, num_stairs, stairwell_type, stair_area_m2=stair_area_m2, own_staff=own_staff,
+        tiles_per_pack=tiles_per_pack,
         glue_cost_per_unit=settings.stairwell_default_glue_cost_per_unit,
         glue_coverage_m2=settings.stairwell_default_glue_coverage_m2,
         labour_per_stair=stairwell_labour_by_type[stairwell_type],
@@ -10354,7 +10399,7 @@ def edit_carpet_line(quote_id: int, line_id: int, product_id: int, quantity_lm: 
 def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: int,
                         num_stairs: int, stairwell_type: StairwellType,
                         stair_area_m2: float = 0.45, own_staff: bool = True,
-                        landing_area_m2: float = 0.0,
+                        landing_area_m2: float = 0.0, colour: str = "",
                         role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
                         username: str = Depends(get_current_username)):
     """See _compute_stairwell_calc() just above for the actual formula/
@@ -10371,10 +10416,20 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
         combined_margin_pct, combined_labour_charged = r["combined_margin_pct"], r["combined_labour_charged"]
         combined_labour_cost, combined_warning = r["combined_labour_cost"], r["combined_warning"]
 
+        # colour (confirmed Sept 2026, stairwell vinyl overhaul) — blank is
+        # a real, allowed state here, unlike the main flooring calculator
+        # which hard-blocks saving while colour is TBC. Burgert's own
+        # words: "make it so that the colour can be added later. TBC".
+        # A stairwell is often quoted before anyone has stood in the
+        # stairwell, and blocking the quote on a colour nobody has
+        # picked yet would stop real work. Filled in later through the
+        # existing change_line_colour() path, which already handles
+        # "line had no colour, add it now" and logs it.
         line = QuoteLineItem(
             quote_id=quote_id, category="stairwell", tenant_id=tenant_id,
             product_id=vinyl_product_id,
             product_name=f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)",
+            colour=colour, original_colour=colour,
             unit_cost=0, unit_price=0,
             line_total=combined_line_total, margin_pct=combined_margin_pct,
             total_job_cost=combined_total_job_cost,
@@ -10858,7 +10913,7 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
 def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosing_product_id: int,
                          num_stairs: int, stairwell_type: StairwellType,
                          stair_area_m2: float = 0.45, own_staff: bool = True,
-                         landing_area_m2: float = 0.0,
+                         landing_area_m2: float = 0.0, colour: str = None,
                          role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant),
                          username: str = Depends(get_current_username)):
     """Editability — every category, in place (confirmed Aug 2026,
@@ -10901,6 +10956,15 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
 
         line.product_id = vinyl_product_id
         line.product_name = f"{vinyl_product.product_name} + {nosing_product.product_name} (stairwell)"
+        # colour: None means "not sent" (an older client, or a caller
+        # not touching colour) and leaves whatever is on the line alone.
+        # An empty string is a real value — it is how the UI says "back
+        # to TBC" — so the two are deliberately not conflated.
+        # original_colour is never rewritten here: it is set once, at
+        # creation, permanently, the same rule change_line_colour()
+        # already follows.
+        if colour is not None:
+            line.colour = colour
         line.num_stairs = num_stairs
         line.stairwell_type = stairwell_type
         line.nosing_length_m = calc["nosing_length_m"]

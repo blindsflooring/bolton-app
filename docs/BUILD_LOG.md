@@ -74,6 +74,29 @@ Builder Portal, second pass — everything Burgert asked for after actually usin
 
 ---
 
+## 2026-09-11
+
+Stairwell calculator — vinyl selection overhaul (brief, confirmed Sept 2026; explicitly supersedes the earlier "low job volume doesn't justify the work now" deprioritisation).
+
+### What shipped
+- **The vinyl dropdown is grouped**: `<optgroup>` per supplier, then one option per real pricing unit (range, plus `product_variant` where a range has them) — instead of a flat list of every product row, which meant every Azura colour, which is what made it a jumble.
+- **Aspen is in it.** Root cause was not the list — it was the filter doing its job. The dropdown only offered products with a *stored* `tiles_per_pack`, because the stairwell bills vinyl by tile count (3 planks per stair) and genuinely cannot compute without a plank size. Aspen carries real plank dimensions but no stored value, since that field is only written when the Supplier Console commits a dimensions edit. The backend now derives it from those dimensions via the same `recompute_tiles_per_pack()` the Console uses.
+- **A colour picker, TBC-able.** Same "— Choose a colour (TBC) —" wording as the vinyl calculator, but deliberately *not* the same enforcement: there TBC hard-blocks saving; here it is an accepted state. Burgert: "make it so that the colour can be added later. TBC". Filled in afterwards through the existing `change_line_colour()` path, which already handled "line had no colour, add it now" and logs it.
+- **Pre-populated from the job's own floor.** Opening the stairwell calculator on a job that already has a flooring line defaults to that product — range and colour — and is a plain dropdown, so a stairwell in a different product is one click away.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Grouped by (supplier, range, variant), not by range alone.** Colours within one of those genuinely share a cost, so pricing a TBC line off the group's first row is safe. Grouping by range alone would fold a 3-level range's variants together, whose costs really do differ — and a TBC quote could then go out mispriced.
+- **The frontend filter mirrors what the backend can actually price** (`tiles_per_pack` OR derivable dimensions), rather than being relaxed to "show everything". A product with no dimensions at all is still refused, with a real reason naming the product and what to add — better than offering it and dividing by nothing.
+- **The derivation is never written back.** A product with no dimensions is a data gap worth fixing, but quoting is the wrong place to fix it silently.
+
+### A real bug caught by its own test
+- The first version set the derived planks-per-box onto the object returned by `resolve_zone_price()`, on the strength of that function's docstring saying it returns a detached copy. It does — **except** for a supplier with no zone pricing, where an early `return product` hands back the session-tracked row itself. So quoting an Aspen stairwell silently wrote a derived value into the real price book. Caught by a check asserting the product row was untouched, and fixed by passing the value into `calculate_stairwell_line()` instead of assigning it anywhere.
+
+### Verified
+- 18 checks: an Aspen stairwell saves and prices on a real tile count; the price-book row is untouched afterwards; a dimensionless product is refused with a readable reason; a line saves with no colour and separately with one; a TBC colour is filled in later and logged; and the dropdown grouping, matching filter, TBC wording, floor pre-population, preview/save agreement and edit repopulation are all in place.
+
+---
+
 ## 2026-09-10 (2)
 
 Shorter login sessions, and builder-network access on the Login Activity page (Burgert: "Get all logins to reset every few hours. I would also like to be able to see who logged on from my builders network or trusted testers. It needs to show up in the login detail page").

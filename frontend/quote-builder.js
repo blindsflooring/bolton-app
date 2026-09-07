@@ -325,7 +325,11 @@ async function previewGenericLine() {
       ready = true;
     }
   } else if (cat === 'stairwell') {
-    const vinylId = document.getElementById('line_stair_vinyl').value;
+    // The vinyl dropdown holds a RANGE key now, not a product id
+    // (confirmed Sept 2026) — resolved to a real product the same way
+    // the save path does, so the live preview and the saved line can
+    // never price off different rows.
+    const vinylId = stairwellVinylSelection().productId;
     const nosingId = document.getElementById('line_nosing_product').value;
     const numStairs = document.getElementById('line_num_stairs').value;
     if (vinylId && nosingId && numStairs) {
@@ -532,8 +536,7 @@ async function toggleLineFields() {
   document.querySelectorAll('.misc-field').forEach(el => el.style.display = cat === 'misc' ? '' : 'none');
   document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
   if (cat === 'stairwell') {
-    const stairVinyl = flooringProducts.filter(p => p.pricing_type === 'material' && p.tiles_per_pack && !p.pending_review);
-    document.getElementById('line_stair_vinyl').innerHTML = stairVinyl.map(p => `<option value="${p.id}">${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
+    populateStairwellVinylDropdown();
     document.getElementById('line_nosing_product').innerHTML = trimProducts.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
   } else if (cat !== 'misc') {
     refreshLineProductOptions();
@@ -985,6 +988,124 @@ function toggleFloorPrepRoomCard(headerEl) {
 // Two-step selection (confirmed Aug 2026): pick a Range first, then a
 // Colour within it — the colour list depends on which range is chosen,
 // since each range has its own set of colour-specific price book entries.
+// Stairwell vinyl selection overhaul (confirmed Sept 2026). Three
+// problems in the old one-line dropdown, all fixed here:
+//
+//  1. It was a flat list of every product ROW — and a row is one
+//     colour, so Azura's many colours swamped it and it read as
+//     jumble rather than a list of things you can choose between.
+//     Now grouped: <optgroup> per supplier, one option per real
+//     pricing unit (range, plus product_variant where a range has
+//     them — the 3-level case the vinyl calculator already handles).
+//  2. Aspen was missing entirely. Root cause was NOT this list: the
+//     old filter required a stored tiles_per_pack, which Aspen has
+//     never had, because that field is only written when the Supplier
+//     Console commits a dimensions edit. The backend now derives it
+//     from the plank dimensions Aspen does carry
+//     (_stairwell_tiles_per_pack(), main.py), so the filter here can
+//     simply ask "does this have a plank size we can work out" and
+//     Aspen passes honestly rather than being waved through into a
+//     calculation that would divide by nothing.
+//  3. No colour choice at all. Now its own picker below, TBC-able.
+//
+// Grouping by (supplier, range, variant) rather than by range alone is
+// deliberate: colours within one of those genuinely share a cost, so
+// pricing a TBC line off the group's first row is safe. Grouping by
+// range alone would fold a 3-level range's variants together, whose
+// costs really do differ, and a TBC quote could then go out mispriced.
+function stairwellVinylCandidates() {
+  return flooringProducts.filter(p =>
+    p.pricing_type === 'material'
+    && !CARPET_ONLY_CATEGORIES.includes(p.flooring_category)
+    && p.flooring_category !== 'uncategorized_pending'
+    && !p.pending_review
+    // Either a stored planks-per-box, or the dimensions the backend can
+    // derive one from — mirrors _stairwell_tiles_per_pack() exactly, so
+    // this list never offers something the calculator will then refuse.
+    && (p.tiles_per_pack || (p.tile_length_mm && p.tile_width_mm && p.m2_per_pack)));
+}
+
+function stairwellVinylGroupKey(p) {
+  return `${p.supplier}||${p.product_name}||${p.product_variant || ''}`;
+}
+
+function populateStairwellVinylDropdown(preselectProductId) {
+  const products = stairwellVinylCandidates();
+  const select = document.getElementById('line_stair_vinyl');
+  if (!products.length) {
+    // A real data problem said out loud, not a silently empty dropdown.
+    select.innerHTML = '<option value="">No vinyl with plank dimensions in the price book</option>';
+    document.getElementById('line_stair_colour').innerHTML = '';
+    return;
+  }
+  const groups = {};
+  products.forEach(p => {
+    const key = stairwellVinylGroupKey(p);
+    (groups[key] = groups[key] || { supplier: p.supplier, label: p.product_name + (p.product_variant ? ' — ' + p.product_variant : ''), order: p.display_order ?? 100, products: [] }).products.push(p);
+  });
+  const bySupplier = {};
+  Object.entries(groups).forEach(([key, g]) => { (bySupplier[g.supplier] = bySupplier[g.supplier] || []).push({ key, ...g }); });
+  select.innerHTML = Object.keys(bySupplier).sort().map(supplier => {
+    const opts = bySupplier[supplier]
+      .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
+      .map(g => `<option value="${g.key}">${g.label}</option>`).join('');
+    return `<optgroup label="${supplier}">${opts}</optgroup>`;
+  }).join('');
+  // Pre-population (confirmed Sept 2026) — default to whatever this job
+  // already quoted on its main floor, so the common case (stairs in the
+  // same vinyl as the rest of the house) needs no choice at all. Still
+  // a plain dropdown, so a stairwell in a different product is one
+  // click away, exactly as the brief requires.
+  const fromFloor = preselectProductId != null ? preselectProductId : stairwellVinylFromExistingFloor();
+  if (fromFloor != null) {
+    const match = products.find(p => p.id === Number(fromFloor));
+    if (match) select.value = stairwellVinylGroupKey(match);
+  }
+  onStairwellVinylChange(fromFloor);
+}
+
+// Which product this job's main floor was quoted in, if any. Reads the
+// lines already loaded for this quote — no extra fetch, and no guessing
+// from a name.
+function stairwellVinylFromExistingFloor() {
+  const lines = (currentQuoteLinesCache || []).filter(l =>
+    l.category === 'flooring' && l.flooring_pricing_type === 'material' && l.product_id);
+  return lines.length ? lines[0].product_id : null;
+}
+
+// Colour, TBC-able (confirmed Sept 2026, Burgert: "make it so that the
+// colour can be added later. TBC"). Same placeholder wording as the
+// vinyl calculator's own colour picker so the two read identically —
+// but deliberately NOT the same enforcement: there, TBC hard-blocks
+// saving; here it is an accepted state, because a stairwell is often
+// quoted before anyone has stood in it.
+function onStairwellVinylChange(preselectProductId) {
+  const key = document.getElementById('line_stair_vinyl').value;
+  const inGroup = stairwellVinylCandidates().filter(p => stairwellVinylGroupKey(p) === key);
+  const colourSelect = document.getElementById('line_stair_colour');
+  colourSelect.innerHTML = `<option value="">— Choose a colour (TBC) —</option>` +
+    inGroup.map(p => `<option value="${p.id}">${p.colour || '(no colour set)'}${p.discontinued ? ' (Discontinued)' : ''}</option>`).join('');
+  if (preselectProductId != null && inGroup.some(p => p.id === Number(preselectProductId))) {
+    colourSelect.value = String(preselectProductId);
+  }
+}
+
+// The product id to price against, and the colour text to store.
+// With a colour chosen they are that exact product row. With TBC, the
+// group's first row prices it — safe because a group is one real
+// pricing unit (see stairwellVinylGroupKey) — and the colour is stored
+// blank, which is what lets change_line_colour() fill it in later.
+function stairwellVinylSelection() {
+  const key = document.getElementById('line_stair_vinyl').value;
+  const inGroup = stairwellVinylCandidates().filter(p => stairwellVinylGroupKey(p) === key);
+  const colourId = document.getElementById('line_stair_colour').value;
+  const chosen = colourId ? inGroup.find(p => p.id === Number(colourId)) : null;
+  return {
+    productId: chosen ? chosen.id : (inGroup[0] ? inGroup[0].id : ''),
+    colour: chosen ? (chosen.colour || '') : '',
+  };
+}
+
 function populateVinylRangeDropdown(preselectRange) {
   // Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026)
   // — same "don't even show it" treatment as populateCarpetTypeProducts()
@@ -2190,8 +2311,13 @@ async function addLine() {
     // (same vinyl product, no markup override) — only how it's posted
     // and displayed changed, not the rate or calculation.
     stairwellLandingTotal = recomputeLandingTotal();
+    // productId/colour come from the range + colour pair (confirmed
+    // Sept 2026) — see stairwellVinylSelection() for why a TBC colour
+    // still resolves to a real, correctly-priced product.
+    const stairVinyl = stairwellVinylSelection();
     stairwellParams = new URLSearchParams({
-      vinyl_product_id: document.getElementById('line_stair_vinyl').value,
+      vinyl_product_id: stairVinyl.productId,
+      colour: stairVinyl.colour,
       nosing_product_id: document.getElementById('line_nosing_product').value,
       num_stairs: document.getElementById('line_num_stairs').value,
       stair_area_m2: document.getElementById('line_stair_area').value || 0.45,
@@ -2397,7 +2523,10 @@ function editQuoteLine(lineId) {
       // Vinyl Quoting UX Redesign proposal §09, approved) — see this
       // function's own doc comment above for exactly what can/can't be
       // recovered and why.
-      document.getElementById('line_stair_vinyl').value = line.product_id;
+      // Both dropdowns are driven from the line's own stored product
+      // (confirmed Sept 2026) — the range it belongs to, and its colour
+      // within that range if one was ever chosen.
+      populateStairwellVinylDropdown(line.product_id);
       document.getElementById('line_num_stairs').value = line.num_stairs || '';
       document.getElementById('line_stairwell_type').value = line.stairwell_type || 'closed';
       document.getElementById('line_stair_area').value = 0.45;   // not recoverable — see comment above
