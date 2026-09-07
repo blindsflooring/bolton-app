@@ -1693,6 +1693,157 @@ def on_startup():
     except Exception as e:
         print(f"Migration: Azura supplier merge failed ({e}) \u2014 the vinyl dropdowns keep showing two Azura groups until this is retried")
 
+    # Aspen plank dimensions + the two missing ranges (confirmed Sept
+    # 2026, "Add Aspen Flooring product data to Supplier Console"
+    # brief, from Aspen's own spec page).
+    #
+    # The brief read this as Aspen's product data being missing
+    # altogether. It isn't: 35 Aspen rows already exist with real box
+    # prices and real m2-per-box, and Aspen has always been selectable
+    # in the MAIN flooring calculator. The only thing missing was the
+    # plank dimensions, which is why Aspen alone was unusable on
+    # stairwells — that calculator bills vinyl by plank count (3 planks
+    # per stair), so it needs a plank size that no Aspen row carried.
+    #
+    # Every one of these sizes was cross-checked against the box
+    # coverage already in the price book before being trusted, because
+    # a wrong plank size produces a confidently wrong stair price
+    # rather than a visible gap. m2_per_pack / plank area comes out to
+    # a whole number of planks on all four ranges that could be
+    # checked — Premium 3.58/0.35872 = 10.0, Project and Living
+    # 4.459/0.27938 = 16.0, Herringbone 1.4161/0.070805 = 20.0. Two
+    # independent sources agreeing to that tolerance is what makes
+    # these safe to load; the assertion is re-run live below and
+    # anything that does NOT land on a whole plank is reported instead
+    # of being silently rounded into a price.
+    #
+    # Sizes are (width x length), the same order the price book's own
+    # tile_width_mm/tile_length_mm pair already uses for Azura.
+    ASPEN_RANGE_SPECS = [
+        # (keyword matched in product_name, width_mm, length_mm, thickness_mm, wear_layer_mm)
+        ("herringbone", 119.0, 595.0, 2.0, 0.44),
+        ("lifestyle", 229.0, 1220.0, 2.0, 0.30),
+        ("living", 229.0, 1220.0, 2.0, 0.40),
+        ("project", 229.0, 1220.0, 2.5, 0.55),
+        # Matches "Premium" AND "Premium Painted" — Painted is the same
+        # 2.5mm Premium board (its m2_per_pack is identical at 3.58),
+        # a different finish, not a different plank.
+        ("premium", 236.0, 1520.0, 2.5, 0.55),
+        ("spc", 229.0, 1220.0, 6.0, 0.55),
+    ]
+    try:
+        with Session(engine) as session:
+            aspen_rows = session.exec(
+                select(FlooringProduct).where(FlooringProduct.supplier.ilike("%aspen%"))
+            ).all()
+            filled, unmatched, odd_plank_counts = 0, [], []
+            for prod in aspen_rows:
+                name = (prod.product_name or "").lower()
+                spec = next((sp for sp in ASPEN_RANGE_SPECS if sp[0] in name), None)
+                if not spec:
+                    unmatched.append(prod.product_name)
+                    continue
+                _kw, width_mm, length_mm, thickness_mm, wear_mm = spec
+                changed = False
+                # Only ever FILLS BLANKS. A dimension already on the row
+                # was put there by a real import or a real Console edit,
+                # and this migration is adding what was missing — not
+                # overruling someone who has since typed a better number.
+                for field, value in (("tile_width_mm", width_mm), ("tile_length_mm", length_mm),
+                                     ("tile_thickness_mm", thickness_mm), ("wear_layer_mm", wear_mm)):
+                    if getattr(prod, field) is None:
+                        setattr(prod, field, value)
+                        session.add(AuditLog(
+                            tenant_id=prod.tenant_id, username="system-migration",
+                            entity_type="FlooringProduct", entity_id=prod.id,
+                            field=field, old_value="", new_value=str(value),
+                        ))
+                        changed = True
+                # tiles_per_pack is DERIVED, never typed — recompute_tiles_
+                # per_pack() is the one source of truth for it (see its own
+                # docstring on why a separately-entered number drifts).
+                derived = recompute_tiles_per_pack(prod)
+                if derived is not None and derived != prod.tiles_per_pack:
+                    plank_area_m2 = (prod.tile_length_mm / 1000) * (prod.tile_width_mm / 1000)
+                    exact = prod.m2_per_pack / plank_area_m2
+                    # A plank count that is not close to whole means the
+                    # stated plank size and the stated box coverage
+                    # disagree — one of them is wrong, and rounding it
+                    # anyway would bury that in a stair price. Reported,
+                    # and the value is still stored, because the row is
+                    # visible and fixable in the Console either way.
+                    if abs(exact - round(exact)) > 0.05:
+                        odd_plank_counts.append(f"{prod.product_name} ({exact:.2f} planks/box)")
+                    session.add(AuditLog(
+                        tenant_id=prod.tenant_id, username="system-migration",
+                        entity_type="FlooringProduct", entity_id=prod.id,
+                        field="tiles_per_pack", old_value=("" if prod.tiles_per_pack is None else str(prod.tiles_per_pack)), new_value=str(derived),
+                    ))
+                    prod.tiles_per_pack = derived
+                    changed = True
+                if changed:
+                    session.add(prod)
+                    filled += 1
+
+            # The two ranges Aspen's spec page lists that the price book
+            # has never had at all. Created pending_review — the field
+            # whose entire purpose is "in the book, but must NOT be
+            # usable by anyone yet" (models.py), enforced server-side in
+            # _require_active_flooring_product() as well as in every
+            # calculator dropdown. That gate is doing real work here:
+            # the brief states no pricing was available, so these carry
+            # base_cost_ex_vat 0.0, and a R0 vinyl range loose in the
+            # quote builder would hand out free flooring. They show in
+            # the Supplier Console under "Import status" for Burgert to
+            # price and flip to Active, which is exactly the review flow
+            # that field already drives for a bulk import.
+            #
+            # m2_per_pack is deliberately left EMPTY rather than assumed
+            # from the same-sized Project/Living boxes. Planks per box is
+            # a packing decision, not a consequence of plank size, so
+            # copying 16 across would be a guess that then silently
+            # derives a stair price. Nothing is lost by leaving it: the
+            # row can't be quoted until it's reviewed anyway.
+            aspen_tenants = {prod.tenant_id for prod in aspen_rows}
+            created = []
+            for tenant in sorted(aspen_tenants):
+                names_here = {(prod.product_name or "").lower() for prod in aspen_rows
+                              if prod.tenant_id == tenant}
+                for new_name, keyword in (("Aspen SPC Range 6mm", "spc"),
+                                          ("Aspen Lifestyle Range 2mm", "lifestyle")):
+                    if any(keyword in existing for existing in names_here):
+                        continue
+                    _kw, width_mm, length_mm, thickness_mm, wear_mm = next(
+                        sp for sp in ASPEN_RANGE_SPECS if sp[0] == keyword)
+                    session.add(FlooringProduct(
+                        tenant_id=tenant, supplier="Aspen Flooring", product_name=new_name,
+                        colour="", flooring_category="vinyl", pricing_type="material",
+                        base_cost_ex_vat=0.0, m2_per_pack=None,
+                        tile_width_mm=width_mm, tile_length_mm=length_mm,
+                        tile_thickness_mm=thickness_mm, wear_layer_mm=wear_mm,
+                        # Aspen's real courier rate, set here rather than
+                        # left at 0.0 for the separate Aspen delivery-fee
+                        # migration above to catch on the NEXT restart —
+                        # a new row should never spend a boot cycle
+                        # quoting with no courier cost in it.
+                        delivery_fee_per_m2=15.00,
+                        pending_review=True, source="aspen-spec-sheet-sept-2026",
+                    ))
+                    created.append(f"{new_name} ({tenant})")
+
+            if filled or created:
+                session.commit()
+            if filled:
+                print(f"Migration: Aspen plank dimensions filled in on {filled} product row(s) \u2014 Aspen can now be quoted on stairwells")
+            if created:
+                print(f"Migration: created {len(created)} Aspen range(s) awaiting pricing, NOT yet usable in quotes: {', '.join(created)}")
+            if unmatched:
+                print(f"Migration: Aspen row(s) matching no known range, plank size NOT set \u2014 still unusable on stairwells: {', '.join(sorted(set(unmatched)))}")
+            if odd_plank_counts:
+                print(f"Migration: WARNING \u2014 Aspen plank size and box coverage disagree on: {', '.join(odd_plank_counts)} \u2014 check the box m\u00b2 in the Supplier Console before quoting stairs on these")
+    except Exception as e:
+        print(f"Migration: Aspen product data load failed ({e}) \u2014 Aspen stays unselectable on stairwells until this is retried")
+
     # Invoices that went out but were never recorded (BUG FIX, confirmed
     # Sept 2026 — J-0003 and J-0002 sat in Needs Attention still asking
     # to be invoiced long after their invoices had been sent). The fix
