@@ -274,7 +274,16 @@ def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
     """
     lines: List[Dict[str, Any]] = []
     problems: List[str] = []
-    section = ""          # the most recent heading, carried onto the lines under it
+    # The heading(s) currently in force. A LIST, because Costa's real
+    # sheet stacks two with no line between them — row 20 "East Wing
+    # Downstairs" then row 21 "Living Areas" — and taking only the
+    # nearest would silently drop the wing off eleven lines. Consecutive
+    # headings are joined; a heading that arrives AFTER lines starts
+    # fresh. That flattens the sheet's two-level grouping to what is
+    # actually written above each line rather than inferring a hierarchy
+    # the file gives no reliable signal for.
+    section_parts: List[str] = []
+    section_used = False
     for row in range(FIRST_LINE_ROW, stop_before_row):
         room = _text(ws[f"{COL_ROOM}{row}"].value)
         blind_type = _text(ws[f"{COL_BLIND_TYPE}{row}"].value)
@@ -298,7 +307,11 @@ def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
         # to the lines that follow, so the grouping survives into the
         # quote instead of being thrown away.
         if room and not has_spec:
-            section = room
+            if section_used:
+                section_parts = [room]
+                section_used = False
+            elif room not in section_parts:
+                section_parts.append(room)
             continue
         # Nothing at all (or nothing but the template's own leftover
         # item number in column B, which is never read here). It also
@@ -309,7 +322,8 @@ def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
         # deliberately cheap one to get wrong — the worst case is a
         # missing word in a note, never a wrong number.
         if not has_spec and not room:
-            section = ""
+            section_parts = []
+            section_used = False
             continue
         # Money or measurements with nothing naming them. The one real
         # ambiguity, and the only thing still worth stopping for.
@@ -332,9 +346,10 @@ def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
         # and which the send-time check already looks for.
         if _norm(colour) == "tbc":
             colour = ""
+        section_used = bool(section_parts)
         lines.append({
             "row": row,
-            "section": section,
+            "section": " — ".join(section_parts),
             "item_no": _text(ws[f"{COL_ITEM_NO}{row}"].value),
             "room": room,
             "width_mm": width,
@@ -492,9 +507,11 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
         # becoming the product name. Falls back to type, then colour,
         # for a row with no allocation.
         line["product_name"] = line["room"] or line["blind_type"] or line["colour"]
+        # The section is NOT repeated in the note — it has its own field
+        # now (QuoteLineItem.section_label) and is drawn as a divider
+        # above the lines it covers, so putting it here too would print
+        # "Living Areas" on every one of the eleven rows under it.
         note_bits = []
-        if line["section"]:
-            note_bits.append(line["section"])
         detail = " ".join(x for x in (line["blind_type"], line["colour"]) if x)
         if detail:
             note_bits.append(detail)

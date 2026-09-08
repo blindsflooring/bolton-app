@@ -173,6 +173,18 @@
     background: #EAF3EF; border-left: 3px solid var(--margin-green);
   }
   .error-text { color: var(--coral); font-weight: 600; }
+  /* Section divider inside Quote Lines (confirmed Sept 2026) — the
+     Excel's own area grouping, carried through on an imported blinds
+     quote. Styled as a band rather than another row of data: it is a
+     label for what follows, and must not read as a line item with a
+     missing price. Muted on purpose — the eye should land on it while
+     scanning and otherwise pass over it. */
+  #linesTable tr.line-section-row td {
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700;
+    letter-spacing: 0.4px; text-transform: uppercase; color: #5b6570;
+    padding: 6px 8px;
+  }
   .job-cat {
     display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px;
     font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; white-space: nowrap;

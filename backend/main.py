@@ -493,6 +493,7 @@ def _ensure_new_columns():
         ("quote", "low_margin_reason_by", "VARCHAR", "NULL"),
         ("quote", "low_margin_reason_at", "TIMESTAMP", "NULL"),
         # Blinds Quote Import (confirmed Sept 2026, Excel -> Order Index):
+        ("quotelineitem", "section_label", "VARCHAR", "NULL"),
         ("quote", "blinds_import_ref", "VARCHAR", "NULL"),
         ("quote", "blinds_import_file", "VARCHAR", "NULL"),
         ("quote", "blinds_import_at", "TIMESTAMP", "NULL"),
@@ -7193,6 +7194,9 @@ async def commit_blinds_import(
                 colour=line["colour"], original_colour=line["colour"],
                 width_mm=line["width_mm"], drop_mm=line["drop_mm"],
                 line_notes=line["line_notes"],
+                # The Excel's own room grouping, kept so the quote can be
+                # read the same way the sheet is.
+                section_label=line["section"] or None,
                 unit_price=round(book / qty, 2),
                 unit_cost=round(cost / qty, 2),
                 line_total=book,

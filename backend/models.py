@@ -1525,6 +1525,16 @@ class QuoteLineItem(SQLModel, table=True):
     # manual, and nothing client-facing reads it — the printed quote
     # and the builder portal render these identically to any other
     # line, per the brief's "no visible manual mode".
+    # Section heading carried in from an imported blinds quote
+    # (confirmed Sept 2026). The Excel groups a long quote by area —
+    # "Living Areas", "East Wing Downstairs", "West Wing Upstairs" —
+    # and Costa's real sheet has 54 lines under six such headings.
+    # Held as its own field rather than inside line_notes because it is
+    # the thing the DISPLAY groups by; buried in a comma-joined note it
+    # was carried through but did nothing, which is what this fixes.
+    # None on every hand-built line, which is exactly what "no heading
+    # here" should look like.
+    section_label: Optional[str] = None
     manual_category: Optional[str] = None   # "engineered_wood" | "laminate"; None = an ordinary calculated line
     manual_unit: Optional[str] = None       # "m2" | "lm" | "each" — what quantity actually means on this line
     manual_quantity: Optional[float] = None # as entered, whatever the unit; quantity_m2/length_m mirror it for the m2/lm cases so existing aggregations see it

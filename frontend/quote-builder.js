@@ -3125,7 +3125,25 @@ async function loadQuote() {
   // the frontend needs its own gate for Owner specifically: only when
   // the breakdown toggle is actually on.
   const showBreakdown = currentRole() === 'owner' && ownerBreakdownVisible;
-  tbody.innerHTML = data.lines.map(l => {
+  tbody.innerHTML = data.lines.map((l, i) => {
+    // Section dividers on an imported blinds quote (confirmed Sept
+    // 2026). Costa's real sheet is 54 lines under six area headings —
+    // "Living Areas", "West Wing Upstairs" — and without these it
+    // arrives as one undifferentiated list that can't be scanned
+    // against the Excel it came from.
+    //
+    // Emitted on CHANGE of section_label rather than by grouping the
+    // lines: the sheet's own order is the meaningful one (it follows
+    // the installer round the house), and re-sorting into buckets would
+    // quietly reorder a quote to match a display idea. A hand-built
+    // line has no section_label, so nothing changes for any other
+    // category — and a run of unlabelled lines after a labelled one
+    // correctly closes the section rather than pretending to extend it.
+    const prevSection = i > 0 ? (data.lines[i - 1].section_label || '') : '';
+    const section = l.section_label || '';
+    const divider = section && section !== prevSection
+      ? `<tr class="line-section-row"><td colspan="7">${section}</td></tr>`
+      : '';
     // Persistent Summary Panel / Carpet Tab integration gap (confirmed
     // Aug 2026) — carpet_category is now set on a NEXBAC 920 Tile line
     // too (add_flooring_line()/edit_flooring_line(), main.py — the fix
@@ -3146,6 +3164,26 @@ async function loadQuote() {
       ? `${l.num_stairs} stairs — ${l.stairwell_type}, ${l.nosing_length_m}m nosing, ${l.boxes_needed} boxes (${l.billed_vinyl_area_m2}m² vinyl billed, ${l.glue_area_m2}m² glue coverage)${l.landing_area_m2 ? ` — incl. ${l.landing_area_m2}m² landing (R${l.landing_sell_total.toFixed(2)})` : ''}`
       : l.category === 'misc'
       ? '—'
+      // Blinds (confirmed Sept 2026). Two different things used to look
+      // identical here: a line whose measurements are deliberately
+      // hidden from the client (the quote's own toggle — get_quote()
+      // strips width/drop server-side, so they are genuinely absent
+      // from this payload too), and an imported add-on that HAS no
+      // measurements at all ("Pelmets", "Valance brackets", the Somfy
+      // items). The second was reading "measurements hidden", which is
+      // simply untrue and hides the line's real detail.
+      //
+      // line_notes carries the imported detail — type, colour, size,
+      // side, and "price TBC" where the sheet had no price. It is shown
+      // only when measurements are NOT being withheld, because that note
+      // contains the size: showing it with the toggle off would leak the
+      // exact figures the toggle exists to withhold. With the toggle off
+      // the old wording stands, since nothing on this side can tell a
+      // stripped width from one that never existed.
+      : l.category === 'blinds'
+      ? (data.quote?.blinds_measurements_visible === false
+          ? `<span class="hidden-note">measurements hidden</span>`
+          : (l.line_notes || (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : '—')))
       : (l.width_mm ? `${l.width_mm}×${l.drop_mm}mm` : `<span class="hidden-note">measurements hidden</span>`);
     if (showBreakdown && l.category === 'flooring' && l.glue_cost_total > 0) {
       detail += `<br><span class="muted">glue: R${l.glue_cost_total.toFixed(2)} (drawn from stock, ~${l.glue_units_needed} drum${l.glue_units_needed !== 1 ? 's' : ''} worth)${l.labour_cost_total > 0 ? ' — +labour R'+l.labour_cost_total.toFixed(2) : ''}</span>`;
@@ -3240,7 +3278,7 @@ async function loadQuote() {
           ? `<br><a onclick="revertLineOverride(${l.id})" style="font-size:10.5px; color:var(--teal); cursor:pointer; font-weight:600;">Revert to calculated (R${l.pre_override_line_total.toFixed(2)})</a>`
           : `<br><a onclick="overrideLinePrice(${l.id}, ${l.line_total})" style="font-size:10.5px; color:var(--teal); cursor:pointer; font-weight:600;">Override price</a>`)
       : '';
-    return `<tr>
+    return `${divider}<tr>
       <td data-label="Category"><span class="badge ${l.category}">${l.category}</span></td>
       <td class="card-title" data-label="Product">${l.product_name}${colourHtml}</td><td data-label="Detail">${detail}</td>
       <td data-label="Price"${priceColor ? ` style="color:${priceColor}; font-weight:700;"` : ''}>R${l.line_total.toFixed(2)}${overrideBadge}${overrideAction}${lowMarginHtml}</td>

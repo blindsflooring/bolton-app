@@ -127,6 +127,33 @@ Burgert: *"On the jobs still being installed and the jobs thats been done and aw
 - Tiles: Being Installed **R14 950,00 outstanding** (3 450 + a whole 11 500), Awaiting Payment **R33 950,00 outstanding** (3 450 + 7 500 + 11 500 + a whole 11 500), full values unchanged at R23 000 / R46 000 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
 - Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
 
+### Section headings carried through into the imported quote
+
+Costa's quote is 54 lines under six area headings. Without the grouping it arrives as one undifferentiated list that can't be read against the Excel it came from.
+
+- **The headings weren't quite discarded — they were buried.** The last round already captured them and put them at the front of each line's note, so every one of the eleven lines under "Living Areas" carried the words "Living Areas". That is data preserved and doing nothing. They now have their own field, `QuoteLineItem.section_label`, because the section is the thing the *display* groups by.
+- **Drawn as dividers on change of label, not by grouping the lines.** The sheet's own order is the meaningful one — it follows the installer round the house — and re-sorting into buckets would quietly reorder a quote to match a display idea. A hand-built line has no label, so nothing changes for any other category.
+- **The heading no longer repeats in the note**, since it now sits in a band above the lines it covers.
+- **Costa stacks two headings with no line between them** — row 20 "East Wing Downstairs", row 21 "Living Areas". Taking only the nearest would have silently dropped the wing off eleven lines, so consecutive headings are joined ("East Wing Downstairs — Living Areas") and a heading arriving *after* lines starts fresh. That flattens the sheet's two-level grouping to what is literally written above each line, rather than inferring a hierarchy the file gives no reliable signal for. **Found because a test assertion failed on the count** — five dividers rendered where the sheet has six headings.
+- **The add-ons belong to no section, and that is the right answer.** The valances, brackets and Somfy items sit below blank separator rows, which end a section; six lines carry no label.
+
+### A second bug the screenshot exposed
+Looking at the rendered result, every add-on row read **"measurements hidden"** — and the imported detail (type, colour, size, side, "price TBC") appeared nowhere at all.
+
+- Two different things looked identical: a line whose measurements are deliberately withheld from the client (the quote's own toggle — `get_quote()` strips width/drop server-side, so they are genuinely absent from this payload too), and an imported add-on that simply **has** no measurements. "Pelmets" was claiming to be hiding dimensions it never had.
+- The blinds branch now shows `line_notes` — which is where the imported detail lives — **but only when measurements are not being withheld**, because that note contains the size. Showing it with the toggle off would have leaked the exact figures the toggle exists to withhold. With the toggle off the old wording stands, since nothing on the frontend can tell a stripped width from one that never existed.
+- This also makes the "price TBC" marker and the sheet's own price note visible, which they weren't: **Costa's row 78 now reads "R4600 Ex Vat Per motor, price TBC"** — the figure needed to fill it in, on the line that needs filling in.
+
+### Verified (sections)
+- The **real Costa workbook**, imported through the real UI in Chromium: 59 rows in the Quote Lines table — 54 lines and **5 dividers** — reading `EAST WING DOWNSTAIRS — LIVING AREAS`, `ROOM AREAS`, `WEST WING DOWNSTAIRS`, `WEST WING UPSTAIRS`, `EAST WING UPSTAIRS`, each in the sheet's own order.
+- Stored: 48 lines carry a section, 6 carry none. The heading is **not** repeated in any line's detail.
+- Detail column, on the same import: a normal blind reads `Roller Sunshade Black, 1660×2200mm L`; the valance run keeps its non-numeric measurement `Bamboo Half Round, 85,4LM`; the brackets read `113 units`; the Somfy motor reads `R4600 Ex Vat Per motor, price TBC`. **Zero rows** say "measurements hidden".
+- All seven suites re-run green, including both real quotes end to end. Two carried stale expectations from the stacked-heading decision and were updated.
+- Screenshot: `.claude/sectionverify/sections.png`.
+
+### Noted, not done
+- The dividers are in Bolton's own quote view only. The **printed client document** still lists the lines flat — the brief asked for the imported quote view, and the printed doc is a separate template with its own layout rules.
+
 ### Blinds import: tolerant rows — and both real quotes finally parsed
 
 The two real workbooks (Stegman Gerhard, Costa and Son) were pulled from Dropbox and read directly. **This is the confirmation that had been outstanding since the import was first built** — every previous round was tested against reconstructions.
