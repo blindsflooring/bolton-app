@@ -247,61 +247,111 @@ def _find_rep_row(ws, after_row: int):
 
 
 def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
-    """Every blind above the totals block, read strictly.
+    """Every row between the header and the Sub Total, read per-row.
 
-    Anything in this range carrying SOME data but not enough to be a
-    blind is an error, never a skip: silently dropping a half-filled row
-    loses a blind off a quote, which is the worst thing this import
-    could do — the total would still reconcile against the remaining
-    lines and nothing would look wrong.
+    CHANGED Sept 2026, against two real quotes (Stegman, Costa). The
+    previous version demanded type + width + drop + qty + price on
+    every row and rejected the whole file otherwise — which threw out
+    both sheets, because a real blinds quote is not a uniform grid:
+
+      * a heading row carrying only a description ("East Wing
+        Downstairs", "Living Areas") — a grouping label, not a blind;
+      * a real line with no spec at all ("Pelmets", qty 2, R3 300;
+        "Valance brackets", qty 113, R1 356) — an add-on that has no
+        width, drop, type or colour and never will;
+      * a real line with no price yet (the four Somfy motor/remote
+        items on Costa's sheet) — quoted later, not never;
+      * rows carrying nothing but a leftover item number in column B
+        (Stegman rows 27-41, Costa 74 and 77) — the template's unused
+        numbering, not data.
+
+    Burgert's rule, and the one applied here: **"does this row have
+    enough to be usefully imported", not "does this row have every
+    column filled"**. A row is only reported when it is genuinely
+    ambiguous — money or measurements with nothing to say what they
+    are for — because that is the one case where guessing would put a
+    figure on a quote nobody can identify.
     """
     lines: List[Dict[str, Any]] = []
     problems: List[str] = []
+    section = ""          # the most recent heading, carried onto the lines under it
     for row in range(FIRST_LINE_ROW, stop_before_row):
-        total = _number(ws[f"{COL_LINE_TOTAL}{row}"].value)
+        room = _text(ws[f"{COL_ROOM}{row}"].value)
         blind_type = _text(ws[f"{COL_BLIND_TYPE}{row}"].value)
+        colour = _text(ws[f"{COL_COLOUR}{row}"].value)
+        side = _text(ws[f"{COL_SIDE}{row}"].value).upper()
         width = _number(ws[f"{COL_WIDTH}{row}"].value)
         drop = _number(ws[f"{COL_DROP}{row}"].value)
-        room = _text(ws[f"{COL_ROOM}{row}"].value)
-        # A row counts as a line ATTEMPT only if it carries one of the
-        # four things a blind is made of. Column C is deliberately not
-        # part of that test (confirmed Sept 2026): real quotes have gap
-        # rows and section text in the description column, and treating
-        # those as broken blinds would reject a perfectly good sheet.
-        # Gaps are skipped, never treated as the end of the list —
-        # Ilse's quote has blanks at B24 and B28-32 with real blinds
-        # below them.
-        if total is None and not blind_type and width is None and drop is None:
-            continue
-        if not blind_type:
-            problems.append(f"row {row}: no blind type in column {COL_BLIND_TYPE}")
-            continue
-        if width is None or drop is None:
-            problems.append(f"row {row}: width/drop missing in columns {COL_WIDTH}/{COL_DROP}")
-            continue
-        if total is None:
-            problems.append(f"row {row}: no line total in column {COL_LINE_TOTAL}")
-            continue
         qty = _number(ws[f"{COL_QTY}{row}"].value)
-        if qty is None or qty <= 0:
-            problems.append(f"row {row}: quantity missing or not a positive number in column {COL_QTY}")
+        total = _number(ws[f"{COL_LINE_TOTAL}{row}"].value)
+        # A measurement that isn't a plain number — Costa's "85,4LM"
+        # for a run of valance. Kept verbatim rather than discarded;
+        # it is the only size that line has.
+        width_raw = _text(ws[f"{COL_WIDTH}{row}"].value)
+        drop_raw = _text(ws[f"{COL_DROP}{row}"].value)
+
+        spec = [width, drop, qty, total]
+        has_spec = (any(v is not None for v in spec) or bool(blind_type)
+                    or bool(colour) or bool(side) or bool(width_raw) or bool(drop_raw))
+
+        # Nothing but a description: a section heading. Held and applied
+        # to the lines that follow, so the grouping survives into the
+        # quote instead of being thrown away.
+        if room and not has_spec:
+            section = room
             continue
+        # Nothing at all (or nothing but the template's own leftover
+        # item number in column B, which is never read here). It also
+        # ENDS the current section: on Costa's sheet the add-ons
+        # (valances, brackets, the Somfy motors) sit below a blank row,
+        # and without this they would inherit "East Wing Upstairs" and
+        # read as if they belonged to that room. An inference, and a
+        # deliberately cheap one to get wrong — the worst case is a
+        # missing word in a note, never a wrong number.
+        if not has_spec and not room:
+            section = ""
+            continue
+        # Money or measurements with nothing naming them. The one real
+        # ambiguity, and the only thing still worth stopping for.
+        description = room or blind_type or colour
+        if not description:
+            bits = []
+            if total is not None:
+                bits.append(f"a price of R{total:,.2f}")
+            if width is not None or drop is not None:
+                bits.append("dimensions")
+            if qty is not None:
+                bits.append(f"a quantity of {qty:g}")
+            problems.append(f"row {row}: has {' and '.join(bits)} but nothing in columns "
+                            f"{COL_ROOM}, {COL_BLIND_TYPE} or {COL_COLOUR} saying what it is")
+            continue
+
+        # "TBC" written into the Colour column is the sheet saying the
+        # colour isn't chosen yet — stored as no colour, which is the
+        # same state the quote builder's own TBC placeholder produces
+        # and which the send-time check already looks for.
+        if _norm(colour) == "tbc":
+            colour = ""
         lines.append({
             "row": row,
+            "section": section,
             "item_no": _text(ws[f"{COL_ITEM_NO}{row}"].value),
             "room": room,
             "width_mm": width,
             "drop_mm": drop,
-            "side": _text(ws[f"{COL_SIDE}{row}"].value).upper(),
+            "width_raw": width_raw if width is None else "",
+            "drop_raw": drop_raw if drop is None else "",
+            "side": side,
             "blind_type": blind_type,
-            "colour": _text(ws[f"{COL_COLOUR}{row}"].value),
-            "qty": qty,
-            "book_price_ex_vat": round(total, 2),
+            "colour": colour,
+            "qty": qty if (qty is not None and qty > 0) else 1,
+            "qty_stated": qty is not None,
+            "book_price_ex_vat": round(total, 2) if total is not None else None,
+            "price_tbc": total is None,
         })
     if problems:
         raise BlindsImportError(
-            "This sheet has rows that look like blinds but can't be read: "
-            + "; ".join(problems)
+            "This sheet has rows that can't be read: " + "; ".join(problems)
             + ". Fix them in Excel and re-upload — nothing was imported."
         )
     return lines
@@ -377,14 +427,17 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
             f"No blinds found on this sheet. Line items are read from row {FIRST_LINE_ROW} down, "
             f"and a row needs a blind type, width, drop, quantity and line total."
         )
-    # Belt and braces: the strict read and the totals scan are two
-    # different passes over the same rows, so they must agree.
-    strict_sum = round(sum(l["book_price_ex_vat"] for l in lines), 2)
+    # The lines that carry a price must add up to the sheet's own Sub
+    # Total. Unpriced lines are excluded from this on purpose — the
+    # sheet's subtotal doesn't include them either, so counting them
+    # would guarantee a mismatch on every quote that has one.
+    priced = [l for l in lines if not l["price_tbc"]]
+    strict_sum = round(sum(l["book_price_ex_vat"] for l in priced), 2)
     if not _close(strict_sum, totals["subtotal_ex_vat"]):
         raise BlindsImportError(
-            f"The {len(lines)} blind(s) read add up to R{strict_sum:,.2f}, but the subtotal on the "
-            f"sheet (row {totals['row']}) is R{totals['subtotal_ex_vat']:,.2f}. Nothing was imported — "
-            f"a line is being misread."
+            f"The {len(priced)} priced line(s) read add up to R{strict_sum:,.2f}, but the Sub Total "
+            f"on the sheet (row {totals['row']}) is R{totals['subtotal_ex_vat']:,.2f}. Nothing was "
+            f"imported — a line is being misread."
         )
 
     # Rep (brief's own open item): E48 is a formula pulling D15 back
@@ -394,10 +447,20 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
     rep_cell = f"{COL_REP}{rep_row}"
     rep_raw = _text(ws[rep_cell].value)
     client_reference = _text(_cell(ws, CELL_CLIENT_REFERENCE))
-    rep_usable = bool(rep_raw) and rep_raw.casefold() != client_reference.casefold()
+    # A name has letters in it. Stegman's sheet has 0 in this cell —
+    # the =D15 formula resolving against an empty Client Reference —
+    # and "0" is not a rep. Confirmed against the real file, which is
+    # the only reason this case is known about at all.
+    rep_has_letters = any(ch.isalpha() for ch in rep_raw)
+    rep_usable = (bool(rep_raw) and rep_has_letters
+                  and rep_raw.casefold() != client_reference.casefold())
     rep_reason = ""
     if not rep_raw:
         rep_reason = f"{rep_cell} is empty."
+    elif not rep_has_letters:
+        rep_reason = (f"{rep_cell} reads {rep_raw!r} — the template's Rep cell is a formula "
+                      f"(={CELL_CLIENT_REFERENCE}) and the Client Reference it points at is "
+                      f"empty, so it resolves to a number rather than a name.")
     elif not rep_usable:
         rep_reason = (f"{rep_cell} reads {rep_raw!r}, which is the client reference from "
                       f"{CELL_CLIENT_REFERENCE} — the template's Rep cell is a formula (=D15), "
@@ -406,33 +469,77 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
     keep = 1.0 - trade_discount_pct
     settle = 1.0 - settlement_discount_pct
     for line in lines:
-        cost_ex_vat = round(line["book_price_ex_vat"] * keep * settle, 2)
-        line["cost_ex_vat"] = cost_ex_vat
-        line["cost_incl_vat"] = round(cost_ex_vat * (1 + vat_pct), 2)
-        line["margin_pct"] = round(
-            (line["book_price_ex_vat"] - cost_ex_vat) / line["book_price_ex_vat"] * 100, 2
-        ) if line["book_price_ex_vat"] else 0.0
-        # The description a human reads on the quote line.
-        bits = [line["blind_type"]]
-        if line["colour"]:
-            bits.append(line["colour"])
-        line["product_name"] = " — ".join(bits)
+        book = line["book_price_ex_vat"]
+        if book is None:
+            # No price on the sheet yet. Zero, not a guess — and carried
+            # with price_tbc so it can be seen, reported, and blocked
+            # before the quote goes out.
+            line["cost_ex_vat"] = 0.0
+            line["cost_incl_vat"] = 0.0
+            line["margin_pct"] = 0.0
+        else:
+            cost_ex_vat = round(book * keep * settle, 2)
+            line["cost_ex_vat"] = cost_ex_vat
+            line["cost_incl_vat"] = round(cost_ex_vat * (1 + vat_pct), 2)
+            line["margin_pct"] = round((book - cost_ex_vat) / book * 100, 2) if book else 0.0
+
+        # The description leads with the ALLOCATION (column C), because
+        # that is what the sheet itself leads with and what the client
+        # reads — "Living Room East side Stack Left", "Pelmets",
+        # "Valance brackets". Type and colour are supporting detail
+        # rather than the name, which also stops a row whose Type column
+        # holds a note ("R4600 Ex Vat Per motor", Costa rows 78-81) from
+        # becoming the product name. Falls back to type, then colour,
+        # for a row with no allocation.
+        line["product_name"] = line["room"] or line["blind_type"] or line["colour"]
         note_bits = []
-        if line["room"]:
-            note_bits.append(line["room"])
-        if line["side"]:
+        if line["section"]:
+            note_bits.append(line["section"])
+        detail = " ".join(x for x in (line["blind_type"], line["colour"]) if x)
+        if detail:
+            note_bits.append(detail)
+        size = ""
+        if line["width_mm"] is not None and line["drop_mm"] is not None:
+            size = f"{line['width_mm']:g}\u00d7{line['drop_mm']:g}mm"
+        elif line["width_raw"] or line["drop_raw"]:
+            size = " ".join(x for x in (line["width_raw"], line["drop_raw"]) if x)
+        if size:
+            note_bits.append(size + (f" {line['side']}" if line["side"] else ""))
+        elif line["side"]:
             note_bits.append(f"{line['side']} side")
-        if line["qty"] and line["qty"] != 1:
+        if line["qty_stated"] and line["qty"] != 1:
             note_bits.append(f"{line['qty']:g} units")
+        if line["price_tbc"]:
+            note_bits.append("price TBC")
         line["line_notes"] = ", ".join(note_bits)
 
     cost_ex_vat_total = round(sum(l["cost_ex_vat"] for l in lines), 2)
+    unpriced = [l for l in lines if l["price_tbc"]]
     # A moved totals block is NORMAL, not a warning — the rows shift with
     # every quote length, which is the whole reason these are found by
     # label. Where things were found is reported as plain information
     # below (`rows`) so it can be checked against the sheet, without
     # crying wolf on every import.
     warnings: List[str] = []
+    if not client_reference:
+        # _blinds_import_match() keys re-imports on this. Without one,
+        # a revised sheet has nothing to match against and would come in
+        # as a second job beside the first rather than replacing it.
+        warnings.append(
+            f"No Client Reference in {CELL_CLIENT_REFERENCE}. This imports fine, but a later "
+            f"re-import of the same job won't be able to find it to replace — it would come in "
+            f"as a second job. Fill in the reference on the sheet if this quote is likely to change."
+        )
+    if unpriced:
+        # Said out loud, because the quote total will be short by
+        # whatever these turn out to cost. The send-time TBC check
+        # blocks the document until they're filled in.
+        warnings.append(
+            f"{len(unpriced)} line(s) have no price on the sheet and come in at R0 — "
+            + "; ".join(f"row {l['row']} {l['product_name']}" for l in unpriced[:6])
+            + (f" and {len(unpriced) - 6} more" if len(unpriced) > 6 else "")
+            + ". Price them on the quote before sending it."
+        )
     if totals["deposit"] is not None and not _close(totals["deposit"], totals["total_incl_vat"] * 0.70):
         warnings.append(
             f"The deposit on the sheet (R{totals['deposit']:,.2f}) isn't 70% of the total "
@@ -471,6 +578,7 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
             "deposit": totals["deposit"],
             "row": totals["row"],
         },
+        "unpriced_count": len(unpriced),
         "cost": {
             "trade_discount_pct": trade_discount_pct,
             "settlement_discount_pct": settlement_discount_pct,

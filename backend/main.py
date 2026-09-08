@@ -7127,7 +7127,7 @@ async def commit_blinds_import(
         quote = None
         if replace_quote_id is not None:
             quote = get_or_404(session, Quote, replace_quote_id, tenant_id, "Quote")
-            if not quote.blinds_import_ref:
+            if quote.blinds_import_at is None:
                 raise HTTPException(400,
                     "That quote wasn't created by a blinds import, so a spreadsheet can't replace it. "
                     "Only an imported quote is replaced by a re-import.")
@@ -7174,6 +7174,13 @@ async def commit_blinds_import(
 
         for line in parsed["lines"]:
             qty = line["qty"] or 1
+            # A line the sheet carries no price for (confirmed Sept 2026
+            # against Costa's quote, which lists four Somfy items still
+            # to be priced). Stored at ZERO rather than guessed — and
+            # the quote can't be sent while one is on it, the same block
+            # a TBC colour already gets (tbcPriceLines(), quote-builder.js).
+            book = line["book_price_ex_vat"] or 0.0
+            cost = line["cost_ex_vat"] or 0.0
             session.add(QuoteLineItem(
                 tenant_id=tenant_id, quote_id=quote.id, category="blinds",
                 # product_id 0 = no price-book product behind this line,
@@ -7186,10 +7193,10 @@ async def commit_blinds_import(
                 colour=line["colour"], original_colour=line["colour"],
                 width_mm=line["width_mm"], drop_mm=line["drop_mm"],
                 line_notes=line["line_notes"],
-                unit_price=round(line["book_price_ex_vat"] / qty, 2),
-                unit_cost=round(line["cost_ex_vat"] / qty, 2),
-                line_total=line["book_price_ex_vat"],
-                total_job_cost=line["cost_ex_vat"],
+                unit_price=round(book / qty, 2),
+                unit_cost=round(cost / qty, 2),
+                line_total=book,
+                total_job_cost=cost,
                 margin_pct=line["margin_pct"],
             ))
         _log_quote_line_audit(session, quote, username,
@@ -12379,7 +12386,13 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # from the `lines` already fetched above for the totals, so
             # this costs no extra query. See _job_category().
             d["job_category"] = _job_category({l.category for l in lines})
-            d["is_blinds_import"] = bool(q.blinds_import_ref)
+            # Keyed on blinds_import_at, NOT the reference (corrected Sept
+            # 2026 against the real Stegman quote, whose sheet has no
+            # Client Reference at all): the timestamp means "this came
+            # from a spreadsheet", the reference means "this is how we
+            # find it again". Using the reference dropped the imported
+            # marker off every job quoted without one.
+            d["is_blinds_import"] = q.blinds_import_at is not None
             # Trusted Tester Accounts brief (confirmed Aug 2026) — NOT
             # hidden from the Order Index, per the brief's own explicit
             # requirement ("NOT hidden from Burgert, Ryno, or Madri's

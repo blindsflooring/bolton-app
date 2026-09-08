@@ -124,13 +124,18 @@ function renderBlindsImportPreview() {
   const rows = d.lines.map(l => `
     <tr>
       <td>${l.item_no || ''}</td>
-      <td>${l.room || '<span class="muted">—</span>'}</td>
-      <td>${l.blind_type}</td>
+      <td>${l.section ? `<span class="muted" style="font-size:10px;">${l.section}</span><br>` : ''}${l.room || '<span class="muted">—</span>'}</td>
+      <td>${l.blind_type || '<span class="muted">—</span>'}</td>
       <td>${l.colour || '<span class="muted">—</span>'}</td>
-      <td>${l.width_mm}×${l.drop_mm}${l.side ? ' ' + l.side : ''}</td>
+      <td>${l.width_mm != null && l.drop_mm != null
+              ? `${l.width_mm}×${l.drop_mm}`
+              : (l.width_raw || l.drop_raw || '<span class="muted">—</span>')}${l.side ? ' ' + l.side : ''}</td>
       <td>${l.qty}</td>
-      <td>${money(l.book_price_ex_vat)}</td>
-      <td class="muted">${money(l.cost_ex_vat)}</td>
+      <!-- A line the sheet had no price for shows TBC, never R0,00 —
+           R0,00 reads as "free", which is a different and much worse
+           claim than "not priced yet". -->
+      <td>${l.price_tbc ? '<b class="oi-final-payment-warn">TBC</b>' : money(l.book_price_ex_vat)}</td>
+      <td class="muted">${l.price_tbc ? '—' : money(l.cost_ex_vat)}</td>
     </tr>`).join('');
 
   // The rep. The template's Rep cell is a formula pulling the client

@@ -127,6 +127,41 @@ Burgert: *"On the jobs still being installed and the jobs thats been done and aw
 - Tiles: Being Installed **R14 950,00 outstanding** (3 450 + a whole 11 500), Awaiting Payment **R33 950,00 outstanding** (3 450 + 7 500 + 11 500 + a whole 11 500), full values unchanged at R23 000 / R46 000 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
 - Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
 
+### Blinds import: tolerant rows — and both real quotes finally parsed
+
+The two real workbooks (Stegman Gerhard, Costa and Son) were pulled from Dropbox and read directly. **This is the confirmation that had been outstanding since the import was first built** — every previous round was tested against reconstructions.
+
+- **A real blinds quote is not a uniform grid, and demanding one threw out both files.** The old reader required type + width + drop + qty + price on every row. The real sheets carry: heading rows with only a description ("East Wing Downstairs", "Living Areas", "Room Areas"); real lines with no spec at all (**Pelmets**, qty 2, R3 300 on Stegman; **Valance brackets**, qty 113, R1 356 on Costa); real lines with no price yet (Costa's four Somfy items); a measurement that isn't a number (**"85,4LM"** for a run of valance); and dozens of rows holding nothing but a leftover item number (Stegman 27–41, Costa 74 and 77).
+- **Burgert's rule applied literally:** *"does this row have enough to be usefully imported", not "does this row have every column filled."* A row is now only refused when it is genuinely ambiguous — **money or measurements with nothing naming them** — because that is the one case where importing would put a figure on a quote nobody can identify.
+- **Section headings are kept, not discarded.** The most recent heading is carried onto the lines beneath it and shows in the line's detail. A blank separator row *ends* a section — an inference, made deliberately because on Costa's sheet the add-ons sit below a blank row and would otherwise read as belonging to "East Wing Upstairs". Its worst failure is a missing word in a note, never a wrong number.
+- **An unpriced line comes in at R0 and blocks the send**, the same treatment a TBC colour already gets, which is the pattern the brief named. `tbcPriceLines()` is scoped to blinds on purpose: a R0 line is a sanctioned state elsewhere (a free Misc item), and blocking on those would make it a nuisance rather than a safeguard. The sheet's own price note is preserved in the line detail — Costa's row 78 keeps *"R4600 Ex Vat Per motor"*, which is exactly the figure needed to fill it in.
+- **The reconciliation now covers priced lines only.** The sheet's Sub Total doesn't include the unpriced ones either, so counting them would have guaranteed a mismatch on every quote that has one.
+- **The description leads with the ALLOCATION** (column C), which is what the sheet leads with and what the client reads. It also stops a row whose Type column holds a note (*"R4600 Ex Vat Per motor"*) from becoming the product name.
+- **"TBC" typed into the Colour column** is stored as no colour, so it lands in the same state the quote builder's own TBC placeholder produces and the existing send-time check already looks for.
+- **Two real bugs the real files exposed**, neither findable from a reconstruction:
+  - **Stegman's Rep cell holds `0`** — the `=D15` formula resolving against an empty Client Reference. It was being accepted as a rep name. A rep now has to contain letters.
+  - **`is_blinds_import` was keyed on the client reference**, and Stegman's sheet has none — so a genuinely imported job lost its ⤓ marker on the Order Index. Now keyed on `blinds_import_at`: the timestamp means "this came from a spreadsheet", the reference means "this is how we find it again". The replace guard moved to the same field.
+- **A blank Client Reference is now called out** at review: the import works, but a re-import can't find that job to replace and would come in as a second one.
+
+### Verified (both real quotes, end to end)
+| | Stegman | Costa |
+|---|---|---|
+| Client | Gerhard Stegmann | F Costa and Son |
+| Rows found | lines 20–26, Sub Total **42**, Rep **48** | lines 22–81, Sub Total **83**, Rep **89** |
+| Lines | 7 | 54 (**4 unpriced**) |
+| Sheet subtotal / VAT / total | R17 514,00 / R2 627,10 / **R20 141,10** | R158 709,00 / R23 806,35 / **R182 515,35** |
+| Our cost ex VAT | R8 910,27 (margin 49.12%) | R80 743,20 (margin 49.13%) |
+| Rep usable | no — cell reads `0` | no — cell reads the client reference |
+
+- Both committed through the real endpoints: line totals on the saved quote match each sheet's Sub Total **to the cent**, every line lands as `category="blinds"`, the client record picks up the sheet's phone number, and the Order Index shows each as a Blinds job with the sheet's own incl-VAT total.
+- Each row type confirmed against the real files by name and row number: Pelmets (no spec), Costa r20/21 headings carried onto r22, rows 78–81 unpriced with the price note kept, r75's "85,4LM", and every leftover item-number row skipped.
+- The send block: an unpriced blinds line stops the quote and names it; a R0 Misc line does not.
+- All five earlier suites re-run green. Three of them had stale expectations from these deliberate changes (the description now leads with the allocation; a description-plus-price row is valid rather than an error; the Blinds tile opens the Blinds screen) — updated, not worked around.
+
+### Still open
+- **The Rep cell needs fixing in the template.** Both real sheets confirm it is unusable, for two different reasons. Until a rep types a real name over it — or the sheet gets a dedicated field — the rep is picked by hand at review.
+- **`B1`'s `#VALUE!`** is present on both real sheets, visible at the top of every quote sent to a client. Still a template issue, not a Bolton one.
+
 ### Blinds import: locate by label, not by row number
 
 The import failed on a real quote, and Burgert found why: **the template's rows are not fixed at all.** Simon's sheet has its totals on row 42 and Rep on 48; Ilse's has them on **34 and 40**. The layout slides with the number of blinds.

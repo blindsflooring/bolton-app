@@ -2414,6 +2414,22 @@ function tbcColourLines() {
     (l.category === 'flooring' || l.category === 'stairwell') && !l.colour);
 }
 
+// An imported blinds line the spreadsheet had no price for (confirmed
+// Sept 2026 — Costa's sheet quotes four Somfy items with the price
+// still to come). The import brings them in at R0 rather than guessing,
+// which leaves the quote total short by whatever they turn out to cost
+// — so they get the SAME treatment TBC colours already get: the quote
+// cannot be sent until they are real. The brief's own words, "matching
+// the same TBC pattern already used elsewhere in Bolton".
+//
+// Scoped to blinds deliberately. A R0 line is a sanctioned state
+// elsewhere (a free Misc item, a no-charge extra), and blocking on
+// those would make this a nuisance rather than a safeguard.
+function tbcPriceLines() {
+  return (currentQuoteLinesCache || []).filter(l =>
+    l.category === 'blinds' && !l.line_total);
+}
+
 async function printQuote() {
   if (!currentQuoteId) return;
   const tbc = tbcColourLines();
@@ -2422,6 +2438,15 @@ async function printQuote() {
       `This quote still has ${tbc.length} line${tbc.length === 1 ? '' : 's'} with the colour left as TBC:\n\n` +
       tbc.map(l => '  • ' + l.product_name).join('\n') +
       `\n\nSet the colour on each (Change colour on the line) before sending the quote.`);
+    return;
+  }
+  const noPrice = tbcPriceLines();
+  if (noPrice.length) {
+    alert(
+      `This quote still has ${noPrice.length} line${noPrice.length === 1 ? '' : 's'} with no price — ` +
+      `the spreadsheet didn't carry one, so they came in at R0 and the total below is short:\n\n` +
+      noPrice.map(l => '  • ' + l.product_name + (l.line_notes ? ` (${l.line_notes})` : '')).join('\n') +
+      `\n\nPrice each of them, or take them off, before sending the quote.`);
     return;
   }
   await renderPrintDoc(currentQuoteId, 'quote');
