@@ -40,6 +40,7 @@ from calculations import calculate_flooring_line, calculate_blinds_line, calcula
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
+from blinds_import import parse_blinds_quote, BlindsImportError
 from pdf_render import render_html_to_pdf
 import dropbox_archive
 import database_backup
@@ -491,6 +492,12 @@ def _ensure_new_columns():
         ("quote", "low_margin_reason", "VARCHAR", "NULL"),
         ("quote", "low_margin_reason_by", "VARCHAR", "NULL"),
         ("quote", "low_margin_reason_at", "TIMESTAMP", "NULL"),
+        # Blinds Quote Import (confirmed Sept 2026, Excel -> Order Index):
+        ("quote", "blinds_import_ref", "VARCHAR", "NULL"),
+        ("quote", "blinds_import_file", "VARCHAR", "NULL"),
+        ("quote", "blinds_import_at", "TIMESTAMP", "NULL"),
+        ("businesssettings", "blinds_trade_discount_pct", "FLOAT", "0.45"),
+        ("businesssettings", "blinds_settlement_discount_pct", "FLOAT", "0.075"),
         # Bulk Import Full Belgotex Carpet Range, PENDING (confirmed Aug 2026):
         ("flooringproduct", "pending_review", "BOOLEAN", "FALSE"),
         # "Colour" Field Showing Products Instead of Real Colours (confirmed Aug 2026):
@@ -6967,6 +6974,237 @@ async def import_master_spreadsheet(
     return {"rows": rows}
 
 
+# ---------------------------------------------------------------------
+# Blinds Quote Import (confirmed Sept 2026, "Blinds Quote Import
+# (Excel -> Order Index)" brief)
+#
+# Blinds are quoted in an Excel template and will go on being quoted
+# there. This brings the FINISHED quote into Bolton so blinds count
+# toward KPIs and rep commission, explicitly "without moving blinds
+# pricing/calculation logic into Bolton itself" - so nothing here
+# prices a blind. The sheet's own numbers are read and stored.
+#
+# Two endpoints, the same split the supplier price-sheet import already
+# uses and for the same reason: preview parses and returns, writing
+# NOTHING; commit is a separate, deliberate action after a human has
+# looked at what came out. Money is being created in the Order Index
+# here - that does not get to happen on an upload alone.
+# ---------------------------------------------------------------------
+
+# Blinds vs Flooring at a glance in the Order Index (confirmed Sept
+# 2026, Blinds Quote Import brief: imported blinds quotes "sit in Order
+# Index alongside flooring quotes but be clearly, immediately
+# distinguishable at a glance").
+#
+# DERIVED from the lines already on the quote, never a stored column.
+# A stored one would need maintaining on every add/edit/delete of a
+# line and would silently go wrong the first time someone forgot -
+# and the answer is a pure function of the lines, so there is nothing
+# to store. It is also deliberately NOT "was this imported": a blinds
+# quote built by hand in Bolton is still a blinds quote, and the badge
+# answers "what kind of work is this", not "where did it come from".
+BLINDS_LINE_CATEGORIES = {"blinds"}
+
+
+def _job_category(line_categories: set) -> str:
+    """"blinds" | "flooring" | "mixed" | "" (nothing on it yet)."""
+    if not line_categories:
+        return ""
+    has_blinds = bool(line_categories & BLINDS_LINE_CATEGORIES)
+    has_other = bool(line_categories - BLINDS_LINE_CATEGORIES)
+    if has_blinds and has_other:
+        return "mixed"
+    return "blinds" if has_blinds else "flooring"
+
+
+def _blinds_import_rates(settings: BusinessSettings) -> dict:
+    return {
+        "trade_discount_pct": settings.blinds_trade_discount_pct,
+        "settlement_discount_pct": settings.blinds_settlement_discount_pct,
+        "vat_pct": settings.vat_pct,
+    }
+
+
+def _blinds_import_match(session: Session, tenant_id: str, parsed: dict) -> List[dict]:
+    """Quotes a re-import might be replacing (brief: a revision "replaces
+    the existing linked Order Index entry", the Excel staying the single
+    source of truth).
+
+    Matched on the sheet's own client reference, narrowed to imported
+    quotes only - a quote built in Bolton is never silently replaced by
+    a spreadsheet. The reference is human-typed ("Woonstel 6") and not
+    unique on its own, so this deliberately RETURNS CANDIDATES for a
+    person to choose from rather than picking one: replacing the wrong
+    job would destroy a real quote's lines with no way back.
+    """
+    ref = (parsed["client"]["reference"] or "").strip()
+    if not ref:
+        return []
+    rows = session.exec(select(Quote).where(
+        Quote.tenant_id == tenant_id,
+        Quote.blinds_import_ref == ref,
+    )).all()
+    return [{
+        "id": q.id, "job_number": q.job_number, "client_name": q.client_name,
+        "workflow_status": q.workflow_status, "sales_owner": q.sales_owner,
+        "imported_at": q.blinds_import_at.isoformat() if q.blinds_import_at else None,
+        "source_file": q.blinds_import_file,
+        # Said out loud on the review screen: a job already in motion is
+        # not a safe thing to overwrite without knowing it.
+        "already_started": q.workflow_status != "quoted" or bool(q.accepted_at),
+    } for q in rows]
+
+
+@app.post("/admin/blinds-import/preview")
+async def preview_blinds_import(
+    file: UploadFile = File(...),
+    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+):
+    """Parse one blinds quote and return what it says. Writes NOTHING -
+    the same contract as import_master_spreadsheet() above. 400 on a
+    rejected file: that is a bad input, not a service failure."""
+    file_bytes = await file.read()
+    with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
+        try:
+            parsed = parse_blinds_quote(file_bytes, filename=file.filename or "",
+                                        **_blinds_import_rates(settings))
+        except BlindsImportError as e:
+            raise HTTPException(400, str(e))
+        parsed["replaces"] = _blinds_import_match(session, tenant_id, parsed)
+        # Who the rep could be. The template's own Rep cell is a formula
+        # pulling the client reference back (the brief's own open item),
+        # so commission attribution cannot come off the sheet yet - the
+        # importer picks from real users instead.
+        parsed["rep_options"] = [
+            {"username": u.username, "display_name": u.display_name}
+            for u in session.exec(select(User).where(
+                User.tenant_id == tenant_id, User.active == True)).all()  # noqa: E712
+        ]
+        return parsed
+
+
+@app.post("/admin/blinds-import/commit")
+async def commit_blinds_import(
+    sales_owner: str, file: UploadFile = File(...), replace_quote_id: Optional[int] = None,
+    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+    username: str = Depends(get_current_username),
+):
+    """Create (or replace) the Order Index entry for a blinds quote.
+
+    The FILE is re-sent and re-parsed here rather than the preview's
+    JSON being posted back. That is deliberate: a client that could post
+    its own line totals would make this endpoint a way to write any
+    number into a quote, and the whole point of a deterministic import
+    is that the numbers come from the sheet. Re-parsing costs
+    milliseconds and means the committed quote provably IS the file.
+
+    sales_owner is required and comes from the review screen, not the
+    sheet - see the brief's own open item on the Rep cell.
+    """
+    file_bytes = await file.read()
+    with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
+        try:
+            parsed = parse_blinds_quote(file_bytes, filename=file.filename or "",
+                                        **_blinds_import_rates(settings))
+        except BlindsImportError as e:
+            raise HTTPException(400, str(e))
+
+        rep = session.exec(select(User).where(
+            User.tenant_id == tenant_id, User.username == sales_owner)).first()
+        if not rep:
+            raise HTTPException(400, f"No user {sales_owner!r} - pick the rep this quote belongs to, "
+                                     f"or commission won't be attributed to anyone.")
+
+        client_info = parsed["client"]
+        quote = None
+        if replace_quote_id is not None:
+            quote = get_or_404(session, Quote, replace_quote_id, tenant_id, "Quote")
+            if not quote.blinds_import_ref:
+                raise HTTPException(400,
+                    "That quote wasn't created by a blinds import, so a spreadsheet can't replace it. "
+                    "Only an imported quote is replaced by a re-import.")
+            # Replace means replace: the sheet is the source of truth for
+            # what is on this quote, so a line removed in Excel has to
+            # disappear here too. The quote ROW survives - job number,
+            # workflow status, dates and payment record all intact -
+            # because this is a revision of the same job, not a new one.
+            for old_line in session.exec(select(QuoteLineItem).where(
+                    QuoteLineItem.quote_id == quote.id,
+                    QuoteLineItem.tenant_id == tenant_id)).all():
+                session.delete(old_line)
+            _log_quote_line_audit(session, quote, username, "replaced",
+                                  f"Blinds import re-run from {parsed['source_file'] or 'spreadsheet'}")
+
+        if quote is None:
+            client = _resolve_or_create_client(session, tenant_id, None, client_info["name"],
+                                               branch=parsed["branch"])
+            # Details off the sheet fill BLANKS on the client record
+            # only - an import must not overwrite a phone number someone
+            # corrected in Bolton with a stale one from a spreadsheet.
+            if client_info["address"] and not (client.address or "").strip():
+                client.address = client_info["address"]
+            if client_info["phone"] and not (client.phone or "").strip():
+                client.phone = client_info["phone"]
+            session.add(client)
+            quote = Quote(
+                tenant_id=tenant_id, client_id=client.id, client_name=client.name,
+                sales_owner=sales_owner, branch=parsed["branch"],
+                site_address=client_info["address"] or (client.address or ""),
+                description=client_info["reference"],
+                deposit_pct=settings.default_deposit_pct,
+            )
+            session.add(quote)
+            session.commit()
+            session.refresh(quote)
+        else:
+            quote.sales_owner = sales_owner
+            quote.branch = parsed["branch"]
+
+        quote.blinds_import_ref = client_info["reference"]
+        quote.blinds_import_file = parsed["source_file"]
+        quote.blinds_import_at = datetime.utcnow()
+
+        for line in parsed["lines"]:
+            qty = line["qty"] or 1
+            session.add(QuoteLineItem(
+                tenant_id=tenant_id, quote_id=quote.id, category="blinds",
+                # product_id 0 = no price-book product behind this line,
+                # the same sentinel add_manual_line() already uses. A
+                # BlindsProduct is deliberately NOT looked up: doing so
+                # would re-price the blind inside Bolton, which is
+                # precisely what this feature must not do.
+                product_id=0,
+                product_name=line["product_name"],
+                colour=line["colour"], original_colour=line["colour"],
+                width_mm=line["width_mm"], drop_mm=line["drop_mm"],
+                line_notes=line["line_notes"],
+                unit_price=round(line["book_price_ex_vat"] / qty, 2),
+                unit_cost=round(line["cost_ex_vat"] / qty, 2),
+                line_total=line["book_price_ex_vat"],
+                total_job_cost=line["cost_ex_vat"],
+                margin_pct=line["margin_pct"],
+            ))
+        _log_quote_line_audit(session, quote, username,
+                              "replaced" if replace_quote_id else "added",
+                              f"Blinds import - {len(parsed['lines'])} line(s), "
+                              f"R{parsed['totals']['subtotal_ex_vat']:,.2f} ex VAT, "
+                              f"from {parsed['source_file'] or 'spreadsheet'}")
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return {
+            "quote_id": quote.id, "job_number": quote.job_number,
+            "client_name": quote.client_name, "branch": quote.branch,
+            "sales_owner": quote.sales_owner,
+            "lines_imported": len(parsed["lines"]),
+            "replaced": replace_quote_id is not None,
+            "totals": parsed["totals"], "cost": parsed["cost"],
+            "warnings": parsed["warnings"],
+        }
+
+
 @app.get("/admin/supplier-defaults", response_model=List[SupplierDefault])
 def list_supplier_defaults(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     """Per-supplier defaults (confirmed Aug 2026 — see SupplierDefault's
@@ -12131,6 +12369,11 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # above (no extra query) — Order Index shows a row's "Adjusted"
             # flag if EITHER is true.
             d["has_line_override"] = any(l.pre_override_line_total is not None for l in lines)
+            # Blinds vs Flooring badge (confirmed Sept 2026) — computed
+            # from the `lines` already fetched above for the totals, so
+            # this costs no extra query. See _job_category().
+            d["job_category"] = _job_category({l.category for l in lines})
+            d["is_blinds_import"] = bool(q.blinds_import_ref)
             # Trusted Tester Accounts brief (confirmed Aug 2026) — NOT
             # hidden from the Order Index, per the brief's own explicit
             # requirement ("NOT hidden from Burgert, Ryno, or Madri's

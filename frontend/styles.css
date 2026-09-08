@@ -129,6 +129,57 @@
      app's normal informational colour; the warn variant reuses
      var(--coral), already this app's "look at this" colour everywhere
      else, for the case where the deposit is still outstanding too. */
+  /* Blinds vs Flooring badge (confirmed Sept 2026) — two muted,
+     clearly different tints rather than two saturated colours: this
+     table already uses coral for "something is wrong" and teal for
+     money, and a loud third colour competing with those would make the
+     row harder to scan, not easier. The arrow suffix marks a quote
+     that came from the blinds spreadsheet. */
+  /* Blinds Quote Import review (confirmed Sept 2026). Deliberately
+     plain: this screen's job is to let someone check numbers against a
+     spreadsheet open next to them, so the line table is dense and the
+     two totals blocks are visually separated — client price on one,
+     our cost on the other — because conflating them is the one
+     mistake that would matter here. */
+  .import-lines { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
+  .import-lines th {
+    text-align: left; padding: 5px 8px; border-bottom: 2px solid var(--border);
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.3px; color: #6b7280; white-space: nowrap;
+  }
+  .import-lines td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  .import-totals {
+    display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 9px 12px; margin: 8px 0;
+    background: var(--bg); border-radius: 8px; font-size: 12.5px;
+  }
+  .import-totals div { display: flex; flex-direction: column; gap: 1px; }
+  .import-totals .muted { font-size: 10.5px; }
+  .import-totals-cost { background: #eef4f4; border-left: 3px solid var(--teal); }
+  .import-reject {
+    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 12.5px; line-height: 1.5;
+    background: #FDF1EC; border-left: 3px solid var(--coral);
+  }
+  .import-warn {
+    padding: 9px 12px; margin: 10px 0; border-radius: 6px; font-size: 12px; line-height: 1.5;
+    background: #FEF8E7; border-left: 3px solid #d8a92b;
+  }
+  .import-warn-inline { display: block; font-weight: 600; font-size: 11px; color: var(--coral); }
+  .import-replace {
+    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 12.5px;
+    background: #F1EEF7; border-left: 3px solid #7c6aa8;
+  }
+  .import-done {
+    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 13px;
+    background: #EAF3EF; border-left: 3px solid var(--margin-green);
+  }
+  .error-text { color: var(--coral); font-weight: 600; }
+  .job-cat {
+    display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; white-space: nowrap;
+  }
+  .job-cat-blinds   { background: #e7edf7; color: #2f4a75; }
+  .job-cat-flooring { background: #eaf3ef; color: #2c5c48; }
+  .job-cat-mixed    { background: #f3eef7; color: #543f6b; }
   .oi-final-payment { font-size: 10.5px; font-weight: 700; color: var(--teal); }
   .oi-final-payment-warn { color: var(--coral); }
   .stage-tile.stage-quoted           { background: #eef2f7; border-left-color: #94a8bf; }

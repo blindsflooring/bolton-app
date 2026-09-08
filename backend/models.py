@@ -1062,6 +1062,17 @@ class BusinessSettings(SQLModel, table=True):
     # Operational values — confirmed Aug 2026, closing the hardcoded/
     # duplicated-value bugs found above:
     vat_pct: float = 0.15
+    # Blinds cost split (confirmed Sept 2026, Blinds Quote Import
+    # brief): "Actual cost to Burgert = book price - 45% trade discount,
+    # + VAT, - 7.5% settlement discount." Settings rather than constants
+    # in the import module because these are supplier commercial terms —
+    # they get renegotiated, and a renegotiation must not need a code
+    # change to take effect on the next import. They apply at IMPORT
+    # time only: a quote already imported keeps the cost it was
+    # imported with, the same way every other stored line keeps the
+    # figures it was priced at.
+    blinds_trade_discount_pct: float = 0.45
+    blinds_settlement_discount_pct: float = 0.075
     default_deposit_pct: float = 0.70
     bag_overage_rate: float = 350.0            # R/bag incl. VAT, screed site-variance charge — see calculations.py's BAG_OVERAGE_RATE comment
     default_labour_rate_per_m2: float = 45.0
@@ -1384,6 +1395,24 @@ class Quote(SQLModel, table=True):
     # least once since this brief shipped. See snapshot_quote()/
     # revert_quote() in main.py.
     snapshot_json: Optional[str] = None
+
+    # ---------- Blinds Quote Import (confirmed Sept 2026, Excel ->
+    # Order Index brief) ----------
+    # A quote that came from the blinds Excel template rather than being
+    # built in Bolton. None on every quote built here, which is what
+    # makes "was this imported" answerable without a second table.
+    #
+    # blinds_import_ref is the client reference from D15 — the sheet's
+    # own handle for the job, and how a RE-import finds the quote it
+    # should replace. Deliberately not treated as unique: it is a human-
+    # typed reference like "Woonstel 6" and two clients can easily both
+    # have one, so it narrows the search and the person importing
+    # confirms the match on screen. The brief's own rule is that a
+    # revision "replaces the existing linked Order Index entry", never a
+    # manual in-app edit — the Excel stays the source of truth.
+    blinds_import_ref: Optional[str] = None
+    blinds_import_file: Optional[str] = None
+    blinds_import_at: Optional[datetime] = None
 
 
 class JobWorkDay(SQLModel, table=True):

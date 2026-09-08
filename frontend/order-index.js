@@ -388,6 +388,13 @@ function renderOrderIndexTable(searchTerm) {
       </div>` : ''}
     </div>
 
+    <!-- Blinds Quote Import (confirmed Sept 2026) — Owner-only, the
+    same gate the backend enforces independently (require_owner on both
+    the preview and commit endpoints), not just a hidden button. Placed
+    on the Order Index because that is where the imported job lands and
+    where someone would go looking for it. -->
+    ${isOwner ? blindsImportCardHtml() : ''}
+
     <div class="card">
       <h2>New Client → Start Quote</h2>
       <p class="muted">Fill in a new client's details, then jump straight into a quote for them.</p>
@@ -584,6 +591,33 @@ function renderOrderStageTiles(quotes, money) {
   }).join('')}</div>`;
 }
 
+// Blinds vs Flooring, at a glance (confirmed Sept 2026, Blinds Quote
+// Import brief: imported blinds quotes "sit in Order Index alongside
+// flooring quotes but be clearly, immediately distinguishable at a
+// glance ... while following the exact same downstream workflow
+// everywhere else").
+//
+// q.job_category is derived server-side from the quote's own lines
+// (_job_category(), main.py) — the badge never asks whether a quote was
+// imported, only what kind of work it is, so a blinds quote built by
+// hand in Bolton carries the same badge as one off the spreadsheet.
+// Nothing else about the row changes: same columns, same stages, same
+// Next Action, same Needs Attention.
+const JOB_CATEGORY_BADGE = {
+  blinds:   { label: 'Blinds',   icon: '\u25a4' },
+  flooring: { label: 'Flooring', icon: '\u25a6' },
+  mixed:    { label: 'Mixed',    icon: '\u25a5' },
+};
+function jobCategoryBadgeHtml(q) {
+  const b = JOB_CATEGORY_BADGE[q.job_category];
+  if (!b) return '';   // nothing on the quote yet — a badge would be a claim
+  const imported = q.is_blinds_import
+    ? ' — imported from the blinds spreadsheet, which stays the source of truth for its pricing'
+    : '';
+  return `<span class="job-cat job-cat-${q.job_category}" title="${b.label} job${imported}">`
+    + `${b.icon} ${b.label}${q.is_blinds_import ? ' \u2913' : ''}</span>`;
+}
+
 function orderIndexClientNameHtml(q) {
   return q.client_id
     ? `<span class="oi-client-name linked" onclick="event.stopPropagation(); openClientDetail(${q.client_id})" title="View client details">${q.client_name}</span>`
@@ -594,7 +628,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
   return `
     <tr id="oi-row-${q.id}" style="cursor:pointer;${isChild ? ' background:var(--bg,#f5f6f8);' : ''}" onclick="openOrderDetailScreen(${q.id})">
       ${isOwner ? `<td data-label="" onclick="event.stopPropagation();"><input type="checkbox" class="oi-select" value="${q.id}" onchange="toggleOrderSelected(${q.id}, this.checked)"></td>` : ''}
-      <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}${q.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${q.test_data_label}</span>` : ''}</td>
+      <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}<br>${jobCategoryBadgeHtml(q)}${q.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${q.test_data_label}</span>` : ''}</td>
       <td data-label="Customer">${orderIndexClientNameHtml(q)}
         ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
       <td data-label="Value">${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}${orderIndexFinalPaymentHtml(q, money)}</td>
