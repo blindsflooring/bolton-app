@@ -127,6 +127,28 @@ Burgert: *"On the jobs still being installed and the jobs thats been done and aw
 - Tiles: Being Installed **R14 950,00 outstanding** (3 450 + a whole 11 500), Awaiting Payment **R33 950,00 outstanding** (3 450 + 7 500 + 11 500 + a whole 11 500), full values unchanged at R23 000 / R46 000 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
 - Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
 
+### Blinds tile → Blinds screen, and the sheet supplies the client
+
+Burgert: *"get the blinds quote that it jups from blinds quote tile to the blinds quote tab. Load up the client once the excell has been loaded, then i doint need to input all the clinets details."*
+
+- **The Blinds tile now opens a Blinds screen**, not the generic New Quote flow. For blinds the old order was backwards: it asked for a client first and the spreadsheet second, when the spreadsheet already *has* the client — so anything typed in was work the import was about to redo. The sheet is now the first thing on the page.
+- **The importer moved there from the Order Index — moved, not duplicated.** Two upload buttons for one import is two places to keep in step, and the Order Index is where an imported job *lands*, not where it starts.
+- **After a successful import the quote opens itself**, in the Quote Builder, on the **Blinds** tab, with the client, branch and sales owner already on it and the lines loaded. That is the "I don't need to input all the client's details" part, and it reuses `openQuoteFromIndex()` rather than reimplementing it — that function is already the one place that opens a real saved quote correctly (snapshot for Revert, the right cards shown, Start Quote locked so a second quote can't be created alongside it).
+- **Quoting a blind by hand is still one click away.** `startBlindsQuoteByHand()` holds the exact previous tile behaviour, given a name so the tile and the button can't drift apart. It starts with a blank client, because there is no sheet to take one from.
+- **Sales sees the screen, not the importer** — the same Owner gate the backend enforces independently on both endpoints.
+- **A risk this work introduced, found and closed:** the import's rep dropdown listed every active user, while `sales_owner` had previously only ever come from a hardcoded three-option select. Trusted testers are now excluded from that list — their work is deliberately kept out of every KPI figure, so putting one on a real commission-bearing quote would be a quiet way to make a job disappear from the numbers this import exists to feed.
+
+### Verified (Blinds screen)
+- **Real browser, real uvicorn server, real login, real file upload.** The harness now serves a copy of the frontend with only its API base URL swapped to the local server, rather than proxying requests through a TestClient — the earlier approach corrupted the .xlsx body in transit ("File is not a zip file"), which was a harness limit that made the upload untestable end to end. It is testable now.
+- The tile lands on the Blinds screen (not the Quote Builder), showing Import a Blinds Quote and Quote blinds by hand; the Order Index no longer carries the import card.
+- Uploading the sheet previewed 3 lines, and importing landed in the Quote Builder on the **Blinds** tab with client **Simon Engelbrecht**, branch **hermanus**, sales owner **ryno**, 3 line rows and **R7 992,50 incl VAT** — Start Quote correctly locked, so a second quote can't be started on top of it. Database confirms one quote, three lines, and a client record carrying the sheet's phone number.
+- Quote-blinds-by-hand still opens the builder with a blank client and Start Quote locked until one is picked.
+- A sales login sees the Blinds screen with the by-hand card only — no import card.
+- Screenshots: `.claude/blindsscreen/blinds-screen.png`, `after-import.png`.
+
+### Open — noticed here, not fixed
+- **`#q_owner` is a hardcoded three-option select** (burgert / madri / ryno) in `index.html`. A quote whose `sales_owner` is any other username saves and reports correctly server-side, but that select cannot display it and silently falls back to blank. Pre-existing and unrelated to blinds — it surfaced because the import asks who the rep is. Worth making data-driven from the real user list when someone is next in that file; a fourth rep would otherwise appear to have no owner on screen.
+
 ### Bug: Blinds tile lands on the Carpet form
 
 Reported with a screenshot: clicking the Blinds tile gives client search → **Add Carpet Line**. Burgert asked for the build log to be checked first, in case the routing had been consolidated on purpose. It had — and the answer changes what the fix is.

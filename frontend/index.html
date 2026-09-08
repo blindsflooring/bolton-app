@@ -1659,6 +1659,7 @@ function renderLanding() {
   if (landingView !== 'installCalendar') document.body.classList.remove('calendar-active');
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
+  if (landingView === 'blinds') return renderBlindsScreen(el);
   if (landingView === 'orders') return renderOrderIndex(el);
   if (landingView === 'installCalendar') return renderInstallationCalendar(el);
   if (landingView === 'photoGallery') return renderPhotoGallery(el);
@@ -1829,12 +1830,12 @@ function onTileClick(tileId) {
   // as startQuoteWithVinylRange() — reset only when nothing is
   // currently open, so real in-progress work on an already-open quote
   // is never wiped by clicking this tile.
-  else if (tileId === 'blinds') {
-    if (!isQuoteBuilderOpen()) { resetQuoteBuilderUI(); }
-    pendingCategory = 'blinds';
-    goToTab('quoteBuilder');
-    if (currentQuoteId) { document.getElementById('line_category').value = 'blinds'; toggleLineFields(); pendingCategory = null; }
-  }
+  // Blinds now has a screen of its own (confirmed Sept 2026) rather
+  // than deep-linking into the generic New Quote flow. The spreadsheet
+  // already carries the client, so asking for one first was work the
+  // import immediately redid. startBlindsQuoteByHand() (blinds-import.js)
+  // still holds the exact old behaviour for a one-off with no sheet.
+  else if (tileId === 'blinds') { landingView = 'blinds'; renderLanding(); }
 }
 
 async function renderFlooringDrill(el) {

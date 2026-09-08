@@ -7076,10 +7076,16 @@ async def preview_blinds_import(
         # pulling the client reference back (the brief's own open item),
         # so commission attribution cannot come off the sheet yet - the
         # importer picks from real users instead.
+        # Trusted testers excluded: their work is deliberately kept out
+        # of every KPI figure (_trusted_tester_usernames()), so putting
+        # one on a real commission-bearing quote would be a quiet way to
+        # make a job vanish from the numbers this import exists to feed.
+        tt = _trusted_tester_usernames(session, tenant_id)
         parsed["rep_options"] = [
             {"username": u.username, "display_name": u.display_name}
             for u in session.exec(select(User).where(
                 User.tenant_id == tenant_id, User.active == True)).all()  # noqa: E712
+            if u.username not in tt
         ]
         return parsed
 

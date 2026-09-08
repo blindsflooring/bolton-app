@@ -388,13 +388,12 @@ function renderOrderIndexTable(searchTerm) {
       </div>` : ''}
     </div>
 
-    <!-- Blinds Quote Import (confirmed Sept 2026) — Owner-only, the
-    same gate the backend enforces independently (require_owner on both
-    the preview and commit endpoints), not just a hidden button. Placed
-    on the Order Index because that is where the imported job lands and
-    where someone would go looking for it. -->
-    ${isOwner ? blindsImportCardHtml() : ''}
-
+    <!-- Blinds Quote Import lived here briefly and MOVED to the Blinds
+    screen (confirmed Sept 2026, Burgert: the tile should jump to
+    blinds quoting, and the sheet should supply the client). Deliberately
+    moved rather than duplicated — two upload buttons for one import is
+    two places to keep in step, and the Order Index is where an imported
+    job LANDS, not where it starts. -->
     <div class="card">
       <h2>New Client → Start Quote</h2>
       <p class="muted">Fill in a new client's details, then jump straight into a quote for them.</p>

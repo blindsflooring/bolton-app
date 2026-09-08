@@ -20,6 +20,56 @@ let blindsImportFile = null;
 let blindsImportParsed = null;
 let blindsImportReplaceId = null;
 
+// The Blinds screen (confirmed Sept 2026, Burgert: "get the blinds
+// quote that it jups from blinds quote tile to the blinds quote tab.
+// Load up the client once the excell has been loaded, then i doint
+// need to input all the clinets details").
+//
+// The Blinds tile used to drop straight into the generic New Quote
+// screen — client search first, blinds second. For blinds that is the
+// wrong way round now: the spreadsheet already HAS the client, so
+// typing one in before loading the sheet is work that the import is
+// about to redo. The tile lands here instead, where the spreadsheet is
+// the first thing on the page.
+//
+// Quoting a blind by hand is still one click away, because the price
+// book route has to stay open for a one-off that never got a sheet.
+async function renderBlindsScreen(el) {
+  const owner = currentRole() === 'owner';
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span>
+    <div class="card">
+      <h2>Blinds</h2>
+      <p class="muted">
+        Blinds are quoted in the Excel template. Load the finished sheet here and it becomes a
+        real job \u2014 client, branch and every line \u2014 without retyping any of it.
+      </p>
+    </div>
+    ${owner ? blindsImportCardHtml() : ''}
+    <div class="card">
+      <h2>Quote blinds by hand</h2>
+      <p class="muted">
+        For a one-off with no spreadsheet. Opens the Blinds tab in the Quote Builder, priced from
+        the blinds price book \u2014 you pick the client yourself here, because there is no sheet to take one from.
+      </p>
+      <button onclick="startBlindsQuoteByHand()">Open the Blinds tab</button>
+    </div>`;
+}
+
+// The old Blinds-tile behaviour, kept intact and given a name so the
+// tile and this button can't drift apart. Same guard shape as every
+// other "start a new quote" entry point.
+function startBlindsQuoteByHand() {
+  if (!isQuoteBuilderOpen()) { resetQuoteBuilderUI(); }
+  pendingCategory = 'blinds';
+  goToTab('quoteBuilder');
+  if (currentQuoteId) {
+    document.getElementById('line_category').value = 'blinds';
+    toggleLineFields();
+    pendingCategory = null;
+  }
+}
+
 function blindsImportCardHtml() {
   return `
     <div class="card" id="blindsImportCard">
@@ -208,28 +258,35 @@ async function commitBlindsImport() {
     el.innerHTML = `<div class="import-reject"><b>Not imported.</b><br>${data.detail || 'Unknown error.'}</div>`;
     return;
   }
-  document.getElementById('blindsImportResult').innerHTML = `
+  const summary = `
     <div class="import-done">
       <b>${data.replaced ? 'Replaced' : 'Imported'}: ${data.job_number || '#' + data.quote_id}</b> —
       ${data.client_name}, ${data.lines_imported} line(s), ${R(data.totals.total_incl_vat)} incl VAT,
       ${data.branch}, rep ${data.sales_owner}.
+      Opened below with the client already filled in.
       <div style="margin-top:6px;">
-        <a href="#" onclick="openOrderDetailScreen(${data.quote_id}); return false;">Open the job</a>
+        <a href="#" onclick="openOrderDetailScreen(${data.quote_id}); return false;">Open the job page instead</a>
       </div>
     </div>`;
+  document.getElementById('blindsImportResult').innerHTML = summary;
   blindsImportFile = null;
   blindsImportParsed = null;
   blindsImportReplaceId = null;
   document.getElementById('blindsImportInput').value = '';
-  // The Order Index's own cache is now stale — the new job isn't in it.
-  // Re-rendered rather than just cleared, so the row (and its Blinds
-  // badge) is on screen immediately, which is the confirmation that
-  // actually matters.
-  if (typeof renderLanding === 'function' && landingView === 'orders') {
-    const el = document.getElementById('landing');
-    const done = document.getElementById('blindsImportResult').innerHTML;
-    await renderOrderIndex(el, '');
-    const slot = document.getElementById('blindsImportResult');
-    if (slot) slot.innerHTML = done;
-  }
+  // "Load up the client once the excell has been loaded, then i doint
+  // need to input all the clinets details" — this is that. The quote
+  // opens straight into the Quote Builder on the Blinds tab, with the
+  // client, branch and sales owner already on it from the sheet.
+  //
+  // openQuoteFromIndex() is reused rather than re-implemented: it is
+  // already the one function that opens a real saved quote correctly
+  // (snapshot for Revert, the right cards shown, Start Quote locked so
+  // a second quote can't be created alongside this one, lines loaded).
+  await openQuoteFromIndex(data.quote_id);
+  document.getElementById('line_category').value = 'blinds';
+  await toggleLineFields();
+  // The Order Index's cached rows no longer include this job. Cleared
+  // rather than re-fetched — we have navigated away from it, and it
+  // re-fetches on its own next render.
+  orderIndexQuotesCache = [];
 }
