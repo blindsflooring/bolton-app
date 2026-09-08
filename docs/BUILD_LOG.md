@@ -127,6 +127,25 @@ Burgert: *"On the jobs still being installed and the jobs thats been done and aw
 - Tiles: Being Installed **R14 950,00 outstanding** (3 450 + a whole 11 500), Awaiting Payment **R33 950,00 outstanding** (3 450 + 7 500 + 11 500 + a whole 11 500), full values unchanged at R23 000 / R46 000 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
 - Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
 
+### Bug: Blinds tile lands on the Carpet form
+
+Reported with a screenshot: clicking the Blinds tile gives client search → **Add Carpet Line**. Burgert asked for the build log to be checked first, in case the routing had been consolidated on purpose. It had — and the answer changes what the fix is.
+
+- **The consolidation was deliberate and approved, and stays.** *Vinyl Quoting UX Redesign, Phase 2* replaced the plain `<select id="line_category">` with a visible row of category tabs, and Blinds has been one of those tabs ever since. The later *Tab-Level Status Affirmation* brief reconfirmed it with an explicit non-goal: *"no navigation change, the category tab model itself is confirmed correct and stays."* So Blinds does have its own space — a tab inside the shared Quote Builder — and the tile deep-links to it via `pendingCategory`. **Nothing was reverted.**
+- **The routing itself was never broken.** From a clean session the Blinds tile lands on the Blinds tab correctly — verified in a real browser before touching anything, including with an empty blinds price book, which is the state the earlier audit recorded.
+- **The real bug, reproduced before writing any fix:** open a quote, switch to the Carpet tab, go Home, click Blinds. The New Quote screen came up with **"Add Carpet Line" still sitting under it** and the Carpet tab still highlighted. Exactly the reported screenshot.
+- **Root cause: four category cards live OUTSIDE `#addLineCard` in the DOM.** `resetQuoteBuilderUI()` hides `addLineCard`, `linesCard`, `quoteDiscountCard`, `transportCourierCard` and `floorPrepCard` — but `fjMain`, `carpetLineCard`, `manualLineCard` and `genericLineCard` are only ever touched by `toggleLineFields()`, which a reset never calls. Whichever category was last on screen therefore survived into the next quote.
+- **Fixed in `resetQuoteBuilderUI()`, not in the tile handler.** This codebase has been bitten three times by the same shape — the Client-Link Audit's own words, *"patching entry points one at a time is not working."* Every entry point that starts a fresh quote funnels through this one function, so the invariant belongs there once: after a reset, no category form is on screen and the tabs agree with the state behind them. **Blinds was just the tile that made it visible** — Stairwell, Misc, Engineered Wood and Flooring all left their form behind identically, confirmed by test.
+- **A wrong first hypothesis, discarded on evidence.** The obvious suspect was a stale `pendingCarpetType` from an abandoned Carpet drill-down overriding `pendingCategory` in `createQuote()`. Reproduced that exact sequence: it does **not** cause the bug, because `selectCarpetType()` only touches carpet sub-fields and never changes `line_category`. The stale handoff variables are cleared anyway now — same class of leftover state, and every caller sets its own *after* calling the reset, so nothing can be stranded.
+- **Not related to the Excel import.** That work lives on the Order Index and never touched the Quote Builder or the tiles; the two are independent.
+
+### Verified (Blinds tile)
+- **Reproduced first, in a real browser against the real backend**, both from a clean session (works) and via the stale path (fails, showing Add Carpet Line) — so the fix is aimed at a confirmed cause, not a guess.
+- After the fix: the Blinds tile lands on the **Blinds** tab with the Blinds form (Product / Width / Drop / Discount) and the summary panel reading "Blinds — in progress".
+- The stale form is gone from the New Quote screen after leaving the builder on **Stairwell, Misc, Engineered Wood, Carpet and Flooring** — zero category cards visible in every case, where a quote does not exist yet and there is nothing to add a line to.
+- **Regression, because the fix clears the drill-down handoff variables:** the Vinyl range deep-link still pre-selects `deZIGN 200` on the Flooring tab, and the Carpet deep-link still pre-selects Stretch (Tufted Broadloom) with its own card showing. Both re-checked rather than assumed safe.
+- Screenshot: `.claude/tilefix/blinds-tile-fixed.png`.
+
 ### Blinds Quote Import (Excel → Order Index)
 
 Blinds are quoted in an Excel template and go on being quoted there. This brings the finished quote into Bolton so blinds count toward KPIs and rep commission — explicitly *"without moving blinds pricing/calculation logic into Bolton itself"*. **Nothing in this feature prices a blind.** It reads numbers the sheet already worked out.

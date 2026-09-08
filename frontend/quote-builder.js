@@ -2221,6 +2221,53 @@ function resetQuoteBuilderUI() {
   syncQuoteOwnerBranchControls();
   clearStaleQuoteResidue();
   document.getElementById('addLineCard').style.display = 'none';
+  // Blinds tile lands on the Carpet form (confirmed Sept 2026,
+  // reproduced in a real browser before this was written: open a quote,
+  // switch to the Carpet tab, go Home, click Blinds -> the New Quote
+  // screen came up with "Add Carpet Line" still sitting under it and
+  // the Carpet tab still highlighted).
+  //
+  // Root cause is NOT the Blinds tile and NOT the category-tab model
+  // (which is the approved design — Vinyl Quoting UX Redesign Phase 2,
+  // and reconfirmed since as an explicit non-goal to change). It is
+  // that these four category cards live OUTSIDE #addLineCard in the
+  // DOM, so hiding that one card never hid them; only toggleLineFields()
+  // ever touches them, and a reset doesn't call it. Whichever category
+  // was last on screen therefore survived into the next quote.
+  //
+  // Fixed here rather than in the tile handler on purpose. This
+  // codebase has been bitten three times by "patching entry points one
+  // at a time is not working" (Client-Link Audit) — every entry point
+  // that starts a fresh quote funnels through this function, so the
+  // invariant belongs here once: after a reset, NO category form is on
+  // screen and the tabs agree with the state behind them. Blinds was
+  // just the tile that made it visible; Stairwell, Trim and Misc all
+  // behaved the same way.
+  ['fjMain', 'carpetLineCard', 'manualLineCard', 'genericLineCard'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  // The category the tabs claim must match the one line_category holds,
+  // or the next toggleLineFields() renders a form the highlighted tab
+  // disagrees with. Flooring is the app's own default starting category.
+  const catSelect = document.getElementById('line_category');
+  if (catSelect) catSelect.value = 'flooring';
+  const includeVinyl = document.getElementById('fj_include_vinyl');
+  const includeScreed = document.getElementById('fj_include_screed');
+  if (includeVinyl) includeVinyl.checked = true;
+  if (includeScreed) includeScreed.checked = false;
+  if (typeof syncActiveCategoryTab === 'function') syncActiveCategoryTab();
+  // Handoff variables from a drill-down the user then abandoned. Not
+  // the cause of the bug above (verified — selectCarpetType() doesn't
+  // change the category), but the same class of stale state: a carpet
+  // range picked, abandoned, and still waiting to be applied to
+  // whatever quote is started next. Every caller sets its own AFTER
+  // calling this function, so clearing them here can't strand a real
+  // handoff.
+  pendingCategory = null;
+  pendingVinylRange = null;
+  pendingCarpetType = null;
+  pendingCarpetRange = null;
   document.getElementById('linesCard').style.display = 'none';
   document.getElementById('quoteDiscountCard').style.display = 'none';
   document.getElementById('transportCourierCard').style.display = 'none';
