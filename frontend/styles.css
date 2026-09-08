@@ -121,6 +121,16 @@
   .stage-tile-count { font-family: 'Poppins', sans-serif; font-size: 19px; font-weight: 800; line-height: 1.1; color: var(--navy); }
   .stage-tile-value { font-size: 11px; font-weight: 700; color: #4b5563; }
   .stage-tile-sub { font-size: 9.5px; color: #6b7280; line-height: 1.2; }
+  /* Final payment on an Order Index row (confirmed Sept 2026) — sits
+     under the job value, the same place the "Adjusted" marker already
+     uses, rather than in a 7th column: this table was cut back to 6
+     data columns for real (a horizontal scrollbar with the rightmost
+     action cut off), and a new column would undo that. Teal is the
+     app's normal informational colour; the warn variant reuses
+     var(--coral), already this app's "look at this" colour everywhere
+     else, for the case where the deposit is still outstanding too. */
+  .oi-final-payment { font-size: 10.5px; font-weight: 700; color: var(--teal); }
+  .oi-final-payment-warn { color: var(--coral); }
   .stage-tile.stage-quoted           { background: #eef2f7; border-left-color: #94a8bf; }
   .stage-tile.stage-accepted         { background: #e9f3f2; border-left-color: #7fb3ae; }
   .stage-tile.stage-installing       { background: #f5f1e7; border-left-color: #c9b184; }

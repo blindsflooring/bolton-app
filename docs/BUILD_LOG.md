@@ -107,6 +107,25 @@ Aspen's **Stair Covering (1220 × 300 × 46mm)** is captured here rather than lo
 - It could not simply be added as a nosing: **`TrimProduct` has no `pending_review` or active flag**, unlike `FlooringProduct`, and the nosing dropdown lists every trim unfiltered. A R0 stair nose would have gone straight into the picker as a real, selectable, free product.
 - **Two things needed before it can be built:** its price, and whether it is billed **per stair (per piece)** or **per linear metre**. Neither is inferable from the spec sheet.
 
+### Final payment on the Order Index
+
+Burgert: *"On the jobs still being installed and the jobs thats been done and awaiting final payment, can we have the final paymet also show up on the order index?"*
+
+- **The figure already existed — it just wasn't on this screen.** `list_quotes()` has returned `balance_amount` since the Order Index first needed totals "visible without clicking into each quote", computed by `_quote_totals()`. This surfaces that same number; it does not compute a second total-minus-deposit anywhere. The Job Detail payment strip and the Order Index row now read from one figure.
+- **It sits under the job value, not in a new column.** The Order Index was deliberately cut back to six data columns after a real problem — a horizontal scrollbar with the rightmost action cut off — and a seventh would have handed that straight back. The Value cell already carries a second line for the "✏️ Adjusted" marker, so this uses the same slot. Total on top, final payment below, per the biggest-to-smallest rule.
+- **Only on the two stages Burgert named.** On a quoted or accepted job nothing has been invoiced and the deposit/balance split can still change; on a closed one there is nothing left to collect. Anywhere else it would be a number that looks owed and isn't.
+- **An unpaid deposit is called out rather than swallowed.** `balance_amount` is total minus deposit whether or not that deposit ever arrived, so on a job where it hasn't, "Final payment R3 450" reads as the whole of what is still owed when it isn't — understating the debt on the exact screen used to chase it. That case turns coral and says **"· deposit unpaid"**, with the full outstanding figure in the tooltip.
+- **The "is a deposit even expected" test now exists once.** `renderStatusTilesHtml()` already carried it inline (`deposit_pct === 0 && actual_deposit_amount == null` is the real, tolerated "no deposit required" shape). Rather than copy it, it was extracted to `jobDepositNotRequired()` / `jobDepositSettled()` and the Job Detail screen switched to the shared version — two copies of that judgement is precisely the drift this codebase keeps getting bitten by.
+- **The Being Installed and Awaiting Payment tiles show what is still to come**, replacing their descriptive sub-line rather than adding a second one. These tiles were shrunk once already at Burgert's request ("maybe just a little smaller"), and a wrapped extra line would give that height back; the stage label already says what the descriptive text said. The headline count and full contract value are untouched.
+
+### Verified (final payment)
+- **Real frontend, real backend, real login.** The page runs unmodified — its API host is hardcoded, so Playwright routes every call into the live FastAPI app. Eight seeded jobs, one R10 000 ex-VAT line each (R11 500 incl.), differing only in their deposit arrangement.
+- Shown on exactly the right jobs: both **scheduled** and both **completed-unpaid** jobs carry it; **accepted**, **quoted** and **completed-and-paid** carry nothing.
+- The figures are the real ones, not a percentage: 70% deposit → **R3 450**; a recorded **actual** deposit of R4 000 → **R7 500** (not the 70% figure), with the tooltip naming R4 000; `deposit_pct` 0 with nothing recorded → the whole **R11 500**, and correctly *not* flagged as an unpaid deposit.
+- The unpaid-deposit job renders coral with "deposit unpaid"; the settled ones don't.
+- Tiles: Being Installed **R6 900,00 final due** (2 × R3 450), Awaiting Payment **R22 450,00 final due** (3 450 + 7 500 + 11 500), full values unchanged at R23 000 / R34 500 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
+- Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
+
 ### Verified (second pass)
 - 24 further checks through the real endpoints, starting from the state actually reported — nothing flagged to the portal at all: the panel reports both extras as off and the live portal genuinely doesn't ask about tiles or door openings; turning both on in one call makes the portal offer them; screed still never appears as a pickable floor; a stair nose is refused as the portal trim and a vinyl range as the floor prep, each with a readable reason; commission splits correctly across earned/in-progress/pipeline with no double-counting, and what the builder sees as earned matches Burgert's own financials view to the cent.
 

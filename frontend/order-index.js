@@ -463,6 +463,54 @@ const ORDER_STAGES = [
   { key: 'awaiting_payment', label: 'Awaiting Payment', sub: 'Installed, unpaid' },
   { key: 'archive', label: 'Closed', sub: 'Paid & expired' },
 ];
+// Deposit state, defined ONCE (confirmed Sept 2026, "show the final
+// payment on the Order Index"). renderStatusTilesHtml() below already
+// carried this exact test inline; the Order Index row now needs the
+// same judgement, and two copies of "is a deposit actually expected
+// here" is precisely the drift this codebase keeps getting bitten by.
+//
+// deposit_pct === 0 with no recorded actual amount is the real,
+// tolerated "no deposit required" shape — confirmed against
+// _quote_totals() (main.py), and settable per job, not just globally.
+function jobDepositNotRequired(q) {
+  return q.deposit_pct === 0 && q.actual_deposit_amount == null;
+}
+// "Settled" means nothing is owed on the deposit — either it was
+// received, or none was ever due. Deliberately NOT the same as "paid":
+// a job with no deposit required has nothing to pay and is settled.
+function jobDepositSettled(q) {
+  return !!q.deposit_paid_date || jobDepositNotRequired(q);
+}
+
+// The final payment on a job that is being installed or is finished and
+// unpaid (confirmed Sept 2026, Burgert: "On the jobs still being
+// installed and the jobs thats been done and awaiting final payment,
+// can we have the final paymet also show up on the order index?").
+//
+// balance_amount comes straight off the API (_quote_totals(), main.py)
+// — the same figure the Job Detail payment strip shows — never a second
+// copy of total-minus-deposit computed here.
+//
+// Shown only on those two stages by design. On a quoted or accepted job
+// nothing has been invoiced and the split can still change; on a closed
+// one there is nothing left to collect. Elsewhere it would be a number
+// that looks owed and isn't.
+function orderIndexFinalPaymentHtml(q, money) {
+  const stage = orderStageOf(q);
+  if (stage !== 'installing' && stage !== 'awaiting_payment') return '';
+  if (q.balance_amount == null) return '';
+  // An unsettled deposit is called out rather than swallowed. Without
+  // it, "Final payment R3 703" reads as the whole of what is still
+  // owed, when the deposit is outstanding too — understating the debt
+  // on exactly the screen used to chase it.
+  const depositOwed = !jobDepositSettled(q);
+  return `<br><span class="oi-final-payment${depositOwed ? ' oi-final-payment-warn' : ''}"`
+    + ` title="${depositOwed
+        ? `Final payment ${money(q.balance_amount)} — plus the deposit of ${money(q.deposit_amount)}, which is not recorded as received. ${money(q.total_incl_vat)} outstanding in total.`
+        : `Balance due on this job. Deposit of ${money(q.deposit_amount)} already settled.`}"`
+    + `>Final payment ${money(q.balance_amount)}${depositOwed ? ' · deposit unpaid' : ''}</span>`;
+}
+
 function orderStageOf(q) {
   // declined_at BEFORE workflow_status: a declined quote's own status
   // stays "quoted" forever (decline_quote(), main.py), so without this
@@ -491,6 +539,17 @@ function renderOrderStageTiles(quotes, money) {
   return `<div class="stage-tiles">${ORDER_STAGES.map(st => {
     const inStage = quotes.filter(q => orderStageOf(q) === st.key);
     const value = inStage.reduce((sum, q) => sum + (q.total_incl_vat || 0), 0);
+    // Final payment still to come, on the two stages where money is
+    // genuinely outstanding (confirmed Sept 2026, same request as the
+    // per-row figure). It REPLACES the descriptive sub-line rather than
+    // adding a second one: these tiles were deliberately shrunk once
+    // already ("most of the height Burgert asked to lose" — see
+    // .stage-tile-sub in styles.css), and a wrapped extra line would
+    // hand that height straight back. The stage's own label already
+    // says what the descriptive text said.
+    const owed = (st.key === 'installing' || st.key === 'awaiting_payment')
+      ? inStage.reduce((sum, q) => sum + (q.balance_amount || 0), 0) : null;
+    const subText = (owed && inStage.length) ? `${money(owed)} final due` : st.sub;
     return `
       <div class="stage-tile stage-${st.key}">
         <div class="stage-tile-label">${st.label}</div>
@@ -498,7 +557,7 @@ function renderOrderStageTiles(quotes, money) {
           <span class="stage-tile-count">${inStage.length}</span>
           <span class="stage-tile-value">${money(value)}</span>
         </div>
-        <div class="stage-tile-sub">${st.sub}</div>
+        <div class="stage-tile-sub">${subText}</div>
       </div>`;
   }).join('')}</div>`;
 }
@@ -516,7 +575,7 @@ function orderIndexRowHtml(q, isOwner, money, isChild) {
       <td class="job-number card-title" data-label="Job"${isChild ? ' style="padding-left:28px;"' : ''}>${q.job_number || `#${q.id}`}${q.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${q.test_data_label}</span>` : ''}</td>
       <td data-label="Customer">${orderIndexClientNameHtml(q)}
         ${q.description ? `<br><span class="muted" style="font-size:11px;">${q.description}</span>` : ''}</td>
-      <td data-label="Value">${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}</td>
+      <td data-label="Value">${money(q.total_incl_vat)}${(q.manual_override_total_incl_vat != null || q.has_line_override) ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="A line or the total on this job was manually adjusted — see Job Detail / Quote Builder for the reason">✏️ Adjusted</span>` : ''}${orderIndexFinalPaymentHtml(q, money)}</td>
       <td data-label="Status">${workflowStatusBadge(q)}</td>
       <td data-label="Install Date">${dateOrDash(q.installation_date)}</td>
       <td data-label="Next Action">${nextActionButton(q) || '<span class="muted">—</span>'}</td>
@@ -1020,7 +1079,7 @@ function renderStatusTilesHtml(q, jobSteps) {
     moneyTile = { cls: 'done', text: 'Paid in full', sub: 'Nothing outstanding' };
   } else if (q.deposit_paid_date) {
     moneyTile = { cls: 'progress', text: 'Deposit received', sub: 'Balance due on completion' };
-  } else if (q.deposit_pct === 0 && q.actual_deposit_amount == null) {
+  } else if (jobDepositNotRequired(q)) {
     moneyTile = { cls: 'progress', text: 'No deposit required', sub: 'Balance due on completion' };
   } else {
     moneyTile = { cls: 'progress', text: 'Awaiting deposit', sub: 'Nothing recorded yet' };
