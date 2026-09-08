@@ -482,33 +482,50 @@ function jobDepositSettled(q) {
   return !!q.deposit_paid_date || jobDepositNotRequired(q);
 }
 
-// The final payment on a job that is being installed or is finished and
-// unpaid (confirmed Sept 2026, Burgert: "On the jobs still being
-// installed and the jobs thats been done and awaiting final payment,
-// can we have the final paymet also show up on the order index?").
+// What is actually still owed on a job (confirmed Sept 2026, Burgert:
+// "On the jobs still being installed and the jobs thats been done and
+// awaiting final payment, can we have the final paymet also show up on
+// the order index?").
 //
-// balance_amount comes straight off the API (_quote_totals(), main.py)
-// — the same figure the Job Detail payment strip shows — never a second
-// copy of total-minus-deposit computed here.
+// CORRECTED Sept 2026 against a real job — Frikkie Klynhans, who never
+// paid a deposit. Burgert: "Where someone didnt pay a deposit, please
+// add the full amount outstanding not the way you did this."
 //
-// Shown only on those two stages by design. On a quoted or accepted job
-// nothing has been invoiced and the split can still change; on a closed
-// one there is nothing left to collect. Elsewhere it would be a number
-// that looks owed and isn't.
+// The first version always showed balance_amount and appended a
+// "deposit unpaid" note when the deposit hadn't landed. That was the
+// wrong figure with a caveat attached: on Frikkie's job the balance is
+// not what he owes — he owes the whole invoice. A number needing a
+// footnote to be read correctly is worse than the right number, and
+// this screen is used to chase money.
+//
+// So the amount shown is now simply what is outstanding:
+//   deposit received (or none due) -> balance_amount, the final payment
+//   deposit not received           -> total_incl_vat, the whole job
+// Both come straight off the API (_quote_totals(), main.py) — the same
+// figures the Job Detail payment strip shows, never recomputed here.
+function jobOutstanding(q) {
+  if (q.balance_amount == null || q.total_incl_vat == null) return null;
+  return jobDepositSettled(q) ? q.balance_amount : q.total_incl_vat;
+}
+
+// Shown only on the two stages Burgert named. On a quoted or accepted
+// job nothing has been invoiced and the deposit/balance split can still
+// change; on a closed one there is nothing left to collect. Elsewhere
+// it would be a number that looks owed and isn't.
 function orderIndexFinalPaymentHtml(q, money) {
   const stage = orderStageOf(q);
   if (stage !== 'installing' && stage !== 'awaiting_payment') return '';
-  if (q.balance_amount == null) return '';
-  // An unsettled deposit is called out rather than swallowed. Without
-  // it, "Final payment R3 703" reads as the whole of what is still
-  // owed, when the deposit is outstanding too — understating the debt
-  // on exactly the screen used to chase it.
+  const owed = jobOutstanding(q);
+  if (owed == null) return '';
+  // The label changes with the figure rather than staying "Final
+  // payment" and qualifying it — "Outstanding" is the honest word for
+  // a whole unpaid job, and it can't be misread as just the balance.
   const depositOwed = !jobDepositSettled(q);
   return `<br><span class="oi-final-payment${depositOwed ? ' oi-final-payment-warn' : ''}"`
     + ` title="${depositOwed
-        ? `Final payment ${money(q.balance_amount)} — plus the deposit of ${money(q.deposit_amount)}, which is not recorded as received. ${money(q.total_incl_vat)} outstanding in total.`
-        : `Balance due on this job. Deposit of ${money(q.deposit_amount)} already settled.`}"`
-    + `>Final payment ${money(q.balance_amount)}${depositOwed ? ' · deposit unpaid' : ''}</span>`;
+        ? `Nothing received on this job yet — the full amount is outstanding: deposit ${money(q.deposit_amount)} plus final payment ${money(q.balance_amount)}.`
+        : `Final payment due. Deposit of ${money(q.deposit_amount)} already settled.`}"`
+    + `>${depositOwed ? 'Outstanding' : 'Final payment'} ${money(owed)}</span>`;
 }
 
 function orderStageOf(q) {
@@ -539,17 +556,22 @@ function renderOrderStageTiles(quotes, money) {
   return `<div class="stage-tiles">${ORDER_STAGES.map(st => {
     const inStage = quotes.filter(q => orderStageOf(q) === st.key);
     const value = inStage.reduce((sum, q) => sum + (q.total_incl_vat || 0), 0);
-    // Final payment still to come, on the two stages where money is
-    // genuinely outstanding (confirmed Sept 2026, same request as the
-    // per-row figure). It REPLACES the descriptive sub-line rather than
-    // adding a second one: these tiles were deliberately shrunk once
-    // already ("most of the height Burgert asked to lose" — see
+    // Money still to come, on the two stages where any is genuinely
+    // outstanding (confirmed Sept 2026, same request as the per-row
+    // figure). It REPLACES the descriptive sub-line rather than adding
+    // a second one: these tiles were deliberately shrunk once already
+    // ("most of the height Burgert asked to lose" — see
     // .stage-tile-sub in styles.css), and a wrapped extra line would
     // hand that height straight back. The stage's own label already
     // says what the descriptive text said.
+    //
+    // Sums jobOutstanding(), the SAME per-job figure the rows show, so
+    // the tile is the total of what is visible beneath it. Summing
+    // balance_amount instead — as this first did — quietly understated
+    // the tile by a whole deposit for every job that hasn't paid one.
     const owed = (st.key === 'installing' || st.key === 'awaiting_payment')
-      ? inStage.reduce((sum, q) => sum + (q.balance_amount || 0), 0) : null;
-    const subText = (owed && inStage.length) ? `${money(owed)} final due` : st.sub;
+      ? inStage.reduce((sum, q) => sum + (jobOutstanding(q) || 0), 0) : null;
+    const subText = (owed && inStage.length) ? `${money(owed)} outstanding` : st.sub;
     return `
       <div class="stage-tile stage-${st.key}">
         <div class="stage-tile-label">${st.label}</div>
