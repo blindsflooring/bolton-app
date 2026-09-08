@@ -127,6 +127,30 @@ Burgert: *"On the jobs still being installed and the jobs thats been done and aw
 - Tiles: Being Installed **R14 950,00 outstanding** (3 450 + a whole 11 500), Awaiting Payment **R33 950,00 outstanding** (3 450 + 7 500 + 11 500 + a whole 11 500), full values unchanged at R23 000 / R46 000 — and **all five tiles measured 59px, the same height as before**, so nothing wrapped.
 - Screenshots: `.claude/finalpayverify/order-index-final-payment.png` and `order-index-stage-tiles.png`.
 
+### Blinds import: locate by label, not by row number
+
+The import failed on a real quote, and Burgert found why: **the template's rows are not fixed at all.** Simon's sheet has its totals on row 42 and Rep on 48; Ilse's has them on **34 and 40**. The layout slides with the number of blinds.
+
+- **Everything below the line items is now found by its label**, which is Burgert's own instruction and also simply how a person reads the sheet: find the words, read across. The row whose column **I** says "Sub Total" gives the money in column L; the row whose column **B** says "Rep" gives the branch in D and the rep in E. Row numbers are reported afterwards, never assumed.
+- **The client block stays at fixed cells, and that is a reason rather than an oversight**: rows 12–16 sit *above* the line items, so the shift — which starts at row 20 and pushes everything below it down — cannot reach them.
+- **The clever thing I built first was the thing that broke.** The previous version found the subtotal by adding up the blinds and looking for a row matching that figure. That works only when the lines are contiguous, and Ilse's quote has blank rows mid-list (B24, B28–32), so the running total at any given row matched nothing and the block was never found. **Finding and verifying are different jobs, and conflating them is what failed.** The sum check survives — but as a check on what the label found, not as the way of finding it.
+- **Gaps are skipped, never treated as the end of the list.** A row now counts as a line *attempt* only if it carries one of the four things a blind is made of (type, width, drop, total). Column C is deliberately excluded from that test: real quotes carry section text and notes in the description column, and treating those as broken blinds would reject a perfectly good sheet. A row with a price but no blind attached to it is still an error, because silently dropping a blind is the worst thing this import can do.
+- **Label matching is tolerant of formatting, not of meaning.** Labels are reduced to letters and digits, so "Sub Total", "SUB-TOTAL", "Sub Total:" and " subtotal " are one thing. "Sub Total" also ends in "total", so the plain-Total matcher explicitly excludes it. The Rep matcher is deliberately tight — exactly `rep`, not "starts with rep" — so a room called "Replacement" can't claim the row, and it searches *below* the totals first, where both real quotes put it.
+- **VAT / Total / Deposit are found by their own labels too**, within a window under the Sub Total, falling back to the next three rows if a sheet leaves them unlabelled.
+- **A moved totals block is no longer a warning.** It is normal — the rows move on every quote. Warning about it each time would be crying wolf. The rows that were actually read are shown on the review screen instead, as plain information, which is the one thing the numbers alone can't confirm: *"Read from rows 20–22 (blinds), 42 (Sub Total), 48 (Rep & branch)."*
+
+### Verified (label location)
+- **Both real layouts, built to the shapes Burgert reported.** Simon: 5 blinds, totals 42, Rep 48, subtotal **R9 160,00**, HER → hermanus. Ilse: totals 34, Rep 40, blanks at 24 and 28–32 — **8 blinds read from rows 20, 21, 22, 23, 25, 26, 27, 33**, so the five-row gap is stepped over and the blind below it is not lost, subtotal **R13 040,00**, GAN → gansbaai.
+- A third, invented position (lines from row 60, totals 99, Rep 140) also reads correctly — the code isn't fitted to the two sheets it was shown.
+- Label formatting: `SUB TOTAL`, `Sub-Total:`, ` subtotal `, `Sub Total ` all resolve; `REP`, `Rep:`, ` rep ` all resolve.
+- Description-only rows (section headings, a "measure again on site" note) are ignored rather than treated as broken blinds.
+- Still refuses, each naming what it looked for: a renamed Sub Total label; a missing Rep label; a branch reading `'CPT'`; a missing client name; a price sitting on a row with no blind; and lines that don't add up to the sheet's own subtotal (**R9 160,00 vs R9 999,99**).
+- The full import suite and the end-to-end browser run were both re-run against the new locator — preview writes nothing, commit creates the job, a re-import replaces it, a hand-built quote refuses the spreadsheet, sales gets 403, and the imported quote still opens on the Blinds tab with the client filled in.
+- Screenshot: `.claude/blindsscreen/review-rows.png`.
+
+### Still open
+- **The real files still haven't been parsed.** Everything here is built to the layout Burgert described, including the two real row positions — but the sheets themselves (Simon Engelbrecht, Ilse) have not been attached, so the label names in columns I and B are taken from his description rather than read off the file. If a label differs, the import will say exactly which one it couldn't find.
+
 ### Blinds tile → Blinds screen, and the sheet supplies the client
 
 Burgert: *"get the blinds quote that it jups from blinds quote tile to the blinds quote tab. Load up the client once the excell has been loaded, then i doint need to input all the clinets details."*

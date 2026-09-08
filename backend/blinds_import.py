@@ -18,10 +18,17 @@ Two things this module refuses to do, both learned from that same file:
   - Guess. A cell that isn't what the template says it is fails the
     whole import with a specific message, rather than importing a
     plausible wrong number.
-  - Trust a fixed row number for the money. The brief says the sheet
-    "grows with more blinds", which pushes the totals block down, so
-    the totals are FOUND and cross-checked against the sum of the
-    lines rather than read from row 42 on faith — see _find_totals().
+  - Trust a fixed row number for anything below the line items.
+    CONFIRMED Sept 2026 by two real quotes: the template's rows are not
+    fixed at all, they slide with the number of blinds. Simon's sheet
+    has its totals on row 42 and Rep on 48; Ilse's has them on 34 and
+    40. Everything below row 20 moves.
+
+    So the money and the Rep are located BY LABEL — find the row whose
+    column I says "Sub Total" and read column L beside it; find the row
+    whose column B says "Rep" and read columns D and E beside it. That
+    is how a person reads the sheet: look for the words, then read
+    across. Row numbers are only ever reported, never assumed.
 """
 import io
 from datetime import datetime
@@ -30,15 +37,26 @@ from typing import Any, Dict, List, Optional
 import openpyxl
 
 # ---------------------------------------------------------------- cells
-# Confirmed cell mapping (brief, Sept 2026). The header block and the
-# line columns are fixed positions; the totals row is NOT read from a
-# fixed position — see _find_totals() for why and how.
+# Confirmed cell mapping (brief, Sept 2026, corrected same month once
+# two real quotes showed the layout shifting). Only the client block and
+# the line-item COLUMNS are fixed; every row below the line items is
+# found by its label.
+# The client block sits ABOVE the line items (rows 12-16), so it does
+# not move when the sheet compresses — the shift starts at row 20 and
+# pushes everything below it. These four stay fixed for that reason,
+# not by assumption.
 CELL_CLIENT_NAME = "D12"
 CELL_CLIENT_ADDRESS = "D13"
 CELL_CLIENT_REFERENCE = "D15"
 CELL_CLIENT_PHONE = "D16"
-CELL_BRANCH = "D48"
-CELL_REP = "E48"
+
+# Branch and Rep are read from the row LABELLED "Rep" in column B, not
+# from fixed cells (confirmed Sept 2026 — see LABELS below). Branch is
+# column D on that row, Rep is column E.
+COL_BRANCH = "D"
+COL_REP = "E"
+COL_TOTALS_LABEL = "I"      # "Sub Total", "VAT", "Total", "Deposit"
+COL_REP_LABEL = "B"         # "Rep"
 
 FIRST_LINE_ROW = 20
 # Column letters for a line item.
@@ -52,8 +70,8 @@ COL_COLOUR = "I"
 COL_QTY = "K"
 COL_LINE_TOTAL = "L"
 
-EXPECTED_TOTALS_ROW = 42          # L42 subtotal, L43 VAT, L44 incl, L45 deposit
-TOTALS_SEARCH_LIMIT = 400         # how far below row 20 to look if the block moved
+SEARCH_LIMIT = 400          # rows below FIRST_LINE_ROW worth scanning
+TOTALS_BLOCK_WINDOW = 12    # rows below Sub Total that VAT/Total/Deposit sit within
 
 BRANCH_CODES = {"HER": "hermanus", "GAN": "gansbaai"}
 
@@ -105,72 +123,127 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= max(MONEY_ABS_TOLERANCE, abs(b) * MONEY_REL_TOLERANCE)
 
 
-def _looks_like_blind(ws, row: int) -> bool:
-    """A row is a blind when it carries all four things a blind cannot
-    be without: a type, a width, a drop and a line total. Used to walk
-    past spacers and to tell a blind apart from the totals block."""
-    return (_text(ws[f"{COL_BLIND_TYPE}{row}"].value) != ""
-            and _number(ws[f"{COL_WIDTH}{row}"].value) is not None
-            and _number(ws[f"{COL_DROP}{row}"].value) is not None
-            and _number(ws[f"{COL_LINE_TOTAL}{row}"].value) is not None)
+def _norm(value) -> str:
+    """Label text, reduced to just its letters and digits, lowercased.
+    Makes "Sub Total", "SUB-TOTAL", "Sub Total:" and " Subtotal " all
+    the same string, so a formatting change in the template doesn't
+    break the import."""
+    return "".join(ch for ch in _text(value).lower() if ch.isalnum())
+
+
+# What each label looks like once normalised. Order matters for the
+# totals block: "subtotal" also ends in "total", so it is tested first
+# and the plain-total matcher explicitly excludes it.
+def _is_subtotal(n: str) -> bool:
+    return n.startswith("subtotal")
+
+
+def _is_vat(n: str) -> bool:
+    return "vat" in n and not n.startswith("total") and not n.startswith("subtotal")
+
+
+def _is_total(n: str) -> bool:
+    return n.startswith("total") and not n.startswith("subtotal")
+
+
+def _is_deposit(n: str) -> bool:
+    return "deposit" in n
+
+
+def _find_label_row(ws, col: str, matcher, first: int, last: int):
+    """First row in [first, last) whose cell in `col` matches."""
+    for row in range(first, last):
+        if matcher(_norm(ws[f"{col}{row}"].value)):
+            return row
+    return None
 
 
 def _find_totals(ws) -> Dict[str, Any]:
-    """Locate the subtotal / VAT / total / deposit block.
+    """The money block, located by its own labels.
 
-    NOT read from a fixed row. The brief says the sheet "grows with more
-    blinds", which pushes the totals down, and reading L42 on a grown
-    sheet would take a BLIND as the quote subtotal — a wrong number that
-    looks entirely reasonable. So the block is found by what it IS:
+    CHANGED Sept 2026 after the import failed on a real quote. The
+    previous version found the subtotal by adding up the blinds and
+    looking for a row matching that figure. Clever, and wrong for the
+    right reason: it worked on a sheet whose lines are contiguous, and
+    Ilse's quote has blank rows mid-list (B24, B28-32), so the running
+    total at any given row didn't correspond to anything and the block
+    was never found. Burgert's own instruction is the fix, and it is
+    also the simpler thing: "search each sheet for the row where column
+    I contains 'Sub Total', then read L on that row."
 
-      - walk down from the first line row, adding up the blinds;
-      - the totals row is the first row that has a value in the total
-        column but is NOT a blind (no type, no width, no drop),
-        whose value equals the blinds added up so far, and which has a
-        VAT figure under it that brings it to the row below that.
-
-    Three independent conditions have to agree — the running sum, the
-    blank item columns, and subtotal + VAT = total — which is what makes
-    this safe to do without a fixed row number. If nothing satisfies all
-    three, the import is rejected rather than guessed at.
+    The sum of the lines is still checked against what is found — but as
+    a VERIFICATION now, not as the way of finding it. Those are
+    different jobs and conflating them is what broke.
     """
-    running = 0.0
-    counted = 0
-    last_row = FIRST_LINE_ROW + TOTALS_SEARCH_LIMIT
-    for row in range(FIRST_LINE_ROW, last_row):
-        if _looks_like_blind(ws, row):
-            running = round(running + _number(ws[f"{COL_LINE_TOTAL}{row}"].value), 2)
-            counted += 1
-            continue
-        subtotal = _number(ws[f"{COL_LINE_TOTAL}{row}"].value)
-        if subtotal is None or counted == 0:
-            continue
-        # Must look nothing like a line item, or a broken blind row
-        # could pass itself off as the subtotal.
-        if (_text(ws[f"{COL_BLIND_TYPE}{row}"].value)
-                or _number(ws[f"{COL_WIDTH}{row}"].value) is not None
-                or _number(ws[f"{COL_DROP}{row}"].value) is not None):
-            continue
-        if not _close(subtotal, running):
-            continue
-        vat = _number(ws[f"{COL_LINE_TOTAL}{row + 1}"].value)
-        total = _number(ws[f"{COL_LINE_TOTAL}{row + 2}"].value)
-        if vat is None or total is None or not _close(subtotal + vat, total):
-            continue
-        deposit = _number(ws[f"{COL_LINE_TOTAL}{row + 3}"].value)
-        return {
-            "row": row, "subtotal_ex_vat": round(subtotal, 2), "vat": round(vat, 2),
-            "total_incl_vat": round(total, 2),
-            "deposit": round(deposit, 2) if deposit is not None else None,
-            "moved": row != EXPECTED_TOTALS_ROW,
-            "blinds_counted": counted,
-        }
-    raise BlindsImportError(
-        f"Couldn't find the totals block. {counted} blind(s) were read from row {FIRST_LINE_ROW} down, "
-        f"adding up to R{running:,.2f}, but no row in column {COL_LINE_TOTAL} matches that with a VAT "
-        f"line under it. Either a blind was misread or the sheet doesn't follow the template — "
-        f"nothing was imported."
-    )
+    last = FIRST_LINE_ROW + SEARCH_LIMIT
+    row = _find_label_row(ws, COL_TOTALS_LABEL, _is_subtotal, FIRST_LINE_ROW, last)
+    if row is None:
+        raise BlindsImportError(
+            f"No \"Sub Total\" label found in column {COL_TOTALS_LABEL} anywhere between rows "
+            f"{FIRST_LINE_ROW} and {last}. That label is how this import finds the money on a "
+            f"sheet, since the rows move with the number of blinds. Either this isn't the blinds "
+            f"quote template, or that label has been renamed \u2014 nothing was imported."
+        )
+    subtotal = _number(ws[f"{COL_LINE_TOTAL}{row}"].value)
+    if subtotal is None:
+        raise BlindsImportError(
+            f"Found the \"Sub Total\" label on row {row}, but column {COL_LINE_TOTAL} beside it "
+            f"holds {_text(ws[f'{COL_LINE_TOTAL}{row}'].value)!r} rather than an amount. If this "
+            f"file has never been opened and saved in Excel, its formulas carry no results yet \u2014 "
+            f"open it, save it, and try again."
+        )
+
+    # VAT / Total / Deposit sit under the subtotal. Located by their own
+    # labels too, with the immediate next rows as a fallback for a sheet
+    # that leaves them unlabelled.
+    window_end = min(row + TOTALS_BLOCK_WINDOW, last)
+    vat_row = _find_label_row(ws, COL_TOTALS_LABEL, _is_vat, row + 1, window_end) or row + 1
+    total_row = _find_label_row(ws, COL_TOTALS_LABEL, _is_total, row + 1, window_end) or row + 2
+    dep_row = _find_label_row(ws, COL_TOTALS_LABEL, _is_deposit, row + 1, window_end) or row + 3
+
+    vat = _number(ws[f"{COL_LINE_TOTAL}{vat_row}"].value)
+    total = _number(ws[f"{COL_LINE_TOTAL}{total_row}"].value)
+    deposit = _number(ws[f"{COL_LINE_TOTAL}{dep_row}"].value)
+    if vat is None or total is None:
+        raise BlindsImportError(
+            f"Found the Sub Total on row {row} (R{subtotal:,.2f}) but couldn't read the VAT "
+            f"(row {vat_row}) and Total (row {total_row}) under it in column {COL_LINE_TOTAL}. "
+            f"Nothing was imported."
+        )
+    if not _close(subtotal + vat, total):
+        raise BlindsImportError(
+            f"The totals on this sheet don't add up: Sub Total R{subtotal:,.2f} + VAT "
+            f"R{vat:,.2f} = R{subtotal + vat:,.2f}, but the Total reads R{total:,.2f}. "
+            f"Nothing was imported \u2014 check the sheet."
+        )
+    return {
+        "row": row, "vat_row": vat_row, "total_row": total_row, "deposit_row": dep_row,
+        "subtotal_ex_vat": round(subtotal, 2), "vat": round(vat, 2),
+        "total_incl_vat": round(total, 2),
+        "deposit": round(deposit, 2) if deposit is not None else None,
+    }
+
+
+def _find_rep_row(ws, after_row: int):
+    """The row labelled "Rep" in column B — it carries the branch in
+    column D and the rep in column E.
+
+    Searched from below the totals first, which is where it sits on both
+    real quotes seen (six rows under the Sub Total on each), then across
+    the whole sheet as a fallback. Searching below first matters: it
+    keeps the match away from the line items, where a room description
+    could otherwise start with the same three letters.
+    """
+    last = FIRST_LINE_ROW + SEARCH_LIMIT
+
+    def is_rep(n: str) -> bool:
+        # Deliberately tight. "rep" and "repname" only — not merely
+        # "starts with rep", which would match a room called
+        # "Replacement" or a note beginning "Repeat".
+        return n in ("rep", "repname", "reps")
+
+    return (_find_label_row(ws, COL_REP_LABEL, is_rep, after_row + 1, last)
+            or _find_label_row(ws, COL_REP_LABEL, is_rep, 1, after_row + 1))
 
 
 def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
@@ -190,7 +263,15 @@ def _read_lines(ws, stop_before_row: int) -> List[Dict[str, Any]]:
         width = _number(ws[f"{COL_WIDTH}{row}"].value)
         drop = _number(ws[f"{COL_DROP}{row}"].value)
         room = _text(ws[f"{COL_ROOM}{row}"].value)
-        if total is None and not blind_type and width is None and drop is None and not room:
+        # A row counts as a line ATTEMPT only if it carries one of the
+        # four things a blind is made of. Column C is deliberately not
+        # part of that test (confirmed Sept 2026): real quotes have gap
+        # rows and section text in the description column, and treating
+        # those as broken blinds would reject a perfectly good sheet.
+        # Gaps are skipped, never treated as the end of the list —
+        # Ilse's quote has blanks at B24 and B28-32 with real blinds
+        # below them.
+        if total is None and not blind_type and width is None and drop is None:
             continue
         if not blind_type:
             problems.append(f"row {row}: no blind type in column {COL_BLIND_TYPE}")
@@ -267,18 +348,29 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
             f"or the sheet was saved before the client details were filled in."
         )
 
-    branch_raw = _text(_cell(ws, CELL_BRANCH)).upper()
+    # Totals FIRST. It fixes the boundary for the line read below, and
+    # the Rep row is found relative to it.
+    totals = _find_totals(ws)
+
+    # Branch and Rep both live on the row labelled "Rep" — column D and
+    # column E of it. Neither is at a fixed cell: on the two real quotes
+    # seen, that row is 48 on one sheet and 40 on the other.
+    rep_row = _find_rep_row(ws, totals["row"])
+    if rep_row is None:
+        raise BlindsImportError(
+            f'No "Rep" label found in column {COL_REP_LABEL}. That row carries the branch '
+            f'(column {COL_BRANCH}) as well as the rep, and a job with no branch can\'t be '
+            f'reported on. Nothing was imported.'
+        )
+    branch_raw = _text(ws[f"{COL_BRANCH}{rep_row}"].value).upper()
     branch = BRANCH_CODES.get(branch_raw)
     if not branch:
         raise BlindsImportError(
-            f"Branch in {CELL_BRANCH} reads {branch_raw or '(blank)'!r} — expected "
-            f"{' or '.join(repr(k) for k in BRANCH_CODES)}. Nothing was imported."
+            f"Branch in {COL_BRANCH}{rep_row} (the row labelled \"Rep\") reads "
+            f"{branch_raw or '(blank)'!r} — expected {' or '.join(repr(k) for k in BRANCH_CODES)}. "
+            f"Nothing was imported."
         )
 
-    # Totals FIRST — that fixes the boundary, so the strict line read
-    # below knows exactly where the blinds stop and can treat anything
-    # unreadable inside that range as an error rather than a spacer.
-    totals = _find_totals(ws)
     lines = _read_lines(ws, stop_before_row=totals["row"])
     if not lines:
         raise BlindsImportError(
@@ -299,14 +391,15 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
     # again, so it holds the client reference, not a person. Detected
     # rather than assumed — if the template is fixed later so reps type
     # a real name over it, this starts working with no code change.
-    rep_raw = _text(_cell(ws, CELL_REP))
+    rep_cell = f"{COL_REP}{rep_row}"
+    rep_raw = _text(ws[rep_cell].value)
     client_reference = _text(_cell(ws, CELL_CLIENT_REFERENCE))
     rep_usable = bool(rep_raw) and rep_raw.casefold() != client_reference.casefold()
     rep_reason = ""
     if not rep_raw:
-        rep_reason = f"{CELL_REP} is empty."
+        rep_reason = f"{rep_cell} is empty."
     elif not rep_usable:
-        rep_reason = (f"{CELL_REP} reads {rep_raw!r}, which is the client reference from "
+        rep_reason = (f"{rep_cell} reads {rep_raw!r}, which is the client reference from "
                       f"{CELL_CLIENT_REFERENCE} — the template's Rep cell is a formula (=D15), "
                       f"not a typed name.")
 
@@ -334,12 +427,12 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
         line["line_notes"] = ", ".join(note_bits)
 
     cost_ex_vat_total = round(sum(l["cost_ex_vat"] for l in lines), 2)
+    # A moved totals block is NORMAL, not a warning — the rows shift with
+    # every quote length, which is the whole reason these are found by
+    # label. Where things were found is reported as plain information
+    # below (`rows`) so it can be checked against the sheet, without
+    # crying wolf on every import.
     warnings: List[str] = []
-    if totals["moved"]:
-        warnings.append(
-            f"The totals block is at row {totals['row']}, not the template's row {EXPECTED_TOTALS_ROW} — "
-            f"this sheet has grown. Figures were read from row {totals['row']} and reconcile against the lines."
-        )
     if totals["deposit"] is not None and not _close(totals["deposit"], totals["total_incl_vat"] * 0.70):
         warnings.append(
             f"The deposit on the sheet (R{totals['deposit']:,.2f}) isn't 70% of the total "
@@ -356,6 +449,19 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
         },
         "branch": branch,
         "branch_code": branch_raw,
+        # Where each thing was actually found. Shown on the review
+        # screen so the mapping can be checked against the open
+        # spreadsheet at a glance — the one thing that can't be verified
+        # from the numbers alone.
+        "rows": {
+            "first_line": lines[0]["row"] if lines else None,
+            "last_line": lines[-1]["row"] if lines else None,
+            "sub_total": totals["row"],
+            "vat": totals["vat_row"],
+            "total": totals["total_row"],
+            "deposit": totals["deposit_row"],
+            "rep": rep_row,
+        },
         "rep": {"raw": rep_raw, "usable": rep_usable, "reason": rep_reason},
         "lines": lines,
         "totals": {

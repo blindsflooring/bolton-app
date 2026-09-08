@@ -167,10 +167,19 @@ function renderBlindsImportPreview() {
     <div class="grid" style="margin-top:10px;">
       <div class="field"><label>Client</label><div><b>${d.client.name}</b></div></div>
       <div class="field"><label>Reference (D15)</label><div>${d.client.reference || '<span class="muted">—</span>'}</div></div>
-      <div class="field"><label>Branch (D48)</label><div><b>${d.branch_code}</b> → ${d.branch}</div></div>
+      <div class="field"><label>Branch <span class="adj">(D${d.rows.rep})</span></label><div><b>${d.branch_code}</b> → ${d.branch}</div></div>
       <div class="field"><label>Phone (D16)</label><div>${d.client.phone || '<span class="muted">—</span>'}</div></div>
     </div>
     <div class="field"><label>Address (D13)</label><div>${d.client.address || '<span class="muted">—</span>'}</div></div>
+    <!-- Where each thing was found. The template's rows shift with the
+         number of blinds (confirmed Sept 2026 on two real quotes), so
+         these are located by label, and showing the rows is what makes
+         the mapping checkable against the sheet sitting open next to you. -->
+    <p class="muted" style="font-size:11px; margin:2px 0 8px;">
+      Read from rows ${d.rows.first_line}–${d.rows.last_line} (blinds),
+      ${d.rows.sub_total} (Sub Total), ${d.rows.rep} (Rep &amp; branch)
+      — found by label, since this template's rows move with the quote length.
+    </p>
 
     <div style="overflow-x:auto;">
       <table class="import-lines">
