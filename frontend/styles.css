@@ -937,6 +937,36 @@
   .oi-tile-dead .oi-tile-count, .oi-tile-dead .oi-tile-label { color: #6b7280; }
   .oi-tile-today            { background: var(--card); border-left-color: var(--teal); }
 
+  /* Date column (confirmed Sept 2026) — its own column so the dates
+     read straight down. Tabular figures so the digits line up rather
+     than wandering with the glyph widths. */
+  .oi-date-cell { white-space: nowrap; }
+  .oi-date { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink-soft, #6b7280); font-weight: 600; }
+
+  /* Past the two-week supplier line — stock was ordered more than a
+     fortnight ago and the job still is not installed. Coral, the colour
+     this app already uses everywhere for something genuinely wrong. */
+  .oi-chase {
+    display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 3px;
+    background: var(--coral); color: #fff;
+    font-family: 'Poppins', sans-serif; font-size: 9px; font-weight: 800; letter-spacing: 0.05em;
+    vertical-align: 1px;
+  }
+
+  /* The line itself — a real divider across the table, not a styled
+     row, so it reads as a threshold rather than another job. */
+  .oi-week-line td {
+    background: repeating-linear-gradient(135deg, transparent, transparent 6px,
+                rgba(239,102,60,0.10) 6px, rgba(239,102,60,0.10) 12px);
+    border-top: 2px solid var(--coral); border-bottom: 2px solid var(--coral);
+    padding: 6px 12px;
+  }
+  .oi-week-line-label {
+    font-family: 'Poppins', sans-serif; font-size: 11px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--coral);
+  }
+  .oi-week-line-note { font-size: 11px; color: var(--ink-soft, #6b7280); margin-left: 10px; }
+
   /* Product sections inside a list (confirmed Sept 2026) — a full-width
      header band, not a badge, so "this block is blinds" reads without
      looking for it. Same device the stage headers used, and the same
