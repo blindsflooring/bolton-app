@@ -1027,6 +1027,43 @@ class ToDo(SQLModel, table=True):
     done: bool = False
     done_at: Optional[datetime] = None   # set/cleared server-side only (toggle_todo_done(), main.py), never client-writable directly — same "derive, don't trust a client-supplied timestamp" discipline as accepted_at/declined_at on Quote
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # ---------- Calendar quick entry, Phase 1 (confirmed Sept 2026,
+    # Installation Calendar Redesign) ----------
+    # Investigated before building, per the brief's own "do not create a
+    # new generic CalendarEvent table": there is no calendar table in
+    # this system and there should not be one. The calendar already
+    # composes three REAL sources live — Quote.installation_date +
+    # JobWorkDay.work_date, Lead.visit_date, and ToDo.due_date — so a
+    # user-created reminder is not a new kind of thing. It is a ToDo
+    # with a date, which this table already supported and already
+    # rendered on the calendar.
+    #
+    # These three columns are the whole schema change. due_date,
+    # assigned_to, created_by, done and done_at were already here, which
+    # is also why the future Team To-do work needs no new modelling: a
+    # real date on the task (never a calendar-cell reference) and a real
+    # owner both already exist.
+    #
+    # category decides which colour the pill takes on the calendar and
+    # nothing else. It is a plain string rather than an enum, matching
+    # every other categorical field on this model set (Quote.status,
+    # Lead.lead_status, OrderSheet.status) — validated at the endpoint,
+    # so an old row can never fail to load because the allowed set
+    # changed later.
+    #
+    # CRITICAL, and the reason this is safe: a ToDo can never alter a
+    # job. A task categorised "flooring" is a reminder about flooring,
+    # not an installation — it has no path to Quote.installation_date or
+    # workflow_status at all. The brief's "a Flooring reminder is a task,
+    # not an actual installation event" is therefore a property of the
+    # model, not a rule anyone has to remember to enforce.
+    category: str = "general"   # "general" | "flooring" | "blinds" | "lead"
+    # Optional, always. The brief is explicit that a plain reminder
+    # ("Phone supplier about stock") must save with zero links, so these
+    # are nullable and never required by any code path. They exist so a
+    # task CAN point at real work when it genuinely relates to some.
+    client_id: Optional[int] = Field(default=None, foreign_key="client.id")
+    quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
 
 
 class BusinessSettings(SQLModel, table=True):
