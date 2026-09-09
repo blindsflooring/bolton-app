@@ -1785,6 +1785,104 @@ def on_startup():
     except Exception as e:
         print(f"Carpet Calculators: price-book seed FAILED ({e}) — needs manual review")
 
+    # Belgotex Tufted Broadloom, full range (confirmed Sept 2026, Cape
+    # Directs price list effective 1 January 2026, superseding the
+    # 27 October 2025 list). Same one-time idempotent startup-migration
+    # shape as the Carpet Calculators seed directly above — this is the
+    # rest of the range that seed took a single row from.
+    #
+    # Influence is already in that seed at R215.00/m², and the new price
+    # list still says R215.00 — so it is listed here too, matches the
+    # existing row, and is correctly skipped rather than duplicated.
+    #
+    # PRICES ARE COST, NOT SELL: base_cost_ex_vat is the supplier's own
+    # per-m² figure off the price list. sell_markup_multiplier=1.3 is
+    # what turns it into a client price, matching Vinyl's confirmed rate
+    # and the four rows seeded above.
+    #
+    # The list's LM column is NOT stored, because it is not independent
+    # data: every one of the 26 rows is exactly m² x 4.00m (verified
+    # arithmetically against the brief, all 26, zero mismatches), and
+    # calculate_carpet_line() already derives m² from LM via
+    # product.roll_width_m. A second stored copy of a derivable figure
+    # is exactly the drift this codebase keeps removing.
+    #
+    # REBATE IS UNCONFIRMED and deliberately NOT guessed — the brief
+    # states the rebate % is TBD. trade_discount_pct stays 0.0, which is
+    # also what the four sibling rows above already carry ("every
+    # reference spreadsheet's own 'Less 0%' cell"). The direction of
+    # that assumption is the safe one: a rebate REDUCES cost, so
+    # assuming none overstates cost, which understates margin and
+    # slightly overprices rather than underprices. It never quotes below
+    # true cost. Set the real figure per product in the Supplier Console
+    # once Cape Direct confirms it.
+    #
+    # Created ACTIVE, not pending_review — unlike the Aspen ranges
+    # created further below, which are pending precisely because they
+    # have NO price and a R0 range loose in the quote builder would hand
+    # out free flooring. These have complete, real pricing; the only
+    # unknown is a rebate whose absence is conservative.
+    BELGOTEX_TUFTED_BROADLOOM = [
+        ("Conqueror", 175.00), ("Influence", 215.00), ("Inclusive", 252.00),
+        ("Latte", 271.00), ("Coexist", 291.00), ("Co-Create", 291.00),
+        ("Longevity - Grandeur", 297.00), ("Merino", 299.00), ("Arabica", 304.00),
+        ("Immerse", 323.00), ("Longevity - Serenity", 331.00), ("Mindful", 342.00),
+        ("Attuned", 342.00), ("Sensology Tactual", 399.00), ("Textured", 428.00),
+        ("Aqua", 428.00), ("Sensology Aural", 478.00), ("Grace", 498.00),
+        ("Softology Lite", 563.00), ("Mood", 606.00), ("Westminster", 625.00),
+        ("Softology", 698.00), ("Serengeti", 727.00), ("Baltimore", 746.00),
+        ("Softology Ultra", 856.00), ("Sensology Lush", 996.00),
+    ]
+    # Carries the effective date, so which price list a row came from is
+    # answerable later without a schema change. Real price-list
+    # versioning/supersession (history, effective-from/to, rolling a
+    # whole list forward) is NOT built — see the brief's own "worth
+    # noting... in case Bolton later needs to track" framing; this
+    # records the fact, it does not implement the feature.
+    BELGOTEX_PRICE_LIST_SOURCE = "belgotex-capedirect-2026-01-01"
+    try:
+        with Session(engine) as session:
+            added, existing_match, price_changed = 0, 0, []
+            for name, cost_per_m2 in BELGOTEX_TUFTED_BROADLOOM:
+                found = session.exec(select(FlooringProduct).where(
+                    FlooringProduct.tenant_id == DEFAULT_TENANT_ID,
+                    FlooringProduct.product_name == name,
+                    FlooringProduct.supplier == "Belgotex",
+                    FlooringProduct.flooring_category == "carpet_tufted_broadloom",
+                )).first()
+                if found:
+                    # A price that has MOVED is reported, never silently
+                    # overwritten. Burgert may have hand-corrected a row,
+                    # and a startup migration quietly rewriting a live
+                    # selling input is exactly the kind of invisible
+                    # change this codebase refuses to make. The Supplier
+                    # Console is where a real price change gets made, by
+                    # a person who can see what it was.
+                    if round(found.base_cost_ex_vat, 2) != round(cost_per_m2, 2):
+                        price_changed.append(f"{name} (book R{found.base_cost_ex_vat:.2f} vs list R{cost_per_m2:.2f})")
+                    else:
+                        existing_match += 1
+                    continue
+                session.add(FlooringProduct(
+                    tenant_id=DEFAULT_TENANT_ID, supplier="Belgotex", product_name=name, colour="",
+                    pricing_type="material", flooring_category="carpet_tufted_broadloom",
+                    base_cost_ex_vat=cost_per_m2, roll_width_m=4.00,
+                    sell_markup_multiplier=1.3, trade_discount_pct=0.0,
+                    source=BELGOTEX_PRICE_LIST_SOURCE,
+                ))
+                added += 1
+            if added:
+                session.commit()
+                print(f"Belgotex Tufted Broadloom: added {added} range(s) from the 1 Jan 2026 Cape Directs list "
+                      f"(rebate NOT applied - trade_discount_pct 0.0 until confirmed)")
+            if existing_match:
+                print(f"Belgotex Tufted Broadloom: {existing_match} range(s) already in the price book at the listed price - left alone")
+            if price_changed:
+                print(f"Belgotex Tufted Broadloom: PRICE DIFFERS from the 1 Jan 2026 list on {len(price_changed)} range(s), "
+                      f"NOT overwritten - review in the Supplier Console: {', '.join(price_changed)}")
+    except Exception as e:
+        print(f"Belgotex Tufted Broadloom: price-book seed FAILED ({e}) - needs manual review")
+
     # "Colour" Field Showing Products Instead of Real Colours (confirmed
     # Aug 2026) — one-time move of a genuinely misplaced value, not a
     # relabel: these two ranges are the only ones confirmed (not
