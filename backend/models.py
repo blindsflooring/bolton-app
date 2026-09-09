@@ -1076,7 +1076,20 @@ class BusinessSettings(SQLModel, table=True):
     default_deposit_pct: float = 0.70
     bag_overage_rate: float = 350.0            # R/bag incl. VAT, screed site-variance charge — see calculations.py's BAG_OVERAGE_RATE comment
     default_labour_rate_per_m2: float = 45.0
-    order_overdue_days: int = 7                # Order Index "Overdue" status threshold
+    order_overdue_days: int = 7                # days since INVOICE SENT before an unpaid job is chased. Was orphaned when computeOrderStatus() was retired (nothing read it, while it stayed editable on the Business Settings screen); wired back to its own documented meaning Sept 2026 — it now gates the "Log payment" Needs Attention flag in _job_workflow_info(). Deliberately still NOT the same as that function's own QUOTE_STALE_DAYS, which counts days since a QUOTE went quiet — two unrelated clocks.
+    # Known areas / suburbs (confirmed Sept 2026, Order Index Redesign
+    # brief §4) — the list _derive_area() (main.py) matches a free-text
+    # address against. Comma-separated free text rather than its own
+    # table: it is a short, hand-maintained list per tenant, edited
+    # about as often as a VAT rate, and every other list-shaped setting
+    # on this model is already stored this way. Seeded with the real
+    # Overberg suburbs this business actually works in; matching is
+    # accent- and case-insensitive, so "voelklip" in a typed address
+    # still resolves to "Voëlklip".
+    known_areas: str = ("Gansbaai, Kleinbaai, De Kelders, Franskraal, Pearly Beach, Baardskeerdersbos, "
+                        "Stanford, Hermanus, Voëlklip, Sandbaai, Onrus, Vermont, Hawston, Fisherhaven, "
+                        "Kleinmond, Betty's Bay, Pringle Bay, Rooi Els, Napier, Bredasdorp, Struisbaai, "
+                        "Agulhas, Arniston, Caledon, Grabouw")
     # Multi-tenant groundwork Part 2 (confirmed Aug 2026): the remaining
     # genuinely-hardcoded numeric business rules found auditing
     # calculations.py/models.py — moved here so a future tenant gets
@@ -1219,6 +1232,23 @@ class Quote(SQLModel, table=True):
     # Order tracking fields, confirmed Aug 2026 — "know everything at a
     # glance" from Order Index without opening each quote individually.
     site_address: str = ""             # install/delivery site — may differ from the client's registered address
+    # Area / suburb (confirmed Sept 2026, Order Index Redesign brief §4)
+    # — a REAL stored, queryable attribute, deliberately not a
+    # display-time parse of site_address. site_address is free text and
+    # frequently blank (the client's own address is the fallback), so a
+    # parser alone could never be a source of truth and there would be
+    # no way to correct a wrong guess.
+    #
+    # Filled by _derive_area() (main.py) against the tenant's own
+    # known-suburb list at quote-create time and whenever site_address
+    # is saved — but ONLY while this is still blank, so a hand-corrected
+    # area is never silently overwritten by a later address edit. Fully
+    # editable by hand on the Job Detail / Order Details form.
+    #
+    # NEVER derived from `branch`: a Gansbaai-branch job installed in
+    # Hermanus would get the wrong area, and a wrong area is worse for
+    # install-day route planning than a blank one.
+    area: str = ""
     installation_date: Optional[date] = None
     invoice_sent_date: Optional[date] = None
     deposit_paid_date: Optional[date] = None
@@ -1504,6 +1534,24 @@ class QuoteLineItem(SQLModel, table=True):
     job_type: Optional[str] = None       # flooring only
     width_mm: Optional[float] = None     # blinds only
     drop_mm: Optional[float] = None      # blinds only
+    # Blind count (confirmed Sept 2026, Order Index Redesign brief §2)
+    # — REAL GAP CLOSED, not a convenience field. The Order Index's new
+    # scope summary needs "8 blinds" the way it already has "142 m²",
+    # and that number genuinely did not exist anywhere: add_blinds_line()
+    # creates exactly one line per blind (no quantity input at all), but
+    # import_blinds_quote() folds the spreadsheet's own qty into the
+    # PRICE (unit_price = book / qty) and recorded the count only as
+    # English text in line_notes ("8 units"). Counting lines would have
+    # under-reported every imported quote.
+    #
+    # NULL means one — true for every hand-built line, and for every
+    # imported line whose sheet stated no quantity. Backfilled once at
+    # startup for existing imported lines by reading that same
+    # line_notes text, which the importer writes in a fixed format.
+    # Same per-category quantity shape as quantity_m2 (flooring),
+    # length_m (trims) and num_stairs (stairwell) — not a shared
+    # `quantity` column, which none of those use either.
+    blind_qty: Optional[int] = None      # blinds only
     quantity_m2: Optional[float] = None  # flooring only
     length_m: Optional[float] = None     # trims only
     # Manual quoting categories (confirmed Sept 2026, "Manual Quoting

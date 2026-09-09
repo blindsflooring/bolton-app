@@ -95,6 +95,28 @@
      wrapped, which is exactly the stacked layout this change exists to
      get rid of). */
   body.home-active main { max-width: 1500px; }
+  /* Order Index Redesign (confirmed Sept 2026, brief §3) — same
+     mechanism again, and the same reason as the Quote Builder's:
+     main's 900px cap is a READING width, and this screen is a dense
+     operational table, not a document.
+     MEASURED, not assumed: the brief adds two dedicated columns (Paid,
+     Outstanding). Even after merging Job+Customer into one cell and
+     moving type/quantity off the row into Quick View — both of which
+     this brief asked for, and both of which were done first precisely
+     to pay for the new columns — the table came to 958px inside 868px
+     of usable space, pushing the Next Action button off the right edge
+     and forcing the horizontal scrollbar that the Row Overflow brief
+     (Aug 2026) exists to have removed.
+     1200px, matching the Quote Builder rather than Home's 1500px: this
+     is a table that needs to fit, not a dashboard spreading out.
+     NOTE for Burgert: a wide container was part of the earlier Order
+     Index redesign that you reverted — but what you rejected there was
+     the two-column layout and the right-hand client list, which are
+     NOT coming back. This is only the width, and only so the columns
+     you asked for fit without a sideways scroll. If you'd rather keep
+     the narrower page, deleting this one line restores it exactly (the
+     table then scrolls horizontally as it did before). */
+  body.order-index-active main { max-width: 1200px; }
   /* Order Index stage tiles (confirmed Sept 2026). The rest of that
      redesign — the wide container, the two-column layout and the
      right-hand client list — was reverted at Burgert's request ("the
@@ -348,6 +370,19 @@
     table.mobile-card-table td.card-actions-cell {
       flex-wrap: wrap; justify-content: flex-start; white-space: normal; gap: 10px 14px;
     }
+    /* Order Index Redesign (confirmed Sept 2026) — the merged Client
+       cell is now four stacked lines (name / job number + category /
+       address / description), not one string. The .card-title rule just
+       above makes every card header a flex ROW, which would lay those
+       four out side by side and push the card past the screen edge.
+       Stack them instead — this is the same card title, just with real
+       internal structure now. */
+    table.mobile-card-table td.oi-client-cell {
+      flex-direction: column; align-items: flex-start; text-align: left; gap: 1px;
+    }
+    /* The name is already the card's title at this size — the desktop
+       step up to 16.5px would over-shout it on a phone. */
+    table.mobile-card-table td.oi-client-cell .oi-client-name { font-size: 15px; }
   }
   /* Desktop-only: kept as a class (not the removed inline style) so
      the mobile override above can cleanly turn it off below the
@@ -640,6 +675,130 @@
      to remove, only the SIZE/WEIGHT/alignment inconsistency across rows. */
   .oi-client-name { font-weight: 700; font-size: 14px; color: var(--navy); }
   .oi-client-name.linked { color: var(--teal); text-decoration: underline; cursor: pointer; }
+  /* ===== Order Index Redesign (confirmed Sept 2026) ===== */
+
+  /* Row hierarchy, brief §1 — the merged Client cell. Client name is
+     the first-read element; everything else in the cell is deliberately
+     quieter than it. Each part is a block so the cell reads as four
+     stacked lines without relying on <br>, which the old two-column
+     layout used and which gave no way to size the lines independently. */
+  /* The merged cell now carries four lines of real content, so it needs
+     a real share of the table width — without this the browser's auto
+     layout splits width evenly and wraps a client name like "Burgert
+     van der Westhuizen" over three lines while the numeric columns sit
+     half empty (confirmed in a real browser at 1568px, not assumed).
+     The narrow columns opposite are told not to wrap for the same
+     reason: "R101 994,36" and "Install Date" breaking mid-value is what
+     was pushing the width away from the column that needed it. */
+  .oi-client-cell { line-height: 1.35; min-width: 210px; }
+  /* Only the VALUES are held on one line, never the headers — measured
+     in a real browser: forcing "Outstanding" and "Install Date" onto
+     one line each cost ~60px of table width and pushed the Next Action
+     button off the right edge at an 834px content width. Two columns
+     arrived this round, so the table has to earn that width back
+     somewhere; a wrapped two-word header costs nothing to read. */
+  .oi-paid, .oi-outstanding, .oi-outstanding-clear { white-space: nowrap; }
+  .oi-client-cell .oi-client-name { display: block; font-size: 16.5px; font-weight: 800; margin-bottom: 1px; }
+  .oi-row-ref { display: block; font-size: 11px; color: var(--ink-soft, #6b7280); }
+  /* The job number keeps its own class (search and every other reader
+     still find it) but loses the visual weight it had as the leading
+     column — brief §1: "not competing for attention". */
+  .oi-client-cell .job-number { font-weight: 600; color: var(--ink-soft, #6b7280); font-size: 11px; }
+  /* inline, not block — the area tag immediately after it should read
+     as the tail of the address, not as a fourth line of its own. The
+     description below is still a block, so it starts a new line on its
+     own regardless. */
+  .oi-row-address { display: inline; font-size: 11.5px; color: var(--ink-soft, #6b7280); }
+  .oi-row-address-missing { font-style: italic; opacity: 0.75; }
+  /* A client-record fallback address, marked quietly rather than
+     styled as an error — it is usually right, just not confirmed
+     against this specific job. The full explanation is in the title. */
+  .oi-address-fallback { opacity: 0.55; margin-right: 2px; }
+  .oi-row-area {
+    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 9px;
+    background: var(--bg, #f0f2f5); color: #4b5563; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.02em; vertical-align: 1px;
+  }
+  .oi-row-desc { display: block; font-size: 11px; color: var(--ink-soft, #6b7280); }
+  .oi-row-test { display: block; font-size: 10px; color: var(--coral); font-weight: 700; }
+
+  /* Paid / Outstanding, brief §3 — two columns that always mean the
+     same thing. Outstanding is the only figure coloured, and only when
+     something is genuinely owed; a settled job goes quiet green rather
+     than showing a loud R0. */
+  .oi-paid { font-weight: 700; color: #1a7a3e; }
+  .oi-outstanding { font-weight: 700; color: var(--coral); }
+  .oi-outstanding-clear { font-weight: 600; color: #1a7a3e; opacity: 0.75; }
+
+  /* Area filter chips, brief §4 — a filter, not a re-grouping: the
+     stage sections underneath are untouched by it. */
+  .oi-area-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; }
+  .oi-area-chips-label {
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft, #6b7280); margin-right: 2px;
+  }
+  .oi-area-chip {
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    background: white; color: var(--navy); font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .oi-area-chip:hover { border-color: var(--teal); color: var(--teal); }
+  .oi-area-chip.active { background: var(--teal); border-color: var(--teal); color: white; }
+  .oi-area-chip-count { opacity: 0.65; font-weight: 700; margin-left: 2px; }
+  .oi-area-chip.active .oi-area-chip-count { opacity: 0.85; }
+  /* Jobs with no area yet — a data-quality prompt, so it reads as
+     something to fix rather than as another place. */
+  .oi-area-chip-unset { font-style: italic; color: var(--ink-soft, #6b7280); }
+  .oi-area-chip-unset.active { color: white; font-style: normal; }
+
+  /* Scope summary in Quick View, brief §2 — every real unit on the job,
+     since a mixed job genuinely has more than one. */
+  .oi-scope-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .oi-scope-label {
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft, #6b7280);
+  }
+  .oi-scope-part {
+    padding: 4px 10px; border-radius: 6px; background: white;
+    border: 1px solid var(--border); font-size: 12.5px; font-weight: 700; color: var(--navy);
+  }
+
+  /* Needs Attention groups, brief §5. Scoped to .attn-group so the
+     .attention-item rules above are untouched — the Home screen's own
+     leads/to-dos list reuses them and must keep rendering exactly as it
+     does today. */
+  .attn-group { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: white; }
+  .attn-group-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 12px; background: var(--bg, #f5f6f8); border-left: 4px solid;
+  }
+  .attn-group-head.priority-critical { border-left-color: var(--coral); }
+  .attn-group-head.priority-warning { border-left-color: #d99a1f; }
+  .attn-group-head.priority-notice { border-left-color: #c7b642; }
+  .attn-group-title { font-family: 'Poppins', sans-serif; font-size: 12.5px; font-weight: 800; color: var(--navy); }
+  .attn-group-count {
+    font-size: 11px; font-weight: 800; color: var(--ink-soft, #6b7280);
+    background: white; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+  }
+  /* Items inside a group drop the rounding/left bar the standalone
+     version carries — the group header above already states the
+     priority, and repeating it on every row was the visual noise the
+     grouping exists to remove. */
+  .attn-group .attention-item { border-radius: 0; border-left: none; background: white; border-top: 1px solid var(--border); }
+  .attn-group .attention-item:hover { background: var(--bg, #f5f6f8); filter: none; }
+  .attn-ref { color: var(--ink-soft, #6b7280); font-weight: 600; }
+  /* Days waited — fixed width so the numbers form a readable column
+     down the group rather than jittering with each row's name length. */
+  .attn-wait {
+    flex: 0 0 auto; min-width: 38px; text-align: center;
+    font-family: 'Poppins', sans-serif; font-size: 11.5px; font-weight: 800;
+    color: var(--navy); background: var(--bg, #f0f2f5); border-radius: 6px; padding: 2px 6px;
+  }
+  .attn-group-more {
+    display: block; width: 100%; padding: 7px; border: none; border-top: 1px solid var(--border);
+    background: white; color: var(--teal); font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  .attn-group-more:hover { background: var(--bg, #f5f6f8); }
+
   .next-action-btn {
     background: none; border: 2px solid var(--teal); color: var(--teal);
     font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;

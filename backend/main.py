@@ -18,6 +18,7 @@ import re
 import base64
 import secrets
 import shutil
+import unicodedata
 import uuid
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Request
@@ -576,19 +577,56 @@ def _ensure_new_columns():
         ("quotelineitem", "manual_quantity", "FLOAT", "NULL"),
         ("quotelineitem", "manual_supplier", "VARCHAR", "NULL"),
         ("quotelineitem", "line_notes", "VARCHAR", "''"),
+        # Order Index Redesign (confirmed Sept 2026). '' / NULL is the
+        # honest default on every existing row in all three cases —
+        # nothing has ever recorded an area, no line has ever recorded a
+        # blind count, and no tenant has ever set a suburb list. Real
+        # values are filled by the two backfills in
+        # _backfill_order_index_fields() right after this, which is also
+        # where BusinessSettings.known_areas gets the seeded list (an
+        # ALTER TABLE default can't carry a string that long safely
+        # across both SQLite and Postgres).
+        ("quote", "area", "VARCHAR", "''"),
+        ("quotelineitem", "blind_qty", "INTEGER", "NULL"),
+        ("businesssettings", "known_areas", "VARCHAR", "''"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     table_columns = {t: {c["name"] for c in inspector.get_columns(t)} for t in existing_tables}
-    with engine.begin() as conn:
-        for table, column, sql_type, default_literal in new_columns:
-            if table not in existing_tables:
-                continue  # brand new table — create_all() right after this will create it already carrying every current field, nothing to backfill
-            if column in table_columns[table]:
-                continue
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default_literal}"))
+    # One transaction PER COLUMN, not one around the whole list
+    # (confirmed Sept 2026) — REAL BUG FIXED, found while adding the
+    # Order Index Redesign columns at the bottom of this list. The
+    # quotephoto/photo_bytes entry above carries a Postgres-only default
+    # literal (''::bytea), which SQLite rejects outright. With every
+    # ALTER sharing one transaction, that single dialect mismatch rolled
+    # back and aborted the ENTIRE run — so on SQLite, not one column
+    # listed after it had ever been added, silently, on every boot.
+    # Production runs Postgres and was unaffected, which is exactly why
+    # this went unnoticed.
+    #
+    # A failure is now isolated and REPORTED rather than swallowed: the
+    # remaining columns still get added, and the log names the one that
+    # didn't so it can be fixed rather than quietly living on as a
+    # missing column. Each ALTER is independent and idempotent (guarded
+    # by the table_columns check above), so this is safe to re-run.
+    dialect = engine.dialect.name
+    for table, column, sql_type, default_literal in new_columns:
+        if table not in existing_tables:
+            continue  # brand new table — create_all() right after this will create it already carrying every current field, nothing to backfill
+        if column in table_columns[table]:
+            continue
+        # Postgres type/cast syntax, translated where SQLite can't parse
+        # it. Only the two shapes actually used in the list above.
+        if dialect != "postgresql":
+            sql_type = "BLOB" if sql_type.upper() == "BYTEA" else sql_type
+            default_literal = default_literal.replace("::bytea", "")
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default_literal}"))
             table_columns[table].add(column)
             print(f"Migration: added {column} to {table}, defaulted to {default_literal}")
+        except Exception as e:
+            print(f"Migration: FAILED to add {column} to {table} ({e}) — skipped, remaining columns still applied")
 
 
 def _next_job_number(session: Session, tenant_id: str) -> str:
@@ -893,6 +931,156 @@ def _madri_login_recovery_remediation():
             print("Madri login recovery: password force-reset")
     except Exception as e:
         print(f"Madri login recovery: remediation FAILED ({e}) — needs manual review")
+
+
+def _strip_accents(text_value: str) -> str:
+    """Voëlklip == voelklip. Addresses are typed by hand, on a phone as
+    often as not, so the accented spelling in the known-areas list can
+    never be relied on to appear in the address itself."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text_value or "") if not unicodedata.combining(c))
+
+
+def _area_match_key(text_value: str) -> str:
+    """Accent-, case- and punctuation-insensitive form used on BOTH
+    sides of the area match.
+
+    Apostrophes are DELETED, not treated as separators — caught by a
+    real test: "Betty's Bay" in the list against "bettys bay 7141" typed
+    into an address. Collapsing the apostrophe to a space turned the
+    list entry into "betty s bay", which no ordinary typed address ever
+    matches, so a real suburb silently never resolved.
+
+    Every other non-alphanumeric collapses to a single space, which is
+    what makes ", Hermanus 7200" and "/Hermanus" both find the town."""
+    cleaned = _strip_accents(text_value).lower().replace("'", "").replace("’", "")
+    squashed = re.sub(r"[^a-z0-9]+", " ", cleaned)
+    return f" {squashed.strip()} "
+
+
+def _derive_area(address: str, known_areas: str) -> str:
+    """Area/suburb from a free-text address (confirmed Sept 2026, Order
+    Index Redesign brief §4 — "likely derivable from the existing
+    address field, needs investigation on data quality/consistency
+    there").
+
+    That investigation's finding, stated plainly: it is NOT reliably
+    derivable, which is exactly why Quote.area is a real stored column
+    and this function only ever proposes a starting value for it. Real
+    addresses in this system look like "315 5th street., voelklip,
+    hermanus 7200", "34 Ingang straat" and "2ie" — different comma
+    conventions, missing accents, and frequently blank (Quote.site_address
+    was empty on the clear majority of rows when this was written).
+
+    So this deliberately does NOT try to parse address structure (no
+    "second-to-last comma-separated part" rule — "34 Ingang straat" has
+    no comma at all and "2ie" is not an address). It matches against the
+    tenant's own known-suburb list and returns "" when nothing matches,
+    which is an honest "not known yet" the Order Index reports rather
+    than a guess it presents as fact.
+
+    The EARLIEST match in the address wins, not the longest — caught by
+    a real address already in this system, "315 5th street., voelklip,
+    hermanus 7200". Both Voëlklip and Hermanus are on the known list and
+    both genuinely appear, because Voëlklip is a suburb OF Hermanus.
+    South African addresses run street, suburb, town, postcode, so the
+    first one mentioned is the narrower place — and the narrower place
+    is the useful one for planning an install day's route. Ties (a
+    single word matching two list entries at the same position) fall
+    back to the longer entry, so "Pearly Beach" is never beaten by a
+    shorter entry sitting inside it.
+
+    The ORIGINAL spelling from the list is returned — never whatever was
+    typed — so every job in one suburb groups under one identical label.
+    """
+    if not address or not known_areas:
+        return ""
+    haystack = _area_match_key(address)
+    best = None
+    for candidate in known_areas.split(","):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        position = haystack.find(_area_match_key(candidate).strip())
+        if position == -1:
+            continue
+        if best is None or (position, -len(candidate)) < best[0]:
+            best = ((position, -len(candidate)), candidate)
+    return best[1] if best else ""
+
+
+def _backfill_order_index_fields():
+    """Order Index Redesign (confirmed Sept 2026) — one-time backfill for
+    the three columns _ensure_new_columns() just added. Idempotent by
+    construction: each part only writes where the field is still empty,
+    so this is a no-op on every boot after the first, and a value
+    corrected by hand afterwards is never overwritten.
+    """
+    try:
+        with Session(engine) as session:
+            # 1. known_areas — the seeded list, which is too long to
+            # carry as an ALTER TABLE default literal. Only ever set on a
+            # settings row that has none; a tenant who has edited theirs
+            # keeps it.
+            seeded = BusinessSettings.model_fields["known_areas"].default
+            settings_rows = session.exec(select(BusinessSettings)).all()
+            seeded_n = 0
+            for s in settings_rows:
+                if not (s.known_areas or "").strip():
+                    s.known_areas = seeded
+                    session.add(s)
+                    seeded_n += 1
+            if seeded_n:
+                session.commit()
+                print(f"Migration: seeded known_areas on {seeded_n} settings row(s)")
+
+            # 2. blind_qty — recovered from the importer's own line_notes
+            # text ("8 units"), which is written in a fixed format by
+            # import_blinds_quote() and is the ONLY surviving record of a
+            # spreadsheet quantity (the qty itself was folded into
+            # unit_price = book / qty and never stored). A blinds line
+            # with no such note genuinely was a single blind, which is
+            # what NULL already means — so those are left alone rather
+            # than written as an explicit 1.
+            qty_n = 0
+            for line in session.exec(select(QuoteLineItem).where(
+                QuoteLineItem.category == "blinds", QuoteLineItem.blind_qty.is_(None)
+            )).all():
+                m = re.search(r"(\d+(?:\.\d+)?)\s*units\b", line.line_notes or "")
+                if not m:
+                    continue
+                line.blind_qty = int(float(m.group(1)))
+                session.add(line)
+                qty_n += 1
+            if qty_n:
+                session.commit()
+                print(f"Migration: recovered blind_qty on {qty_n} imported blinds line(s) from line_notes")
+
+            # 3. area — derived for every quote that has an address to
+            # derive it from. Quotes whose address is blank or matches
+            # no known suburb are deliberately left blank and REPORTED,
+            # never guessed: the Order Index surfaces the count so they
+            # can be filled in by hand, the same way it already surfaces
+            # quotes with no linked client.
+            known_by_tenant = {s.tenant_id: (s.known_areas or seeded) for s in settings_rows}
+            client_address = {}
+            for c in session.exec(select(Client)).all():
+                client_address[(c.tenant_id, c.id)] = c.address
+            filled = unresolved = 0
+            for q in session.exec(select(Quote).where(Quote.area == "")).all():
+                address = (q.site_address or "").strip() or (client_address.get((q.tenant_id, q.client_id)) or "")
+                derived = _derive_area(address, known_by_tenant.get(q.tenant_id, seeded))
+                if derived:
+                    q.area = derived
+                    session.add(q)
+                    filled += 1
+                else:
+                    unresolved += 1
+            if filled:
+                session.commit()
+            if filled or unresolved:
+                print(f"Migration: derived area on {filled} quote(s); {unresolved} left blank for manual review")
+    except Exception as e:
+        print(f"Migration: Order Index field backfill FAILED ({e}) — needs manual review")
 
 
 def _fix_orphaned_quotes_remediation():
@@ -1476,6 +1664,12 @@ def on_startup():
     # harmless once uncalled) but must never run again — a proper
     # password change now has to actually stay changed.
     _fix_orphaned_quotes_remediation()
+
+    # Order Index Redesign (confirmed Sept 2026) — seeds known_areas and
+    # backfills area/blind_qty for data that predates those columns.
+    # Runs after create_all()/the settings bootstrap above, since it
+    # reads and writes BusinessSettings rows.
+    _backfill_order_index_fields()
 
     # Diagnostic (confirmed Aug 2026, Supplier Order Sheets brief §4 —
     # "verify Azura's existing floor-prep/consumable product records
@@ -7940,7 +8134,8 @@ def delete_client(client_id: int, role: str = Depends(require_owner),
         return {"deleted": client_id}
 
 
-def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False, last_follow_up_date: Optional[date] = None) -> dict:
+def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False, last_follow_up_date: Optional[date] = None,
+                        overdue_days: int = 7) -> dict:
     """Next Action / Needs Attention engine (confirmed Aug 2026, Order
     Index / Job Workflow Redesign brief + Next Action Addendum).
     Computed at read time from workflow_status plus the operational/
@@ -7985,7 +8180,32 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     on_hold_at sit alongside workflow_status, never replace one of its
     4 values), so the job's step progress freezes exactly where it was
     and resumes there once taken off hold, with nothing else about its
-    state touched."""
+    state touched.
+
+    attention_since (confirmed Sept 2026, Order Index Redesign brief §5
+    — Needs Attention must "sort within each group by urgency/age
+    (oldest waiting first), not by creation order"). Returned from HERE,
+    not computed in the frontend, because which clock is running depends
+    entirely on WHICH branch below fired: a job waiting to be booked has
+    been waiting since it was accepted, an unpaid one since it was
+    invoiced, a quote since it last went quiet. The function that
+    decides the label is the only one that can honestly say when that
+    label started applying. Every branch sets it alongside its own
+    label; None where there is nothing waiting.
+
+    "Log payment" (confirmed Sept 2026, same brief) — REAL GAP CLOSED.
+    The invoiced-but-unpaid branch below set a next_action but
+    deliberately no attention_priority, so an invoice nobody had paid
+    never reached Needs Attention at all — the one thing on this screen
+    that is actually money owed to the business. Now flagged, gated on
+    overdue_days (BusinessSettings.order_overdue_days, default 7) so it
+    doesn't nag the day the invoice goes out. That setting was live and
+    editable on the Business Settings screen while NOTHING read it —
+    orphaned when computeOrderStatus() was retired — and its documented
+    meaning is exactly "days since invoice sent", so this puts it back
+    to its own stated job rather than inventing a second threshold.
+    Still deliberately NOT reused for QUOTE_STALE_DAYS below, for the
+    reason stated above: two unrelated clocks."""
     QUOTE_STALE_DAYS = 7
     # Quote expiry (confirmed Sept 2026, Burgert: "add quote expiry
     # after 30 days"). Closes the gap the Order Index Redesign brief
@@ -8005,6 +8225,7 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     paid = bool(quote.final_payment_date)
     next_action = action_button = action_target = None
     attention_priority = attention_label = None
+    attention_since = None
     expired = False
 
     # A declined quote has nothing left to do (found Sept 2026, Order
@@ -8019,7 +8240,7 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
     if quote.declined_at:
         return {
             "next_action": None, "action_button": None, "action_target": None,
-            "attention_priority": None, "attention_label": None,
+            "attention_priority": None, "attention_label": None, "attention_since": None,
             # A declined quote is closed by a real decision, which is a
             # different and stronger fact than having gone quiet — it is
             # never additionally labelled "expired".
@@ -8030,6 +8251,11 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
         return {
             "next_action": f"On Hold — {quote.on_hold_reason}", "action_button": "VIEW HOLD", "action_target": "job_detail",
             "attention_priority": "critical", "attention_label": "On Hold",
+            # Waiting since it was PAUSED, not since the job began — the
+            # hold is what is being waited on. on_hold_at is set together
+            # with on_hold_reason (hold_job(), below), so the pair is
+            # always either both present or both absent.
+            "attention_since": quote.on_hold_at.date() if quote.on_hold_at else None,
             # A job deliberately paused is not an expired quote — On Hold
             # is a real, explicit state someone chose, and its clock is
             # frozen on purpose.
@@ -8058,6 +8284,10 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
             next_action, action_button, action_target = "Follow up with customer", "FOLLOW UP", "job_detail"
             if days_quiet >= QUOTE_STALE_DAYS:
                 attention_priority, attention_label = "notice", "Follow up"
+                # stale_since, not created_at — the same clock this
+                # branch already measures staleness with, so "waiting 9
+                # days" always agrees with why the flag appeared.
+                attention_since = stale_since
     elif ws == "accepted":
         # Booking visibility fix (confirmed Aug 2026, Master Workflow
         # proposal §01/§05/§07) — REAL GAP FIXED, not a new field.
@@ -8079,9 +8309,16 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
             next_action = f"Confirm installation — {quote.installation_date.strftime('%d %b')} proposed"
             action_button, action_target = "CONFIRM BOOKING", "job_detail"
             attention_priority, attention_label = "warning", "Confirm booking"
+            attention_since = quote.accepted_at.date() if quote.accepted_at else quote.created_at.date()
         else:
             next_action, action_button, action_target = "Book installation", "BOOK INSTALLATION", "job_detail"
             attention_priority, attention_label = "critical", "Book installation"
+            # Waiting to be booked since the customer said yes.
+            # accepted_at is set once, exactly at QUOTED -> ACCEPTED, and
+            # survives a later hand-correction of workflow_status — so
+            # it's the honest start of the wait. created_at is the
+            # fallback for rows accepted before that field existed.
+            attention_since = quote.accepted_at.date() if quote.accepted_at else quote.created_at.date()
     elif ws == "scheduled":
         # Three real states here, not two (confirmed directly): ordered
         # and physically received/on-hand are genuinely different events
@@ -8098,12 +8335,20 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
         # forgotten. Short-circuits BOTH the ordered and received checks
         # below — using stock on hand means there's nothing left to wait
         # on for materials at all, same as if it had already arrived.
+        # A scheduled job has been waiting for its prep since it was
+        # booked — installation_confirmed_date is set inside
+        # schedule_quote() together with the flip to "scheduled", so it
+        # is the real start of every wait in this branch. Computed once
+        # here rather than repeated in each arm below.
+        booked_since = quote.installation_confirmed_date or (quote.accepted_at.date() if quote.accepted_at else quote.created_at.date())
         if quote.installation_date and quote.installation_date == today + timedelta(days=1):
             next_action, action_button, action_target = "Prepare job", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Upcoming"
+            attention_since = booked_since
         elif not materials_ordered and not quote.materials_not_needed:
             next_action, action_button, action_target = "Prepare / order materials", "PREPARE JOB", "job_detail"
             attention_priority, attention_label = "warning", "Materials required"
+            attention_since = booked_since
         elif not quote.ready_for_installation and not quote.materials_not_needed:
             next_action, action_button, action_target = "Confirm materials received", "PREPARE JOB", "job_detail"
             # Job Detail / Needs Attention disagreement (confirmed Aug
@@ -8122,19 +8367,37 @@ def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = Fa
             # job in this genuinely different state can never look
             # identical to one where materials haven't been ordered yet.
             attention_priority, attention_label = "warning", "Confirm receipt"
+            attention_since = booked_since
         else:
             next_action, action_button, action_target = "Complete installation", "OPEN JOB", "job_detail"
     elif ws == "completed":
         if not invoiced:
             next_action, action_button, action_target = "Invoice customer", "CREATE INVOICE", "print_invoice"
             attention_priority, attention_label = "warning", "Invoice"
+            # Waiting to be invoiced since the work was finished.
+            attention_since = quote.completion_date or (quote.accepted_at.date() if quote.accepted_at else quote.created_at.date())
         elif not paid:
             next_action, action_button, action_target = "Receive payment", "LOG PAYMENT", "job_detail"
+            # "Log payment" (confirmed Sept 2026) — see this function's
+            # own docstring for why this branch carried no flag at all
+            # before, and why order_overdue_days is the right gate.
+            # Counted from the invoice, which is the moment the customer
+            # was actually asked for the money; a job invoiced today is
+            # not overdue and is deliberately left unflagged (with its
+            # next_action still shown on the row, exactly as before).
+            invoiced_since = quote.invoice_sent_date
+            if invoiced_since and (today - invoiced_since).days >= overdue_days:
+                attention_priority, attention_label = "warning", "Log payment"
+                attention_since = invoiced_since
         # invoiced and paid -> job fully closed out, nothing left to prompt
 
     return {
         "next_action": next_action, "action_button": action_button, "action_target": action_target,
         "attention_priority": attention_priority, "attention_label": attention_label,
+        # Whichever clock the branch above actually started — see the
+        # docstring. Always None when attention_priority is None, so a
+        # row that needs nothing never carries a stray waiting-time.
+        "attention_since": attention_since,
         # One place computes expiry (here), so the Order Index badge,
         # the stage tiles and the sort order can never disagree about
         # which quotes are dead.
@@ -8354,6 +8617,124 @@ def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dic
         "discount_amount": round(discount_amount, 2), "total_ex_vat": round(total_ex_vat, 2),
         "total_incl_vat": round(total_incl_vat, 2), "deposit_amount": round(deposit_amount, 2),
         "balance_amount": round(balance_amount, 2),
+    }
+
+
+def _quote_payment_state(quote: "Quote", totals: dict) -> dict:
+    """Paid / Outstanding, as REAL structured fields (confirmed Sept
+    2026, Order Index Redesign brief §3 — "should be real structured
+    fields pulled consistently across every job type... not per-status
+    custom text").
+
+    This is now the ONE place that decides what a job has been paid and
+    what it still owes. It replaces four separate client-side helpers
+    that each reached into the raw date/amount fields on their own
+    (jobOutstanding(), jobDepositSettled(), jobDepositNotRequired() and
+    orderIndexFinalPaymentHtml(), all order-index.js) — the Order Index
+    rows, the stage tiles and Job Detail's own status tiles each read a
+    different one of those, which is exactly the duplication that let
+    the tiles quietly understate themselves by a whole deposit before.
+
+    What this can and cannot represent, stated honestly: Bolton records
+    payment as TWO MILESTONES, not a ledger — deposit_paid_date (with
+    the real figure in actual_deposit_amount when it differs from the
+    percentage) and final_payment_date. A client who has part-paid a
+    deposit is representable only through actual_deposit_amount. A
+    proper payment ledger is separate work and is deliberately not
+    invented here — every figure below comes from a field a human
+    actually recorded.
+
+    deposit_required is exported rather than re-derived by callers for
+    the same one-source-of-truth reason: deposit_pct == 0 with no
+    recorded actual amount is the real "no deposit on this job" shape
+    (confirmed against _quote_totals() above, and settable per job).
+    "Settled" is deliberately not the same as "paid" — a job with no
+    deposit due has nothing to pay and owes nothing on it.
+    """
+    deposit_required = not (quote.deposit_pct == 0 and quote.actual_deposit_amount is None)
+    deposit_settled = bool(quote.deposit_paid_date) or not deposit_required
+    total = totals["total_incl_vat"]
+    paid = 0.0
+    if quote.deposit_paid_date:
+        paid += totals["deposit_amount"]
+    if quote.final_payment_date:
+        # The balance, plus — on a job that was paid off in full without
+        # a deposit ever being recorded — the deposit portion too, since
+        # nothing is outstanding on a job whose final payment has landed.
+        paid += totals["balance_amount"] if deposit_settled else total
+    paid = min(round(paid, 2), total)
+    return {
+        "amount_paid": paid,
+        "amount_outstanding": round(total - paid, 2),
+        "deposit_required": deposit_required,
+        "deposit_settled": deposit_settled,
+    }
+
+
+def _blinds_count(lines: list) -> int:
+    """Number of actual blinds on a quote. NULL blind_qty means one —
+    see QuoteLineItem.blind_qty's own comment for why (one line per
+    blind from add_blinds_line(), and an imported line whose sheet
+    stated no quantity really is one blind)."""
+    return sum(int(l.blind_qty or 1) for l in lines if l.category == "blinds")
+
+
+def _scope_summary(lines: list, total_m2: float, types: list) -> dict:
+    """Type + quantity, as an ADAPTABLE summary rather than a fixed
+    column (confirmed Sept 2026, Order Index Redesign brief §2 —
+    "Flooring and blinds jobs have fundamentally different units (m² vs.
+    blind count), so this needs to render as an adaptable summary
+    field, not a fixed column type").
+
+    Returns structure, never a pre-formatted row of text: `parts` is
+    every real unit on the job, `headline` is the one worth reading
+    first. A mixed flooring+blinds job genuinely has two quantities in
+    two different units and this says so, instead of picking one and
+    silently dropping the other.
+
+    Ordering of `parts` is the job's own significance order (floor
+    first, then blinds, then the trims/stairs that accompany them) —
+    NOT largest-number-first, which would rank 113 valance brackets
+    above 142 m² of vinyl.
+
+    total_m2 and `types` are passed in rather than recomputed: both
+    already exist on this row for other consumers (calendar.js reads
+    flooring_types), and total_m2 in particular follows the m² rule the
+    m² KPIs already use — material flooring lines only, because a
+    screeded job carries a material line AND a screed line at the
+    identical area and counting both doubles it.
+    """
+    parts = []
+    if total_m2:
+        floor_types = [t for t in types if t not in ("Blinds",)]
+        parts.append({
+            "unit": "m2", "quantity": total_m2,
+            "text": f"{total_m2:g} m²" + (f" · {', '.join(floor_types)}" if floor_types else ""),
+        })
+    blinds = _blinds_count(lines)
+    if blinds:
+        # Mechanism/product name where every blind on the job shares one
+        # (e.g. "Roller Sunshade"); left off a job mixing several rather
+        # than naming just the first one, which would be a false claim
+        # about the rest.
+        names = {(l.product_name or "").strip() for l in lines if l.category == "blinds" and (l.product_name or "").strip()}
+        label = names.pop() if len(names) == 1 else ""
+        parts.append({
+            "unit": "blinds", "quantity": blinds,
+            "text": f"{blinds} blind{'s' if blinds != 1 else ''}" + (f" · {label}" if label else ""),
+        })
+    trim_lm = round(sum(l.length_m or 0.0 for l in lines if l.category in ("trim", "skirting")), 2)
+    if trim_lm:
+        parts.append({"unit": "lm", "quantity": trim_lm, "text": f"{trim_lm:g} lm trim"})
+    stairs = sum(int(l.num_stairs or 0) for l in lines if l.category == "stairwell")
+    if stairs:
+        parts.append({"unit": "stairs", "quantity": stairs, "text": f"{stairs} stair{'s' if stairs != 1 else ''}"})
+    return {
+        "parts": parts,
+        "headline": parts[0]["text"] if parts else "",
+        "unit": parts[0]["unit"] if parts else None,
+        "quantity": parts[0]["quantity"] if parts else None,
+        "types": types,
     }
 
 
@@ -8632,6 +9013,13 @@ def create_quote(client_name: str, sales_owner: str, branch: str = "gansbaai",
             discount_pct=discount_pct,
             deposit_pct=deposit_pct,
             site_address=site_address,
+            # Area / suburb (confirmed Sept 2026, Order Index Redesign
+            # brief §4) — proposed from the address the new quote starts
+            # with, so a job created from a client who already has an
+            # address arrives on the Order Index already placed. "" when
+            # nothing matches, which the screen reports rather than
+            # guessing at. Fully editable afterwards on Job Detail.
+            area=_derive_area(site_address, get_settings(session, tenant_id).known_areas),
             tenant_id=tenant_id,
         )
         session.add(quote)
@@ -8713,7 +9101,7 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
                           final_payment_method: str = None, installer_team: str = None,
                           workflow_status: str = None, actual_deposit_amount: float = None,
                           clear_actual_deposit_amount: bool = False, installation_notes: str = None,
-                          deposit_pct: float = None,
+                          deposit_pct: float = None, area: str = None,
                           tenant_id: str = Depends(get_current_tenant),
                           username: str = Depends(get_current_username)):
     """Update a quote's own details — client name, sales owner, branch,
@@ -8821,6 +9209,22 @@ def update_quote_details(quote_id: int, client_name: str = None, client_id: int 
             quote.description = description
         if site_address is not None:
             quote.site_address = site_address
+        # Area / suburb (confirmed Sept 2026, Order Index Redesign brief
+        # §4). An explicitly-sent value always wins — including an
+        # explicit blank, which is a real "this guess was wrong, clear
+        # it" the form has to be able to express. Otherwise the address
+        # just saved is used to propose one, but ONLY while the field is
+        # still empty: a hand-corrected area must never be silently
+        # overwritten by a later edit to the address it was derived
+        # from. Same derive-once-then-defer rule as the startup backfill.
+        if area is not None:
+            quote.area = area.strip()
+        elif site_address is not None and not (quote.area or "").strip():
+            fallback_addr = quote.site_address or ""
+            if not fallback_addr.strip() and quote.client_id:
+                linked = session.get(Client, quote.client_id)
+                fallback_addr = (linked.address or "") if linked and linked.tenant_id == tenant_id else ""
+            quote.area = _derive_area(fallback_addr, get_settings(session, tenant_id).known_areas)
         if installer_team is not None:
             quote.installer_team = installer_team
         if installation_notes is not None:
@@ -11784,7 +12188,16 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
             # Addendum) — same engine list_quotes() uses, so the Job
             # Detail screen's own action button always agrees with
             # whatever the Order Index row showed to get here.
-            "workflow": _job_workflow_info(quote, date.today(), materials_ordered_flag, latest_follow_up.follow_up_date if latest_follow_up else None),
+            "workflow": _job_workflow_info(quote, date.today(), materials_ordered_flag,
+                                            latest_follow_up.follow_up_date if latest_follow_up else None,
+                                            settings.order_overdue_days),
+            # Paid / Outstanding (confirmed Sept 2026, Order Index
+            # Redesign brief §3) — the SAME helper the Order Index rows
+            # and stage tiles read, so Job Detail's own payment strip can
+            # never disagree with the list that linked here. Replaces the
+            # deposit-state test this screen used to make for itself in
+            # renderStatusTilesHtml() (order-index.js).
+            **_quote_payment_state(quote, totals),
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # exposed directly, not just folded into next_action's prose,
             # so the frontend can show a clean derived status line
@@ -12280,7 +12693,14 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
     Customer, Job number, and Site"), alongside the pre-existing client
     name / quote # / description match."""
     with Session(engine) as session:
-        VAT_PCT = get_settings(session, tenant_id).vat_pct
+        # Kept as the whole settings row rather than just vat_pct
+        # (confirmed Sept 2026) — order_overdue_days is now read from it
+        # too, for the "Log payment" attention flag, and fetching the
+        # same row twice in one request would be the start of exactly
+        # the two-sources-of-truth drift this endpoint keeps guarding
+        # against.
+        settings = get_settings(session, tenant_id)
+        VAT_PCT = settings.vat_pct
         tt_usernames = _trusted_tester_usernames(session, tenant_id)
         stmt = select(Quote).where(Quote.tenant_id == tenant_id)
         # Price Check (confirmed Aug 2026, New Quote Screen brief §3) —
@@ -12362,6 +12782,18 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
                 select(FlooringProduct.id, FlooringProduct.flooring_category).where(FlooringProduct.tenant_id == tenant_id)
             ).all()
         }
+        # Order Index Redesign (confirmed Sept 2026, brief §2 — "Address:
+        # always visible on the row"). One query for every client's
+        # address, same shape as the three lookups above; this endpoint
+        # never joined Client at all before, and the row genuinely needs
+        # it — Quote.site_address is optional and blank on most rows, so
+        # without the fallback the new address line would be empty on
+        # exactly the jobs someone most needs to place.
+        client_address_by_id = {
+            cid: addr for cid, addr in session.exec(
+                select(Client.id, Client.address).where(Client.tenant_id == tenant_id)
+            ).all()
+        }
         result = []
         for q in quotes:
             lines = session.exec(select(QuoteLineItem).where(QuoteLineItem.quote_id == q.id, QuoteLineItem.tenant_id == tenant_id)).all()
@@ -12413,7 +12845,8 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # be built client-side from this one response, no second
             # request.
             row_materials_ordered = _materials_ordered_for_quote(session, q.id, tenant_id)
-            d.update(_job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id)))
+            d.update(_job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
+                                         settings.order_overdue_days))
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered
@@ -12429,6 +12862,21 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
                 l.quantity_m2 or 0.0 for l in lines
                 if l.category == "flooring" and l.flooring_pricing_type == "material"
             ), 2)
+            # ---------- Order Index Redesign (confirmed Sept 2026) ----------
+            # Address, always on the row (brief §2). site_address is the
+            # real install site and wins when set; the client's own
+            # address is the fallback, marked as such via
+            # job_address_source rather than passed off as a confirmed
+            # site — a delivery address that was never actually checked
+            # is exactly the thing an installer must not be misled about.
+            site = (q.site_address or "").strip()
+            client_addr = (client_address_by_id.get(q.client_id) or "").strip() if q.client_id else ""
+            d["job_address"] = site or client_addr
+            d["job_address_source"] = "site" if site else ("client" if client_addr else None)
+            # Paid / Outstanding as real structured fields (brief §3) —
+            # one helper, shared with get_quote(), replacing four
+            # client-side money helpers. See _quote_payment_state().
+            d.update(_quote_payment_state(q, totals))
             types = []
             for l in lines:
                 label = None
@@ -12443,5 +12891,10 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
                 if label and label not in types:
                     types.append(label)
             d["flooring_types"] = types
+            # Type + quantity, adaptable across job types (brief §2) —
+            # lives in Quick View, not on the row, to keep the main list
+            # scannable. Reuses total_m2 and flooring_types computed just
+            # above rather than recomputing either. See _scope_summary().
+            d["scope_summary"] = _scope_summary(lines, d["total_m2"], types)
             result.append(d)
         return result
