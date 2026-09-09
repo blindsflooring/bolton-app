@@ -137,13 +137,7 @@
   .job-cat-blinds   { background: #e7edf7; color: #2f4a75; }
   .job-cat-flooring { background: #eaf3ef; color: #2c5c48; }
   .job-cat-mixed    { background: #f3eef7; color: #543f6b; }
-  .oi-final-payment { font-size: 10.5px; font-weight: 700; color: var(--teal); }
   .oi-final-payment-warn { color: var(--coral); }
-  .stage-tile.stage-quoted           { background: #eef2f7; border-left-color: #94a8bf; }
-  .stage-tile.stage-accepted         { background: #e9f3f2; border-left-color: #7fb3ae; }
-  .stage-tile.stage-installing       { background: #f5f1e7; border-left-color: #c9b184; }
-  .stage-tile.stage-awaiting_payment { background: #f0eef5; border-left-color: #a79cc4; }
-  .stage-tile.stage-archive          { background: #f1f1f1; border-left-color: #b7b7b7; }
   .quote-builder-layout { display: block; }
   @media (min-width: 900px) {
     body.quote-builder-active .quote-builder-layout {
@@ -797,42 +791,13 @@
     border: 1px solid var(--border); font-size: 12.5px; font-weight: 700; color: var(--navy);
   }
 
-  /* Needs Attention groups, brief §5. Scoped to .attn-group so the
-     .attention-item rules above are untouched — the Home screen's own
-     leads/to-dos list reuses them and must keep rendering exactly as it
-     does today. */
-  .attn-group { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: white; }
-  .attn-group-head {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 7px 12px; background: var(--bg, #f5f6f8); border-left: 4px solid;
-  }
-  .attn-group-head.priority-critical { border-left-color: var(--coral); }
-  .attn-group-head.priority-warning { border-left-color: #d99a1f; }
-  .attn-group-head.priority-notice { border-left-color: #c7b642; }
-  .attn-group-title { font-family: 'Poppins', sans-serif; font-size: 12.5px; font-weight: 800; color: var(--navy); }
-  .attn-group-count {
-    font-size: 11px; font-weight: 800; color: var(--ink-soft, #6b7280);
-    background: white; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-  }
-  /* Items inside a group drop the rounding/left bar the standalone
-     version carries — the group header above already states the
-     priority, and repeating it on every row was the visual noise the
-     grouping exists to remove. */
-  .attn-group .attention-item { border-radius: 0; border-left: none; background: white; border-top: 1px solid var(--border); }
-  .attn-group .attention-item:hover { background: var(--bg, #f5f6f8); filter: none; }
-  .attn-ref { color: var(--ink-soft, #6b7280); font-weight: 600; }
+  /* The Needs Attention group rules that lived here are gone (Sept
+     2026, tile-first Order Index) — that panel came off the Order Index
+     entirely. The .attention-item / .attn-flag / .attn-detail rules
+     ABOVE deliberately stay: Home's own leads & to-dos list renders
+     with those exact classes and is unaffected. */
   /* Days waited — fixed width so the numbers form a readable column
      down the group rather than jittering with each row's name length. */
-  .attn-wait {
-    flex: 0 0 auto; min-width: 38px; text-align: center;
-    font-family: 'Poppins', sans-serif; font-size: 11.5px; font-weight: 800;
-    color: var(--navy); background: var(--bg, #f0f2f5); border-radius: 6px; padding: 2px 6px;
-  }
-  .attn-group-more {
-    display: block; width: 100%; padding: 7px; border: none; border-top: 1px solid var(--border);
-    background: white; color: var(--teal); font-size: 12px; font-weight: 700; cursor: pointer;
-  }
-  .attn-group-more:hover { background: var(--bg, #f5f6f8); }
 
   /* Blinds vs Flooring at a glance (confirmed Sept 2026) — a coloured
      left edge on the row's leading cell. Same three hues the .job-cat
@@ -890,7 +855,6 @@
     color: var(--teal); background: white;
   }
   .oi-contact-btn:hover { border-color: var(--teal); background: var(--teal); color: white; }
-  .attn-contact { flex: 0 0 auto; }
   .oi-contact-box { max-width: 420px; }
   .oi-contact-lines { display: flex; flex-direction: column; gap: 7px; }
   .oi-contact-line { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
@@ -1009,15 +973,6 @@
     .oi-tile-count { font-size: 26px; }
   }
 
-  .next-action-btn {
-    background: none; border: 2px solid var(--teal); color: var(--teal);
-    font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;
-    border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap;
-    text-transform: uppercase; letter-spacing: 0.02em;
-  }
-  .next-action-btn:hover { background: var(--teal); color: white; }
-  .summary-counts { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink-soft, #6b7280); margin-bottom: 4px; }
-  .summary-counts b { color: var(--navy); font-size: 15px; }
   .attention-list { display: flex; flex-direction: column; gap: 8px; }
   .attention-item {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -1041,7 +996,9 @@
   /* Mobile Rendering: Order Index Card Overlap brief (confirmed Aug
      2026) — the exact risk the min-width:0 comment above already
      predicted, now actually reproduced (real phone screenshot,
-     393px viewport): .attn-flag and .next-action-btn (white-space:
+     393px viewport): .attn-flag and .next-action-btn — the latter
+     retired Sept 2026 with the tile-first redesign; this stays as the
+     record of why .attention-item stacks on a phone — (white-space:
      nowrap) neither shrink, squeezing .attn-detail into an
      unreadable ~30px-wide wrapped column between them — reads as
      the button sitting on/behind the text, confirmed via real
