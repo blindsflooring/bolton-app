@@ -1657,6 +1657,13 @@ function renderLanding() {
   // by renderLandingTiles() alone.
   if (landingView !== 'tiles') document.body.classList.remove('home-active');
   if (landingView !== 'installCalendar') document.body.classList.remove('calendar-active');
+  // Order Index Redesign (confirmed Sept 2026) — same per-screen
+  // mechanism as home-active/quote-builder-active above, added and
+  // removed here rather than inside renderOrderIndex() so navigating
+  // AWAY always clears it, including via the browser back button.
+  // See body.order-index-active (styles.css) for why this screen needs
+  // more than the shared 900px reading width.
+  document.body.classList.toggle('order-index-active', landingView === 'orders');
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'blinds') return renderBlindsScreen(el);
@@ -5228,7 +5235,19 @@ async function renderBusinessSettings(el) {
         <div class="field"><label>Default deposit %</label><input id="bs_deposit_pct" type="number" step="1" value="${(s.default_deposit_pct*100).toFixed(0)}" ${ro}></div>
         <div class="field"><label>Screed bag overage rate (R, incl. VAT)</label><input id="bs_bag_overage" type="number" step="0.01" value="${s.bag_overage_rate}" ${ro}></div>
         <div class="field"><label>Default labour rate (R/m²)</label><input id="bs_labour_rate" type="number" step="0.01" value="${s.default_labour_rate_per_m2}" ${ro}></div>
-        <div class="field"><label>Order Index overdue threshold (days)</label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
+        <!-- Now genuinely in use (confirmed Sept 2026, Order Index
+        Redesign brief §5) — this setting was editable here while
+        NOTHING read it, orphaned when computeOrderStatus() was retired.
+        It gates the "Log payment" Needs Attention flag: an invoiced job
+        is chased once it has been unpaid for this many days. -->
+        <div class="field"><label>Chase unpaid invoices after (days) <span class="adj">days since the invoice was sent before a job appears under "Log payment"</span></label><input id="bs_overdue_days" type="number" step="1" value="${s.order_overdue_days}" ${ro}></div>
+        <!-- Known areas / suburbs (confirmed Sept 2026, Order Index
+        Redesign brief §4) — the list an address is matched against to
+        propose a job's Area. Editable here rather than in code, because
+        which suburbs this business works in is a business fact, not a
+        technical one. Changing it never rewrites an area already set on
+        a job: derivation only ever fills a blank one. -->
+        <div class="field" style="grid-column: span 2;"><label>Known areas / suburbs <span class="adj">comma-separated — used to work out each job's Area from its address, and to filter the Order Index by area</span></label><input id="bs_known_areas" value="${(s.known_areas || '').replace(/"/g, '&quot;')}" placeholder="Gansbaai, Hermanus, Stanford, ..." ${ro}></div>
         <!-- Sessions reset every few hours (confirmed Sept 2026, Burgert:
         "Get all logins to reset every few hours"). A setting rather than
         a constant because "a few hours" is a judgement about how the
@@ -5323,6 +5342,7 @@ async function saveBusinessSettings() {
     bag_overage_rate: parseFloat(document.getElementById('bs_bag_overage').value),
     default_labour_rate_per_m2: parseFloat(document.getElementById('bs_labour_rate').value),
     order_overdue_days: parseInt(document.getElementById('bs_overdue_days').value),
+    known_areas: document.getElementById('bs_known_areas').value,
     session_hours: parseFloat(document.getElementById('bs_session_hours').value),
     // Multi-tenant groundwork Part 2 (confirmed Aug 2026) — stairwell/screed defaults, now settings-driven:
     flooring_margin_warn_threshold: parseFloat(document.getElementById('bs_margin_threshold').value) / 100,
