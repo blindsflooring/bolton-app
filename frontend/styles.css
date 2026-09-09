@@ -799,6 +799,83 @@
   }
   .attn-group-more:hover { background: var(--bg, #f5f6f8); }
 
+  /* Blinds vs Flooring at a glance (confirmed Sept 2026) — a coloured
+     left edge on the row's leading cell. Same three hues the .job-cat
+     badge already uses, so the stripe and the badge can never say
+     different things; the stripe is just the version you can read
+     without focusing on it. Costs no table width.
+     A quote with no lines yet gets no stripe at all (.oi-cat-none) —
+     the badge already refuses to make a claim about an empty quote and
+     this follows it rather than inventing a neutral-grey "category". */
+  /* Same three hues as the badge, but at real chroma. The badge's own
+     colours are deliberately low-saturation TEXT colours (#2c5c48 /
+     #2f4a75 / #543f6b) and, checked in a real browser, a 4px line in
+     those reads as three near-identical dark marks — which fails the
+     one thing this is for. Brighter siblings of the same hues: still
+     obviously the flooring green / blinds blue / mixed purple, but
+     actually separable without looking directly at them.
+     Colour is never the ONLY signal — the badge beside it still says
+     "Blinds" or "Flooring" in words, which is what keeps this readable
+     for anyone who can't separate the hues. */
+  .oi-cat-flooring { box-shadow: inset 4px 0 0 #1f9d63; }
+  .oi-cat-blinds   { box-shadow: inset 4px 0 0 #3d7dd8; }
+  .oi-cat-mixed    { box-shadow: inset 4px 0 0 #8b5fc9; }
+  td.oi-client-cell.oi-cat-flooring,
+  td.oi-client-cell.oi-cat-blinds,
+  td.oi-client-cell.oi-cat-mixed { padding-left: 12px; }
+
+  /* Still-to-install workload strip (confirmed Sept 2026) — one quiet
+     line under the tiles, not a sixth tile: it answers a different
+     question (how much WORK) from the tiles above it (how many jobs,
+     how much MONEY), and giving it tile styling would imply it belongs
+     to that row of figures. */
+  .oi-workload {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    padding: 7px 11px; margin-bottom: 12px; border-radius: 8px;
+    background: var(--bg, #f5f6f8); border: 1px solid var(--border); font-size: 12.5px;
+  }
+  .oi-workload-label {
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft, #6b7280);
+  }
+  /* The figures carry the same category colour as the row stripes, so
+     "which of these two numbers is blinds" needs no legend. */
+  .oi-workload-fig { padding-left: 8px; box-shadow: none; border-left: 3px solid; color: var(--navy); }
+  .oi-workload-fig.oi-cat-flooring { border-left-color: #1f9d63; }
+  .oi-workload-fig.oi-cat-blinds   { border-left-color: #3d7dd8; }
+  .oi-workload-fig b { font-size: 15px; font-weight: 800; }
+  .oi-workload-sep { color: var(--ink-faint, #8A93A0); }
+  .oi-workload-jobs { font-size: 11.5px; color: var(--ink-soft, #6b7280); }
+
+  /* Client contact card (confirmed Sept 2026) — reuses the Client
+     Picker's overlay/box shell; only the contents are new. */
+  .oi-contact-btn {
+    display: inline-block; text-decoration: none; font-size: 14px; line-height: 1;
+    padding: 4px 8px; margin-right: 6px; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--teal); background: white;
+  }
+  .oi-contact-btn:hover { border-color: var(--teal); background: var(--teal); color: white; }
+  .attn-contact { flex: 0 0 auto; }
+  .oi-contact-box { max-width: 420px; }
+  .oi-contact-lines { display: flex; flex-direction: column; gap: 7px; }
+  .oi-contact-line { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+  .oi-contact-label {
+    flex: 0 0 66px; font-family: 'Poppins', sans-serif; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-soft, #6b7280);
+  }
+  .oi-contact-line a { color: var(--teal); }
+  .oi-contact-channels { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .oi-contact-action {
+    flex: 1 1 auto; text-align: center; text-decoration: none; white-space: nowrap;
+    padding: 9px 12px; border-radius: 7px; border: 2px solid var(--teal); color: var(--teal);
+    font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 12.5px;
+  }
+  .oi-contact-action:hover { background: var(--teal); color: white; }
+  .oi-contact-action.wa { border-color: #25D366; color: #128C43; }
+  .oi-contact-action.wa:hover { background: #25D366; color: white; }
+  .oi-contact-notes { margin-top: 12px; font-size: 12.5px; color: var(--ink-soft, #6b7280); }
+  .oi-contact-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
   .next-action-btn {
     background: none; border: 2px solid var(--teal); color: var(--teal);
     font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;

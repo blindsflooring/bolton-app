@@ -761,11 +761,7 @@ async function buildPrintDocHtml(quoteId, docType) {
   // to NO number (wa.me/?text=... still opens WhatsApp's own contact
   // picker with the message pre-filled) rather than risk guessing wrong
   // and pointing at a stranger's chat.
-  const waDigitsRaw = (client && client.phone) ? client.phone.replace(/[^0-9]/g, '') : '';
-  const waPhone = (client && client.phone && client.phone.trim().startsWith('+')) ? waDigitsRaw
-    : (waDigitsRaw.startsWith('27') && waDigitsRaw.length >= 11) ? waDigitsRaw
-    : (waDigitsRaw.startsWith('0') && waDigitsRaw.length === 10) ? ('27' + waDigitsRaw.slice(1))
-    : '';
+  const waPhone = saWhatsAppNumber(client && client.phone);
   const waLink = `https://wa.me/${waPhone}?text=${waText}`;
 
   const rows = data.lines.map(l => {
@@ -1307,6 +1303,29 @@ document.addEventListener('keydown', (e) => {
 // than an exact re-match of the original text (even a well-intentioned
 // note). This replaces that with a real search-and-SELECT picker —
 // the only way out is clicking an actual Client record, so the result
+// South African phone -> WhatsApp number (extracted Sept 2026, Order
+// Index client contact card). This logic was written inline inside the
+// print-document builder below and is now needed by a second caller —
+// extracting it rather than copying it is the same discipline that
+// retired the four duplicated money helpers on the Order Index.
+//
+// Numbers here are stored as free text, usually local format (e.g.
+// "082 555 1234"); wa.me needs international format with no leading 0.
+// Only converts when the local-SA-mobile shape is unambiguous (10
+// digits starting with 0). Anything else returns '' rather than a
+// guess — wa.me/?text=... still opens WhatsApp's own contact picker
+// with the message pre-filled, which is a mild inconvenience, whereas
+// guessing wrong opens a stranger's chat with a client's job details
+// already typed into it.
+function saWhatsAppNumber(phone) {
+  const digits = phone ? String(phone).replace(/[^0-9]/g, '') : '';
+  if (!digits) return '';
+  if (String(phone).trim().startsWith('+')) return digits;
+  if (digits.startsWith('27') && digits.length >= 11) return digits;
+  if (digits.startsWith('0') && digits.length === 10) return '27' + digits.slice(1);
+  return '';
+}
+
 // is always a validated client_id, never a name string that might or
 // might not match one. Promise-based so a caller just does
 // `const picked = await openClientPicker(...); if (!picked) return;`
