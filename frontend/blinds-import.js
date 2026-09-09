@@ -35,7 +35,17 @@ let blindsImportReplaceId = null;
 // Quoting a blind by hand is still one click away, because the price
 // book route has to stay open for a one-off that never got a sheet.
 async function renderBlindsScreen(el) {
-  const owner = currentRole() === 'owner';
+  // Who may import (confirmed Sept 2026, Burgert: "I need Madri and
+  // Ryno also to be able to add excell quotes for blinds onto the
+  // system"). Owner + Admin + Sales — the same three roles the backend's
+  // own require_quote_creator() allows, and the Admin role's definition
+  // in models.py already listed "imports" among what it is for, so this
+  // closes a gap rather than widening the role.
+  //
+  // This is the visible half only; the real control is server-side, on
+  // both the preview and the commit endpoint. Trusted testers are
+  // excluded there for a specific reason — see require_quote_creator().
+  const canImport = ['owner', 'admin', 'sales'].includes(currentRole());
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span>
     <div class="card">
@@ -45,7 +55,7 @@ async function renderBlindsScreen(el) {
         real job \u2014 client, branch and every line \u2014 without retyping any of it.
       </p>
     </div>
-    ${owner ? blindsImportCardHtml() : ''}
+    ${canImport ? blindsImportCardHtml() : ''}
     <div class="card">
       <h2>Quote blinds by hand</h2>
       <p class="muted">
@@ -141,8 +151,14 @@ function renderBlindsImportPreview() {
   // The rep. The template's Rep cell is a formula pulling the client
   // reference (the brief's own open item), so it cannot attribute
   // commission — this asks, rather than guessing or leaving it blank.
+  // rep_options is scoped server-side: a person-scoped rep (Ryno) gets
+  // exactly himself, Owner/Admin get everyone. When there is only one
+  // real choice, pre-select it and say so rather than presenting a
+  // "— Choose the rep —" dropdown with a single item, which reads as a
+  // decision when there isn't one.
+  const onlyRep = d.rep_options.length === 1 ? d.rep_options[0] : null;
   const repOpts = d.rep_options.map(u =>
-    `<option value="${u.username}">${u.display_name || u.username}</option>`).join('');
+    `<option value="${u.username}"${onlyRep ? ' selected' : ''}>${u.display_name || u.username}</option>`).join('');
 
   const replaceHtml = d.replaces.length ? `
     <div class="import-replace">
@@ -222,13 +238,15 @@ function renderBlindsImportPreview() {
     <div class="field" style="max-width:320px;">
       <label>Rep this quote belongs to <span class="adj">(required — for commission)</span></label>
       <select id="blindsImportRep" onchange="renderBlindsImportAction()">
-        <option value="">— Choose the rep —</option>
+        ${onlyRep ? '' : '<option value="">— Choose the rep —</option>'}
         ${repOpts}
       </select>
       <div class="muted" style="font-size:11px; margin-top:4px;">
-        ${d.rep.usable
-          ? `The sheet's Rep cell reads "${d.rep.raw}" — confirm it here anyway.`
-          : `Not taken from the sheet: ${d.rep.reason} Until the template has a real Rep field, this has to be chosen by hand.`}
+        ${onlyRep
+          ? `Imported as ${onlyRep.display_name || onlyRep.username} — a quote you import is attributed to you.`
+          : d.rep.usable
+            ? `The sheet's Rep cell reads "${d.rep.raw}" — confirm it here anyway.`
+            : `Not taken from the sheet: ${d.rep.reason} Until the template has a real Rep field, this has to be chosen by hand.`}
       </div>
     </div>
     <div id="blindsImportAction"></div>`;
