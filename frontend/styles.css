@@ -937,6 +937,29 @@
   .oi-tile-dead .oi-tile-count, .oi-tile-dead .oi-tile-label { color: #6b7280; }
   .oi-tile-today            { background: var(--card); border-left-color: var(--teal); }
 
+  /* By Product (confirmed Sept 2026) — two tiles, each with its own
+     branch chips underneath so "Blinds in Hermanus" is one tap rather
+     than open-then-filter. The chips sit BELOW the tile, visually
+     attached to it, because they narrow that product rather than being
+     a filter over the whole dashboard. */
+  .oi-tiles-product { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); max-width: 620px; }
+  .oi-prod-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .oi-prod-wrap .oi-tile { width: 100%; }
+  /* The same two category colours the row stripes and the workload
+     figures already use, so flooring and blinds read as the same thing
+     everywhere on this screen. */
+  .oi-tile-prod-flooring { background: #eaf3ef; border-left-color: #1f9d63; }
+  .oi-tile-prod-blinds   { background: #eaeff7; border-left-color: #3d7dd8; }
+  .oi-prod-areas { display: flex; gap: 6px; }
+  .oi-prod-area {
+    flex: 1 1 0; padding: 6px 8px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--navy);
+    font-family: 'Poppins', sans-serif; font-size: 11.5px; font-weight: 700;
+  }
+  .oi-prod-area:hover { border-color: var(--teal); color: var(--teal); }
+  .oi-prod-area:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
+  .oi-prod-area-n { opacity: 0.6; font-weight: 800; margin-left: 2px; }
+
   /* Search stays on the dashboard, but typing opens a results
      drill-down rather than filtering the tiles — so the screen is still
      tiles-only until you act, and finding one job is one step. */
@@ -970,7 +993,15 @@
     /* Two-up on a phone: still one glance, no scrolling to reach the
        last tile. */
     .oi-tiles-pipeline { grid-template-columns: repeat(2, 1fr); }
+    /* Product tiles two-up as well — at one per row the dashboard grew
+       from ~860px to ~1200px on a 390px screen, which is exactly the
+       scrolling this screen exists to remove. */
+    .oi-tiles-product { grid-template-columns: repeat(2, 1fr); }
     .oi-tile-count { font-size: 26px; }
+    /* A comfortable tap target: these sit directly under a tile that is
+       also tappable, so they need to be hard to hit by accident and
+       easy to hit on purpose. */
+    .oi-prod-area { padding: 9px 6px; }
   }
 
   .attention-list { display: flex; flex-direction: column; gap: 8px; }
