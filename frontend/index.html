@@ -2205,8 +2205,20 @@ function renderTopSellersCard() {
 async function renderBusinessOverview(el) {
   await renderWithRetry(el, 'Business Overview', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Business Overview</h2><p class="muted">Loading...</p></div>`;
-  const res = await fetch(`${API}/analytics/overview`);
+  // Two fetches, deliberately (confirmed Sept 2026, "add the same
+  // product tiles to the Business Overview"). The product tiles read
+  // the SAME /quotes rows the Order Index does, through the SAME
+  // orderProductGroupHtml() — rather than adding product aggregates to
+  // /analytics/overview, which would be a second calculation of the
+  // same fact and the first thing to drift. Same parameters as the
+  // Order Index, so the two screens cannot disagree: declined included
+  // (they are real work that was quoted) and test accounts excluded.
+  const [res, quotesRes] = await Promise.all([
+    fetch(`${API}/analytics/overview`),
+    fetch(`${API}/quotes?include_declined=true&exclude_test_accounts=true`),
+  ]);
   const data = await res.json();
+  const productQuotes = await quotesRes.json().catch(() => []);
   lastAnalyticsData = data;
 
   const pct = (v) => v === null || v === undefined ? '—' : (v*100).toFixed(1) + '%';
@@ -2318,6 +2330,8 @@ async function renderBusinessOverview(el) {
          here as well as where it was actually reported, since it is the
          identical pattern on the identical screen — fixing only the
          reported instance would have left this one contradicting it. -->
+    ${Array.isArray(productQuotes) && productQuotes.length ? orderProductGroupHtml(productQuotes, money, true) : ''}
+
     <div class="tile-grid" style="margin-bottom:16px;">
       ${kpiCard('Quoted — This Month', `${data.m2_metrics.quoted.month} m²`)}
       ${kpiCard('Quoted — This Week', `${data.m2_metrics.quoted.week} m²`)}
