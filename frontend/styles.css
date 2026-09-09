@@ -937,6 +937,36 @@
   .oi-tile-dead .oi-tile-count, .oi-tile-dead .oi-tile-label { color: #6b7280; }
   .oi-tile-today            { background: var(--card); border-left-color: var(--teal); }
 
+  /* Product sections inside a list (confirmed Sept 2026) — a full-width
+     header band, not a badge, so "this block is blinds" reads without
+     looking for it. Same device the stage headers used, and the same
+     category colours the row stripes and the By Product tiles already
+     carry, so flooring is one colour everywhere on this screen. */
+  .oi-prod-section td {
+    background: var(--navy); color: #fff; padding: 7px 12px;
+    border-bottom: none;
+  }
+  .oi-prod-section-label {
+    font-family: 'Poppins', sans-serif; font-size: 12px; font-weight: 800;
+    letter-spacing: 0.04em; text-transform: uppercase;
+    border-left: 4px solid; padding-left: 8px;
+  }
+  .oi-prod-section-flooring          { border-left-color: #1f9d63; }
+  .oi-prod-section-blinds            { border-left-color: #3d7dd8; }
+  .oi-prod-section-flooring-blinds   { border-left-color: #8b5fc9; }
+  .oi-prod-section-nothing-quoted-yet{ border-left-color: #8A939C; }
+  .oi-prod-section-n { font-size: 11px; opacity: 0.7; margin-left: 10px; font-weight: 600; }
+
+  /* Raised today. The list is already newest-first, but order alone
+     does not survive a glance once the list is split into sections —
+     this says which rows are new no matter which section they land in. */
+  .oi-new-chip {
+    display: inline-block; background: var(--teal); color: #fff;
+    font-family: 'Poppins', sans-serif; font-size: 9px; font-weight: 800;
+    letter-spacing: 0.06em; border-radius: 3px; padding: 1px 5px; margin-right: 5px;
+    vertical-align: 1px;
+  }
+
   /* By Product (confirmed Sept 2026) — two tiles, each with its own
      branch chips underneath so "Blinds in Hermanus" is one tap rather
      than open-then-filter. The chips sit BELOW the tile, visually
