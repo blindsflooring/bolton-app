@@ -13074,6 +13074,16 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
         # it — Quote.site_address is optional and blank on most rows, so
         # without the fallback the new address line would be empty on
         # exactly the jobs someone most needs to place.
+        # Order sheets for every quote in ONE query (confirmed Sept 2026,
+        # two-week supplier line) — same shape as work_days_by_quote and
+        # latest_follow_up_by_quote above, and it removes a real N+1:
+        # _materials_ordered_for_quote() ran its own SELECT per row, so a
+        # 52-job Order Index made 52 extra round trips just to answer a
+        # boolean. Same answer, one query.
+        sheets_by_quote = {}
+        for sheet in session.exec(select(OrderSheet).where(OrderSheet.tenant_id == tenant_id)).all():
+            sheets_by_quote.setdefault(sheet.quote_id, []).append(sheet)
+
         client_address_by_id = {
             cid: addr for cid, addr in session.exec(
                 select(Client.id, Client.address).where(Client.tenant_id == tenant_id)
@@ -13129,7 +13139,26 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # Next Action column and the Needs Attention list can both
             # be built client-side from this one response, no second
             # request.
-            row_materials_ordered = _materials_ordered_for_quote(session, q.id, tenant_id)
+            row_sheets = sheets_by_quote.get(q.id, [])
+            row_materials_ordered = _all_sheets_placed(row_sheets)
+            # When the supplier clock actually started (confirmed Sept
+            # 2026, Burgert: "It takes 2 weeks to receive our blinds.
+            # everything under the two weeks line needs to get installed
+            # and chased").
+            #
+            # The LATEST placed_at across the job's sheets, not the
+            # earliest: a job ordered from two suppliers is only fully
+            # supplied once the last order lands, so the honest
+            # "everything should be here by" clock starts at the last one
+            # placed. Using the earliest would call a job overdue while
+            # one of its orders was legitimately still young.
+            #
+            # None until every sheet is actually placed — a half-ordered
+            # job has not started its clock, and dating it from a partial
+            # order would quietly promise stock nobody has ordered yet.
+            placed = [sh.placed_at for sh in row_sheets if sh.placed_at]
+            d["materials_ordered_at"] = (max(placed).date().isoformat()
+                                          if placed and row_materials_ordered else None)
             workflow = _job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
                                            settings.order_overdue_days)
             d.update(workflow)
