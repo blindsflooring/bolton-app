@@ -97,6 +97,7 @@ async function renderClients(el, searchTerm) {
       <br><button class="primary" id="addClientBtn" onclick="addClient()">Add Client</button>
       <p class="muted" id="addClientStatus" style="margin-top:8px;"></p>
     </div>
+    ${newClientStartQuoteCardHtml()}
   `;
   // Autofocus fix (confirmed Aug 2026, Remove Unwanted Auto-Focus
   // brief) — real bug: this used to fire unconditionally, including on
@@ -176,6 +177,33 @@ let currentClientDetailId = null;
 // record is fetched (showEditClientForm() needs that record already
 // cached — can't open the edit form before it exists).
 let pendingClientDetailOpenEdit = false;
+// New Client -> Start Quote (moved here Sept 2026, tile-first Order
+// Index). It lived on the Order Index, which is now a dashboard of
+// business state — starting a quote is an ACTION, not state, and this
+// screen already owns creating clients. Same ids and same
+// addClientAndStartQuote() handler as before, so nothing about how it
+// behaves changed; only where it lives.
+function newClientStartQuoteCardHtml() {
+  return `
+    <div class="card">
+      <h2>New Client &rarr; Start Quote</h2>
+      <p class="muted">Fill in a new client's details, then jump straight into a quote for them.</p>
+      <div class="grid">
+        <div class="field"><label>Name</label><input id="oi_cl_name" placeholder="Client name"></div>
+        <div class="field"><label>Phone</label><input id="oi_cl_phone" placeholder="082 555 1234"></div>
+        <div class="field"><label>Email</label><input id="oi_cl_email" placeholder="client@example.com"></div>
+        <div class="field"><label>Preferred branch</label>
+          <select id="oi_cl_branch">
+            <option value="gansbaai" ${defaultBranchForCurrentUser() === 'gansbaai' ? 'selected' : ''}>Gansbaai</option>
+            <option value="hermanus" ${defaultBranchForCurrentUser() === 'hermanus' ? 'selected' : ''}>Hermanus</option>
+          </select>
+        </div>
+        <div class="field" style="grid-column: span 2;"><label>Address</label><input id="oi_cl_address" placeholder="Site/delivery address"></div>
+      </div>
+      <br><button class="primary" onclick="addClientAndStartQuote()">Add Client &amp; Start Quote</button>
+    </div>`;
+}
+
 function openClientDetail(clientId, openEdit) {
   currentClientDetailId = clientId;
   pendingClientDetailOpenEdit = !!openEdit;
