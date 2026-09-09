@@ -383,7 +383,119 @@
     /* The name is already the card's title at this size — the desktop
        step up to 16.5px would over-shout it on a phone. */
     table.mobile-card-table td.oi-client-cell .oi-client-name { font-size: 15px; }
+
+    /* ===== One line per job on a phone (confirmed Sept 2026) =====
+       Burgert: "I need the lines on the order index to be collapsable
+       into a one line on the phones screen. At the moment, I need to
+       scroll down very far to see what is at hand."
+
+       Every <td> becomes a labelled line in the card layout above, and
+       the redesign took the row to nine columns — so one job was
+       filling most of a phone screen and a working list meant scrolling
+       past jobs to find jobs.
+
+       Collapsed keeps exactly two cells: the client name and the status
+       badge. The badge is the REAL one from the Status column, not a
+       copy rendered into the title cell — duplicating it would be a
+       second place for the same fact to drift, which is the thing this
+       whole redesign has been removing. */
+    table.mobile-card-table tr.oi-collapsed {
+      display: flex; align-items: center; gap: 8px; padding: 2px 12px;
+    }
+    table.mobile-card-table tr.oi-collapsed > td { display: none; }
+    table.mobile-card-table tr.oi-collapsed > td.oi-client-cell,
+    table.mobile-card-table tr.oi-collapsed > td[data-label="Status"] { display: flex; }
+    /* width:auto is load-bearing — REAL BUG, traced by measuring the
+       flex chain rather than reading the CSS. The card layout's own
+       base rule sets width:100% on EVERY <td> (that is what turns a
+       cell into a full-width labelled line). In a flex row that means
+       the status cell's flex-basis resolves to the full row width, so
+       it claimed all 306px and starved the name cell down to 8px —
+       which is why the collapsed line rendered as a chevron and a badge
+       with nothing between them. Both visible cells have to opt out of
+       that 100% for the row to share space normally. */
+    table.mobile-card-table tr.oi-collapsed > td.oi-client-cell {
+      flex: 1 1 auto; width: auto; min-width: 0;
+      flex-direction: row; align-items: center; gap: 6px;
+      padding: 9px 0; border-bottom: none;
+      /* The card layout right-aligns every cell (a labelled line puts
+         its value on the right). On the collapsed line the text IS the
+         line, so it reads left — without this a row identified only by
+         its job number rendered adrift in the middle of the row while
+         named rows sat left, which looked like two different layouts. */
+      text-align: left; justify-content: flex-start;
+    }
+    /* The stripe is the whole point of the category colour coding, so
+       it has to survive the collapse — re-drawn as a left border here
+       because the cell's own padding-left changes in this state. */
+    table.mobile-card-table tr.oi-collapsed > td.oi-client-cell { padding-left: 8px; }
+    table.mobile-card-table tr.oi-collapsed > td[data-label="Status"] {
+      flex: 0 0 auto; width: auto; padding: 0; border-bottom: none;
+    }
+    table.mobile-card-table tr.oi-collapsed > td[data-label="Status"]::before { content: none; }
+    /* Everything under the name folds away; the name itself must not
+       wrap the row onto a second line, which would defeat the point. */
+    table.mobile-card-table tr.oi-collapsed .oi-row-ref,
+    table.mobile-card-table tr.oi-collapsed .oi-row-address,
+    table.mobile-card-table tr.oi-collapsed .oi-row-area,
+    table.mobile-card-table tr.oi-collapsed .oi-row-desc,
+    table.mobile-card-table tr.oi-collapsed .oi-row-test { display: none; }
+    /* flex: 1 1 auto is load-bearing, not decoration — REAL BUG caught
+       by measuring the rendered element instead of trusting the
+       screenshot: a nowrap + overflow:hidden flex item with no grow
+       basis resolves to ZERO width, so every collapsed row rendered as
+       a chevron and a status badge with the client name invisible
+       between them. Measured 0px on all 22 rows.
+       The name is the whole point of the line, so it takes the
+       remaining space and ellipsises only when it genuinely must. */
+    table.mobile-card-table tr.oi-collapsed .oi-client-name {
+      flex: 1 1 auto; display: block; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* A quote with no client name would otherwise collapse to a bare
+       badge with nothing identifying it. Those are walk-ins and old
+       rows where the name was never captured — the job number is the
+       only identity they have, so it stays on the line for them
+       specifically, rather than being shown on every row and spending
+       width the name needs. */
+    /* The empty name span still has flex-grow, so it claimed a share of
+       the row and shoved the job number a varying distance right —
+       measured at 88-125px across rows against a steady 41px for named
+       ones, which read as ragged rather than as a deliberate layout.
+       Nothing to show, so it takes no space. */
+    table.mobile-card-table tr.oi-collapsed.oi-noname .oi-client-name { display: none; }
+    table.mobile-card-table tr.oi-collapsed.oi-noname .oi-row-ref {
+      display: block; flex: 1 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* Expanded: back to the stacked card. The expander is pinned to the
+       top-right rather than left inline — the cell is a COLUMN in this
+       state, so an inline button takes a whole line of its own above
+       the client name (seen in a real browser, not assumed). Pinning it
+       also puts collapse-again in a predictable place instead of
+       wherever the name happens to end.
+       padding-left here is not cosmetic: the category stripe is an
+       inset box-shadow on this cell's left edge, and the card layout
+       zeroes the cell's left padding — so without it the stripe is
+       drawn straight through the first characters of the text. */
+    table.mobile-card-table td.oi-client-cell { position: relative; }
+    table.mobile-card-table tr:not(.oi-collapsed) > td.oi-client-cell {
+      padding-left: 10px; padding-right: 40px;
+    }
+    table.mobile-card-table tr:not(.oi-collapsed) > td.oi-client-cell .oi-row-toggle {
+      position: absolute; right: 0; top: 10px;
+    }
+    table.mobile-card-table td.oi-client-cell .oi-row-toggle { display: inline-block; }
+    .oi-row-toggle {
+      flex: 0 0 auto; align-self: flex-start; border: 1px solid var(--border); background: white;
+      color: var(--ink-soft, #6b7280); border-radius: 5px; cursor: pointer;
+      font-size: 11px; line-height: 1; padding: 5px 7px; margin-right: 2px;
+    }
+    .oi-row-toggle:hover { border-color: var(--teal); color: var(--teal); }
   }
+  /* Desktop shows every column already — an expander there would toggle
+     nothing. Hidden outside the phone breakpoint entirely. */
+  .oi-row-toggle { display: none; }
   /* Desktop-only: kept as a class (not the removed inline style) so
      the mobile override above can cleanly turn it off below the
      breakpoint instead of fighting an inline style with !important. */

@@ -4381,6 +4381,30 @@ def require_owner(role: str = Depends(get_current_role)) -> str:
     return role
 
 
+# Roles that may bring a real, commission-bearing job into the system
+# (confirmed Sept 2026, Burgert: "I need Madri and Ryno also to be able
+# to add excell quotes for blinds onto the system").
+#
+# Owner + Admin + Sales, and deliberately NOT trusted_tester. That
+# exclusion is not a judgement about those three people — it closes a
+# real hole. Every quote a trusted tester creates is meant to be
+# excluded from KPI figures and labelled as test data, which
+# _trusted_tester_usernames() decides from Quote.sales_owner. But the
+# blinds importer asks WHO the quote belongs to and writes that name
+# into sales_owner, and the rep list deliberately excludes testers — so
+# a tester importing a sheet would necessarily attribute it to a real
+# rep, producing a quote that is test data by origin but counts in the
+# numbers by attribution. Nothing else in this codebase can produce
+# that shape, and it would be invisible once created.
+#
+# Its own guard rather than reusing require_owner's shape inline at two
+# endpoints, so "who may import" is decided in exactly one place.
+def require_quote_creator(role: str = Depends(get_current_role)) -> str:
+    if role not in (UserRole.owner, UserRole.admin, UserRole.sales):
+        raise HTTPException(403, "Your role can't import quotes.")
+    return role
+
+
 @app.post("/admin/database-backup/run-now")
 def trigger_database_backup_now(role: str = Depends(require_owner)):
     """Owner-only manual trigger — a genuinely useful standing
@@ -7252,8 +7276,8 @@ def _blinds_import_match(session: Session, tenant_id: str, parsed: dict) -> List
 
 @app.post("/admin/blinds-import/preview")
 async def preview_blinds_import(
-    file: UploadFile = File(...),
-    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+    request: Request, file: UploadFile = File(...),
+    role: str = Depends(require_quote_creator), tenant_id: str = Depends(get_current_tenant),
 ):
     """Parse one blinds quote and return what it says. Writes NOTHING -
     the same contract as import_master_spreadsheet() above. 400 on a
@@ -7276,19 +7300,35 @@ async def preview_blinds_import(
         # one on a real commission-bearing quote would be a quiet way to
         # make a job vanish from the numbers this import exists to feed.
         tt = _trusted_tester_usernames(session, tenant_id)
+        # A person-scoped rep (Ryno) can only ever import as HIMSELF
+        # (confirmed Sept 2026, opening this to Madri and Ryno).
+        # Decided here, in the query, not by disabling a dropdown:
+        #
+        #  - sales_owner is the commission-bearing field, and letting one
+        #    rep post a job onto another rep's name is not a decision the
+        #    importer should be able to make silently.
+        #  - list_quotes() filters a sales role to its own sales_owner,
+        #    so a quote Ryno attributed to Madri would vanish from his
+        #    own Order Index the instant he created it — he'd reasonably
+        #    conclude the import had failed and do it again.
+        #
+        # Owner and Admin keep the full list: Madri legitimately works
+        # across everyone's jobs (she invoices for them), which is the
+        # same reason Admin isn't in PERSON_SCOPED_ROLES.
+        only_mine = scoped_username(request)
         parsed["rep_options"] = [
             {"username": u.username, "display_name": u.display_name}
             for u in session.exec(select(User).where(
                 User.tenant_id == tenant_id, User.active == True)).all()  # noqa: E712
-            if u.username not in tt
+            if u.username not in tt and (only_mine is None or u.username == only_mine)
         ]
         return parsed
 
 
 @app.post("/admin/blinds-import/commit")
 async def commit_blinds_import(
-    sales_owner: str, file: UploadFile = File(...), replace_quote_id: Optional[int] = None,
-    role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+    request: Request, sales_owner: str, file: UploadFile = File(...), replace_quote_id: Optional[int] = None,
+    role: str = Depends(require_quote_creator), tenant_id: str = Depends(get_current_tenant),
     username: str = Depends(get_current_username),
 ):
     """Create (or replace) the Order Index entry for a blinds quote.
@@ -7317,6 +7357,23 @@ async def commit_blinds_import(
         if not rep:
             raise HTTPException(400, f"No user {sales_owner!r} - pick the rep this quote belongs to, "
                                      f"or commission won't be attributed to anyone.")
+        # Enforced HERE too, not just by the scoped list the preview
+        # returns. That list shapes the dropdown; this is the actual
+        # control. sales_owner arrives as a plain query parameter, so a
+        # scoped rep could otherwise post any username at all and write
+        # a commission-bearing job onto a colleague's name — the review
+        # screen is not a security boundary, and this endpoint is the
+        # only place that can be.
+        only_mine = scoped_username(request)
+        if only_mine is not None and sales_owner != only_mine:
+            raise HTTPException(403, "You can only import a quote as yourself.")
+        # A trusted tester must never end up as the rep on a real
+        # imported job: sales_owner is exactly what marks a quote as
+        # test data and excludes it from the KPI figures, so attributing
+        # one here would create a job that is counted in the numbers
+        # while being labelled test data everywhere it is displayed.
+        if sales_owner in _trusted_tester_usernames(session, tenant_id):
+            raise HTTPException(400, "That account is a test account - pick the real rep this quote belongs to.")
 
         client_info = parsed["client"]
         quote = None
