@@ -1191,6 +1191,14 @@ function navSnapshot() {
     tab: 'landing',
     landingView: typeof landingView !== 'undefined' ? landingView : 'tiles',
     orderDetailQuoteId: typeof currentOrderDetailQuoteId !== 'undefined' ? currentOrderDetailQuoteId : null,
+    // Tile-First Order Index (confirmed Sept 2026) — which tile is open,
+    // so the browser's back button and the phone's back gesture walk
+    // dashboard -> drill-down -> job the same way the on-screen Back
+    // links do. Without this, back from a job would land on the
+    // dashboard and you'd have to re-open the tile for the next job in
+    // the list you were working through.
+    orderDrillStage: typeof orderIndexDrillStage !== 'undefined' ? orderIndexDrillStage : null,
+    orderSearchTerm: typeof orderIndexSearchTerm !== 'undefined' ? orderIndexSearchTerm : '',
     clientDetailId: typeof currentClientDetailId !== 'undefined' ? currentClientDetailId : null,
     hrView: typeof hrView !== 'undefined' ? hrView : null,
   };
@@ -1241,6 +1249,11 @@ function applyNavState(navState) {
   } else {
     landingView = navState.landingView || 'tiles';
     if (navState.orderDetailQuoteId) currentOrderDetailQuoteId = navState.orderDetailQuoteId;
+    // Restored unconditionally (not `if (...)`) — null is a real value
+    // here, meaning "the dashboard", and skipping it would strand you
+    // in the last drill-down you happened to open.
+    if (typeof orderIndexDrillStage !== 'undefined') orderIndexDrillStage = navState.orderDrillStage || null;
+    if (typeof orderIndexSearchTerm !== 'undefined') orderIndexSearchTerm = navState.orderSearchTerm || '';
     if (navState.clientDetailId) currentClientDetailId = navState.clientDetailId;
     if (navState.hrView) hrView = navState.hrView;
     showRawSection('landing');

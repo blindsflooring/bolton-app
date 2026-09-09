@@ -130,83 +130,6 @@
      and a Needs Attention panel above it. Every colour here is a
      desaturated tint of a hue already in the palette, so the loud
      coral/amber stay meaningful where they genuinely signal a problem. */
-  .stage-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 7px; margin-bottom: 12px; }
-  .stage-tile {
-    border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
-    border-left: 4px solid;
-  }
-  /* The count and the Rand amount share one line — that pairing is the
-     whole point of the tile ("the amounts and stats"), and stacking
-     them was most of the height Burgert asked to lose. */
-  .stage-tile-label { font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700; color: var(--navy); line-height: 1.2; }
-  .stage-tile-figures { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-  .stage-tile-count { font-family: 'Poppins', sans-serif; font-size: 19px; font-weight: 800; line-height: 1.1; color: var(--navy); }
-  .stage-tile-value { font-size: 11px; font-weight: 700; color: #4b5563; }
-  .stage-tile-sub { font-size: 9.5px; color: #6b7280; line-height: 1.2; }
-  /* Final payment on an Order Index row (confirmed Sept 2026) — sits
-     under the job value, the same place the "Adjusted" marker already
-     uses, rather than in a 7th column: this table was cut back to 6
-     data columns for real (a horizontal scrollbar with the rightmost
-     action cut off), and a new column would undo that. Teal is the
-     app's normal informational colour; the warn variant reuses
-     var(--coral), already this app's "look at this" colour everywhere
-     else, for the case where the deposit is still outstanding too. */
-  /* Blinds vs Flooring badge (confirmed Sept 2026) — two muted,
-     clearly different tints rather than two saturated colours: this
-     table already uses coral for "something is wrong" and teal for
-     money, and a loud third colour competing with those would make the
-     row harder to scan, not easier. The arrow suffix marks a quote
-     that came from the blinds spreadsheet. */
-  /* Blinds Quote Import review (confirmed Sept 2026). Deliberately
-     plain: this screen's job is to let someone check numbers against a
-     spreadsheet open next to them, so the line table is dense and the
-     two totals blocks are visually separated — client price on one,
-     our cost on the other — because conflating them is the one
-     mistake that would matter here. */
-  .import-lines { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
-  .import-lines th {
-    text-align: left; padding: 5px 8px; border-bottom: 2px solid var(--border);
-    font-family: 'Poppins', sans-serif; font-size: 10.5px; text-transform: uppercase;
-    letter-spacing: 0.3px; color: #6b7280; white-space: nowrap;
-  }
-  .import-lines td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
-  .import-totals {
-    display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 9px 12px; margin: 8px 0;
-    background: var(--bg); border-radius: 8px; font-size: 12.5px;
-  }
-  .import-totals div { display: flex; flex-direction: column; gap: 1px; }
-  .import-totals .muted { font-size: 10.5px; }
-  .import-totals-cost { background: #eef4f4; border-left: 3px solid var(--teal); }
-  .import-reject {
-    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 12.5px; line-height: 1.5;
-    background: #FDF1EC; border-left: 3px solid var(--coral);
-  }
-  .import-warn {
-    padding: 9px 12px; margin: 10px 0; border-radius: 6px; font-size: 12px; line-height: 1.5;
-    background: #FEF8E7; border-left: 3px solid #d8a92b;
-  }
-  .import-warn-inline { display: block; font-weight: 600; font-size: 11px; color: var(--coral); }
-  .import-replace {
-    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 12.5px;
-    background: #F1EEF7; border-left: 3px solid #7c6aa8;
-  }
-  .import-done {
-    padding: 10px 12px; margin: 10px 0; border-radius: 6px; font-size: 13px;
-    background: #EAF3EF; border-left: 3px solid var(--margin-green);
-  }
-  .error-text { color: var(--coral); font-weight: 600; }
-  /* Section divider inside Quote Lines (confirmed Sept 2026) — the
-     Excel's own area grouping, carried through on an imported blinds
-     quote. Styled as a band rather than another row of data: it is a
-     label for what follows, and must not read as a line item with a
-     missing price. Muted on purpose — the eye should land on it while
-     scanning and otherwise pass over it. */
-  #linesTable tr.line-section-row td {
-    background: var(--bg); border-bottom: 1px solid var(--border);
-    font-family: 'Poppins', sans-serif; font-size: 10.5px; font-weight: 700;
-    letter-spacing: 0.4px; text-transform: uppercase; color: #5b6570;
-    padding: 6px 8px;
-  }
   .job-cat {
     display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px;
     font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; white-space: nowrap;
@@ -988,6 +911,104 @@
   .oi-contact-notes { margin-top: 12px; font-size: 12.5px; color: var(--ink-soft, #6b7280); }
   .oi-contact-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
+  /* ===== Tile-First Order Index dashboard (confirmed Sept 2026) =====
+     The landing screen answers one question — what is happening in my
+     business — and nothing else happens until a tile is tapped. */
+
+  /* Two visually distinct groups, not one flat grid: the pipeline asks
+     "where does the work sit", Today asks "how did we do today". They
+     get their own headed sections so the eye reads them as different
+     questions rather than eight equivalent boxes. */
+  .oi-group { margin-bottom: 22px; }
+  .oi-group-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 9px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  }
+  .oi-group-title {
+    font-family: 'Poppins', sans-serif; font-size: 12px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.09em; color: var(--navy);
+  }
+  .oi-group-note { font-size: 11.5px; color: var(--ink-soft, #6b7280); }
+
+  .oi-tiles { display: grid; gap: 10px; }
+  /* Six across on a wide screen, folding to two on a phone — never one,
+     because a single column turns a 2-second scan into a scroll. */
+  .oi-tiles-pipeline { grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+  .oi-tiles-today { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); max-width: 560px; }
+
+  /* A tile is a button, not a div with a click handler — it is the only
+     interactive thing on this screen, so it must be reachable by
+     keyboard and announce itself as pressable. */
+  .oi-tile {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    text-align: left; cursor: pointer; font-family: inherit;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 4px solid var(--border); border-radius: 9px; padding: 12px 14px 13px;
+    transition: transform 0.08s ease, box-shadow 0.12s ease;
+  }
+  .oi-tile:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.10); transform: translateY(-1px); }
+  .oi-tile:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
+  .oi-tile-label {
+    font-family: 'Poppins', sans-serif; font-size: 11.5px; font-weight: 700;
+    color: var(--navy); line-height: 1.25;
+  }
+  /* Count dominant, Rand secondary — the brief's own hierarchy, so the
+     screen is scannable in about two seconds. */
+  .oi-tile-count {
+    font-family: 'Poppins', sans-serif; font-size: 30px; font-weight: 800;
+    line-height: 1.05; color: var(--navy); font-variant-numeric: tabular-nums;
+  }
+  .oi-tile-value { font-size: 12.5px; font-weight: 700; color: #4b5563; font-variant-numeric: tabular-nums; }
+  .oi-tile-sub { font-size: 10.5px; color: var(--ink-faint, #8A939C); line-height: 1.25; }
+
+  /* Same low-saturation stage language the old tiles established —
+     these sit above a screen with real urgency colouring elsewhere, so
+     coral stays reserved for things that are actually wrong. */
+  .oi-tile-quoted           { background: #eef2f7; border-left-color: #94a8bf; }
+  .oi-tile-accepted         { background: #e9f3f2; border-left-color: #7fb3ae; }
+  .oi-tile-scheduled        { background: #f5f1e7; border-left-color: #c9b184; }
+  .oi-tile-awaiting_payment { background: #f7efe9; border-left-color: var(--coral); }
+  .oi-tile-closed           { background: #eaf3ef; border-left-color: var(--margin-green); }
+  .oi-tile-dead             { background: #f1f1f1; border-left-color: #b7b7b7; }
+  .oi-tile-dead .oi-tile-count, .oi-tile-dead .oi-tile-label { color: #6b7280; }
+  .oi-tile-today            { background: var(--card); border-left-color: var(--teal); }
+
+  /* Search stays on the dashboard, but typing opens a results
+     drill-down rather than filtering the tiles — so the screen is still
+     tiles-only until you act, and finding one job is one step. */
+  .oi-dash-search { margin-bottom: 18px; }
+  .oi-dash-search input {
+    width: 100%; padding: 11px 14px; font-size: 15px; font-family: inherit;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--card);
+  }
+  .oi-dash-search input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(0,170,178,0.15); }
+
+  /* A data-quality prompt, deliberately quiet — it is not business
+     state and must not compete with the tiles. */
+  .oi-dash-footnote { font-size: 12.5px; color: var(--ink-soft, #6b7280); margin: 18px 0 0; }
+  .oi-footnote-flag { color: var(--coral); font-weight: 700; margin-right: 4px; }
+  .oi-dash-footnote a { color: var(--teal); }
+
+  /* Branch tabs — Hermanus and Gansbaai only. No "Other": branch has
+     exactly two values, so a third tab would be permanently empty. */
+  .oi-branch-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .oi-branch-tab {
+    padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: white; color: var(--navy); font-family: 'Poppins', sans-serif;
+    font-size: 12.5px; font-weight: 700; cursor: pointer;
+  }
+  .oi-branch-tab:hover { border-color: var(--teal); color: var(--teal); }
+  .oi-branch-tab.active { background: var(--teal); border-color: var(--teal); color: white; }
+  .oi-branch-n { opacity: 0.65; font-weight: 800; margin-left: 3px; }
+  .oi-branch-tab.active .oi-branch-n { opacity: 0.9; }
+
+  @media (max-width: 700px) {
+    /* Two-up on a phone: still one glance, no scrolling to reach the
+       last tile. */
+    .oi-tiles-pipeline { grid-template-columns: repeat(2, 1fr); }
+    .oi-tile-count { font-size: 26px; }
+  }
+
   .next-action-btn {
     background: none; border: 2px solid var(--teal); color: var(--teal);
     font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 11.5px;
@@ -995,8 +1016,6 @@
     text-transform: uppercase; letter-spacing: 0.02em;
   }
   .next-action-btn:hover { background: var(--teal); color: white; }
-  .workflow-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-  .workflow-tabs button { padding: 7px 14px; }
   .summary-counts { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink-soft, #6b7280); margin-bottom: 4px; }
   .summary-counts b { color: var(--navy); font-size: 15px; }
   .attention-list { display: flex; flex-direction: column; gap: 8px; }
