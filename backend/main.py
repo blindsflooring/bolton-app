@@ -75,6 +75,38 @@ app = FastAPI(title="Blinds & Flooring Studio — Bolt-on API")
 _APP_STARTED_AT = datetime.utcnow()
 
 
+# South African time, defined ONCE (confirmed Sept 2026, Order Index
+# tile-first redesign Phase 1). This offset was written inline inside
+# analytics_overview() and is now needed by list_quotes() too, for the
+# "Quoted Today" / "Sold Today" tiles — extracting it rather than
+# copying it is the same discipline that retired the duplicated money
+# helpers on the Order Index.
+#
+# Why it exists at all (analytics_overview()'s own reasoning, kept):
+# every timestamp in this app is stored as naive UTC (datetime.utcnow()
+# throughout), so a quote raised at 00:30 SAST — 22:30 UTC the PREVIOUS
+# day — silently lands in "yesterday" on a UTC-boundary "today" figure.
+# That is exactly the few-hours-off error someone checking a dashboard
+# first thing in the morning actually hits.
+#
+# A fixed offset rather than zoneinfo, deliberately: South Africa has
+# never observed DST, so there is no transition to track and a constant
+# is both simpler and correct here.
+SAST_OFFSET = timedelta(hours=2)
+
+
+def sast_today() -> date:
+    """Today's date as someone standing in the shop would name it."""
+    return (datetime.utcnow() + SAST_OFFSET).date()
+
+
+def sast_date(value) -> Optional[date]:
+    """A stored naive-UTC timestamp as its SAST calendar date. None in,
+    None out — an absent accepted_at means the job was never sold, which
+    is a real answer, not a missing one."""
+    return (value + SAST_OFFSET).date() if value else None
+
+
 @app.get("/version")
 def get_version():
     """Version badge fix (confirmed Aug 2026) — the badge had shown a
@@ -3075,8 +3107,11 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
         # checking this dashboard first thing in the morning would
         # actually hit. Fixed offset rather than zoneinfo — simpler,
         # and correct here specifically because SA has no DST to track.
-        SAST_OFFSET = timedelta(hours=2)
-        today_sast = (datetime.utcnow() + SAST_OFFSET).date()
+        # SAST_OFFSET/sast_today() now live at module scope (see their
+        # own comment) — the Order Index tiles need the identical basis,
+        # and two copies of "what counts as today" is precisely how two
+        # screens end up disagreeing about a day's takings.
+        today_sast = sast_today()
         month_start_sast = today_sast.replace(day=1)
         monday_sast = today_sast - timedelta(days=today_sast.weekday())  # Monday=0
 
@@ -8775,6 +8810,87 @@ def _quote_totals(subtotal_ex_vat: float, quote: "Quote", vat_pct: float) -> dic
     }
 
 
+# ===== Order Index stage, the ONE definition (confirmed Sept 2026,
+# Tile-First Order Index, Phase 1) =====
+#
+# Six mutually exclusive stages that between them cover every quote in
+# the system. This is the function the dashboard tiles group by AND the
+# function each drill-down filters on — so a tile's count is literally
+# the length of the list it opens, and the two cannot drift apart.
+#
+# It replaces orderStageOf() in order-index.js, which is where this
+# judgement has lived until now. That worked only because the tiles and
+# the table happened to call the same local function; nothing structural
+# stopped a second copy appearing, and the backend had no concept of a
+# stage at all. Approved spec: "tile counts/values and their drill-down
+# lists must read from the same backend calculation, never computed
+# separately."
+#
+# ORDER OF CHECKS IS THE DEFINITION, not tidiness:
+#
+#  1. Declined first. A declined quote keeps workflow_status "quoted"
+#     forever (decline_quote() only ever sets declined_at), so every
+#     branch below would otherwise read it as live work. Declined also
+#     deliberately beats expired: a quote the customer turned down is
+#     closed by a real decision, which is a stronger and more useful
+#     fact than one that merely went quiet.
+#  2. Expired next, same reasoning — still workflow_status "quoted",
+#     and without this it would inflate Work Quoted with month-dead
+#     quotes. `expired` is passed in rather than recomputed here: it is
+#     derived by _job_workflow_info(), and a second copy of the 30-day
+#     rule is exactly the drift this function exists to remove.
+#  3. Completed splits on final_payment_date — installed-and-paid is
+#     Closed, installed-and-unpaid is Awaiting Payment.
+#
+# On Hold deliberately does NOT appear here (confirmed with Burgert): a
+# held job stays counted in its underlying stage and is marked with a
+# badge in the list, never moved into a pipeline stage of its own.
+ORDER_STAGE_QUOTED = "quoted"                     # Work Quoted — sent, awaiting an answer
+ORDER_STAGE_ACCEPTED = "accepted"                 # customer said yes, not yet booked
+ORDER_STAGE_SCHEDULED = "scheduled"               # booked in. NOT "being installed" — see below
+ORDER_STAGE_AWAITING_PAYMENT = "awaiting_payment" # work done, money outstanding
+ORDER_STAGE_CLOSED = "closed"                     # done and fully paid
+ORDER_STAGE_DEAD = "dead"                         # declined or expired
+
+# "Scheduled", not "Being Installed" (confirmed with Burgert): Bolton
+# knows a job is BOOKED, not that anyone is on site — a job booked for
+# next month is indistinguishable here from one being laid today. The
+# label states what the system actually knows rather than implying a
+# progress state that no field backs. A genuine in-progress state can be
+# added later if the workflow needs one; it is deliberately not invented
+# to satisfy a tile.
+ORDER_STAGE_LABELS = {
+    ORDER_STAGE_QUOTED: "Work Quoted",
+    ORDER_STAGE_ACCEPTED: "Accepted",
+    ORDER_STAGE_SCHEDULED: "Scheduled",
+    ORDER_STAGE_AWAITING_PAYMENT: "Awaiting Payment",
+    ORDER_STAGE_CLOSED: "Closed",
+    ORDER_STAGE_DEAD: "Dead Quotes",
+}
+
+
+def _order_stage(quote: "Quote", expired: bool) -> str:
+    if quote.declined_at:
+        return ORDER_STAGE_DEAD
+    if expired:
+        return ORDER_STAGE_DEAD
+    if quote.workflow_status == "quoted":
+        return ORDER_STAGE_QUOTED
+    if quote.workflow_status == "accepted":
+        return ORDER_STAGE_ACCEPTED
+    if quote.workflow_status == "scheduled":
+        return ORDER_STAGE_SCHEDULED
+    if quote.workflow_status == "completed":
+        return ORDER_STAGE_CLOSED if quote.final_payment_date else ORDER_STAGE_AWAITING_PAYMENT
+    # No real workflow_status value reaches this today (the four above
+    # are the only ones the model allows). A row with a hand-corrupted
+    # status counts as Dead rather than vanishing from every tile —
+    # every quote must land in exactly one stage for the tile totals to
+    # be trustworthy, and silently belonging to none is the one outcome
+    # that would break that guarantee invisibly.
+    return ORDER_STAGE_DEAD
+
+
 def _quote_payment_state(quote: "Quote", totals: dict) -> dict:
     """Paid / Outstanding, as REAL structured fields (confirmed Sept
     2026, Order Index Redesign brief §3 — "should be real structured
@@ -12828,7 +12944,7 @@ FLOORING_TYPE_LABELS = {
 def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Optional[str] = None,
                  status: Optional[str] = None, workflow_status: Optional[str] = None,
                  search: Optional[str] = None, include_price_checks: bool = False,
-                 include_declined: bool = False,
+                 include_declined: bool = False, exclude_test_accounts: bool = False,
                  tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — Order Index needs totals (deposit amount,
     balance amount) visible without clicking into each quote, so this
@@ -12898,6 +13014,16 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
         if workflow_status:
             stmt = stmt.where(Quote.workflow_status == workflow_status)
         quotes = session.exec(stmt).all()
+        # Test accounts, excluded on request (confirmed Sept 2026,
+        # Tile-First Order Index) — the Order Index dashboard asks "how
+        # is my business doing", and Business Overview already leaves
+        # these out of every KPI for exactly that reason
+        # (analytics_overview()). OFF by default deliberately: every
+        # existing caller, including the Installation Calendar, keeps
+        # the behaviour it has today, and the rows stay visible-but-
+        # labelled on any screen that still wants them.
+        if exclude_test_accounts and tt_usernames:
+            quotes = [q for q in quotes if q.sales_owner not in tt_usernames]
         if search:
             search_lower = search.lower()
             quotes = [q for q in quotes if search_lower in q.client_name.lower() or search_lower in str(q.id)
@@ -12905,6 +13031,10 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
                       or search_lower in (q.site_address or "").lower()]
 
         today = date.today()
+        # Resolved once per request, not per row — 50 identical
+        # datetime.utcnow() calls would also risk two rows landing on
+        # opposite sides of midnight within a single response.
+        today_sast = sast_today()
         # Calendar: Multiple Work Days Per Job (confirmed Sept 2026,
         # approved proposal) — one query for every quote's extra days,
         # grouped in Python, rather than one query per row inside the
@@ -13000,8 +13130,29 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # be built client-side from this one response, no second
             # request.
             row_materials_ordered = _materials_ordered_for_quote(session, q.id, tenant_id)
-            d.update(_job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
-                                         settings.order_overdue_days))
+            workflow = _job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
+                                           settings.order_overdue_days)
+            d.update(workflow)
+            # ---------- Tile-First Order Index, Phase 1 ----------
+            # The one stage every tile groups by and every drill-down
+            # filters on. Takes `expired` straight from the workflow
+            # info just computed above rather than re-deriving the
+            # 30-day rule — one clock, read once. See _order_stage().
+            d["stage"] = _order_stage(q, workflow.get("expired", False))
+            # Today's performance, bucketed in SAST rather than raw UTC
+            # (see SAST_OFFSET) and decided server-side so the tiles
+            # can't disagree with Business Overview about what "today"
+            # means. Computed per row rather than as a separate total:
+            # same one-source rule as `stage` — the tile is a count of
+            # rows carrying the flag, and its drill-down lists exactly
+            # those rows.
+            #
+            # A page left open across midnight keeps yesterday's flags
+            # until it re-fetches. That is the same staleness every
+            # other figure on the screen already has, and a re-render
+            # refreshes it.
+            d["is_quoted_today"] = (sast_date(q.created_at) == today_sast) and q.declined_at is None
+            d["is_sold_today"] = sast_date(q.accepted_at) == today_sast
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered
