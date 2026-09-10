@@ -398,8 +398,10 @@ function renderCalendarView(el) {
 
         <div class="cal-sidebar-group muted">
           <div class="cal-sidebar-heading">Status</div>
-          <span><span class="cal-chip-dot confirmed" style="color:#1c4b8a;"></span> Confirmed</span>
-          <span><span class="cal-chip-dot tentative" style="color:#1c4b8a;"></span> Tentative</span>
+          <!-- Same blue the flooring pills now use, so the key matches
+          what the grid draws (was the old pale palette's text colour). -->
+          <span><span class="cal-chip-dot confirmed" style="color:#2C6BB8;"></span> Confirmed</span>
+          <span><span class="cal-chip-dot tentative" style="color:#2C6BB8;"></span> Tentative</span>
           <span><span class="cal-legend-today"></span> Today</span>
         </div>
 
@@ -419,10 +421,17 @@ function renderCalendarView(el) {
       </aside>
 
       <div class="cal-main">
+        <!-- Header tightened (confirmed Sept 2026, Part 3) — the month
+        reads first, at the left where the eye starts, and Prev/Next
+        group at the right as a single control instead of sitting at
+        opposite ends of a 1500px header with the month adrift between
+        them. -->
         <div class="cal-head">
-          <button onclick="changeCalendarMonth(-1)">‹ Prev</button>
           <h2 style="margin:0;">${CAL_MONTH_NAMES[month]} ${year}</h2>
-          <button onclick="changeCalendarMonth(1)">Next ›</button>
+          <div class="cal-nav">
+            <button onclick="changeCalendarMonth(-1)" title="Previous month">‹ Prev</button>
+            <button onclick="changeCalendarMonth(1)" title="Next month">Next ›</button>
+          </div>
         </div>
         <div class="cal-grid">
           ${dowHtml}
