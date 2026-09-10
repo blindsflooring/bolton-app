@@ -53,6 +53,18 @@ async function renderInstallationCalendar(el) {
   // mechanism Home and the Quote Builder already use; renderLanding()
   // clears it when any other view takes over.
   document.body.classList.add('calendar-active');
+  // The month is normally set by openInstallationCalendar() (the tile).
+  // But renderLanding() can also reach this screen without it — a
+  // browser-back restore through applyNavState() sets landingView
+  // directly — and with both still null, new Date(null, null, 1)
+  // resolves to 1900 and the grid renders December 1899. Found while
+  // testing quick entry. Defaulting here costs nothing and means this
+  // screen can never open on the wrong century.
+  if (calendarViewYear === null || calendarViewMonth === null) {
+    const now = new Date();
+    calendarViewYear = now.getFullYear();
+    calendarViewMonth = now.getMonth();
+  }
   await renderWithRetry(el, 'Installation Calendar', async () => {
     el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><p class="muted">Loading...</p></div>`;
     const [quotesRes, leadsRes, todosRes] = await Promise.all([
@@ -126,7 +138,10 @@ function calLeadChip(l) {
            assignedTo: l.assigned_to };
 }
 function calTodoChip(t) {
-  return { type: 'todo', todoId: t.id, title: t.title, date: t.due_date };
+  return { type: 'todo', todoId: t.id, title: t.title, date: t.due_date,
+           // The user's own choice, defaulting to the neutral to-do
+           // colour for anything created before categories existed.
+           category: t.category || 'general' };
 }
 const CAL_DAY_TYPE_LABEL = { screed: 'Screed', installation: 'Install', other: 'Other' };
 
@@ -154,7 +169,12 @@ const CAL_CATEGORY_LABEL = {
 };
 function calChipCategory(chip) {
   if (chip.type === 'lead') return 'lead';
-  if (chip.type === 'todo') return 'todo';
+  // A task takes the colour of the work it is ABOUT (confirmed Sept
+  // 2026) — a blinds reminder reads as blinds. 'general' keeps the
+  // neutral to-do colour. What stops a task being mistaken for a real
+  // booking is the permanent task outline, not a different hue: see
+  // .cal-chip.is-task (styles.css).
+  if (chip.type === 'todo') return chip.category && chip.category !== 'general' ? chip.category : 'todo';
   if (chip.dayType === 'screed') return 'flooring';
   const types = chip.types || [];
   // Blinds only counts as a blinds job when there is NO floor on it —
@@ -272,7 +292,12 @@ function renderCalendarView(el) {
           onclick="event.stopPropagation(); openLeadDetailScreen(${chip.leadId});">📋 ${(chip.name || '').replace(/</g,'&lt;')}</div>`;
       }
       if (chip.type === 'todo') {
-        return `<div class="cal-chip cal-cat-todo ${isToday ? 'is-today' : ''}" title="To-do: ${(chip.title || '').replace(/"/g,'&quot;')}"
+        // is-task is the permanent mark that keeps a task distinguishable
+        // from a real booking in the same colour — the single most
+        // important visual rule here, because a flooring reminder that
+        // looks like a flooring install is how a day gets planned wrong.
+        const tcat = calChipCategory(chip);
+        return `<div class="cal-chip cal-cat-${tcat} is-task ${isToday ? 'is-today' : ''}" title="To-do (${CAL_CATEGORY_LABEL[tcat]}): ${(chip.title || '').replace(/"/g,'&quot;')}"
           onclick="event.stopPropagation(); landingView='todos'; renderLanding();">✓ ${(chip.title || '').replace(/</g,'&lt;')}</div>`;
       }
       // Multiple Work Days Per Job (confirmed Sept 2026) — a work-day
@@ -303,8 +328,20 @@ function renderCalendarView(el) {
       ecalender where we can"). Every day is clickable now, not only
       days that already have something on them — an empty day was
       inert, which is exactly the day you want to book INTO. -->
-      <div class="cal-day ${otherMonth ? 'other-month' : ''} ${dateStr === todayStr ? 'today' : ''} ${jobs.length ? 'has-jobs' : ''}" data-date="${dateStr}" onclick="toggleCalendarDayList('${dateStr}')">
-        <div class="cal-daynum">${d}</div>
+      <!-- Click targets split (confirmed Sept 2026, Installation
+      Calendar Redesign): EMPTY SPACE in the cell opens quick entry,
+      the DAY NUMBER opens that day's list. The whole cell used to open
+      the list, which collides head-on with click-to-add — one of the
+      two had to move, and the brief's ten-second path is the one worth
+      keeping at a single click.
+      Chips are unaffected: every chip already stops propagation on
+      click, so opening an existing event can never create an item.
+      NOTE: the proposal also named "+N more" as a second trigger for
+      the day list — that control no longer exists, having been removed
+      when chip truncation was retired, so the day number is the one
+      trigger. -->
+      <div class="cal-day ${otherMonth ? 'other-month' : ''} ${dateStr === todayStr ? 'today' : ''} ${jobs.length ? 'has-jobs' : ''}" data-date="${dateStr}" onclick="openCalQuickAdd('${dateStr}')" title="Click to add something for this day">
+        <div class="cal-daynum" onclick="event.stopPropagation(); toggleCalendarDayList('${dateStr}');" title="Show everything on this day">${d}</div>
         ${chipsHtml}
       </div>`;
   }
@@ -344,6 +381,19 @@ function renderCalendarView(el) {
           <span class="cal-legend-key cal-cat-blinds">Blinds</span>
           <span class="cal-legend-key cal-cat-lead">Lead visit</span>
           <span class="cal-legend-key cal-cat-todo">To-do</span>
+        </div>
+
+        <!-- The task mark, explained (confirmed Sept 2026, Installation
+        Calendar Redesign). A task now takes the COLOUR of the work it
+        is about, so a flooring reminder is flooring-blue — which makes
+        this outline the only thing separating "flooring booked in" from
+        "flooring thing to do". A distinction that decides how a day
+        gets planned has to be documented on the screen that uses it,
+        not left for someone to work out. The swatch reuses the real
+        .is-task rule, so it can never drift from what the chips draw. -->
+        <div class="cal-sidebar-group muted">
+          <div class="cal-sidebar-heading">Reminders</div>
+          <span class="cal-legend-key cal-cat-flooring is-task">Task, not a booking</span>
         </div>
 
         <div class="cal-sidebar-group muted">
@@ -456,6 +506,141 @@ function calFitCalendarGrid() {
 if (!window._calFitResizeBound) {
   window._calFitResizeBound = true;
   window.addEventListener('resize', () => { if (document.querySelector('.cal-grid')) calFitCalendarGrid(); });
+}
+
+// ===== Quick entry (confirmed Sept 2026, Installation Calendar
+// Redesign, Phase 2) =====
+//
+// Writes a real ToDo and nothing else. There is no calendar-event
+// record in this system and this does not introduce one — the pill that
+// appears afterwards is the same ToDo.due_date chip the calendar has
+// always drawn, so what you see is genuinely the record, not a copy of
+// it.
+//
+// A task can never change a job: ToDo has no path to a Quote's dates or
+// workflow_status, so a reminder categorised "flooring" stays a
+// reminder even when it is linked to a real job.
+const CAL_QUICK_CATEGORIES = [
+  { key: 'general',  label: 'General to-do' },
+  { key: 'flooring', label: 'Flooring / screed' },
+  { key: 'blinds',   label: 'Blinds' },
+  { key: 'lead',     label: 'Lead / customer' },
+];
+
+let calQuickAddDate = null;
+
+function openCalQuickAdd(dateStr) {
+  // A drag that ended on empty space must not also open the form — the
+  // same guard chip clicks already use.
+  if (calDragMoved) return;
+  calQuickAddDate = dateStr;
+  let panel = document.getElementById('calQuickAddPanel');
+  if (!panel) { panel = document.createElement('div'); panel.id = 'calQuickAddPanel'; document.body.appendChild(panel); }
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const nice = new Date(y, m - 1, d).toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  // The optional job link is built from jobs ALREADY loaded for the
+  // grid, so offering it costs no extra request and cannot slow the
+  // fast path. Deliberately a plain select rather than a search: this
+  // has to stay a ten-second action, and hunting for a job is exactly
+  // the kind of thing that would stop it being one.
+  const jobOpts = (calendarQuotesCache || [])
+    .filter(q => q.job_number && !q.declined_at)
+    .slice(0, 60)
+    .map(q => `<option value="${q.id}">${q.job_number} — ${(q.client_name || '').replace(/</g, '&lt;')}</option>`)
+    .join('');
+
+  panel.innerHTML = `
+    <div class="client-picker-overlay" onclick="closeCalQuickAdd()">
+      <div class="client-picker-box cal-quick-box" onclick="event.stopPropagation();">
+        <h3 style="margin-top:0;">Add for ${nice}</h3>
+        <div class="field">
+          <label>What needs to happen</label>
+          <input type="text" id="calQuickTitle" placeholder="Phone supplier about stock" autocomplete="off"
+                 onkeydown="if (event.key === 'Enter') { event.preventDefault(); saveCalQuickAdd(); }
+                            if (event.key === 'Escape') { closeCalQuickAdd(); }">
+        </div>
+        <div class="field">
+          <label>Category</label>
+          <div class="cal-quick-cats">
+            ${CAL_QUICK_CATEGORIES.map((c, i) => `
+              <label class="cal-quick-cat cal-cat-${c.key === 'general' ? 'todo' : c.key}">
+                <input type="radio" name="calQuickCat" value="${c.key}" ${i === 0 ? 'checked' : ''}> ${c.label}
+              </label>`).join('')}
+          </div>
+        </div>
+        <details class="cal-quick-link">
+          <summary>Link to a job (optional)</summary>
+          <div class="field" style="margin-top:8px;">
+            <select id="calQuickQuote">
+              <option value="">— No link —</option>
+              ${jobOpts}
+            </select>
+            <p class="muted" style="font-size:11px; margin-top:4px;">Only if this is genuinely about that job. A reminder never changes a job's status either way.</p>
+          </div>
+        </details>
+        <p class="muted" id="calQuickStatus" style="min-height:16px; margin:8px 0 0; font-size:12px;"></p>
+        <div class="cal-quick-actions">
+          <button onclick="closeCalQuickAdd()">Cancel</button>
+          <button class="primary" id="calQuickSaveBtn" onclick="saveCalQuickAdd()">Add</button>
+        </div>
+      </div>
+    </div>`;
+  const input = document.getElementById('calQuickTitle');
+  if (input) input.focus();
+  if (!calQuickEscHandler) {
+    calQuickEscHandler = (e) => { if (e.key === 'Escape') closeCalQuickAdd(); };
+    document.addEventListener('keydown', calQuickEscHandler);
+  }
+}
+
+let calQuickEscHandler = null;
+
+function closeCalQuickAdd() {
+  const panel = document.getElementById('calQuickAddPanel');
+  if (panel) panel.innerHTML = '';
+  calQuickAddDate = null;
+  if (calQuickEscHandler) { document.removeEventListener('keydown', calQuickEscHandler); calQuickEscHandler = null; }
+}
+
+async function saveCalQuickAdd() {
+  const titleEl = document.getElementById('calQuickTitle');
+  const statusEl = document.getElementById('calQuickStatus');
+  const btn = document.getElementById('calQuickSaveBtn');
+  const title = (titleEl && titleEl.value || '').trim();
+  if (!title) { if (statusEl) statusEl.textContent = 'Type what needs to happen first.'; if (titleEl) titleEl.focus(); return; }
+  const cat = (document.querySelector('input[name="calQuickCat"]:checked') || {}).value || 'general';
+  const quoteId = (document.getElementById('calQuickQuote') || {}).value || '';
+  const linked = quoteId ? (calendarQuotesCache || []).find(q => String(q.id) === String(quoteId)) : null;
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  if (statusEl) statusEl.textContent = '';
+  let saved;
+  try {
+    const res = await fetch(`${API}/todos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title, due_date: calQuickAddDate, category: cat,
+        quote_id: linked ? linked.id : null,
+        // A job carries its own client, so linking to a job links the
+        // client too — without asking twice for the same fact.
+        client_id: linked && linked.client_id ? linked.client_id : null,
+      }),
+    });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.detail || 'Could not save that.'); }
+    saved = await res.json();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Add'; }
+    if (statusEl) statusEl.textContent = e.message || 'Could not save that — nothing was added.';
+    return;
+  }
+
+  // Straight into the same cache the grid already reads, then re-render
+  // — no page reload, and no second fetch to find out what we just
+  // created. The pill that appears IS this record.
+  calendarTodosCache = (calendarTodosCache || []).concat([saved]);
+  closeCalQuickAdd();
+  renderCalendarView(document.getElementById('landing'));
 }
 
 function toggleCalendarDayList(dateStr) {

@@ -937,6 +937,37 @@
   .oi-tile-dead .oi-tile-count, .oi-tile-dead .oi-tile-label { color: #6b7280; }
   .oi-tile-today            { background: var(--card); border-left-color: var(--teal); }
 
+  /* ===== Calendar quick entry (confirmed Sept 2026) ===== */
+  /* The day number is now its own click target (opens the day list)
+     while the rest of the cell adds an item — so it has to look
+     pressable rather than like a label. */
+  .cal-daynum { cursor: pointer; border-radius: 3px; padding: 0 3px; display: inline-block; }
+  .cal-daynum:hover { background: var(--teal); color: #fff; }
+  /* Empty space invites a click without shouting about it. */
+  .cal-day { cursor: pointer; }
+  .cal-day:hover { background: rgba(0,170,178,0.05); }
+
+  /* A TASK, not a booking. The single most important rule on this
+     screen: a task takes the colour of the work it is about, so a
+     flooring reminder is flooring-blue — which would make it
+     indistinguishable from a real booked install without this. The
+     inset outline is permanent and independent of colour, so the
+     distinction survives for anyone who cannot separate the hues. */
+  .cal-chip.is-task {
+    box-shadow: inset 0 0 0 2px rgba(255,255,255,0.85), inset 0 0 0 3px currentColor;
+    font-style: italic;
+  }
+
+  .cal-quick-box { max-width: 420px; }
+  .cal-quick-cats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .cal-quick-cat {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 7px 9px; border-radius: 6px; font-size: 12.5px; font-weight: 700;
+    border-left: 3px solid;
+  }
+  .cal-quick-link summary { cursor: pointer; font-size: 12.5px; color: var(--teal); margin-top: 10px; }
+  .cal-quick-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
   /* Date column (confirmed Sept 2026) — its own column so the dates
      read straight down. Tabular figures so the digits line up rather
      than wandering with the glyph widths. */
