@@ -621,6 +621,14 @@ def _ensure_new_columns():
         ("quote", "area", "VARCHAR", "''"),
         ("quotelineitem", "blind_qty", "INTEGER", "NULL"),
         ("businesssettings", "known_areas", "VARCHAR", "''"),
+        # Calendar quick entry, Phase 1 (confirmed Sept 2026). 'general'
+        # on every existing row is the literal truth — nothing created
+        # before this had a category, and a plain reminder is exactly
+        # what general means. NULL links likewise: no to-do has ever
+        # pointed at a job.
+        ("todo", "category", "VARCHAR", "'general'"),
+        ("todo", "client_id", "INTEGER", "NULL"),
+        ("todo", "quote_id", "INTEGER", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -10464,6 +10472,14 @@ def convert_lead(lead_id: int, sales_owner: str, branch: str = "gansbaai", clien
 # Dos / Calendar brief) — see ToDo's own docstring (models.py) for why
 # this is a genuinely separate, minimal table, not a Lead variant. ----
 
+# The four a quick entry can be (confirmed Sept 2026, Installation
+# Calendar Redesign). They deliberately mirror the calendar's OWN
+# existing category vocabulary (calChipCategory(), calendar.js) rather
+# than inventing a second set, so a task and a real job of the same kind
+# take the same colour by construction.
+TODO_CATEGORIES = ("general", "flooring", "blinds", "lead")
+
+
 class ToDoCreate(BaseModel):
     """Deliberately its own request model, not the raw ToDo table
     (same reasoning as DeclineQuoteRequest/BuilderEstimateRequest
@@ -10472,6 +10488,12 @@ class ToDoCreate(BaseModel):
     title: str
     assigned_to: str = ""
     due_date: Optional[str] = None
+    # All three optional, and category defaults to general — a plain
+    # reminder must save with nothing but a title and a date, which is
+    # the whole point of quick entry.
+    category: str = "general"
+    client_id: Optional[int] = None
+    quote_id: Optional[int] = None
 
 
 @app.post("/todos")
@@ -10482,11 +10504,26 @@ def create_todo(body: ToDoCreate, tenant_id: str = Depends(get_current_tenant), 
     Lead.assigned_to already established (create_lead(), above)."""
     if not body.title or not body.title.strip():
         raise HTTPException(400, "A title is required.")
+    category = (body.category or "general").strip().lower() or "general"
+    if category not in TODO_CATEGORIES:
+        raise HTTPException(400, f"Unknown category {category!r} - expected one of {', '.join(TODO_CATEGORIES)}.")
     with Session(engine) as session:
+        # A link is optional, but a link that IS given has to be real and
+        # has to belong to this tenant — a task pointing at someone
+        # else's job, or at an id that does not exist, would render a
+        # calendar pill that goes nowhere.
+        if body.client_id is not None:
+            get_or_404(session, Client, body.client_id, tenant_id, "Client")
+        if body.quote_id is not None:
+            get_or_404(session, Quote, body.quote_id, tenant_id, "Quote")
         todo = ToDo(
             tenant_id=tenant_id, title=body.title.strip(), created_by=username,
+            # Owner defaults to whoever created it (confirmed Sept 2026),
+            # which is what this line already did — same "starts as your
+            # own unless deliberately handed off" convention as leads.
             assigned_to=(body.assigned_to or "").strip() or username,
             due_date=date.fromisoformat(body.due_date) if body.due_date else None,
+            category=category, client_id=body.client_id, quote_id=body.quote_id,
         )
         session.add(todo)
         session.commit()
@@ -10674,6 +10711,14 @@ _CASCADE_POLICY = {
         (HoursWorked, "quote_id", "assert_empty", None),          # blocked upstream by _quote_delete_dependencies
         (BuilderEstimate, "linked_quote_id", "assert_empty", None),  # blocked upstream by _quote_delete_dependencies
         (Lead, "converted_quote_id", "nullify", None),  # Leads brief (confirmed Aug 2026): the enquiry genuinely happened and is real history — deleting the quote it converted into must not delete the Lead, only clear the backward-link (lead_status stays "converted", same as a builder estimate surviving a Force Delete with only its link cleared)
+        # Calendar quick entry (confirmed Sept 2026) — NULLIFY, not
+        # cascade. A to-do is the user's own note and has a real life of
+        # its own: "confirm colour with Anine before Friday" is still a
+        # thing someone has to do even if the quote it pointed at is
+        # deleted. Deleting a job must clear the dead link, never delete
+        # somebody's reminder. Same reasoning as Lead.converted_quote_id
+        # directly above.
+        (ToDo, "quote_id", "nullify", None),
     ],
     "quotelineitem": [
         (ColourChangeLog, "quote_line_item_id", "cascade", None),
@@ -10682,6 +10727,10 @@ _CASCADE_POLICY = {
         (OrderSheetLine, "order_sheet_id", "cascade", None),
     ],
     "client": [
+        # Same reasoning as ToDo.quote_id above: a reminder outlives the
+        # client record it happened to reference. Nullify the link, keep
+        # the task.
+        (ToDo, "client_id", "nullify", None),
         (Quote, "client_id", "assert_empty", None),  # blocked upstream by delete_client()'s own pre-check
     ],
 }
