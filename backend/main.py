@@ -26,12 +26,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, or_
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
-    HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp,
+    HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp, QuotePayment,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
@@ -1178,6 +1178,9 @@ def on_startup():
     _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
     _enable_row_level_security()
+    # Payments as a List (confirmed Sept 2026) — after create_all, since
+    # it writes into the table that call just created.
+    _backfill_quote_payments()
     with Session(engine) as session:
         if not session.exec(select(CommissionRate)).first():
             # Confirmed Aug 2026: seeding the brief's own recommended GP
@@ -8899,7 +8902,176 @@ def _order_stage(quote: "Quote", expired: bool) -> str:
     return ORDER_STAGE_DEAD
 
 
-def _quote_payment_state(quote: "Quote", totals: dict) -> dict:
+# ===== Payments as a List (confirmed Sept 2026, approved Option B) =====
+#
+# Everything below exists to make ONE promise true: recording a payment
+# through the new list keeps Quote's five flat payment fields exactly as
+# correct as if it had been typed into the old form.
+#
+# That promise is not cosmetic. commission_statement() selects paid jobs
+# in SQL straight off Quote.final_payment_date, and this codebase has
+# already had commission silently stop calculating once, when the
+# workflow moved off Quote.status and nothing kept the old field
+# populated. Every other money-critical reader — _order_stage,
+# _quote_payment_state, builder financials, the delete guard — reads
+# these same fields. So the rule is: write a payment row, then
+# immediately rewrite the shadow from the rows. Never one without the
+# other.
+PAYMENT_TYPES = ("deposit", "final", "extra")
+
+
+def _backfill_quote_payments():
+    """One-time, idempotent: turn the old flat payment fields into rows.
+
+    Every job that already has a deposit and/or final payment date gets
+    matching QuotePayment rows, so the new list shows the real payment
+    history from the first load — nothing re-entered, nothing lost.
+
+    Idempotent the honest way: a job with ANY payment row is skipped
+    entirely. Not "skip if a matching row exists" — that would let a
+    half-finished earlier run leave a job permanently short a payment,
+    and a payment that silently fails to appear is worse than one that
+    obviously never ran.
+
+    Amounts come from the same _quote_totals() the screen has always
+    shown, so a backfilled job's figures are byte-for-byte what it
+    displayed yesterday:
+      deposit  = actual_deposit_amount when one was recorded, otherwise
+                 the percentage figure — exactly _quote_totals()'s own
+                 precedence.
+      final    = whatever is left of the total after that deposit, which
+                 is what "balance" has always meant here.
+    A job with a final payment and no deposit gets ONE row for the whole
+    total, which is the case that started this whole brief.
+
+    Deliberately does NOT touch the flat fields. They are already
+    correct — this reads them, it does not rewrite them — so a failure
+    part-way through can leave rows to clean up but can never corrupt
+    the numbers commission is calculated from.
+    """
+    try:
+        with Session(engine) as session:
+            quotes = session.exec(
+                select(Quote).where(
+                    or_(Quote.deposit_paid_date.is_not(None), Quote.final_payment_date.is_not(None))
+                )
+            ).all()
+            if not quotes:
+                print("Payments backfill: no jobs with recorded payments — nothing to do")
+                return
+            already = {row.quote_id for row in session.exec(select(QuotePayment)).all()}
+            made = skipped = 0
+            for q in quotes:
+                if q.id in already:
+                    skipped += 1
+                    continue
+                totals = _quote_totals_for(session, q, q.tenant_id)
+                total = totals["total_incl_vat"]
+                deposit_amt = round(totals["deposit_amount"], 2)
+                rows = []
+                # A zero-amount row is not a payment. Shows up on
+                # zero-total QA/placeholder jobs that still carry a
+                # payment date, and a R0.00 line on the screen is noise
+                # that also claims money moved when none did.
+                if q.deposit_paid_date and deposit_amt > 0.005:
+                    rows.append(QuotePayment(
+                        tenant_id=q.tenant_id, quote_id=q.id, amount=deposit_amt,
+                        paid_date=q.deposit_paid_date, method=q.deposit_payment_method or "",
+                        payment_type="deposit", recorded_by="backfill",
+                    ))
+                if q.final_payment_date:
+                    # What was left. A job paid in full with no deposit
+                    # recorded has the whole total left, which is right.
+                    remainder = round(total - (deposit_amt if q.deposit_paid_date else 0.0), 2)
+                    if remainder > 0.005:
+                        rows.append(QuotePayment(
+                            tenant_id=q.tenant_id, quote_id=q.id, amount=remainder,
+                            paid_date=q.final_payment_date, method=q.final_payment_method or "",
+                            payment_type="final", recorded_by="backfill",
+                        ))
+                for r in rows:
+                    session.add(r)
+                made += len(rows)
+            session.commit()
+            print(f"Payments backfill: created {made} payment row(s) across "
+                  f"{len(quotes) - skipped} job(s); {skipped} job(s) already had rows")
+    except Exception as e:
+        # Never block startup. The flat fields are untouched and remain
+        # the truth for every reader, so a failed backfill costs the new
+        # list its history — not the business its numbers.
+        print(f"Payments backfill: FAILED ({e}) — flat payment fields are unaffected, list will be empty for old jobs")
+
+
+def _quote_totals_for(session, quote: "Quote", tenant_id: str) -> dict:
+    """This job's totals from scratch. _quote_totals() takes a subtotal
+    the caller has already summed (it is shared by screens that sum many
+    jobs at once); the payment code only ever has one job in hand, so
+    this does that one step and hands over to the same shared math
+    rather than repeating any of it."""
+    lines = session.exec(
+        select(QuoteLineItem).where(QuoteLineItem.quote_id == quote.id, QuoteLineItem.tenant_id == tenant_id)
+    ).all()
+    subtotal_ex_vat = sum(l.line_total for l in lines) + quote.transport_levy
+    return _quote_totals(subtotal_ex_vat, quote, get_settings(session, tenant_id).vat_pct)
+
+
+def _quote_payments(session, quote_id: int, tenant_id: str) -> list:
+    """A job's payments, oldest first — the order money actually arrived."""
+    return list(session.exec(
+        select(QuotePayment)
+        .where(QuotePayment.quote_id == quote_id, QuotePayment.tenant_id == tenant_id)
+        .order_by(QuotePayment.paid_date, QuotePayment.id)
+    ).all())
+
+
+def _refresh_payment_shadow(session, quote: "Quote", tenant_id: str) -> None:
+    """Rewrite Quote's five flat payment fields FROM the payment rows.
+
+    Each field keeps the precise meaning it has always had, which is the
+    only reason the 28 existing readers can be left alone:
+
+      deposit_paid_date / _payment_method
+          The first deposit-type payment. "When did the deposit land."
+      actual_deposit_amount
+          The sum of deposit-type payments — what was REALLY received up
+          front, which is exactly what this field already meant as a
+          manual override of the percentage.
+      final_payment_date / _payment_method
+          The payment that SETTLED the job, and only once the job is
+          genuinely settled. This is the subtle one and it matters more
+          than the rest: commission reads "final_payment_date is not
+          null" as "this invoice is fully paid", so it must never be set
+          by a tranche that merely happens to be the latest one. A job
+          paid 3 of 4 tranches has no final payment date, and nobody
+          gets paid commission on it yet — which is correct.
+
+    Called after EVERY write to the payments list. Never call one
+    without the other.
+    """
+    rows = _quote_payments(session, quote.id, tenant_id)
+    totals = _quote_totals_for(session, quote, tenant_id)
+    total = totals["total_incl_vat"]
+
+    deposits = [p for p in rows if p.payment_type == "deposit"]
+    quote.deposit_paid_date = deposits[0].paid_date if deposits else None
+    quote.deposit_payment_method = (deposits[0].method or "") if deposits else ""
+    quote.actual_deposit_amount = round(sum(p.amount for p in deposits), 2) if deposits else None
+
+    paid = round(sum(p.amount for p in rows), 2)
+    # Half a cent of slack: a 70/30 split of an odd total rounds to a
+    # pair that can miss the total by a cent, and a job that is paid
+    # should not fail to count as paid over rounding dust.
+    if rows and paid >= round(total, 2) - 0.005:
+        settling = max(rows, key=lambda p: (p.paid_date, p.id))
+        quote.final_payment_date = settling.paid_date
+        quote.final_payment_method = settling.method or ""
+    else:
+        quote.final_payment_date = None
+        quote.final_payment_method = ""
+    session.add(quote)
+
+
+def _quote_payment_state(quote: "Quote", totals: dict, payments: list = None) -> dict:
     """Paid / Outstanding, as REAL structured fields (confirmed Sept
     2026, Order Index Redesign brief §3 — "should be real structured
     fields pulled consistently across every job type... not per-status
@@ -8933,6 +9105,31 @@ def _quote_payment_state(quote: "Quote", totals: dict) -> dict:
     deposit_required = not (quote.deposit_pct == 0 and quote.actual_deposit_amount is None)
     deposit_settled = bool(quote.deposit_paid_date) or not deposit_required
     total = totals["total_incl_vat"]
+    # Payments as a List (confirmed Sept 2026) — when a job has real
+    # payment rows, what it has paid is their sum. Nothing derived,
+    # nothing inferred from two milestone dates.
+    #
+    # This is the ONE function that changed for that, deliberately: it
+    # is already documented above as the single place that decides what
+    # a job has paid and still owes, so teaching it about tranches
+    # updates every consumer at once instead of scattering the knowledge.
+    # Its output contract is unchanged, and the branch below is the
+    # untouched original for every job with no payment rows — which is
+    # every job that existed before the backfill, and every job whose
+    # figures were typed into the old form.
+    #
+    # It also closes a gap the shadow alone cannot: a job part-paid
+    # across three tranches has no final_payment_date (correctly — it
+    # is not settled), so the milestone maths below would see only the
+    # deposit and understate what has been received.
+    if payments:
+        paid = round(sum(p.amount for p in payments), 2)
+        return {
+            "amount_paid": min(paid, total),
+            "amount_outstanding": round(max(0.0, total - paid), 2),
+            "deposit_required": deposit_required,
+            "deposit_settled": deposit_settled,
+        }
     paid = 0.0
     if quote.deposit_paid_date:
         paid += totals["deposit_amount"]
@@ -10653,7 +10850,17 @@ def _quote_delete_dependencies(session: Session, quote: "Quote", tenant_id: str)
     ).first()
     if linked_estimate:
         reasons.append(f"is linked to a builder estimate (#{linked_estimate.id})")
-    if quote.deposit_paid_date or quote.final_payment_date:
+    # Payments as a List (confirmed Sept 2026) — asked of the rows, not
+    # only the shadow dates. A job part-paid in tranches has neither a
+    # deposit date nor a final date set (correctly: no deposit, not yet
+    # settled), so the shadow alone would let real recorded money be
+    # deleted without a word.
+    payment_count = len(session.exec(
+        select(QuotePayment).where(QuotePayment.quote_id == quote.id, QuotePayment.tenant_id == tenant_id)
+    ).all())
+    if payment_count:
+        reasons.append(f"has {payment_count} recorded payment(s)")
+    elif quote.deposit_paid_date or quote.final_payment_date:
         reasons.append("has a recorded deposit or final payment")
     return reasons
 
@@ -10702,6 +10909,14 @@ _CASCADE_POLICY = {
         (QuoteLineItem, "quote_id", "cascade", None),
         (OrderSheet, "quote_id", "cascade", None),
         (PaymentFollowUp, "quote_id", "cascade", None),
+        # Payments as a List (confirmed Sept 2026). A payment has no
+        # life outside the job it was paid against, so it goes with it —
+        # same as PaymentFollowUp directly above. Note the job can only
+        # ever reach a delete with payments on it by the owner forcing
+        # past _quote_delete_dependencies, which lists them as a reason
+        # to refuse; this entry is what makes that forced path clean
+        # rather than a Postgres FK 500.
+        (QuotePayment, "quote_id", "cascade", None),
         # Calendar: Multiple Work Days Per Job (confirmed Sept 2026) — a
         # job's extra days have no independent life outside it (same
         # reasoning as PaymentFollowUp above), no further dependents of
@@ -12416,6 +12631,137 @@ def preview_line(category: str,
         return result
 
 
+# ===== Recording a payment (confirmed Sept 2026, Payments as a List) =====
+#
+# Its own write path, deliberately separate from update_quote_details():
+# that endpoint takes the five flat fields straight from the form, and
+# those fields are now DERIVED. Letting both write them would give the
+# job two masters and eventually two different answers.
+#
+# Every one of these three ends the same way — write the row, then
+# _refresh_payment_shadow() — because a payment that does not update the
+# shadow is a payment commission never sees.
+class QuotePaymentRequest(BaseModel):
+    """Its own request model, not the raw table (same reasoning as
+    ToDoCreate/DeclineQuoteRequest elsewhere): id, tenant, quote and the
+    recorded-by/at audit fields must never be client-settable."""
+    amount: float
+    paid_date: str
+    method: str = ""
+    payment_type: str = "extra"
+
+
+def _validated_payment(body: "QuotePaymentRequest"):
+    """Shared checks. An amount of zero or less is not a payment, and a
+    payment with no date is exactly the half-filled state the Financial
+    summary already refuses to treat as paid."""
+    if body.amount is None or body.amount <= 0:
+        raise HTTPException(400, "A payment needs an amount greater than zero.")
+    if not body.paid_date:
+        raise HTTPException(400, "A payment needs the date it was received.")
+    ptype = (body.payment_type or "extra").strip().lower() or "extra"
+    if ptype not in PAYMENT_TYPES:
+        raise HTTPException(400, f"Unknown payment type {ptype!r} - expected one of {', '.join(PAYMENT_TYPES)}.")
+    try:
+        paid = date.fromisoformat(body.paid_date)
+    except ValueError:
+        raise HTTPException(400, "That payment date isn't a real date.")
+    return round(float(body.amount), 2), paid, (body.method or "").strip(), ptype
+
+
+@app.post("/quotes/{quote_id}/payments")
+def add_quote_payment(quote_id: int, body: QuotePaymentRequest, request: Request,
+                      tenant_id: str = Depends(get_current_tenant)):
+    amount, paid, method, ptype = _validated_payment(body)
+    username = scoped_username(request) or ""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        # One deposit per job. The deposit is a position in the payment
+        # plan, not a kind of money — a second one up front is a tranche,
+        # and calling it a deposit would overwrite deposit_paid_date and
+        # quietly move when the job's deposit "landed".
+        if ptype == "deposit":
+            existing = [p for p in _quote_payments(session, quote_id, tenant_id) if p.payment_type == "deposit"]
+            if existing:
+                raise HTTPException(400, "This job already has a deposit recorded - add it as an extra payment, or edit the deposit.")
+        row = QuotePayment(tenant_id=tenant_id, quote_id=quote_id, amount=amount,
+                           paid_date=paid, method=method, payment_type=ptype,
+                           recorded_by=username)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        _refresh_payment_shadow(session, quote, tenant_id)
+        session.commit()
+        session.refresh(quote)
+        return _payment_response(session, quote, tenant_id, row.id)
+
+
+@app.put("/quotes/{quote_id}/payments/{payment_id}")
+def edit_quote_payment(quote_id: int, payment_id: int, body: QuotePaymentRequest,
+                       tenant_id: str = Depends(get_current_tenant)):
+    """Correcting a typo, which is the whole reason the edit control
+    exists. payment_type is deliberately NOT editable here: turning a
+    deposit into an extra (or back) reshuffles which row owns
+    deposit_paid_date, and that is a different action from fixing a
+    date."""
+    amount, paid, method, _ = _validated_payment(body)
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        row = session.get(QuotePayment, payment_id)
+        if not row or row.tenant_id != tenant_id or row.quote_id != quote_id:
+            raise HTTPException(404, "Payment not found on this job.")
+        row.amount, row.paid_date, row.method = amount, paid, method
+        session.add(row)
+        session.commit()
+        _refresh_payment_shadow(session, quote, tenant_id)
+        session.commit()
+        session.refresh(quote)
+        return _payment_response(session, quote, tenant_id, row.id)
+
+
+@app.delete("/quotes/{quote_id}/payments/{payment_id}")
+def delete_quote_payment(quote_id: int, payment_id: int, role: str = Depends(require_owner),
+                         tenant_id: str = Depends(get_current_tenant)):
+    """Owner only. Removing a payment makes a job owe money again, which
+    is a bigger claim than recording one."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        row = session.get(QuotePayment, payment_id)
+        if not row or row.tenant_id != tenant_id or row.quote_id != quote_id:
+            raise HTTPException(404, "Payment not found on this job.")
+        session.delete(row)
+        session.commit()
+        _refresh_payment_shadow(session, quote, tenant_id)
+        session.commit()
+        session.refresh(quote)
+        return _payment_response(session, quote, tenant_id, None)
+
+
+def _payment_response(session, quote, tenant_id: str, payment_id):
+    """What every payment write returns: the full list and the job's
+    resulting money state, so the screen never has to re-fetch to find
+    out what it just did — and the SHADOW FIELDS, so the effect on the
+    fields commission reads is visible rather than assumed."""
+    rows = _quote_payments(session, quote.id, tenant_id)
+    totals = _quote_totals_for(session, quote, tenant_id)
+    return {
+        "payment_id": payment_id,
+        "payments": [{
+            "id": p.id, "amount": round(p.amount, 2), "paid_date": p.paid_date.isoformat(),
+            "method": p.method or "", "payment_type": p.payment_type, "recorded_by": p.recorded_by or "",
+        } for p in rows],
+        "total_incl_vat": totals["total_incl_vat"],
+        **_quote_payment_state(quote, totals, rows),
+        "shadow": {
+            "deposit_paid_date": quote.deposit_paid_date.isoformat() if quote.deposit_paid_date else None,
+            "deposit_payment_method": quote.deposit_payment_method or "",
+            "actual_deposit_amount": quote.actual_deposit_amount,
+            "final_payment_date": quote.final_payment_date.isoformat() if quote.final_payment_date else None,
+            "final_payment_method": quote.final_payment_method or "",
+        },
+    }
+
+
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
     """Per-person visibility (confirmed Sept 2026) — the list endpoint
@@ -12498,6 +12844,10 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
             .order_by(PaymentFollowUp.follow_up_date.desc())
         ).first()
 
+        # Payments as a List (confirmed Sept 2026) — read once, used
+        # twice below: to work out what the job has paid, and to hand
+        # the screen the real rows behind that figure.
+        payment_rows = _quote_payments(session, quote.id, tenant_id)
         response = {
             "quote": quote.dict(),
             "lines": lines_out,
@@ -12517,7 +12867,16 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
             # never disagree with the list that linked here. Replaces the
             # deposit-state test this screen used to make for itself in
             # renderStatusTilesHtml() (order-index.js).
-            **_quote_payment_state(quote, totals),
+            **_quote_payment_state(quote, totals, payment_rows),
+            # Payments as a List (confirmed Sept 2026) — the real rows,
+            # oldest first, so the Financial tab can draw one line per
+            # payment instead of inferring a history from two dates.
+            "payments": [{
+                "id": p.id, "amount": round(p.amount, 2),
+                "paid_date": p.paid_date.isoformat(), "method": p.method or "",
+                "payment_type": p.payment_type,
+                "recorded_by": p.recorded_by or "",
+            } for p in payment_rows],
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # exposed directly, not just folded into next_action's prose,
             # so the frontend can show a clean derived status line
@@ -13133,6 +13492,14 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
         for sheet in session.exec(select(OrderSheet).where(OrderSheet.tenant_id == tenant_id)).all():
             sheets_by_quote.setdefault(sheet.quote_id, []).append(sheet)
 
+        # Payments as a List (confirmed Sept 2026) — same one-query
+        # shape as the order sheets above, for the same reason: the
+        # Order Index reads a payment total for every row, and doing
+        # that per row would be a 52-query round trip to answer one sum.
+        payments_by_quote = {}
+        for pay in session.exec(select(QuotePayment).where(QuotePayment.tenant_id == tenant_id)).all():
+            payments_by_quote.setdefault(pay.quote_id, []).append(pay)
+
         client_address_by_id = {
             cid: addr for cid, addr in session.exec(
                 select(Client.id, Client.address).where(Client.tenant_id == tenant_id)
@@ -13260,7 +13627,7 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # Paid / Outstanding as real structured fields (brief §3) —
             # one helper, shared with get_quote(), replacing four
             # client-side money helpers. See _quote_payment_state().
-            d.update(_quote_payment_state(q, totals))
+            d.update(_quote_payment_state(q, totals, payments_by_quote.get(q.id, [])))
             types = []
             for l in lines:
                 label = None

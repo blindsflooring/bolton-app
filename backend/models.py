@@ -1511,6 +1511,54 @@ class JobWorkDay(SQLModel, table=True):
     notes: str = ""
 
 
+class QuotePayment(SQLModel, table=True):
+    """Payments as a List (confirmed Sept 2026, approved Option B).
+
+    A job's payments are a LIST, not a fixed deposit/final pair. Clients
+    pay in tranches, pay the whole thing in one go after installation,
+    or pay a deposit that has nothing to do with the quoted percentage —
+    none of which two columns can hold.
+
+    DELIBERATELY ADDITIVE, and that is the whole design. The five flat
+    fields on Quote (deposit_paid_date, final_payment_date,
+    actual_deposit_amount, deposit_payment_method, final_payment_method)
+    are NOT replaced. They stay, and are recomputed from these rows on
+    every write by _refresh_payment_shadow() (main.py). Same pattern
+    JobWorkDay used for the calendar: the new table holds the full
+    truth, the old fields keep meaning exactly what they always meant,
+    and every existing reader carries on untouched.
+
+    That is not tidiness, it is the specific thing that stops this
+    change repeating a failure this codebase has already had.
+    Commission selects paid jobs in SQL, straight off
+    Quote.final_payment_date. Commission ALREADY silently stopped
+    calculating once before, when the workflow moved off Quote.status
+    and nothing kept the old field populated (see commission_statement's
+    own comment). Keeping the shadow in step is what makes sure a
+    payment recorded here still pays the person who sold the job.
+
+    payment_type is a plain string, matching every other categorical
+    field on this model set (Quote.status, Lead.lead_status,
+    ToDo.category) — validated at the endpoint so an old row can never
+    fail to load because the allowed set changed later.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    quote_id: int = Field(foreign_key="quote.id", index=True)
+    # What actually arrived, always — never a percentage of anything.
+    # The percentage is a projection and lives on Quote.deposit_pct;
+    # this table only ever records money that really moved.
+    amount: float
+    paid_date: date
+    method: str = ""            # EFT / Cash / Card / Yoco...
+    payment_type: str = "extra"  # "deposit" | "final" | "extra"
+    # Who recorded it, not who paid it — the same audit shape
+    # actual_deposit_amount_by/_at already used for a hand-entered
+    # deposit figure, kept so that provenance is not lost in the move.
+    recorded_by: str = ""
+    recorded_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PaymentFollowUp(SQLModel, table=True):
     """Confirmed Aug 2026 — a quote can need MULTIPLE follow-ups over
     time (first reminder, second reminder...), so this is its own
