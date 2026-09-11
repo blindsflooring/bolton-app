@@ -2007,9 +2007,43 @@ async function printInvoiceForQuote(quoteId) {
   // archive call below: the invoice has already been produced on screen
   // by this point, and a failed status write must not undo that or
   // block the print.
+  //
+  // SECOND FIX (confirmed Sept 2026) — the write above was right, and
+  // J-0004 proved it: after clicking Create Invoice the job really did
+  // have invoice_sent_date set on the server, stage "closed", and no
+  // next_action at all. The backend had recorded everything correctly.
+  // Nothing on screen moved, because nothing re-rendered — the panel
+  // holding that button reads q.invoice_sent_date from the payload
+  // fetched BEFORE the click, so it went on offering "Create Invoice"
+  // for a job that was already invoiced. Clicking again just re-did a
+  // no-op, which is what made it look broken rather than merely stale.
+  //
+  // So: record the outcome, then show it. And say so when it fails,
+  // because a swallowed error here is indistinguishable from success
+  // and leaves the same button sitting there either way.
+  let invoiceRecorded = false;
   try {
-    await fetch(`${API}/quotes/${quoteId}/mark-invoiced`, { method: 'POST' });
-  } catch (e) { /* the print above already happened; the date can still be set by hand on Job Detail */ }
+    const res = await fetch(`${API}/quotes/${quoteId}/mark-invoiced`, { method: 'POST' });
+    invoiceRecorded = res.ok;
+  } catch (e) { invoiceRecorded = false; }
+  if (!invoiceRecorded) {
+    // Deliberately after the fact, never blocking: the invoice has
+    // already been produced and filed by this point, and this must not
+    // undo that. It only explains why the job still says it needs
+    // invoicing, instead of leaving that a mystery.
+    alert("The invoice was created, but Bolton couldn't record that it went out — so the job will still show \"Invoice customer\". Set the Invoice sent date on the job's Financial tab, or try again.");
+  } else if (typeof landingView !== 'undefined' && landingView === 'orderDetail'
+             && typeof currentOrderDetailQuoteId !== 'undefined' && currentOrderDetailQuoteId === quoteId) {
+    // Re-render the job that is actually on screen. Safe to do in place
+    // now: renderOrderDetail() keeps its scroll position and skips the
+    // loading card when it is re-rendering the same job (order-index.js),
+    // so this resolves the action item without the reader being moved.
+    await renderOrderDetail(document.getElementById('landing'));
+  } else if (typeof landingView !== 'undefined' && (landingView === 'orders' || landingView === 'orderIndex')) {
+    // Same staleness on the list and its Needs Attention feed — the row
+    // that offered the button is showing pre-click data too.
+    renderLanding();
+  }
   // Dropbox Document Archive brief v2 (confirmed Aug 2026, §2) — "invoice"
   // has no standalone PDF of its own; confirmed by inspecting
   // buildPrintDocHtml() (shared.js) before building anything here, per
