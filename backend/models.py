@@ -1419,6 +1419,20 @@ class Quote(SQLModel, table=True):
     # flag" precedent as materials_ordered/ready_for_installation
     # themselves.
     materials_not_needed: bool = False
+    # Retail sale (confirmed Sept 2026, Direct Create Invoice brief) — a
+    # job with nothing to install: trims, parts, offcuts, a callout.
+    # Quoted, accepted, handed over, invoiced.
+    #
+    # Its own field rather than inferring "completed with no installation
+    # date", because those are two different facts. A retail sale never
+    # needed a date; an installation job that reached completed without
+    # one is a gap somebody should look at. Inferring would quietly
+    # relabel the second as the first and hide a real problem.
+    #
+    # Exactly mirrors materials_not_needed above, including being
+    # independently toggleable — a job can genuinely be one, the other,
+    # or both.
+    installation_not_needed: bool = False
     # Blinds Ordered (confirmed Sept 2026, Burgert: "get the blinds, even
     # if we only upload the excell pages, to have a button ... to show
     # that its been ordered").

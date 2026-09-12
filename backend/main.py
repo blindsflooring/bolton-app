@@ -648,6 +648,10 @@ def _ensure_new_columns():
         # row is the literal truth: nobody has ever been able to record
         # this, because there was no way to.
         ("quote", "materials_ordered_date", "DATE", "NULL"),
+        # Retail sale (confirmed Sept 2026). False everywhere is the
+        # truth: every job to date went through the installation
+        # pipeline, because there was no other way to invoice one.
+        ("quote", "installation_not_needed", "BOOLEAN", "false"),
         ("todo", "category", "VARCHAR", "'general'"),
         ("todo", "client_id", "INTEGER", "NULL"),
         ("todo", "quote_id", "INTEGER", "NULL"),
@@ -10188,6 +10192,77 @@ def complete_quote(quote_id: int, completion_date: str = None, tenant_id: str = 
         session.commit()
         session.refresh(quote)
         return quote
+
+
+@app.post("/quotes/{quote_id}/complete-as-sale")
+def complete_quote_as_sale(quote_id: int, request: Request,
+                            tenant_id: str = Depends(get_current_tenant),
+                            username: str = Depends(get_current_username)):
+    """ACCEPTED -> COMPLETED for a sale with nothing to install
+    (confirmed Sept 2026, Direct Create Invoice brief).
+
+    The normal route to an invoice runs Materials -> Booking ->
+    Installation -> Completed, which is right for a floor going down and
+    wrong for two trims handed over the counter. complete_quote() above
+    deliberately refuses anything that isn't already scheduled, so a
+    retail sale had no way through at all short of the manual
+    status-override escape hatch, and no way to stop the Booking tile
+    asking for an installation date that is never coming.
+
+    NO NEW INVOICE LOGIC, and that is the answer to the brief's first
+    question. Invoicing was never gated on workflow status: the document
+    builder (buildPrintDocHtml(), shared.js) reads the quote's own lines,
+    client and pricing and never looks at workflow_status, and
+    mark_quote_invoiced() below checks nothing either. Only the button's
+    render condition was gating it. So this endpoint moves the job to a
+    state where that button already appears, and the existing, proven
+    invoice path does the rest, unchanged.
+
+    Records WHY there is no installation date rather than leaving a hole:
+    materials_not_needed and installation_not_needed both go true, which
+    are the same two fields the status tiles already read, so the job
+    reads as settled instead of permanently half-finished.
+    """
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        only_mine = scoped_username(request)
+        if only_mine and quote.sales_owner != only_mine:
+            raise HTTPException(404, "Quote not found")
+        # Accepted only. A quote that has not been accepted has no job
+        # number and no agreed price to invoice against, and a scheduled
+        # job is mid-pipeline — it has an installation date precisely
+        # because someone said it needs one, so completing it as a sale
+        # would be saying the opposite.
+        if quote.workflow_status != "accepted":
+            raise HTTPException(400, f"Only an accepted quote can be invoiced as a direct sale (this one is '{quote.workflow_status}').")
+        quote.workflow_status = "completed"
+        quote.completion_date = date.today()
+        quote.materials_not_needed = True
+        quote.installation_not_needed = True
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="workflow_status", old_value="accepted", new_value="completed (direct sale - nothing to install)",
+        ))
+        session.commit()
+        session.refresh(quote)
+        return {"quote_id": quote.id, "workflow_status": quote.workflow_status,
+                "completion_date": quote.completion_date.isoformat()}
+
+
+@app.post("/quotes/{quote_id}/set-installation-not-needed")
+def set_installation_not_needed(quote_id: int, not_needed: bool = True,
+                                 tenant_id: str = Depends(get_current_tenant)):
+    """The undo for the above, and a standalone toggle — same shape as
+    materials_not_needed's own endpoint. Deliberately does NOT touch
+    workflow_status: saying a job needs no installation is a different
+    statement from saying it is finished."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote.installation_not_needed = not_needed
+        session.add(quote)
+        session.commit()
+        return {"quote_id": quote.id, "installation_not_needed": quote.installation_not_needed}
 
 
 @app.post("/quotes/{quote_id}/mark-invoiced")
