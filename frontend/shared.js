@@ -1111,6 +1111,12 @@ const LANDING_TILES = [
   { id: 'settings', title: 'Business Settings', desc: 'VAT, deposit %, banking, rates', ready: true },
   { id: 'sessionLog', title: 'Login Activity', desc: 'Who logged in, when, for how long', ready: true },
   { id: 'supplierConsole', title: 'Supplier Console', desc: 'Every supplier\'s real data, one place', ready: true },
+  // Supertrim stock order (confirmed Sept 2026). Deliberately NOT
+  // inside Supplier Console: that screen is for maintaining what things
+  // COST, this is for buying them. Different job, different day, and
+  // burying an ordering tool inside a price-maintenance screen is how
+  // it stops getting used.
+  { id: 'supertrimOrder', title: 'Supertrim Order', desc: 'Build a stock order, email it to Supertrim', ready: true },
   { id: 'changeLog', title: 'Change Log', desc: 'Every price book edit, audited', ready: true },
   { id: 'accounts', title: 'Accounts', desc: 'Staff logins, password reset links', ready: true },
   { id: 'builderPortal', title: 'Builder Portal', desc: 'Referral links, orders, commission, reporting', ready: true },
