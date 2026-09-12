@@ -12651,6 +12651,28 @@ class QuotePaymentRequest(BaseModel):
     payment_type: str = "extra"
 
 
+def _payment_quote_or_404(session, quote_id: int, tenant_id: str, request: "Request"):
+    """The job a payment is being written against, or 404.
+
+    Tenant scoping alone is not enough, for exactly the reason
+    get_quote() gives: a person-scoped role could otherwise reach a job
+    it cannot open simply by guessing the id in the URL. Recording a
+    payment is a stronger action than reading, so it cannot be looser
+    about who the job belongs to — without this, a rep could mark
+    another rep's job paid, which sets final_payment_date and moves
+    someone else's commission.
+
+    404 rather than 403, matching get_quote(): a "not allowed" answer
+    confirms the record exists, which is itself something a rep should
+    not learn about another rep's client.
+    """
+    quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+    only_mine = scoped_username(request)
+    if only_mine and quote.sales_owner != only_mine:
+        raise HTTPException(404, "Quote not found")
+    return quote
+
+
 def _validated_payment(body: "QuotePaymentRequest"):
     """Shared checks. An amount of zero or less is not a payment, and a
     payment with no date is exactly the half-filled state the Financial
@@ -12675,7 +12697,7 @@ def add_quote_payment(quote_id: int, body: QuotePaymentRequest, request: Request
     amount, paid, method, ptype = _validated_payment(body)
     username = scoped_username(request) or ""
     with Session(engine) as session:
-        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = _payment_quote_or_404(session, quote_id, tenant_id, request)
         # One deposit per job. The deposit is a position in the payment
         # plan, not a kind of money — a second one up front is a tranche,
         # and calling it a deposit would overwrite deposit_paid_date and
@@ -12697,7 +12719,7 @@ def add_quote_payment(quote_id: int, body: QuotePaymentRequest, request: Request
 
 
 @app.put("/quotes/{quote_id}/payments/{payment_id}")
-def edit_quote_payment(quote_id: int, payment_id: int, body: QuotePaymentRequest,
+def edit_quote_payment(quote_id: int, payment_id: int, body: QuotePaymentRequest, request: Request,
                        tenant_id: str = Depends(get_current_tenant)):
     """Correcting a typo, which is the whole reason the edit control
     exists. payment_type is deliberately NOT editable here: turning a
@@ -12706,7 +12728,7 @@ def edit_quote_payment(quote_id: int, payment_id: int, body: QuotePaymentRequest
     date."""
     amount, paid, method, _ = _validated_payment(body)
     with Session(engine) as session:
-        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote = _payment_quote_or_404(session, quote_id, tenant_id, request)
         row = session.get(QuotePayment, payment_id)
         if not row or row.tenant_id != tenant_id or row.quote_id != quote_id:
             raise HTTPException(404, "Payment not found on this job.")
