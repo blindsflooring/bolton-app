@@ -3258,6 +3258,96 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
                 "profit": round(sum(profit_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
             }
 
+        # ===== Month by month, and the year so far (confirmed Sept 2026,
+        # Burgert: "per month turnover and also tallying up as a running
+        # total for the year... with that also as a running total and
+        # per month total of the profit, its a very easy way to see the
+        # business health at a glance") =====
+        #
+        # Bucketed on accepted_at, the same date every other figure on
+        # this screen already calls "won", in SAST for the same reason
+        # today/month already are. That is also what makes the monthly
+        # series reconcile with the Order Index's Turnover banner — both
+        # count a job in the month the work LANDED, not the month it was
+        # quoted or the month the money arrived.
+        #
+        # Twelve months back from this one, oldest first, so it reads
+        # left to right the way a year does. Months with nothing in them
+        # are kept rather than skipped: a gap in trade is information,
+        # and a chart that silently closes it up lies about the shape of
+        # the year.
+        def month_key(d):
+            return (d.year, d.month)
+
+        months_back = 12
+        series_keys = []
+        y, m = today_sast.year, today_sast.month
+        for _ in range(months_back):
+            series_keys.append((y, m))
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        series_keys.reverse()
+
+        # Outstanding, per month AND as one running figure. The running
+        # one is deliberately NOT month-scoped: money owed is owed
+        # whenever it was sold, so scoping it to a month would quietly
+        # drop the older debt that matters most. Both come from
+        # _quote_payment_state(), the single source for what a job has
+        # paid and still owes.
+        payments_for_outstanding = {}
+        for pay in session.exec(select(QuotePayment).where(QuotePayment.tenant_id == tenant_id)).all():
+            payments_for_outstanding.setdefault(pay.quote_id, []).append(pay)
+
+        outstanding_by_quote, total_by_quote = {}, {}
+        for q in quotes:
+            subtotal = subtotal_by_quote.get(q.id, 0.0) + q.transport_levy
+            t = _quote_totals(subtotal, q, VAT_PCT)
+            st = _quote_payment_state(q, t, payments_for_outstanding.get(q.id, []))
+            outstanding_by_quote[q.id] = st["amount_outstanding"]
+            total_by_quote[q.id] = t["total_incl_vat"]
+
+        # Only work that LANDED can be owed on, and a declined or expired
+        # quote owes nothing — same rule the Order Index applies.
+        owing_quotes = [q for q in won_quotes if not q.declined_at]
+        outstanding_running = round(sum(outstanding_by_quote.get(q.id, 0.0) for q in owing_quotes), 2)
+
+        monthly = []
+        running_sales = running_profit = 0.0
+        for (yy, mm) in series_keys:
+            # owing_quotes, not won_quotes: a job accepted and later
+            # declined is not turnover, and the Order Index's own
+            # Turnover banner excludes it too (dead is dead, one place).
+            # Using different sets here would put two different numbers
+            # for the same month on two screens.
+            in_month = [q for q in owing_quotes
+                        if accepted_date_sast(q) is not None and month_key(accepted_date_sast(q)) == (yy, mm)]
+            fig = sales_profit_for(in_month)
+            # Year-to-date resets in January, so the running column
+            # answers "how is THIS year going" rather than a rolling
+            # twelve-month figure that never starts anywhere.
+            if mm == 1:
+                running_sales = running_profit = 0.0
+            running_sales = round(running_sales + fig["sales"], 2)
+            running_profit = round(running_profit + fig["profit"], 2)
+            monthly.append({
+                "year": yy, "month": mm,
+                "key": f"{yy}-{mm:02d}",
+                "label": date(yy, mm, 1).strftime("%b"),
+                "label_long": date(yy, mm, 1).strftime("%b %Y"),
+                "is_current": (yy, mm) == (today_sast.year, today_sast.month),
+                **fig,
+                "count": len(in_month),
+                # What of THIS month's landed work is still unpaid.
+                "outstanding": round(sum(outstanding_by_quote.get(q.id, 0.0) for q in in_month), 2),
+                "ytd_sales": running_sales,
+                "ytd_profit": running_profit,
+            })
+
+        this_month = next((x for x in monthly if x["is_current"]), None)
+        prev_key = series_keys[-2] if len(series_keys) > 1 else None
+        prev_month = next((x for x in monthly if (x["year"], x["month"]) == prev_key), None) if prev_key else None
+
         today_quotes = [q for q in won_quotes if accepted_date_sast(q) == today_sast]
         month_quotes = [q for q in won_quotes if accepted_date_sast(q) is not None and month_start_sast <= accepted_date_sast(q) <= today_sast]
 
@@ -3421,6 +3511,14 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             "by_rep": by_rep,
             "today": sales_profit_for(today_quotes),
             "month": sales_profit_for(month_quotes),
+            # Month by month + year to date (confirmed Sept 2026).
+            # this_month/previous_month are pulled from the same series
+            # rather than computed again, so the comparison can never
+            # disagree with the row it is comparing against.
+            "monthly": monthly,
+            "this_month": this_month,
+            "previous_month": prev_month,
+            "outstanding_running": outstanding_running,
             "weekly_graph": weekly_graph,
             # Daily quoted value by branch (confirmed Sept 2026) —
             # branches shipped alongside the rows so the chart can build
@@ -13938,6 +14036,15 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # refreshes it.
             d["is_quoted_today"] = (sast_date(q.created_at) == today_sast) and q.declined_at is None
             d["is_sold_today"] = sast_date(q.accepted_at) == today_sast
+            # The date the work LANDED, as a SAST calendar date
+            # (confirmed Sept 2026, monthly turnover). Exposed as the
+            # already-shifted date rather than the raw UTC timestamp
+            # precisely so the Order Index cannot bucket it into the
+            # wrong month: a job accepted at 00:30 SAST is 22:30 UTC the
+            # previous day, which on the 1st of a month is the previous
+            # MONTH. sast_date() is the same helper the KPI screen's own
+            # monthly series uses, so both land on the same month.
+            d["accepted_date"] = sast_date(q.accepted_at).isoformat() if q.accepted_at else None
             # Job Workflow Design Proposal Phase 1 (confirmed Aug 2026) —
             # same direct field as get_quote() above.
             d["materials_ordered"] = row_materials_ordered

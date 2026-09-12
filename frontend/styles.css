@@ -1287,7 +1287,29 @@
     font-size: 12px; color: var(--ink-soft, #6b7280); font-variant-numeric: tabular-nums;
   }
   .oi-turnover-split b { color: var(--margin-green, #3C9D5C); }
-  .oi-turnover-owed b { color: var(--coral); }
+  .oi-turnover-prev { color: var(--ink-soft, #6b7280) !important; }
+  /* Month on month, as a direction. Green up / coral down is the one
+     place on this banner colour carries meaning, so the figures
+     themselves stay neutral and the arrow does the work. */
+  .oi-turnover-delta { font-size: 13px; font-weight: 700; margin-left: 10px; }
+  .oi-turnover-delta.is-up { color: var(--margin-green, #3C9D5C); }
+  .oi-turnover-delta.is-down { color: var(--coral); }
+  /* Outstanding gets its own row, not a slot in the month line — it is
+     a running figure across the whole book while everything above it is
+     scoped to a month, and sitting them together invited reading the
+     debt as this month's. */
+  .oi-turnover-owed-row {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border);
+  }
+  .oi-turnover-owed-label {
+    font-family: 'Poppins', sans-serif; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; font-weight: 700; color: var(--ink-faint, #8A93A0);
+  }
+  .oi-turnover-owed-figure {
+    font-family: 'Poppins', sans-serif; font-size: 17px; font-weight: 700;
+    color: var(--coral); font-variant-numeric: tabular-nums;
+  }
   .oi-turnover-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
   .oi-turnover-chip {
     background: none; border: 1px solid var(--border); border-radius: 999px;
@@ -1304,6 +1326,25 @@
   }
   .oi-group-quotes { opacity: .92; }
   .oi-group-quotes .oi-group-title { color: var(--ink-soft, #6b7280); }
+
+  /* Month by month (confirmed Sept 2026). Figures line up down the
+     column with tabular figures, because the whole point is scanning a
+     trend rather than reading a row. */
+  .mth-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .mth-table th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    font-weight: 700; color: var(--ink-faint, #8A93A0); padding: 0 12px 6px 0;
+    border-bottom: 1.5px solid var(--border); white-space: nowrap;
+  }
+  .mth-table td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .mth-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mth-table td:last-child, .mth-table th:last-child { padding-right: 0; }
+  /* The year-to-date pair is a different question from the month beside
+     it, so it gets its own weight rather than blending into the row. */
+  .mth-ytd { color: var(--navy); font-weight: 700; }
+  .mth-owed { color: var(--coral); font-weight: 600; }
+  .mth-current { background: var(--cream); }
+  .mth-current td { font-weight: 700; }
 
   /* ===== Payments as a List (confirmed Sept 2026, Option B) =====
      Replaces the progressive-disclosure pill/pencil styles. Green and
