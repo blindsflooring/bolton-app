@@ -1179,6 +1179,10 @@ function visibleLandingTiles() {
 // that existing state, without ever changing the address bar — a
 // well-established pattern for a single-URL SPA with no server-side
 // routes to match anyway.
+// Which landing view was rendered last, so a screen can tell "I am
+// being entered" from "I am re-rendering". Used by the Order Index to
+// open on its front page (renderLanding(), index.html).
+let lastLandingView = null;
 let restoringNavState = false;   // guards popstate's own render calls from re-pushing a new history entry, which would turn "back" into a no-op
 let nextNavIsBaseline = false;   // set once, by showApp() right after login — that first render establishes the history baseline (replaceState) instead of pushing a new entry on top of nothing
 

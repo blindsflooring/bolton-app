@@ -1664,6 +1664,27 @@ function renderLanding() {
   // See body.order-index-active (styles.css) for why this screen needs
   // more than the shared 900px reading width.
   document.body.classList.toggle('order-index-active', landingView === 'orders');
+  // Order Index opens on its front page (confirmed Sept 2026) — arriving
+  // from anywhere else clears whichever tile was last drilled into.
+  // orderIndexDrillStage is module-level and survived the trip, so
+  // coming back from a job, or in from Home an hour later, reopened a
+  // list you had finished with instead of the dashboard.
+  //
+  // Guarded on restoringNavState, and that guard is the point: the
+  // browser back button DELIBERATELY restores the drill (navSnapshot(),
+  // shared.js) so back from a job walks job -> drill-down -> dashboard
+  // the way you came. Resetting there would collapse two steps into one
+  // and break the one navigation that was already right.
+  //
+  // Sited here rather than at the half-dozen `landingView='orders'`
+  // call sites for the reason this whole function exists: every "go to
+  // a different screen" path already passes through it, so none of them
+  // needed touching, and a future one cannot forget.
+  if (landingView === 'orders' && lastLandingView !== 'orders' && !restoringNavState) {
+    if (typeof orderIndexDrillStage !== 'undefined') orderIndexDrillStage = null;
+    if (typeof orderIndexSearchTerm !== 'undefined') orderIndexSearchTerm = '';
+  }
+  lastLandingView = landingView;
   if (landingView === 'tiles') return renderLandingTiles(el);
   if (landingView === 'flooring-drill') return renderFlooringDrill(el);
   if (landingView === 'blinds') return renderBlindsScreen(el);

@@ -624,7 +624,29 @@ function populateCarpetTypeProducts(type, preselectRange) {
   // ("Pick a product first."), so this placeholder is enough on its
   // own — no other change needed to block an accidental add.
   sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>— Choose a product —</option>` +
-    products.map(p => `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${p.product_name}${p.colour ? ' — ' + p.colour : ''}</option>`).join('');
+    products.map(p => {
+      // Supplier and the discontinuing flag, on the option itself
+      // (confirmed Sept 2026, Nouwens Carpets brief). Two things
+      // changed with a second carpet supplier arriving:
+      //
+      // The list used to show the range name alone, which was
+      // unambiguous while every broadloom carpet came from one
+      // supplier. It no longer does — Nouwens and Belgotex both sell
+      // ranges, at different roll widths and different cutting fees, so
+      // picking the wrong one is a real pricing error and the name on
+      // its own does not let anyone tell them apart.
+      //
+      // And the brief asks for a discontinuing range to be flagged
+      // here rather than hidden, "since it may still be quotable while
+      // stock lasts" — which is exactly what the discontinued field
+      // already means (models.py: flagged, never hidden, still fully
+      // usable). This is where that flag becomes visible at the moment
+      // of choosing.
+      const bits = [p.product_name];
+      if (p.colour) bits.push(p.colour);
+      const tail = [p.supplier, p.discontinued ? 'discontinuing' : ''].filter(Boolean).join(', ');
+      return `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${bits.join(' — ')}${tail ? `  (${tail})` : ''}</option>`;
+    }).join('');
   scheduleCarpetPreview();
 }
 
