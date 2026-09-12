@@ -520,6 +520,10 @@ def _ensure_new_columns():
         # Build Brief) — added to the model AND here together, same
         # discipline as every migration above.
         ("flooringproduct", "roll_width_m", "FLOAT", "NULL"),
+        # Per-supplier cutting fee (confirmed Sept 2026) — NULL on every
+        # existing row keeps them on the category default they already
+        # used, so nothing in the book changes price.
+        ("flooringproduct", "cutting_fee", "FLOAT", "NULL"),
         ("quotelineitem", "carpet_category", "VARCHAR", "NULL"),
         ("quotelineitem", "quantity_lm", "FLOAT", "NULL"),
         ("quotelineitem", "gripper_perimeter_m", "FLOAT", "NULL"),
@@ -11947,7 +11951,17 @@ def _compute_carpet_calc(session: Session, tenant_id: str, product_id: int, quan
         labour_rate_per_m2 if labour_rate_per_m2 is not None
         else (product.labour_rate_per_m2 if product.labour_rate_per_m2 is not None else settings.default_labour_rate_per_m2)
     )
-    cutting_fee_rate = settings.carpet_cushion_vinyl_cutting_fee if product.flooring_category == "cushion_vinyl" else settings.carpet_cutting_fee
+    # Product's own rate first, category default otherwise (confirmed
+    # Sept 2026, Nouwens via Fotakis at R165 against Belgotex's R350).
+    # Same precedence as resolved_labour_rate just above — and the
+    # reason it is per-product rather than per-supplier-string is that
+    # "supplier" here is free text, so keying a price off it would make
+    # a typo silently change what a job costs.
+    cutting_fee_rate = (
+        product.cutting_fee if product.cutting_fee is not None
+        else (settings.carpet_cushion_vinyl_cutting_fee if product.flooring_category == "cushion_vinyl"
+              else settings.carpet_cutting_fee)
+    )
     gripper_cost_per_lm = (settings.carpet_gripper_cost_per_box / settings.carpet_gripper_lm_per_box) if settings.carpet_gripper_lm_per_box else 0.0
     calc = calculate_carpet_line(
         product, quantity_lm, discount_pct=discount_pct, markup_override=markup_override,

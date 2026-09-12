@@ -439,6 +439,21 @@ class FlooringProduct(SQLModel, table=True):
     # follows. None for every other flooring_category — box/tile
     # products keep using m2_per_pack exactly as before, untouched.
     roll_width_m: Optional[float] = None
+    # Per-supplier cutting fee (confirmed Sept 2026, Nouwens Carpets via
+    # Fotakis). Width and trade discount were ALREADY per-product
+    # (roll_width_m above, trade_discount_pct) — the cutting fee was the
+    # one commercial term still global: BusinessSettings.carpet_cutting_fee,
+    # R350, shared by every broadloom carpet in the book. Fotakis charge
+    # R165 on Nouwens, so onboarding them at the global rate would have
+    # overcharged by R185 a cut, and changing the global would have done
+    # the same to Belgotex in reverse.
+    #
+    # Nullable on purpose: NULL means "use the category default", which
+    # is every product that existed before this and every future one
+    # whose supplier charges the standard rate. Exactly the shape
+    # labour_rate_per_m2 above already uses — product override first,
+    # settings default otherwise.
+    cutting_fee: Optional[float] = None
     unit: str = "m2"
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     source: str = "manual"           # "manual" | "pdf_import" | "legacy_import"
