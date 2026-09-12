@@ -32,6 +32,7 @@ from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp, QuotePayment,
+    LoginFailure,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
@@ -259,13 +260,30 @@ async def require_auth(request: Request, call_next):
 FRONTEND_ORIGINS = [
     "https://bolton-frontend.onrender.com",
 ]
+# Local origins are a DEVELOPMENT convenience and must not be live in
+# production (confirmed Sept 2026, security pass). Until now this regex
+# was unconditional, so the deployed API accepted cross-origin calls
+# from any page served on localhost — meaning something running locally
+# on a staff machine could call the real API with that person's session.
+# Narrow, but it is a door that was open for no reason.
+#
+# Keyed on RENDER, which Render sets on every deploy and nothing sets on
+# a laptop, so this needs no new configuration and cannot be forgotten.
+# ALLOW_LOCAL_ORIGINS=true is the deliberate override, for the case where
+# the hosted API genuinely has to be reachable from a local frontend.
+_ON_RENDER = bool(os.environ.get("RENDER") or os.environ.get("RENDER_GIT_COMMIT"))
+ALLOW_LOCAL_ORIGINS = (os.environ.get("ALLOW_LOCAL_ORIGINS", "").strip().lower() == "true") or not _ON_RENDER
+_cors_kwargs = {}
+if ALLOW_LOCAL_ORIGINS:
+    _cors_kwargs["allow_origin_regex"] = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
+print(f"CORS: {FRONTEND_ORIGINS}" + (" + local dev origins" if ALLOW_LOCAL_ORIGINS else " (local origins OFF — running on Render)"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",  # local dev only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_kwargs,
 )
 
 
@@ -626,6 +644,14 @@ def _ensure_new_columns():
         # before this had a category, and a plain reminder is exactly
         # what general means. NULL links likewise: no to-do has ever
         # pointed at a job.
+        # Blinds Ordered (confirmed Sept 2026) — NULL on every existing
+        # row is the literal truth: nobody has ever been able to record
+        # this, because there was no way to.
+        ("quote", "materials_ordered_date", "DATE", "NULL"),
+        # Retail sale (confirmed Sept 2026). False everywhere is the
+        # truth: every job to date went through the installation
+        # pipeline, because there was no other way to invoice one.
+        ("quote", "installation_not_needed", "BOOLEAN", "false"),
         ("todo", "category", "VARCHAR", "'general'"),
         ("todo", "client_id", "INTEGER", "NULL"),
         ("todo", "quote_id", "INTEGER", "NULL"),
@@ -2388,17 +2414,102 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+# ===== Login throttling (confirmed Sept 2026, security pass) =====
+#
+# Eight wrong passwords in fifteen minutes and that name stops being
+# accepted until the window rolls off. Numbers chosen for a four-person
+# business: nobody fat-fingers a password eight times in a quarter of an
+# hour, and eight guesses per quarter-hour is useless to an attacker.
+LOGIN_MAX_FAILURES = 8
+# The IP limit is deliberately far looser than the per-name one, and
+# that gap is the whole point. Burgert, Ryno and Madri work out of the
+# same shop on the same connection, so they share an IP — tested at the
+# same threshold as the username and three people fumbling passwords
+# between them locked the entire office out after eight tries. A limit
+# that punishes a team for being in one building is worse than no limit.
+#
+# So the IP count only exists to catch the other shape of attack: one
+# host working THROUGH a list of usernames, where no single name ever
+# reaches eight. Twenty-five in a quarter of an hour is far past
+# anything three people do by accident and still nowhere near enough to
+# guess a password.
+LOGIN_MAX_FAILURES_PER_IP = 25
+LOGIN_WINDOW = timedelta(minutes=15)
+
+
+def _client_ip(request: "Request") -> str:
+    """Best available client address.
+
+    CF-Connecting-IP first, and it is the one worth trusting:
+    Cloudflare fronts this API (confirmed by the CF-RAY header on live
+    responses) and sets that header itself, overwriting anything the
+    caller sent. X-Forwarded-For is client-supplied at the first hop and
+    therefore spoofable, so it is only a fallback for running without
+    Cloudflare in front.
+    """
+    for header in ("cf-connecting-ip", "x-forwarded-for"):
+        raw = request.headers.get(header)
+        if raw:
+            return raw.split(",")[0].strip()[:45]
+    return (request.client.host if request.client else "")[:45]
+
+
+def _login_lock_remaining(session, username: str, ip: str):
+    """Minutes until this login is accepted again, or None if it is not
+    locked.
+
+    Locks on the USERNAME, and on the IP as a secondary. The username is
+    the primary deliberately, because it is the half an attacker cannot
+    forge — X-Forwarded-For can be spoofed, so an IP-only lock would be
+    trivially evaded by the very traffic it exists to stop.
+
+    The tradeoff, stated rather than hidden: someone who knows a
+    username can keep that person locked out by failing against it on
+    purpose. That is a real denial of service, and it is accepted as the
+    lesser problem — fifteen minutes of inconvenience against the
+    alternative, which is unlimited password guesses. It expires on its
+    own, it clears the moment a correct password is used, and
+    /admin/login-failures shows exactly what is happening.
+    """
+    since = datetime.utcnow() - LOGIN_WINDOW
+    rows = session.exec(select(LoginFailure).where(LoginFailure.at >= since)).all()
+    for matches, limit in (([r for r in rows if r.username == username], LOGIN_MAX_FAILURES),
+                           ([r for r in rows if ip and r.ip == ip], LOGIN_MAX_FAILURES_PER_IP)):
+        if len(matches) >= limit:
+            oldest = min(r.at for r in matches)
+            mins = int((oldest + LOGIN_WINDOW - datetime.utcnow()).total_seconds() // 60) + 1
+            return max(1, mins)
+    return None
+
+
 @app.post("/auth/login")
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request):
     # Body, not query params (unlike the rest of this API's endpoints) —
     # deliberate: credentials must never land in a URL, where they'd be
     # captured by Render/proxy access logs and browser history.
+    typed_username = body.username.strip().lower()
+    ip = _client_ip(request)
     with Session(engine) as session:
-        user = session.exec(select(User).where(User.username == body.username.strip().lower())).first()
+        # Throttle check runs BEFORE the user lookup, on the string that
+        # was typed. That ordering is the point: a real username and a
+        # made-up one get the identical response, so the lockout cannot
+        # be used to find out which accounts exist — the same reasoning
+        # as the shared error message below.
+        locked = _login_lock_remaining(session, typed_username, ip)
+        if locked:
+            raise HTTPException(429, f"Too many failed login attempts. Try again in {locked} minute{'s' if locked != 1 else ''}.")
+        user = session.exec(select(User).where(User.username == typed_username)).first()
         # Deliberately identical error for "no such user" and "wrong
         # password" — doesn't leak which usernames exist.
         if not user or not user.active or not verify_password(body.password, user.password_hash):
+            session.add(LoginFailure(username=typed_username, ip=ip))
+            session.commit()
             raise HTTPException(401, "Incorrect username or password")
+        # A correct password clears this name's record immediately, so
+        # someone who mistyped a few times does not carry that against
+        # themselves for the rest of the window.
+        for stale in session.exec(select(LoginFailure).where(LoginFailure.username == typed_username)).all():
+            session.delete(stale)
         # Single Active Session per User (confirmed Aug 2026) — root
         # cause of multiple simultaneous "Still active" sessions for the
         # same person: staff close the browser/app instead of clicking
@@ -4836,6 +4947,57 @@ def builder_access_log(start_date: Optional[str] = None, end_date: Optional[str]
             "visit_count": sum(1 for ev in events if ev["type"] == "visit"),
             "estimate_count": sum(1 for ev in events if ev["type"] == "estimate"),
             "builders": sorted({ev["builder_name"] for ev in events}),
+        }
+
+
+@app.get("/admin/login-failures")
+def login_failures(role: str = Depends(require_owner)):
+    """Failed logins in the current window, Owner-only.
+
+    Sits beside /admin/session-log, which records who got IN; this is
+    who did not. Together they answer "is someone trying my app", which
+    previously had no answer at all.
+
+    Grouped rather than listed raw, because the useful question is "is
+    any name close to being locked out, and from where", not a scroll of
+    timestamps.
+    """
+    since = datetime.utcnow() - LOGIN_WINDOW
+    with Session(engine) as session:
+        rows = session.exec(select(LoginFailure).where(LoginFailure.at >= since)
+                            .order_by(LoginFailure.at.desc())).all()
+        by_name = {}
+        for r in rows:
+            g = by_name.setdefault(r.username, {"username": r.username, "attempts": 0, "ips": set(), "last_at": r.at})
+            g["attempts"] += 1
+            if r.ip: g["ips"].add(r.ip)
+            g["last_at"] = max(g["last_at"], r.at)
+        by_ip = {}
+        for r in rows:
+            if not r.ip: continue
+            b = by_ip.setdefault(r.ip, {"ip": r.ip, "attempts": 0, "usernames": set()})
+            b["attempts"] += 1
+            b["usernames"].add(r.username)
+        locked_ips = {ip for ip, b in by_ip.items() if b["attempts"] >= LOGIN_MAX_FAILURES_PER_IP}
+        return {
+            "window_minutes": int(LOGIN_WINDOW.total_seconds() // 60),
+            "lock_threshold_per_username": LOGIN_MAX_FAILURES,
+            "lock_threshold_per_ip": LOGIN_MAX_FAILURES_PER_IP,
+            "total_failures_in_window": len(rows),
+            # locked reflects BOTH limits. Reporting only the per-name
+            # count showed someone as free to log in while the IP limit
+            # was in fact turning them away — found by testing, and a
+            # status line that disagrees with the door is worse than
+            # none.
+            "by_username": sorted([
+                {"username": g["username"], "attempts": g["attempts"], "ips": sorted(g["ips"]),
+                 "last_at": g["last_at"].isoformat(),
+                 "locked": g["attempts"] >= LOGIN_MAX_FAILURES or bool(g["ips"] & locked_ips)}
+                for g in by_name.values()], key=lambda x: -x["attempts"]),
+            "by_ip": sorted([
+                {"ip": b["ip"], "attempts": b["attempts"], "usernames": sorted(b["usernames"]),
+                 "locked": b["attempts"] >= LOGIN_MAX_FAILURES_PER_IP}
+                for b in by_ip.values()], key=lambda x: -x["attempts"]),
         }
 
 
@@ -8619,6 +8781,39 @@ def _all_sheets_placed(order_sheets: list) -> bool:
     return bool(order_sheets) and all(s.status == "placed" for s in order_sheets)
 
 
+def _materials_ordered(quote: "Quote", order_sheets: list) -> bool:
+    """Has this job's stock actually been ordered?
+
+    Two ways to be true, and which one applies is decided by whether the
+    job can produce an Order Sheet at all:
+
+      - it produced sheets and they are all placed (_all_sheets_placed
+        above, unchanged — the derivation that replaced a manual
+        checkbox and should stay the truth wherever it applies), or
+      - it produced none and somebody said so by hand.
+
+    The second case is not a loophole, it is the only option for a whole
+    product line: generate_order_sheets() excludes blinds by design, so
+    a blinds job has no sheet to place and would otherwise be stuck
+    reading "not yet ordered" for the rest of its life.
+
+    Sheets win where they exist — the manual date is never offered on a
+    job that has them (update_quote_materials refuses it), so the two can
+    never disagree about the same job.
+    """
+    return _all_sheets_placed(order_sheets) or bool(quote.materials_ordered_date)
+
+
+def _materials_ordered_at(quote: "Quote", order_sheets: list):
+    """WHEN the supplier clock started, which the two-week chase line
+    measures from. Same precedence as above: the last sheet placed, or
+    the hand-recorded date for a job that has no sheets."""
+    placed = [sh.placed_at for sh in order_sheets if sh.placed_at]
+    if placed and _all_sheets_placed(order_sheets):
+        return max(placed).date()
+    return quote.materials_ordered_date
+
+
 def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str) -> bool:
     """Convenience wrapper over _all_sheets_placed() for callers (e.g.
     list_quotes()) that don't already have the job's Order Sheets
@@ -9954,6 +10149,22 @@ def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if materials_ordered is not None:
             quote.materials_ordered = materials_ordered
+            # Blinds Ordered (confirmed Sept 2026) — record WHEN, not
+            # just that. The two-week chase line measures from the date
+            # the order was placed, so a bare flag would light the
+            # Materials tile and leave the chasing just as broken as it
+            # was, on the one product that line was built for.
+            #
+            # Refused outright on a job that has Order Sheets: those are
+            # the real record of an order being placed, and a second
+            # control writing the same fact is how two sources of truth
+            # start disagreeing. Such a job already has "Mark as Placed"
+            # on the sheet itself, which is the honest way to say this.
+            sheets = session.exec(select(OrderSheet).where(
+                OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
+            if sheets:
+                raise HTTPException(400, "This job has Order Sheets - mark the sheet itself as placed, so there's one record of when it was ordered.")
+            quote.materials_ordered_date = date.today() if materials_ordered else None
         if ready_for_installation is not None:
             quote.ready_for_installation = ready_for_installation
         if installer_team is not None:
@@ -9981,6 +10192,77 @@ def complete_quote(quote_id: int, completion_date: str = None, tenant_id: str = 
         session.commit()
         session.refresh(quote)
         return quote
+
+
+@app.post("/quotes/{quote_id}/complete-as-sale")
+def complete_quote_as_sale(quote_id: int, request: Request,
+                            tenant_id: str = Depends(get_current_tenant),
+                            username: str = Depends(get_current_username)):
+    """ACCEPTED -> COMPLETED for a sale with nothing to install
+    (confirmed Sept 2026, Direct Create Invoice brief).
+
+    The normal route to an invoice runs Materials -> Booking ->
+    Installation -> Completed, which is right for a floor going down and
+    wrong for two trims handed over the counter. complete_quote() above
+    deliberately refuses anything that isn't already scheduled, so a
+    retail sale had no way through at all short of the manual
+    status-override escape hatch, and no way to stop the Booking tile
+    asking for an installation date that is never coming.
+
+    NO NEW INVOICE LOGIC, and that is the answer to the brief's first
+    question. Invoicing was never gated on workflow status: the document
+    builder (buildPrintDocHtml(), shared.js) reads the quote's own lines,
+    client and pricing and never looks at workflow_status, and
+    mark_quote_invoiced() below checks nothing either. Only the button's
+    render condition was gating it. So this endpoint moves the job to a
+    state where that button already appears, and the existing, proven
+    invoice path does the rest, unchanged.
+
+    Records WHY there is no installation date rather than leaving a hole:
+    materials_not_needed and installation_not_needed both go true, which
+    are the same two fields the status tiles already read, so the job
+    reads as settled instead of permanently half-finished.
+    """
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        only_mine = scoped_username(request)
+        if only_mine and quote.sales_owner != only_mine:
+            raise HTTPException(404, "Quote not found")
+        # Accepted only. A quote that has not been accepted has no job
+        # number and no agreed price to invoice against, and a scheduled
+        # job is mid-pipeline — it has an installation date precisely
+        # because someone said it needs one, so completing it as a sale
+        # would be saying the opposite.
+        if quote.workflow_status != "accepted":
+            raise HTTPException(400, f"Only an accepted quote can be invoiced as a direct sale (this one is '{quote.workflow_status}').")
+        quote.workflow_status = "completed"
+        quote.completion_date = date.today()
+        quote.materials_not_needed = True
+        quote.installation_not_needed = True
+        session.add(quote)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="Quote", entity_id=quote.id,
+            field="workflow_status", old_value="accepted", new_value="completed (direct sale - nothing to install)",
+        ))
+        session.commit()
+        session.refresh(quote)
+        return {"quote_id": quote.id, "workflow_status": quote.workflow_status,
+                "completion_date": quote.completion_date.isoformat()}
+
+
+@app.post("/quotes/{quote_id}/set-installation-not-needed")
+def set_installation_not_needed(quote_id: int, not_needed: bool = True,
+                                 tenant_id: str = Depends(get_current_tenant)):
+    """The undo for the above, and a standalone toggle — same shape as
+    materials_not_needed's own endpoint. Deliberately does NOT touch
+    workflow_status: saying a job needs no installation is a different
+    statement from saying it is finished."""
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        quote.installation_not_needed = not_needed
+        session.add(quote)
+        session.commit()
+        return {"quote_id": quote.id, "installation_not_needed": quote.installation_not_needed}
 
 
 @app.post("/quotes/{quote_id}/mark-invoiced")
@@ -12857,7 +13139,7 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
         # both materials_ordered and job_steps below, rather than
         # querying OrderSheet twice in the same request.
         order_sheets_for_workflow = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
-        materials_ordered_flag = _all_sheets_placed(order_sheets_for_workflow)
+        materials_ordered_flag = _materials_ordered(quote, order_sheets_for_workflow)
         # Logged Follow-Up Doesn't Clear Needs Attention Flag (confirmed
         # Sept 2026) — the most recent real follow-up on this job, if
         # any; _job_workflow_info() uses it to reset the staleness clock.
@@ -12904,6 +13186,22 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
             # so the frontend can show a clean derived status line
             # instead of parsing a sentence.
             "materials_ordered": materials_ordered_flag,
+            # Is this a blinds job? Deliberately NOT the list endpoint's
+            # flooring_types, which resolves product categories through a
+            # preloaded product map this request doesn't build. The only
+            # question here is what to call the thing being ordered, and
+            # the line's own category answers it directly — a smaller
+            # question, honestly asked, rather than the same computation
+            # written a second way.
+            "is_blinds_only": bool(lines) and all(l.category == "blinds" for l in lines),
+            # WHEN it was ordered, exposed here as well as on the list
+            # rows (confirmed Sept 2026, Blinds Ordered). Without it this
+            # screen could say a job was ordered but not how long ago,
+            # while the Order Index row that linked here showed a CHASE
+            # chip — the same fact, two different answers. One helper
+            # reads it on both (orderMaterialsAgeDays(), order-index.js).
+            "materials_ordered_at": (lambda d: d.isoformat() if d else None)(
+                _materials_ordered_at(quote, order_sheets_for_workflow)),
             # Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) —
             # the adaptive step list, computed fresh, never stored. Empty
             # list for a quote that isn't a job yet (or was declined) —
@@ -13578,7 +13876,7 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # be built client-side from this one response, no second
             # request.
             row_sheets = sheets_by_quote.get(q.id, [])
-            row_materials_ordered = _all_sheets_placed(row_sheets)
+            row_materials_ordered = _materials_ordered(q, row_sheets)
             # When the supplier clock actually started (confirmed Sept
             # 2026, Burgert: "It takes 2 weeks to receive our blinds.
             # everything under the two weeks line needs to get installed
@@ -13594,9 +13892,8 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # None until every sheet is actually placed — a half-ordered
             # job has not started its clock, and dating it from a partial
             # order would quietly promise stock nobody has ordered yet.
-            placed = [sh.placed_at for sh in row_sheets if sh.placed_at]
-            d["materials_ordered_at"] = (max(placed).date().isoformat()
-                                          if placed and row_materials_ordered else None)
+            ordered_at = _materials_ordered_at(q, row_sheets)
+            d["materials_ordered_at"] = ordered_at.isoformat() if ordered_at else None
             workflow = _job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
                                            settings.order_overdue_days)
             d.update(workflow)

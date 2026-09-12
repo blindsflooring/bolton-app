@@ -140,6 +140,32 @@ class PasswordResetToken(SQLModel, table=True):
     used_at: Optional[datetime] = None
 
 
+class LoginFailure(SQLModel, table=True):
+    """One failed login attempt (confirmed Sept 2026, security pass).
+
+    Bolton had no brute-force protection at all: an attacker could try
+    passwords against /auth/login forever. The hashing is strong
+    (PBKDF2-SHA256, 260k iterations) so this was never the weakest link,
+    but unlimited guesses against a public endpoint is the kind of gap
+    that only looks small until someone reuses a password.
+
+    Stored in the DATABASE, not in a process-local dict, for the same
+    reason UserSession is: Render restarts on every deploy and may run
+    more than one instance. An in-memory counter would reset itself on
+    each deploy and would not be shared between workers — which is to
+    say it would look like protection without being any.
+
+    Deliberately NO foreign key to app_user. The username here is the
+    string that was TYPED, so attempts against usernames that do not
+    exist are recorded too — that is exactly the traffic worth seeing,
+    and a FK would make it impossible to store.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(index=True)   # as submitted, lowercased/trimmed
+    ip: str = ""                        # CF-Connecting-IP where available
+    at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class UserSession(SQLModel, table=True):
     """Server-side session record backing the login cookie. Stored in the
     DB (not in-memory) so sessions survive a Render backend restart/redeploy
@@ -1393,6 +1419,43 @@ class Quote(SQLModel, table=True):
     # flag" precedent as materials_ordered/ready_for_installation
     # themselves.
     materials_not_needed: bool = False
+    # Retail sale (confirmed Sept 2026, Direct Create Invoice brief) — a
+    # job with nothing to install: trims, parts, offcuts, a callout.
+    # Quoted, accepted, handed over, invoiced.
+    #
+    # Its own field rather than inferring "completed with no installation
+    # date", because those are two different facts. A retail sale never
+    # needed a date; an installation job that reached completed without
+    # one is a gap somebody should look at. Inferring would quietly
+    # relabel the second as the first and hide a real problem.
+    #
+    # Exactly mirrors materials_not_needed above, including being
+    # independently toggleable — a job can genuinely be one, the other,
+    # or both.
+    installation_not_needed: bool = False
+    # Blinds Ordered (confirmed Sept 2026, Burgert: "get the blinds, even
+    # if we only upload the excell pages, to have a button ... to show
+    # that its been ordered").
+    #
+    # The gap this closes, found by investigating before building:
+    # generate_order_sheets() says in its own docstring that "Blinds is
+    # explicitly out of scope", so a blinds job can never produce an
+    # Order Sheet — and materials_ordered is derived purely from sheets
+    # being placed. On the live book that meant 29 blinds jobs, not one
+    # of them ever able to read as ordered, while the Materials section
+    # told them "nothing to order".
+    #
+    # Worse, and the real reason this is a date rather than a boolean:
+    # the two-week supplier line measures from when the order was
+    # actually placed, so it had never once fired on a blinds job —
+    # despite blinds being the exact reason that line exists ("It takes
+    # 2 weeks to receive our blinds"). A flag would light the tile and
+    # still leave the chase broken.
+    #
+    # Only ever set on a job with NO order sheets. Where sheets exist
+    # they remain the single source of truth for whether an order was
+    # placed; this is for the jobs that can't have any.
+    materials_ordered_date: Optional[date] = None
     # On Hold (confirmed Aug 2026, Job Workflow Design Proposal Phase 1)
     # — deliberately NOT a 5th workflow_status value, per the brief's own
     # explicit "no second status system" instruction: same pattern as
