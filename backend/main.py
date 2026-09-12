@@ -3158,10 +3158,19 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
         # still shows its real margin against what was actually charged,
         # not the original calculated price.
         profit_by_quote = {}
+        value_ex_by_quote = {}
         for q in quotes:
             subtotal_ex_vat = subtotal_by_quote.get(q.id, 0.0) + q.transport_levy
             totals = _quote_totals(subtotal_ex_vat, q, VAT_PCT)
             value_by_quote[q.id] = totals["total_incl_vat"]
+            # Ex VAT too (confirmed Sept 2026, Burgert: "show turnover ex
+            # VAT so the margin is true but also show incl price").
+            # Profit is ALREADY ex VAT — VAT is never the business's
+            # money — so a margin taken against an incl-VAT turnover
+            # divides by a number roughly 15% too big and reads low by
+            # about that much. Both are carried so the honest margin can
+            # be shown next to the figure that matches the bank.
+            value_ex_by_quote[q.id] = totals["total_ex_vat"]
             real_cost = sum(line_real_cost(l) for l in lines_by_quote.get(q.id, []))
             profit_by_quote[q.id] = totals["total_ex_vat"] - real_cost
 
@@ -3255,6 +3264,9 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
         def sales_profit_for(quote_subset):
             return {
                 "sales": round(sum(value_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
+                # The same turnover with VAT taken off — the figure a
+                # margin can honestly be taken against.
+                "sales_ex_vat": round(sum(value_ex_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
                 "profit": round(sum(profit_by_quote.get(q.id, 0.0) for q in quote_subset), 2),
             }
 
@@ -3313,7 +3325,7 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
         outstanding_running = round(sum(outstanding_by_quote.get(q.id, 0.0) for q in owing_quotes), 2)
 
         monthly = []
-        running_sales = running_profit = 0.0
+        running_sales = running_sales_ex = running_profit = 0.0
         for (yy, mm) in series_keys:
             # owing_quotes, not won_quotes: a job accepted and later
             # declined is not turnover, and the Order Index's own
@@ -3327,8 +3339,9 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             # answers "how is THIS year going" rather than a rolling
             # twelve-month figure that never starts anywhere.
             if mm == 1:
-                running_sales = running_profit = 0.0
+                running_sales = running_sales_ex = running_profit = 0.0
             running_sales = round(running_sales + fig["sales"], 2)
+            running_sales_ex = round(running_sales_ex + fig["sales_ex_vat"], 2)
             running_profit = round(running_profit + fig["profit"], 2)
             monthly.append({
                 "year": yy, "month": mm,
@@ -3341,6 +3354,7 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
                 # What of THIS month's landed work is still unpaid.
                 "outstanding": round(sum(outstanding_by_quote.get(q.id, 0.0) for q in in_month), 2),
                 "ytd_sales": running_sales,
+                "ytd_sales_ex_vat": running_sales_ex,
                 "ytd_profit": running_profit,
             })
 

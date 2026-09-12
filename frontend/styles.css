@@ -1320,6 +1320,14 @@
   .oi-turnover-chip.is-on span { color: rgba(255,255,255,.8); }
   /* Quotes read as the lesser half of the screen — same tiles, quieter
      frame, so the eye lands on Jobs first. */
+  /* Scope, said on the tile (confirmed Sept 2026). Small and grey so a
+     number stays the thing you see first, present so nobody has to ask
+     what period it covers. */
+  .oi-scope {
+    display: inline-block; font-size: 9.5px; font-weight: 600; text-transform: none;
+    letter-spacing: .01em; color: var(--ink-faint, #8A93A0); margin-left: 5px;
+  }
+  .oi-workload-label .oi-scope { display: block; margin-left: 0; }
   .oi-group-sub {
     text-transform: none; letter-spacing: 0; font-weight: 400;
     font-size: 11.5px; color: var(--ink-faint, #8A93A0);
@@ -1343,6 +1351,13 @@
      it, so it gets its own weight rather than blending into the row. */
   .mth-ytd { color: var(--navy); font-weight: 700; }
   .mth-owed { color: var(--coral); font-weight: 600; }
+  /* The unit belongs ON the header, not in a footnote — a column of
+     rands means two different things ex and incl VAT, and the margin
+     beside them is only honest against one of the two. */
+  .mth-unit { font-size: 9px; font-weight: 400; letter-spacing: .03em; color: var(--ink-faint, #8A93A0); }
+  /* Incl VAT is the figure that matches the bank, so it is kept — but
+     quieter than the ex-VAT column the margin is taken against. */
+  .mth-incl { color: var(--ink-faint, #8A93A0); }
   .mth-current { background: var(--cream); }
   .mth-current td { font-weight: 700; }
 
