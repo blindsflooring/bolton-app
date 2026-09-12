@@ -1419,6 +1419,29 @@ class Quote(SQLModel, table=True):
     # flag" precedent as materials_ordered/ready_for_installation
     # themselves.
     materials_not_needed: bool = False
+    # Blinds Ordered (confirmed Sept 2026, Burgert: "get the blinds, even
+    # if we only upload the excell pages, to have a button ... to show
+    # that its been ordered").
+    #
+    # The gap this closes, found by investigating before building:
+    # generate_order_sheets() says in its own docstring that "Blinds is
+    # explicitly out of scope", so a blinds job can never produce an
+    # Order Sheet — and materials_ordered is derived purely from sheets
+    # being placed. On the live book that meant 29 blinds jobs, not one
+    # of them ever able to read as ordered, while the Materials section
+    # told them "nothing to order".
+    #
+    # Worse, and the real reason this is a date rather than a boolean:
+    # the two-week supplier line measures from when the order was
+    # actually placed, so it had never once fired on a blinds job —
+    # despite blinds being the exact reason that line exists ("It takes
+    # 2 weeks to receive our blinds"). A flag would light the tile and
+    # still leave the chase broken.
+    #
+    # Only ever set on a job with NO order sheets. Where sheets exist
+    # they remain the single source of truth for whether an order was
+    # placed; this is for the jobs that can't have any.
+    materials_ordered_date: Optional[date] = None
     # On Hold (confirmed Aug 2026, Job Workflow Design Proposal Phase 1)
     # — deliberately NOT a 5th workflow_status value, per the brief's own
     # explicit "no second status system" instruction: same pattern as

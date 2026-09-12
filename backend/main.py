@@ -644,6 +644,10 @@ def _ensure_new_columns():
         # before this had a category, and a plain reminder is exactly
         # what general means. NULL links likewise: no to-do has ever
         # pointed at a job.
+        # Blinds Ordered (confirmed Sept 2026) — NULL on every existing
+        # row is the literal truth: nobody has ever been able to record
+        # this, because there was no way to.
+        ("quote", "materials_ordered_date", "DATE", "NULL"),
         ("todo", "category", "VARCHAR", "'general'"),
         ("todo", "client_id", "INTEGER", "NULL"),
         ("todo", "quote_id", "INTEGER", "NULL"),
@@ -8773,6 +8777,39 @@ def _all_sheets_placed(order_sheets: list) -> bool:
     return bool(order_sheets) and all(s.status == "placed" for s in order_sheets)
 
 
+def _materials_ordered(quote: "Quote", order_sheets: list) -> bool:
+    """Has this job's stock actually been ordered?
+
+    Two ways to be true, and which one applies is decided by whether the
+    job can produce an Order Sheet at all:
+
+      - it produced sheets and they are all placed (_all_sheets_placed
+        above, unchanged — the derivation that replaced a manual
+        checkbox and should stay the truth wherever it applies), or
+      - it produced none and somebody said so by hand.
+
+    The second case is not a loophole, it is the only option for a whole
+    product line: generate_order_sheets() excludes blinds by design, so
+    a blinds job has no sheet to place and would otherwise be stuck
+    reading "not yet ordered" for the rest of its life.
+
+    Sheets win where they exist — the manual date is never offered on a
+    job that has them (update_quote_materials refuses it), so the two can
+    never disagree about the same job.
+    """
+    return _all_sheets_placed(order_sheets) or bool(quote.materials_ordered_date)
+
+
+def _materials_ordered_at(quote: "Quote", order_sheets: list):
+    """WHEN the supplier clock started, which the two-week chase line
+    measures from. Same precedence as above: the last sheet placed, or
+    the hand-recorded date for a job that has no sheets."""
+    placed = [sh.placed_at for sh in order_sheets if sh.placed_at]
+    if placed and _all_sheets_placed(order_sheets):
+        return max(placed).date()
+    return quote.materials_ordered_date
+
+
 def _materials_ordered_for_quote(session: Session, quote_id: int, tenant_id: str) -> bool:
     """Convenience wrapper over _all_sheets_placed() for callers (e.g.
     list_quotes()) that don't already have the job's Order Sheets
@@ -10108,6 +10145,22 @@ def update_quote_materials(quote_id: int, materials_ordered: bool = None, ready_
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         if materials_ordered is not None:
             quote.materials_ordered = materials_ordered
+            # Blinds Ordered (confirmed Sept 2026) — record WHEN, not
+            # just that. The two-week chase line measures from the date
+            # the order was placed, so a bare flag would light the
+            # Materials tile and leave the chasing just as broken as it
+            # was, on the one product that line was built for.
+            #
+            # Refused outright on a job that has Order Sheets: those are
+            # the real record of an order being placed, and a second
+            # control writing the same fact is how two sources of truth
+            # start disagreeing. Such a job already has "Mark as Placed"
+            # on the sheet itself, which is the honest way to say this.
+            sheets = session.exec(select(OrderSheet).where(
+                OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
+            if sheets:
+                raise HTTPException(400, "This job has Order Sheets - mark the sheet itself as placed, so there's one record of when it was ordered.")
+            quote.materials_ordered_date = date.today() if materials_ordered else None
         if ready_for_installation is not None:
             quote.ready_for_installation = ready_for_installation
         if installer_team is not None:
@@ -13011,7 +13064,7 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
         # both materials_ordered and job_steps below, rather than
         # querying OrderSheet twice in the same request.
         order_sheets_for_workflow = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
-        materials_ordered_flag = _all_sheets_placed(order_sheets_for_workflow)
+        materials_ordered_flag = _materials_ordered(quote, order_sheets_for_workflow)
         # Logged Follow-Up Doesn't Clear Needs Attention Flag (confirmed
         # Sept 2026) — the most recent real follow-up on this job, if
         # any; _job_workflow_info() uses it to reset the staleness clock.
@@ -13058,6 +13111,22 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
             # so the frontend can show a clean derived status line
             # instead of parsing a sentence.
             "materials_ordered": materials_ordered_flag,
+            # Is this a blinds job? Deliberately NOT the list endpoint's
+            # flooring_types, which resolves product categories through a
+            # preloaded product map this request doesn't build. The only
+            # question here is what to call the thing being ordered, and
+            # the line's own category answers it directly — a smaller
+            # question, honestly asked, rather than the same computation
+            # written a second way.
+            "is_blinds_only": bool(lines) and all(l.category == "blinds" for l in lines),
+            # WHEN it was ordered, exposed here as well as on the list
+            # rows (confirmed Sept 2026, Blinds Ordered). Without it this
+            # screen could say a job was ordered but not how long ago,
+            # while the Order Index row that linked here showed a CHASE
+            # chip — the same fact, two different answers. One helper
+            # reads it on both (orderMaterialsAgeDays(), order-index.js).
+            "materials_ordered_at": (lambda d: d.isoformat() if d else None)(
+                _materials_ordered_at(quote, order_sheets_for_workflow)),
             # Job Workflow Design Proposal Phase 2 (confirmed Aug 2026) —
             # the adaptive step list, computed fresh, never stored. Empty
             # list for a quote that isn't a job yet (or was declined) —
@@ -13732,7 +13801,7 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # be built client-side from this one response, no second
             # request.
             row_sheets = sheets_by_quote.get(q.id, [])
-            row_materials_ordered = _all_sheets_placed(row_sheets)
+            row_materials_ordered = _materials_ordered(q, row_sheets)
             # When the supplier clock actually started (confirmed Sept
             # 2026, Burgert: "It takes 2 weeks to receive our blinds.
             # everything under the two weeks line needs to get installed
@@ -13748,9 +13817,8 @@ def list_quotes(request: Request, sales_owner: Optional[str] = None, branch: Opt
             # None until every sheet is actually placed — a half-ordered
             # job has not started its clock, and dating it from a partial
             # order would quietly promise stock nobody has ordered yet.
-            placed = [sh.placed_at for sh in row_sheets if sh.placed_at]
-            d["materials_ordered_at"] = (max(placed).date().isoformat()
-                                          if placed and row_materials_ordered else None)
+            ordered_at = _materials_ordered_at(q, row_sheets)
+            d["materials_ordered_at"] = ordered_at.isoformat() if ordered_at else None
             workflow = _job_workflow_info(q, today, row_materials_ordered, latest_follow_up_by_quote.get(q.id),
                                            settings.order_overdue_days)
             d.update(workflow)
