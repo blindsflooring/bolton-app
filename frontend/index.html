@@ -1706,6 +1706,7 @@ function renderLanding() {
   if (landingView === 'hr') return renderHR(el);
   if (landingView === 'sessionLog') return renderSessionLog(el);
   if (landingView === 'supplierConsole') return renderSupplierConsole(el);
+  if (landingView === 'supertrimOrder') return renderSupertrimOrder(el);
   if (landingView === 'changeLog') return renderChangeLog(el);
   if (landingView === 'accounts') return renderAccounts(el);
   if (landingView === 'builderPortal') return renderBuilderPortalAdmin(el);
@@ -1839,6 +1840,7 @@ function onTileClick(tileId) {
   else if (tileId === 'hr') { landingView = 'hr'; hrView = 'employees'; renderLanding(); }
   else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
   else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
+  else if (tileId === 'supertrimOrder') { landingView = 'supertrimOrder'; renderLanding(); }
   else if (tileId === 'changeLog') { landingView = 'changeLog'; renderLanding(); }
   else if (tileId === 'accounts') { landingView = 'accounts'; renderLanding(); }
   else if (tileId === 'builderPortal') { landingView = 'builderPortal'; renderLanding(); }
@@ -2789,6 +2791,245 @@ let supplierConsoleData = { flooring: [], blinds: [], trims: [], floorPrep: [] }
 // rather than one value per supplier).
 let supplierDefaults = {};
 let stagedSupplierDefaults = {};   // supplier -> { fieldName: stagedValue }
+
+// ===== Supertrim stock order (confirmed Sept 2026) =====
+//
+// A buying tool, not a quoting one. Nothing here touches a client, a
+// job or a sell price: these are Supertrim's own list prices ex VAT,
+// which is what goes on a purchase order, and the running total is what
+// the invoice will say.
+//
+// ON THE DIAGRAMS, which the brief asked to be investigated rather than
+// assumed: Bolton can store real images (QuotePhoto keeps bytes and
+// archives to Dropbox), so catalogue diagrams were possible. They are
+// not here, deliberately. The stated purpose was "so I can recognize
+// what I'm ordering" — and someone ordering S2020 knows what an equal
+// angle looks like; what they need correct is the code, the size and
+// the finish. Real diagrams would mean sourcing ~45 images, storing and
+// serving them, and re-doing it every time the list reissues. A drawn
+// shape per category gets the recognition at none of that cost, and
+// carries the profile's real dimensions beside it, which a picture
+// does not.
+const SUPERTRIM_SHAPES = {
+  angle:        { glyph: '\u2310', hint: 'Equal / unequal angle' },
+  end_cap:      { glyph: '\u2319', hint: 'End cap' },
+  reducer:      { glyph: '\u2312', hint: 'Reducer / transition' },
+  cover_strip:  { glyph: '\u2015', hint: 'Cover strip' },
+  stair_nose:   { glyph: '\u2308', hint: 'Stair nose' },
+  carpet_strip: { glyph: '\u2307', hint: 'Carpet strip' },
+  tile_edge:    { glyph: '\u230A', hint: 'Tile edge' },
+  rail:         { glyph: '\u2550', hint: 'Rail' },
+  clip:         { glyph: '\u2293', hint: 'Clip' },
+};
+const SUPERTRIM_CAT_LABEL = {
+  angle: 'Angles', end_cap: 'End caps', reducer: 'Reducers & transitions',
+  cover_strip: 'Cover strips', stair_nose: 'Stair noses', carpet_strip: 'Carpet strips',
+  tile_edge: 'Tile edges', rail: 'Rail', clip: 'Clips',
+  // Pre-dates the April 2026 load (one 2024 row still carries it) —
+  // labelled rather than left showing a raw key, same fix as the price
+  // book tree needed.
+  corner_protector: 'Corner protectors', skirting: 'Skirting', quarter_round: 'Quarter round',
+};
+
+let supertrimOrderData = null;
+// Quantities survive a refresh. An order is built over a morning, not
+// in one sitting, and losing it to an accidental reload would make the
+// tool something you avoid using.
+let supertrimQty = JSON.parse(localStorage.getItem('supertrimQty') || '{}');
+
+function supertrimSetQty(id, raw) {
+  const n = Math.max(0, Math.floor(Number(raw) || 0));
+  if (n) supertrimQty[id] = n; else delete supertrimQty[id];
+  localStorage.setItem('supertrimQty', JSON.stringify(supertrimQty));
+  // Mark the line here rather than in CSS. A :has(input:not([value=""]))
+  // rule only sees the ATTRIBUTE, which never changes as someone types
+  // — so it would highlight lines restored from a saved order and
+  // silently ignore everything typed this session. A rule that works
+  // half the time is worse than none.
+  const input = document.querySelector(`.st-finish input[data-pid="${id}"]`);
+  if (input) input.closest('.st-finish').classList.toggle('has-qty', !!n);
+  supertrimRenderTotals();
+}
+
+function supertrimClear() {
+  if (!confirm('Clear every quantity on this order?')) return;
+  supertrimQty = {};
+  localStorage.removeItem('supertrimQty');
+  renderSupertrimOrder(document.getElementById('landing'));
+}
+
+// One place that works out what the order is, read by the totals bar,
+// the pasteable text and the printed sheet — so the three can never
+// disagree about what was ordered.
+function supertrimOrderLines() {
+  if (!supertrimOrderData) return [];
+  const out = [];
+  supertrimOrderData.profiles.forEach(p => p.finishes.forEach(f => {
+    const qty = supertrimQty[f.id];
+    if (!qty) return;
+    out.push({
+      code: p.profile_code, name: p.name, finish: f.finish,
+      length_m: f.length_m, qty, unit: f.price_ex_vat || 0,
+      total: (f.price_ex_vat || 0) * qty,
+    });
+  }));
+  return out;
+}
+
+function supertrimRenderTotals() {
+  const bar = document.getElementById('supertrimTotals');
+  if (!bar || !supertrimOrderData) return;
+  const lines = supertrimOrderLines();
+  const total = lines.reduce((a, l) => a + l.total, 0);
+  const lengths = lines.reduce((a, l) => a + l.qty, 0);
+  const min = supertrimOrderData.terms.min_order_ex_vat;
+  const short = min - total;
+  bar.innerHTML = `
+    <div class="st-total-main">
+      <span class="st-total-label">Order total <span class="oi-scope">ex VAT, Supertrim list price</span></span>
+      <span class="st-total-figure">${R(total)}</span>
+    </div>
+    <div class="st-total-sub">
+      ${lines.length} line${lines.length === 1 ? '' : 's'} &middot; ${lengths} length${lengths === 1 ? '' : 's'}
+    </div>
+    ${total > 0 && short > 0
+      ? `<div class="st-min st-min-under">Under the R${min.toLocaleString('en-ZA')} Cape Town minimum &mdash; <b>${R(short)}</b> short</div>`
+      : total > 0
+        ? `<div class="st-min st-min-ok">\u2713 Over the R${min.toLocaleString('en-ZA')} minimum</div>`
+        : `<div class="st-min">Nothing on the order yet.</div>`}
+    <div class="st-total-actions">
+      <button class="primary" onclick="supertrimCopy()" ${lines.length ? '' : 'disabled'}>Copy for email</button>
+      <button onclick="supertrimEmail()" ${lines.length ? '' : 'disabled'}>Open in email</button>
+      <button onclick="supertrimPrint()" ${lines.length ? '' : 'disabled'}>Print / PDF</button>
+      <button class="delete-btn" onclick="supertrimClear()" ${lines.length ? '' : 'disabled'}>Clear</button>
+    </div>`;
+}
+
+// Plain text, because the thing that has to survive is the ORDER, and
+// plain text survives every mail client, phone and copy-paste. A
+// prettier HTML mail that arrives mangled in Supertrim's inbox helps
+// nobody.
+function supertrimOrderText() {
+  const t = supertrimOrderData.terms;
+  const lines = supertrimOrderLines();
+  const total = lines.reduce((a, l) => a + l.total, 0);
+  const body = lines.map(l =>
+    `${l.qty} x ${l.code}  ${l.name} — ${l.finish}  (${l.length_m}m)   @ R${l.unit.toFixed(2)}   = R${l.total.toFixed(2)}`
+  ).join('\n');
+  const short = t.min_order_ex_vat - total;
+  return [
+    `Supertrim order — Blinds & Flooring Studio`,
+    `Date: ${new Date().toLocaleDateString('en-ZA', {day:'numeric', month:'long', year:'numeric'})}`,
+    ``,
+    body,
+    ``,
+    `TOTAL EX VAT: R${total.toFixed(2)}`,
+    short > 0 ? `(Note: under the R${t.min_order_ex_vat.toFixed(2)} Cape Town minimum by R${short.toFixed(2)})` : ``,
+    ``,
+    `Prices per ${t.issue} trade list, ex VAT.`,
+  ].filter(x => x !== null).join('\n');
+}
+
+async function supertrimCopy() {
+  try {
+    await navigator.clipboard.writeText(supertrimOrderText());
+    const b = document.getElementById('supertrimTotals').querySelector('button');
+    if (b) { const o = b.textContent; b.textContent = '\u2713 Copied'; setTimeout(() => { b.textContent = o; }, 1800); }
+  } catch (e) {
+    alert('Could not copy automatically — the order text is in the printable view instead.');
+  }
+}
+
+function supertrimEmail() {
+  const t = supertrimOrderData.terms;
+  const subject = `Order — Blinds & Flooring Studio — ${new Date().toLocaleDateString('en-ZA')}`;
+  // mailto only OPENS a draft — it never sends. The order is always
+  // read and sent by a person, which is the right place for that
+  // decision to sit.
+  window.location.href = `mailto:${t.order_email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(supertrimOrderText())}`;
+}
+
+function supertrimPrint() {
+  const t = supertrimOrderData.terms;
+  const lines = supertrimOrderLines();
+  const total = lines.reduce((a, l) => a + l.total, 0);
+  const rows = lines.map(l => `<tr>
+      <td>${l.qty}</td><td>${l.code}</td><td>${l.name} — ${l.finish}</td>
+      <td class="num">${l.length_m}m</td><td class="num">${R(l.unit)}</td><td class="num">${R(l.total)}</td>
+    </tr>`).join('');
+  triggerPrint(`
+    <div style="font-family:sans-serif; padding:24px;">
+      <h2 style="margin:0;">Supertrim order</h2>
+      <p style="margin:2px 0 16px; color:#555;">Blinds &amp; Flooring Studio &middot; ${new Date().toLocaleDateString('en-ZA', {day:'numeric', month:'long', year:'numeric'})}<br>
+        To: ${t.order_email}</p>
+      <table style="border-collapse:collapse; width:100%; font-size:13px;">
+        <thead><tr style="border-bottom:2px solid #333;">
+          <th align="left">Qty</th><th align="left">Code</th><th align="left">Product</th>
+          <th align="right">Length</th><th align="right">Each</th><th align="right">Total</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="border-top:2px solid #333; font-weight:700;">
+          <td colspan="5" align="right">Total ex VAT</td><td align="right">${R(total)}</td>
+        </tr></tfoot>
+      </table>
+      <p style="margin-top:16px; font-size:12px; color:#555;">${t.min_order_note}<br>${t.price_basis}</p>
+    </div>`);
+}
+
+async function renderSupertrimOrder(el) {
+  await renderWithRetry(el, 'Supertrim Order', async () => {
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span><div class="card"><p class="muted">Loading...</p></div>`;
+  supertrimOrderData = await fetch(`${API}/suppliers/supertrim/stock-order`).then(r => r.json());
+  const d = supertrimOrderData;
+  if (!d || !d.profiles) { el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span><div class="card"><p class="muted">No Supertrim products in the price book yet.</p></div>`; return; }
+
+  const byCat = {};
+  d.profiles.forEach(p => (byCat[p.category] = byCat[p.category] || []).push(p));
+  const sections = Object.keys(byCat).map(cat => {
+    const shape = SUPERTRIM_SHAPES[cat] || { glyph: '\u25AB', hint: '' };
+    const items = byCat[cat].map(p => `
+      <div class="st-prod">
+        <div class="st-prod-head">
+          <span class="st-shape" title="${shape.hint}">${shape.glyph}</span>
+          <span class="st-code">${p.profile_code}</span>
+          <span class="st-name">${p.name}</span>
+          <span class="st-len">${p.length_m}m lengths</span>
+        </div>
+        <div class="st-finishes">
+          ${p.finishes.map(f => `
+            <label class="st-finish ${supertrimQty[f.id] ? 'has-qty' : ''}">
+              <span class="st-finish-name">${f.finish}</span>
+              <span class="st-finish-price">${R(f.price_ex_vat || 0)}</span>
+              <input type="number" min="0" step="1" inputmode="numeric" data-pid="${f.id}"
+                     value="${supertrimQty[f.id] || ''}" placeholder="0"
+                     onchange="supertrimSetQty(${f.id}, this.value)"
+                     oninput="supertrimSetQty(${f.id}, this.value)"
+                     aria-label="${p.profile_code} ${f.finish} quantity">
+            </label>`).join('')}
+        </div>
+      </div>`).join('');
+    return `
+      <details class="card st-cat" open>
+        <summary><b>${SUPERTRIM_CAT_LABEL[cat] || cat}</b> <span class="muted">${byCat[cat].length} profile${byCat[cat].length === 1 ? '' : 's'}</span></summary>
+        <div class="st-prod-list">${items}</div>
+      </details>`;
+  }).join('');
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span>
+    <div class="landing-welcome">
+      <h1>Supertrim Order</h1>
+      <p>Enter how many LENGTHS of each you want. Prices are Supertrim's own list, ex VAT \u2014 this is a buying sheet, not a quote.</p>
+    </div>
+    <div class="card st-terms">
+      <b>${d.profile_count} profiles &middot; ${d.line_count} product/finish options</b> &middot; ${d.terms.issue} trade list<br>
+      <span class="muted">${d.terms.min_order_note}</span>
+    </div>
+    <div id="supertrimTotals" class="st-totals"></div>
+    ${sections}`;
+  supertrimRenderTotals();
+  });
+}
 
 async function renderSupplierConsole(el) {
   await renderWithRetry(el, 'Supplier Console', async () => {

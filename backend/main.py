@@ -7279,6 +7279,73 @@ class CommitRequest(BaseModel):
     deletions: List[StagedDeletion] = []
 
 
+# ===== Supertrim stock order (confirmed Sept 2026, Supertrim brief) =====
+#
+# NOT an OrderSheet. OrderSheet is per-JOB procurement for flooring —
+# what to buy for one client's floor. This is a standing stock order to
+# one supplier, tied to no job at all, and naming them the same thing
+# would be the start of a long confusion. Its own endpoint, its own
+# screen, its own word: an ORDER SHEET belongs to a job, a STOCK ORDER
+# belongs to the shelf.
+#
+# Terms live here rather than in the frontend because they are facts
+# about the supplier, printed on their price list, and a minimum-order
+# warning hardcoded into a screen is a number nobody will find when it
+# changes.
+SUPERTRIM_TERMS = {
+    "supplier": "Supertrim",
+    "order_email": "orders@supertrim.co.za",
+    "min_order_ex_vat": 3500.00,      # Cape Town delivery
+    "min_order_note": "Cape Town deliveries are subject to a R3 500 ex VAT minimum. Delivery outside the Cape Metro is not included in these prices.",
+    "price_basis": "Per length, ex VAT. Supertrim sell at list \u2014 no trade discount applies.",
+    "issue": "April 2026",
+}
+
+
+@app.get("/suppliers/supertrim/stock-order")
+def supertrim_stock_order(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
+    """Everything the Supertrim stock-order screen needs, in one call.
+
+    Grouped by PROFILE with its finishes nested, because that is how the
+    printed list reads and how someone orders: you pick S299, then which
+    finish. A flat list of 215 rows is the same data arranged so nobody
+    can find anything.
+
+    Owner-only: this is buying at cost, and cost is Owner-only
+    everywhere else in this app.
+    """
+    with Session(engine) as session:
+        rows = session.exec(
+            select(TrimProduct).where(TrimProduct.tenant_id == tenant_id,
+                                      TrimProduct.supplier == SUPERTRIM_TERMS["supplier"])
+        ).all()
+        by_profile = {}
+        for r in rows:
+            code = (r.profile_code or "").strip() or r.product_name
+            g = by_profile.setdefault(code, {
+                "profile_code": code,
+                # The description without the " — Finish" suffix the
+                # loader appended, so the profile reads once and its
+                # finishes list underneath it.
+                "name": (r.product_name or "").split(" \u2014 ")[0],
+                "category": r.category,
+                "length_m": r.length_m,
+                "finishes": [],
+            })
+            g["finishes"].append({
+                "id": r.id,
+                "finish": (r.finish or "").strip() or "Standard",
+                "price_ex_vat": r.price_per_length_ex_vat,
+                "length_m": r.length_m,
+            })
+        for g in by_profile.values():
+            g["finishes"].sort(key=lambda f: f["finish"])
+        profiles = sorted(by_profile.values(), key=lambda g: (g["category"], g["profile_code"]))
+        return {"terms": SUPERTRIM_TERMS, "profiles": profiles,
+                "profile_count": len(profiles),
+                "line_count": sum(len(g["finishes"]) for g in profiles)}
+
+
 @app.post("/admin/supplier-console/commit")
 def commit_supplier_console_changes(
     body: CommitRequest, role: str = Depends(require_owner),
