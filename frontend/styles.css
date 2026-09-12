@@ -514,15 +514,45 @@
      pushes the page down again, which is the failure being fixed. */
   .home-side-card { display: flex; flex-direction: column; min-height: 0; width: 100%; margin-bottom: 0; }
   .home-side-card .attention-list { overflow-y: auto; min-height: 0; }
-  /* The existing stacking fix for a cramped attention row keys off the
-     VIEWPORT width (@media max-width:700px, further down) — which never
-     fires here: the column is 340px wide on a 1440px screen, so the row
-     stayed horizontal and squeezed the client name into a wrapped
-     two-character column, the exact failure that media query exists to
-     prevent. Same fix, applied by container instead of by screen. */
-  .home-side-card .attention-item { flex-wrap: wrap; gap: 4px 8px; }
+  /* One fixed shape for every row in this panel (confirmed Sept 2026:
+     "card height/button position should be consistent across all cards
+     in this panel regardless of content length, since inconsistent
+     layout is part of what causes mis-taps in fast use").
+
+     What was here before was flex-wrap:wrap -- the fix for a cramped
+     row in a 340px column, since the @media (max-width:700px) stacking
+     rule further down keys off the VIEWPORT and so never fires for a
+     narrow column on a wide screen. It did stop the overlap, but it
+     left the geometry content-dependent: a long client name wrapped and
+     pushed the buttons somewhere new in every card, so the same button
+     was never twice in the same place. Fine to look at, bad to work at
+     speed -- which is the actual complaint.
+
+     An explicit three-part column instead: flag, name, actions. Every
+     row the same height, every button at the same offset, whatever is
+     in it. */
+  .home-side-card .attention-item {
+    flex-direction: column; align-items: stretch; justify-content: flex-start;
+    flex-wrap: nowrap; gap: 2px; min-height: 76px;
+  }
   .home-side-card .attention-item .attn-flag { flex: 0 0 auto; }
-  .home-side-card .attention-item .attn-detail { flex: 1 1 55%; margin-left: 0; }
+  /* One line, always. The name is truncated rather than allowed to
+     wrap, because a second line is precisely what was moving the
+     buttons. Nothing is lost: the full name is in the title attribute
+     and the row itself opens the lead. */
+  .home-side-card .attention-item .attn-detail {
+    flex: 0 0 auto; margin-left: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* margin-top:auto pins the actions to the bottom of the card, so they
+     sit at the same height whether the text above is one short line or
+     a truncated one. min-height holds a to-do row -- which has no
+     buttons at all -- level with a lead's, so the list keeps one
+     rhythm and your thumb can trust the spacing. */
+  .home-side-card .attn-actions {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin-top: auto; padding-top: 4px; min-height: 24px;
+  }
   /* Tighter tiles on Home only (not .tile everywhere) — with a column
      taken by the personal list, this is what keeps the whole tile grid
      visible without scrolling on a normal laptop screen. */
