@@ -2257,6 +2257,61 @@ function renderTopSellersCard() {
     <div class="tile-grid">${tiles}</div>`;
 }
 
+// Month-by-month turnover and profit, with the year-to-date running
+// beside each month (confirmed Sept 2026).
+//
+// The running columns RESET IN JANUARY rather than rolling twelve
+// months, so "YTD" answers how this year is going — a rolling figure
+// never starts anywhere and can never be compared to last year's same
+// point. Computed server-side (analytics_overview(), main.py) on the
+// same accepted-date basis the Order Index's Turnover banner uses, so
+// the two screens report the same figure for the same month.
+function monthlyTableHtml(data, money) {
+  const months = data.monthly || [];
+  if (!months.length) return '';
+  const cur = data.this_month, prev = data.previous_month;
+  let delta = '';
+  if (cur && prev && prev.sales_ex_vat > 0.005) {
+    const pct = ((cur.sales_ex_vat - prev.sales_ex_vat) / prev.sales_ex_vat) * 100;
+    const up = pct >= 0;
+    delta = `<span class="oi-turnover-delta ${up ? 'is-up' : 'is-down'}">${up ? '▲' : '▼'} ${Math.abs(pct).toFixed(0)}% on ${prev.label_long}</span>`;
+  }
+  // Newest first: the month you are in is the one you look at, so it
+  // should not be at the bottom of twelve rows.
+  const rows = months.slice().reverse().map(m => `
+    <tr class="${m.is_current ? 'mth-current' : ''}">
+      <td>${m.label_long}${m.is_current ? ' <span class="muted">(so far)</span>' : ''}</td>
+      <td class="num">${money(m.sales_ex_vat)}</td>
+      <td class="num mth-incl">${money(m.sales)}</td>
+      <td class="num">${money(m.profit)}</td>
+      <td class="num">${m.sales_ex_vat > 0.005 ? ((m.profit / m.sales_ex_vat) * 100).toFixed(0) + '%' : '—'}</td>
+      <td class="num mth-ytd">${money(m.ytd_sales_ex_vat)}</td>
+      <td class="num mth-ytd">${money(m.ytd_profit)}</td>
+      <td class="num ${m.outstanding > 0.005 ? 'mth-owed' : 'muted'}">${money(m.outstanding)}</td>
+    </tr>`).join('');
+  return `
+    <div class="card" style="margin-bottom:16px;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <h3 style="margin:0;">Month by month</h3>
+        <span class="muted" style="font-size:12px;">Work that landed, by acceptance date — same basis as the Order Index. Margin is profit over EX-VAT turnover, because VAT was never yours. Year-to-date resets each January.</span>
+      </div>
+      ${cur ? `<p style="margin:8px 0 0; font-size:13px;">${cur.label_long}: <b>${money(cur.sales_ex_vat)}</b> turnover ex VAT <span class="muted">(${money(cur.sales)} incl)</span>, <b>${money(cur.profit)}</b> profit ${delta}</p>` : ''}
+      ${data.outstanding_running != null ? `<p style="margin:4px 0 0; font-size:13px;">Outstanding across the whole book: <b style="color:var(--coral);">${money(data.outstanding_running)}</b></p>` : ''}
+      <div style="overflow-x:auto; margin-top:10px;">
+        <table class="mth-table">
+          <thead><tr>
+            <th>Month</th><th class="num">Turnover<br><span class="mth-unit">ex VAT</span></th>
+            <th class="num mth-incl">Turnover<br><span class="mth-unit">incl VAT</span></th>
+            <th class="num">Profit</th><th class="num">Margin</th>
+            <th class="num">Turnover YTD<br><span class="mth-unit">ex VAT</span></th>
+            <th class="num">Profit YTD</th><th class="num">Still owed<br><span class="mth-unit">incl VAT</span></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 async function renderBusinessOverview(el) {
   await renderWithRetry(el, 'Business Overview', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Business Overview</h2><p class="muted">Loading...</p></div>`;
@@ -2340,6 +2395,15 @@ async function renderBusinessOverview(el) {
       ${kpiCard('Today — Sales', money(data.today.sales))}
       ${kpiCard('Today — Profit', money(data.today.profit))}
     </div>
+
+    <!-- Month by month, with the year running alongside (confirmed Sept
+    2026, Burgert: "per month turnover and also tallying up as a running
+    total for the year... with that also as a running total and per
+    month total of the profit, its a very easy way to see the business
+    health at a glance").
+    A table rather than tiles: twelve months of four figures is a thing
+    you read DOWN a column to see a trend, which tiles cannot do. -->
+    ${monthlyTableHtml(data, money)}
 
     <div class="card" id="weeklyGraphCard"></div>
     <!-- Daily quoted value by branch (confirmed Sept 2026, brief §4) -->
