@@ -524,6 +524,12 @@ def _ensure_new_columns():
         # existing row keeps them on the category default they already
         # used, so nothing in the book changes price.
         ("flooringproduct", "cutting_fee", "FLOAT", "NULL"),
+        # Supertrim sells whole lengths (confirmed Sept 2026). NULL/blank
+        # on every existing row: nothing before this recorded a length or
+        # a finish, and cost_ex_vat_per_lm stays the required figure.
+        ("trimproduct", "length_m", "FLOAT", "NULL"),
+        ("trimproduct", "price_per_length_ex_vat", "FLOAT", "NULL"),
+        ("trimproduct", "finish", "VARCHAR", "''"),
         ("quotelineitem", "carpet_category", "VARCHAR", "NULL"),
         ("quotelineitem", "quantity_lm", "FLOAT", "NULL"),
         ("quotelineitem", "gripper_perimeter_m", "FLOAT", "NULL"),
@@ -6995,6 +7001,7 @@ FIELD_LABELS = {
     "price_zone_a": "Zone A price (calculated)", "price_zone_b": "Zone B price (calculated)", "price_zone_c": "Zone C price (calculated)",
     "book_price": "Book price", "mechanism": "Mechanism", "fabric_tier": "Fabric tier",
     "cost_ex_vat_per_lm": "Cost per lm (ex VAT)", "fixed_sell_price_per_lm": "Fixed sell price per lm",
+    "length_m": "Length sold (m)", "price_per_length_ex_vat": "Price per length (ex VAT)", "finish": "Finish",
     "markup_multiplier": "Markup",
     "default_trade_discount_pct": "Trade discount % (default for new products)",
     "pricing_zone": "Pricing zone",

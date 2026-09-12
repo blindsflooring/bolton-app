@@ -233,6 +233,32 @@ class TrimProduct(SQLModel, table=True):
     category: str = "skirting"   # "skirting" | "stair_nose" | "reducer" | "carpet_strip" | "quarter_round"
     supplier: str
     cost_ex_vat_per_lm: float
+    # ===== Sold by the LENGTH, not the metre (confirmed Sept 2026,
+    # Supertrim April 2026 price list) =====
+    #
+    # Supertrim quote and ship whole lengths — 2.7m for most profiles,
+    # 2.5m for the ST/CT tile-edge range — and their price list is
+    # printed that way. Recording only a per-metre figure meant a real
+    # order of "6 lengths of S299" had to be converted to 16.2m and back
+    # again, and the number that finally went to the supplier was a
+    # rounding of a rounding.
+    #
+    # DELIBERATELY ADDITIVE. cost_ex_vat_per_lm stays, stays required,
+    # and is still what the trim line calculator and stairwell nosing
+    # price from (calculations.py) — it is derived on load as
+    # price_per_length_ex_vat / length_m, so those keep working
+    # untouched and on better figures than the Feb 2024 import they
+    # replace. Same pattern as JobWorkDay and QuotePayment: the new
+    # shape carries the truth, the old field stays correct beside it.
+    length_m: Optional[float] = None            # 2.7 / 2.5 — the length actually sold
+    price_per_length_ex_vat: Optional[float] = None   # what the supplier charges for one
+    # A profile is a different PRODUCT in each finish, at its own price:
+    # S1125 is R149 in Anodized Silver and simply not available in Black.
+    # Free text rather than an enum, matching every other categorical
+    # field here (Quote.status, ToDo.category) — a supplier can invent a
+    # finish and an old row must never fail to load because the allowed
+    # set moved on.
+    finish: str = ""                            # "Powder Coated White", "Anodized Silver", "Mill", ...
     vat_pct: float = 0.15        # confirmed Aug 2026 — used in markup mode: cost x (1+vat) x markup
     wastage_pct: float = 0.08    # confirmed Aug 2026 — buffer for offcuts/mitres when ordering, affects cost only (client is charged for actual length, not the extra bought)
     pricing_mode: str = "fixed"  # "fixed" | "markup"
