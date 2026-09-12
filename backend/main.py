@@ -32,6 +32,7 @@ from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
     BusinessSettings, Employee, CommissionRate, CommissionPayment,
     HoursWorked, Document, LeaveBalance, LeaveRequest, ColourChangeLog, PaymentFollowUp, QuotePayment,
+    LoginFailure,
     JobType, UserRole, StairwellType, User, UserSession, DEFAULT_TENANT_ID, AuditLog,
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
@@ -259,13 +260,30 @@ async def require_auth(request: Request, call_next):
 FRONTEND_ORIGINS = [
     "https://bolton-frontend.onrender.com",
 ]
+# Local origins are a DEVELOPMENT convenience and must not be live in
+# production (confirmed Sept 2026, security pass). Until now this regex
+# was unconditional, so the deployed API accepted cross-origin calls
+# from any page served on localhost — meaning something running locally
+# on a staff machine could call the real API with that person's session.
+# Narrow, but it is a door that was open for no reason.
+#
+# Keyed on RENDER, which Render sets on every deploy and nothing sets on
+# a laptop, so this needs no new configuration and cannot be forgotten.
+# ALLOW_LOCAL_ORIGINS=true is the deliberate override, for the case where
+# the hosted API genuinely has to be reachable from a local frontend.
+_ON_RENDER = bool(os.environ.get("RENDER") or os.environ.get("RENDER_GIT_COMMIT"))
+ALLOW_LOCAL_ORIGINS = (os.environ.get("ALLOW_LOCAL_ORIGINS", "").strip().lower() == "true") or not _ON_RENDER
+_cors_kwargs = {}
+if ALLOW_LOCAL_ORIGINS:
+    _cors_kwargs["allow_origin_regex"] = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
+print(f"CORS: {FRONTEND_ORIGINS}" + (" + local dev origins" if ALLOW_LOCAL_ORIGINS else " (local origins OFF — running on Render)"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",  # local dev only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_kwargs,
 )
 
 
@@ -2388,17 +2406,102 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+# ===== Login throttling (confirmed Sept 2026, security pass) =====
+#
+# Eight wrong passwords in fifteen minutes and that name stops being
+# accepted until the window rolls off. Numbers chosen for a four-person
+# business: nobody fat-fingers a password eight times in a quarter of an
+# hour, and eight guesses per quarter-hour is useless to an attacker.
+LOGIN_MAX_FAILURES = 8
+# The IP limit is deliberately far looser than the per-name one, and
+# that gap is the whole point. Burgert, Ryno and Madri work out of the
+# same shop on the same connection, so they share an IP — tested at the
+# same threshold as the username and three people fumbling passwords
+# between them locked the entire office out after eight tries. A limit
+# that punishes a team for being in one building is worse than no limit.
+#
+# So the IP count only exists to catch the other shape of attack: one
+# host working THROUGH a list of usernames, where no single name ever
+# reaches eight. Twenty-five in a quarter of an hour is far past
+# anything three people do by accident and still nowhere near enough to
+# guess a password.
+LOGIN_MAX_FAILURES_PER_IP = 25
+LOGIN_WINDOW = timedelta(minutes=15)
+
+
+def _client_ip(request: "Request") -> str:
+    """Best available client address.
+
+    CF-Connecting-IP first, and it is the one worth trusting:
+    Cloudflare fronts this API (confirmed by the CF-RAY header on live
+    responses) and sets that header itself, overwriting anything the
+    caller sent. X-Forwarded-For is client-supplied at the first hop and
+    therefore spoofable, so it is only a fallback for running without
+    Cloudflare in front.
+    """
+    for header in ("cf-connecting-ip", "x-forwarded-for"):
+        raw = request.headers.get(header)
+        if raw:
+            return raw.split(",")[0].strip()[:45]
+    return (request.client.host if request.client else "")[:45]
+
+
+def _login_lock_remaining(session, username: str, ip: str):
+    """Minutes until this login is accepted again, or None if it is not
+    locked.
+
+    Locks on the USERNAME, and on the IP as a secondary. The username is
+    the primary deliberately, because it is the half an attacker cannot
+    forge — X-Forwarded-For can be spoofed, so an IP-only lock would be
+    trivially evaded by the very traffic it exists to stop.
+
+    The tradeoff, stated rather than hidden: someone who knows a
+    username can keep that person locked out by failing against it on
+    purpose. That is a real denial of service, and it is accepted as the
+    lesser problem — fifteen minutes of inconvenience against the
+    alternative, which is unlimited password guesses. It expires on its
+    own, it clears the moment a correct password is used, and
+    /admin/login-failures shows exactly what is happening.
+    """
+    since = datetime.utcnow() - LOGIN_WINDOW
+    rows = session.exec(select(LoginFailure).where(LoginFailure.at >= since)).all()
+    for matches, limit in (([r for r in rows if r.username == username], LOGIN_MAX_FAILURES),
+                           ([r for r in rows if ip and r.ip == ip], LOGIN_MAX_FAILURES_PER_IP)):
+        if len(matches) >= limit:
+            oldest = min(r.at for r in matches)
+            mins = int((oldest + LOGIN_WINDOW - datetime.utcnow()).total_seconds() // 60) + 1
+            return max(1, mins)
+    return None
+
+
 @app.post("/auth/login")
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request):
     # Body, not query params (unlike the rest of this API's endpoints) —
     # deliberate: credentials must never land in a URL, where they'd be
     # captured by Render/proxy access logs and browser history.
+    typed_username = body.username.strip().lower()
+    ip = _client_ip(request)
     with Session(engine) as session:
-        user = session.exec(select(User).where(User.username == body.username.strip().lower())).first()
+        # Throttle check runs BEFORE the user lookup, on the string that
+        # was typed. That ordering is the point: a real username and a
+        # made-up one get the identical response, so the lockout cannot
+        # be used to find out which accounts exist — the same reasoning
+        # as the shared error message below.
+        locked = _login_lock_remaining(session, typed_username, ip)
+        if locked:
+            raise HTTPException(429, f"Too many failed login attempts. Try again in {locked} minute{'s' if locked != 1 else ''}.")
+        user = session.exec(select(User).where(User.username == typed_username)).first()
         # Deliberately identical error for "no such user" and "wrong
         # password" — doesn't leak which usernames exist.
         if not user or not user.active or not verify_password(body.password, user.password_hash):
+            session.add(LoginFailure(username=typed_username, ip=ip))
+            session.commit()
             raise HTTPException(401, "Incorrect username or password")
+        # A correct password clears this name's record immediately, so
+        # someone who mistyped a few times does not carry that against
+        # themselves for the rest of the window.
+        for stale in session.exec(select(LoginFailure).where(LoginFailure.username == typed_username)).all():
+            session.delete(stale)
         # Single Active Session per User (confirmed Aug 2026) — root
         # cause of multiple simultaneous "Still active" sessions for the
         # same person: staff close the browser/app instead of clicking
@@ -4836,6 +4939,57 @@ def builder_access_log(start_date: Optional[str] = None, end_date: Optional[str]
             "visit_count": sum(1 for ev in events if ev["type"] == "visit"),
             "estimate_count": sum(1 for ev in events if ev["type"] == "estimate"),
             "builders": sorted({ev["builder_name"] for ev in events}),
+        }
+
+
+@app.get("/admin/login-failures")
+def login_failures(role: str = Depends(require_owner)):
+    """Failed logins in the current window, Owner-only.
+
+    Sits beside /admin/session-log, which records who got IN; this is
+    who did not. Together they answer "is someone trying my app", which
+    previously had no answer at all.
+
+    Grouped rather than listed raw, because the useful question is "is
+    any name close to being locked out, and from where", not a scroll of
+    timestamps.
+    """
+    since = datetime.utcnow() - LOGIN_WINDOW
+    with Session(engine) as session:
+        rows = session.exec(select(LoginFailure).where(LoginFailure.at >= since)
+                            .order_by(LoginFailure.at.desc())).all()
+        by_name = {}
+        for r in rows:
+            g = by_name.setdefault(r.username, {"username": r.username, "attempts": 0, "ips": set(), "last_at": r.at})
+            g["attempts"] += 1
+            if r.ip: g["ips"].add(r.ip)
+            g["last_at"] = max(g["last_at"], r.at)
+        by_ip = {}
+        for r in rows:
+            if not r.ip: continue
+            b = by_ip.setdefault(r.ip, {"ip": r.ip, "attempts": 0, "usernames": set()})
+            b["attempts"] += 1
+            b["usernames"].add(r.username)
+        locked_ips = {ip for ip, b in by_ip.items() if b["attempts"] >= LOGIN_MAX_FAILURES_PER_IP}
+        return {
+            "window_minutes": int(LOGIN_WINDOW.total_seconds() // 60),
+            "lock_threshold_per_username": LOGIN_MAX_FAILURES,
+            "lock_threshold_per_ip": LOGIN_MAX_FAILURES_PER_IP,
+            "total_failures_in_window": len(rows),
+            # locked reflects BOTH limits. Reporting only the per-name
+            # count showed someone as free to log in while the IP limit
+            # was in fact turning them away — found by testing, and a
+            # status line that disagrees with the door is worse than
+            # none.
+            "by_username": sorted([
+                {"username": g["username"], "attempts": g["attempts"], "ips": sorted(g["ips"]),
+                 "last_at": g["last_at"].isoformat(),
+                 "locked": g["attempts"] >= LOGIN_MAX_FAILURES or bool(g["ips"] & locked_ips)}
+                for g in by_name.values()], key=lambda x: -x["attempts"]),
+            "by_ip": sorted([
+                {"ip": b["ip"], "attempts": b["attempts"], "usernames": sorted(b["usernames"]),
+                 "locked": b["attempts"] >= LOGIN_MAX_FAILURES_PER_IP}
+                for b in by_ip.values()], key=lambda x: -x["attempts"]),
         }
 
 

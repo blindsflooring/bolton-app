@@ -140,6 +140,32 @@ class PasswordResetToken(SQLModel, table=True):
     used_at: Optional[datetime] = None
 
 
+class LoginFailure(SQLModel, table=True):
+    """One failed login attempt (confirmed Sept 2026, security pass).
+
+    Bolton had no brute-force protection at all: an attacker could try
+    passwords against /auth/login forever. The hashing is strong
+    (PBKDF2-SHA256, 260k iterations) so this was never the weakest link,
+    but unlimited guesses against a public endpoint is the kind of gap
+    that only looks small until someone reuses a password.
+
+    Stored in the DATABASE, not in a process-local dict, for the same
+    reason UserSession is: Render restarts on every deploy and may run
+    more than one instance. An in-memory counter would reset itself on
+    each deploy and would not be shared between workers — which is to
+    say it would look like protection without being any.
+
+    Deliberately NO foreign key to app_user. The username here is the
+    string that was TYPED, so attempts against usernames that do not
+    exist are recorded too — that is exactly the traffic worth seeing,
+    and a FK would make it impossible to store.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(index=True)   # as submitted, lowercased/trimmed
+    ip: str = ""                        # CF-Connecting-IP where available
+    at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class UserSession(SQLModel, table=True):
     """Server-side session record backing the login cookie. Stored in the
     DB (not in-memory) so sessions survive a Render backend restart/redeploy
