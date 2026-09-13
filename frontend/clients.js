@@ -10,6 +10,82 @@
 // the New Quote form's own client-search-while-typing feature, a Quote
 // Builder concern, not client CRM management.
 
+// Selected clients, kept across re-renders (confirmed Sept 2026,
+// "a tick box next to the name to delete — there's so many test clients
+// in there"). The whole screen re-renders on every keystroke in the
+// search box, so a selection held only in the DOM would be wiped by
+// typing. Held by id, so a tick survives searching for the next one.
+let selectedClientIds = new Set();
+
+function toggleClientSelected(id, on) {
+  if (on) selectedClientIds.add(id); else selectedClientIds.delete(id);
+  renderClientSelectionBar();
+  const row = document.querySelector(`tr[data-client-row="${id}"]`);
+  if (row) row.classList.toggle('row-selected', on);
+}
+
+function toggleAllVisibleClients(on) {
+  document.querySelectorAll('input[data-client-tick]').forEach(box => {
+    if (box.disabled) return;       // a client with jobs can't be deleted — see the endpoint
+    box.checked = on;
+    toggleClientSelected(Number(box.dataset.clientTick), on);
+  });
+}
+
+function clearClientSelection() {
+  selectedClientIds = new Set();
+  document.querySelectorAll('input[data-client-tick]').forEach(b => { b.checked = false; });
+  document.querySelectorAll('tr[data-client-row]').forEach(r => r.classList.remove('row-selected'));
+  renderClientSelectionBar();
+}
+
+function renderClientSelectionBar() {
+  const bar = document.getElementById('clientSelectionBar');
+  if (!bar) return;
+  const n = selectedClientIds.size;
+  bar.style.display = n ? '' : 'none';
+  if (!n) return;
+  bar.innerHTML = `
+    <span><b>${n}</b> client${n === 1 ? '' : 's'} selected</span>
+    <button class="delete-btn" onclick="deleteSelectedClients()">Delete ${n} selected</button>
+    <button onclick="clearClientSelection()">Clear</button>`;
+}
+
+// The confirm names who is going, because "delete 14 clients?" is not
+// something anyone can check before pressing yes.
+async function deleteSelectedClients() {
+  const ids = [...selectedClientIds];
+  if (!ids.length) return;
+  const names = ids.map(id => {
+    const row = document.querySelector(`tr[data-client-row="${id}"] .card-title`);
+    return row ? row.childNodes[0].textContent.trim() : `#${id}`;
+  });
+  const shown = names.slice(0, 12).join('\n  ');
+  const more = names.length > 12 ? `\n  ...and ${names.length - 12} more` : '';
+  if (!confirm(`Delete ${ids.length} client${ids.length === 1 ? '' : 's'}?\n\n  ${shown}${more}`
+      + `\n\nThis cannot be undone.`)) return;
+
+  const res = await fetch(`${API}/clients/bulk-delete`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ client_ids: ids }),
+  });
+  const result = await res.json();
+  if (!res.ok) { alert(result.detail || 'Could not delete these clients.'); return; }
+
+  // Skipped ones are reported rather than swallowed: they were refused
+  // for a reason the Owner can act on.
+  let msg = `Deleted ${result.deleted_count} client${result.deleted_count === 1 ? '' : 's'}.`;
+  if (result.skipped_count) {
+    msg += `\n\n${result.skipped_count} kept, because ${result.skipped_count === 1 ? 'it has' : 'they have'} jobs attached:\n  `
+         + result.skipped.map(x => `${x.name} — ${x.reason}`).join('\n  ')
+         + `\n\nDelete those jobs first if these records really need to go.`;
+  }
+  alert(msg);
+  clearClientSelection();
+  renderClients(document.getElementById('landing'),
+                document.getElementById('clientSearchInput')?.value);
+}
+
 async function renderClients(el, searchTerm) {
   await renderWithRetry(el, 'Clients', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span><div class="card"><h2>Clients</h2><p class="muted">Loading...</p></div>`;
@@ -21,10 +97,28 @@ async function renderClients(el, searchTerm) {
   // sweep (this table had no mobile handling at all before -- not even
   // overflow-x:auto -- and email addresses are exactly the kind of
   // unbreakable string that forces a table wider than the screen).
-  const rows = clients.length ? clients.map(c => `
-    <tr style="cursor:pointer;" onclick="openClientDetail(${c.id})">
-      <td class="card-title" data-label="Name">${c.name}${c.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${c.test_data_label}</span>` : ''}</td><td data-label="Phone">${c.phone || '—'}</td><td data-label="Email">${c.email || '—'}</td><td data-label="Branch">${c.preferred_branch}</td>
-    </tr>`).join('') : '<tr><td colspan="4" class="muted">No clients match.</td></tr>';
+  // Deleting is Owner-only server-side (delete_client/bulk_delete_clients),
+  // so the tick boxes only exist for an Owner rather than being offered
+  // to everyone and refused on click.
+  const canDelete = currentRole() === 'owner';
+  const cols = canDelete ? 6 : 5;
+  const rows = clients.length ? clients.map(c => {
+    const blocked = (c.quote_count || 0) > 0;
+    const tick = canDelete ? `<td data-label="" onclick="event.stopPropagation()" style="width:34px;">
+        <input type="checkbox" data-client-tick="${c.id}" ${blocked ? 'disabled' : ''}
+               ${selectedClientIds.has(c.id) ? 'checked' : ''}
+               title="${blocked ? `Has ${c.quote_count} job(s) — delete those first` : 'Select for deletion'}"
+               onchange="toggleClientSelected(${c.id}, this.checked)" style="width:auto; cursor:pointer;"></td>` : '';
+    return `
+    <tr style="cursor:pointer;" data-client-row="${c.id}" class="${selectedClientIds.has(c.id) ? 'row-selected' : ''}" onclick="openClientDetail(${c.id})">
+      ${tick}
+      <td class="card-title" data-label="Name">${c.name}${c.is_test_data ? `<br><span class="muted" style="font-size:10px; color:var(--coral); font-weight:700;" title="Created by a Trusted Tester account — excluded from Business Overview figures">🧪 ${c.test_data_label}</span>` : ''}</td>
+      <td data-label="Phone">${c.phone || '—'}</td><td data-label="Email">${c.email || '—'}</td><td data-label="Branch">${c.preferred_branch}</td>
+      <td class="card-actions-cell" data-label="" onclick="event.stopPropagation()">
+        <button onclick="openClientDetail(${c.id}, true)" style="font-size:11px;">Edit</button>
+        ${blocked ? `<span class="muted" style="font-size:11px; margin-left:8px;" title="A client with jobs can't be deleted — delete the jobs first">${c.quote_count} job${c.quote_count === 1 ? '' : 's'}</span>` : ''}
+      </td>
+    </tr>`; }).join('') : `<tr><td colspan="${cols}" class="muted">No clients match.</td></tr>`;
   // Possible Duplicate Clients (confirmed Aug 2026, Order Index ->
   // Client Link Gap brief — "check for and report any other duplicate
   // client records"). Owner-only endpoint (require_owner server-side),
@@ -57,7 +151,13 @@ async function renderClients(el, searchTerm) {
     <div class="card">
       <h2>Clients</h2>
       <div class="field"><label>Search</label><input type="text" id="clientSearchInput" value="${searchTerm || ''}" placeholder="Type to search..." oninput="renderClients(document.getElementById('landing'), this.value)"></div>
-      <table class="mobile-card-table"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Branch</th></tr></thead>
+      ${canDelete ? `<p class="muted" style="margin-top:-4px; font-size:12px;">
+        Tick the ones to remove. A client with jobs attached can't be deleted — its box is greyed out and the job count is shown instead.</p>` : ''}
+      <div id="clientSelectionBar" class="client-select-bar" style="display:none;"></div>
+      <table class="mobile-card-table"><thead><tr>
+        ${canDelete ? `<th style="width:34px;"><input type="checkbox" title="Select every deletable client shown" onchange="toggleAllVisibleClients(this.checked)" style="width:auto; cursor:pointer;"></th>` : ''}
+        <th>Name</th><th>Phone</th><th>Email</th><th>Branch</th><th></th>
+      </tr></thead>
       <tbody>${rows}</tbody></table>
     </div>
     <div class="card">
@@ -114,6 +214,9 @@ async function renderClients(el, searchTerm) {
   // one-argument dispatch call (renderLanding() -> renderClients(el)).
   const input = document.getElementById('clientSearchInput');
   if (input && searchTerm !== undefined) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  // A selection made before a search is still live afterwards, so the
+  // bar has to be redrawn with the screen rather than only on a click.
+  renderClientSelectionBar();
   });
 }
 

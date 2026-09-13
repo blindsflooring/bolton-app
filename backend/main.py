@@ -4189,6 +4189,41 @@ CATEGORY_FILENAME_LABEL = {
 # than with "Misc" implying one.
 MAX_CATEGORIES_IN_FILENAME = 3
 
+# Which half of the business a job belongs to (confirmed Sept 2026,
+# "split flooring and blinds into two folders over Gansbaai and
+# Hermanus"). Everything that is not blinds is the flooring side — screed
+# under a floor, the trim around it and the stairs it runs up are all
+# part of a flooring job, and filing them apart from it would scatter one
+# job across folders.
+#
+# A job carrying BOTH gets its own folder rather than being filed under
+# one and hidden from the other (confirmed Sept 2026, Burgert's choice
+# when asked): every document then sits in exactly one place, and the
+# folder name says why it is there.
+BLINDS_BUCKETS = {"blinds"}
+FLOORING_BUCKETS = {"flooring", "screed", "carpet", "trim", "skirting", "stairwell"}
+CATEGORY_FOLDER_BLINDS = "Blinds"
+CATEGORY_FOLDER_FLOORING = "Flooring"
+CATEGORY_FOLDER_BOTH = "Blinds + Flooring"
+
+
+def _category_folder(buckets: set) -> str:
+    """The sub-folder for a job's categories, or "" when it has none.
+
+    A job with only misc lines, or no lines at all, keeps the branch
+    folder itself rather than being pushed into a category it is not in —
+    the same reasoning that leaves the category out of its filename.
+    """
+    has_blinds = bool(buckets & BLINDS_BUCKETS)
+    has_flooring = bool(buckets & FLOORING_BUCKETS)
+    if has_blinds and has_flooring:
+        return CATEGORY_FOLDER_BOTH
+    if has_blinds:
+        return CATEGORY_FOLDER_BLINDS
+    if has_flooring:
+        return CATEGORY_FOLDER_FLOORING
+    return ""
+
 
 def _line_category_bucket(line: "QuoteLineItem") -> str:
     """One line's product bucket. A port of lineSummaryBucket()
@@ -4202,7 +4237,17 @@ def _line_category_bucket(line: "QuoteLineItem") -> str:
     return line.category or ""
 
 
-def _quote_category_label(session: Session, tenant_id: str, quote_id: int) -> str:
+def _quote_categories(session: Session, tenant_id: str, quote_id: int) -> dict:
+    """A job's categories as BOTH the filename part and the folder,
+    from one read of its lines — so the name and the folder can never
+    describe the job differently."""
+    lines = session.exec(select(QuoteLineItem).where(
+        QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.quote_id == quote_id)).all()
+    buckets = {_line_category_bucket(l) for l in lines}
+    return {"label": _category_label_from(buckets), "folder": _category_folder(buckets)}
+
+
+def _category_label_from(buckets: set) -> str:
     """Every product category on a job, as one filename part.
 
     Joined with " + " because " - " already separates the filename's own
@@ -4214,10 +4259,7 @@ def _quote_category_label(session: Session, tenant_id: str, quote_id: int) -> st
     that quietly omits half the job is worse than one that says there is
     more.
     """
-    lines = session.exec(select(QuoteLineItem).where(
-        QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.quote_id == quote_id)).all()
-    present = {_line_category_bucket(l) for l in lines}
-    ordered = [CATEGORY_FILENAME_LABEL[c] for c in CATEGORY_FILENAME_ORDER if c in present]
+    ordered = [CATEGORY_FILENAME_LABEL[c] for c in CATEGORY_FILENAME_ORDER if c in buckets]
     if not ordered:
         return ""
     if len(ordered) > MAX_CATEGORIES_IN_FILENAME:
@@ -4236,13 +4278,14 @@ def _document_subject(session: Session, tenant_id: str, entity_type: str,
     every job and every client, and inventing a client name for it would
     be worse than leaving it out.
     """
-    client = job_ref = extra = category = ""
+    client = job_ref = extra = category = folder = ""
     if entity_type in ("Quote", "Invoice"):
         quote = session.get(Quote, entity_id)
         if quote and quote.tenant_id == tenant_id:
             client = quote.client_name or ""
             job_ref = quote.job_number or f"Q-{quote.id}"
-            category = _quote_category_label(session, tenant_id, quote.id)
+            cats = _quote_categories(session, tenant_id, quote.id)
+            category, folder = cats["label"], cats["folder"]
     elif entity_type == "OrderSheet":
         sheet = session.get(OrderSheet, entity_id)
         if sheet and sheet.tenant_id == tenant_id:
@@ -4261,8 +4304,10 @@ def _document_subject(session: Session, tenant_id: str, entity_type: str,
                 # already names itself (its order number is in the
                 # filename), and what someone scanning the folder wants
                 # to know is what job it belongs to.
-                category = _quote_category_label(session, tenant_id, quote.id)
-    return {"client": client, "job_ref": job_ref, "extra": extra, "category": category}
+                cats = _quote_categories(session, tenant_id, quote.id)
+                category, folder = cats["label"], cats["folder"]
+    return {"client": client, "job_ref": job_ref, "extra": extra,
+            "category": category, "folder": folder}
 
 
 DOCUMENT_TYPE_LABEL = {
@@ -4315,6 +4360,31 @@ def _branch_folder_name(branch: Optional[str]) -> str:
     return branch.strip().title()
 
 
+def _archive_folder_path(branch: Optional[str], subject: dict) -> str:
+    """/Bolton/{Branch}/{Blinds|Flooring|Blinds + Flooring}
+
+    The category level was added Sept 2026. A job with no product
+    category keeps the branch folder itself, which is also where every
+    document lived before the split — so nothing that cannot be
+    classified gets pushed somewhere arbitrary.
+    """
+    path = f"/Bolton/{_branch_folder_name(branch)}"
+    folder = subject.get("folder") or ""
+    return f"{path}/{folder}" if folder else path
+
+
+def _branch_from_dropbox_path(path: str) -> Optional[str]:
+    """The branch a stored path was filed under — the segment straight
+    after /Bolton/. Works for both the flat pre-Sept-2026 paths
+    (/Bolton/Hermanus/file.pdf) and the split ones
+    (/Bolton/Hermanus/Blinds/file.pdf), which is what a retry of an old
+    row needs: keep its branch, re-derive everything else."""
+    parts = [p for p in (path or "").split("/") if p]
+    if len(parts) >= 2 and parts[0] == "Bolton":
+        return parts[1]
+    return None
+
+
 def _create_and_upload_archive(session: Session, tenant_id: str, username: str, entity_type: str, entity_id: int,
                                 reference: str, file_bytes: bytes, mark_as_accepted: bool = False, branch: Optional[str] = None) -> DocumentArchive:
     """The actual reusable "pipeline" the brief's §2/§11 asks for (§2:
@@ -4358,8 +4428,13 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
     # requirement, kept.
     suffix = "ACCEPTED" if mark_as_accepted else f"v{version}"
     filename = dropbox_filename(subject, entity_type, suffix, ext, fallback=reference)
-    folder = ARCHIVE_CATEGORY_FOLDER[entity_type] if entity_type == "OrderIndexSnapshot" else _branch_folder_name(branch)
-    dropbox_path = f"/Bolton/{folder}/{filename}"
+    if entity_type == "OrderIndexSnapshot":
+        # Whole-tenant and branch-independent: a snapshot spans every
+        # branch and every category, so neither level applies to it.
+        folder_path = f"/Bolton/{ARCHIVE_CATEGORY_FOLDER[entity_type]}"
+    else:
+        folder_path = _archive_folder_path(branch, subject)
+    dropbox_path = f"{folder_path}/{filename}"
     if mark_as_accepted:
         # At most one row per document ever carries this flag — unset
         # it on any earlier version before this new one claims it, so
@@ -4505,15 +4580,17 @@ def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current
         if archive.status == "uploaded":
             raise HTTPException(400, "This version is already uploaded — nothing to retry.")
         ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
-        if archive.dropbox_path and "/" in archive.dropbox_path:
-            folder_path = archive.dropbox_path.rsplit("/", 1)[0]
-        else:
-            folder = (ARCHIVE_CATEGORY_FOLDER[archive.entity_type]
-                      if archive.entity_type == "OrderIndexSnapshot"
-                      else _branch_folder_name(None))
-            folder_path = f"/Bolton/{folder}"
         subject = _document_subject(session, tenant_id, archive.entity_type, archive.entity_id)
         suffix = "ACCEPTED" if archive.is_accepted_version else f"v{archive.version}"
+        if archive.entity_type == "OrderIndexSnapshot":
+            folder_path = f"/Bolton/{ARCHIVE_CATEGORY_FOLDER[archive.entity_type]}"
+        else:
+            # Only the BRANCH survives from the stored path; the category
+            # folder is re-derived, for the same reason the filename is —
+            # a row that never uploaded has no file anywhere to stay
+            # consistent with, and its stored path predates the split.
+            folder_path = _archive_folder_path(
+                _branch_from_dropbox_path(archive.dropbox_path or ""), subject)
         dropbox_path = folder_path + "/" + dropbox_filename(
             subject, archive.entity_type, suffix, ext, fallback=archive.reference)
         upload_result = dropbox_archive.upload_document(archive.pdf_bytes, dropbox_path)
@@ -7068,16 +7145,23 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     root cause of Madri's reported failure, confirmed by reading
     photo_storage.py directly: SUPABASE_URL/SUPABASE_SERVICE_KEY was
     never configured)."""
-    folder = _branch_folder_name(quote.branch) if quote else "Builder Estimates"
+    photo_folder = (_archive_folder_path(quote.branch, {}) if quote
+                    else "/Bolton/Builder Estimates")
     # Same naming rule as every archived document (Sept 2026): a photo in
     # the Dropbox archive is as hard to place without a client name as a
     # quote is. A builder estimate has no Quote behind it, so it carries
     # its own reference in the job slot rather than being left unnamed.
-    subject = ({"client": quote.client_name or "", "job_ref": quote.job_number or f"Q-{quote.id}",
-                "extra": "", "category": _quote_category_label(session, tenant_id, quote.id)}
-               if quote else
-               {"client": "", "job_ref": f"Estimate-{builder_estimate_id}",
-                "extra": "", "category": ""})
+    if quote:
+        cats = _quote_categories(session, tenant_id, quote.id)
+        subject = {"client": quote.client_name or "",
+                   "job_ref": quote.job_number or f"Q-{quote.id}",
+                   "extra": "", "category": cats["label"], "folder": cats["folder"]}
+        # Recomputed now that the categories are known — _archive_folder_path
+        # above was called before them.
+        photo_folder = _archive_folder_path(quote.branch, subject)
+    else:
+        subject = {"client": "", "job_ref": f"Estimate-{builder_estimate_id}",
+                   "extra": "", "category": "", "folder": ""}
     # The original filename is kept as the suffix so the photo is still
     # recognisable, and a short uuid keeps two photos of the same wall on
     # the same job from colliding — mode=add never overwrites, so a
@@ -7085,7 +7169,9 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     stem, dot, photo_ext = safe_name.rpartition(".")
     suffix = f"{_dropbox_safe(stem or safe_name, 40)} {uuid.uuid4().hex[:8]}"
     filename = dropbox_filename(subject, "Photo", suffix, photo_ext or "jpg")
-    dropbox_path = f"/Bolton/Photos/{folder}/{filename}"
+    # Photos keep their own top-level folder, then the same
+    # branch/category split as the documents (Sept 2026).
+    dropbox_path = photo_folder.replace("/Bolton/", "/Bolton/Photos/", 1) + f"/{filename}"
     upload_result = dropbox_archive.upload_document(data, dropbox_path)
     photo = QuotePhoto(
         tenant_id=tenant_id, quote_id=quote.id if quote else None, builder_estimate_id=builder_estimate_id,
@@ -9209,11 +9295,22 @@ def list_clients(search: str = None, tenant_id: str = Depends(get_current_tenant
         # _trusted_tester_usernames() source, never hidden from the
         # normal client list.
         tt_usernames = _trusted_tester_usernames(session, tenant_id)
+        # How many quotes each client has, counted once for the whole
+        # list rather than per row (confirmed Sept 2026, bulk delete).
+        # The Clients screen needs it to show which records can actually
+        # be removed — delete_client() refuses a client with quotes, and
+        # a tick box that looks available but always fails is worse than
+        # one that explains itself up front.
+        quote_counts = {}
+        for q in session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all():
+            if q.client_id is not None:
+                quote_counts[q.client_id] = quote_counts.get(q.client_id, 0) + 1
         result = []
         for c in clients:
             d = c.dict()
             d["is_test_data"] = c.created_by in tt_usernames
             d["test_data_label"] = f"TEST — {tt_usernames[c.created_by]}" if c.created_by in tt_usernames else None
+            d["quote_count"] = quote_counts.get(c.id, 0)
             result.append(d)
         return result
 
@@ -9280,6 +9377,61 @@ def delete_client(client_id: int, role: str = Depends(require_owner),
         session.delete(client)
         session.commit()
         return {"deleted": client_id}
+
+
+class BulkDeleteClientsRequest(BaseModel):
+    client_ids: List[int]
+
+
+@app.post("/clients/bulk-delete")
+def bulk_delete_clients(body: BulkDeleteClientsRequest, role: str = Depends(require_owner),
+                        tenant_id: str = Depends(get_current_tenant),
+                        username: str = Depends(get_current_username)):
+    """Delete several clients at once — for clearing out test records,
+    which is what this exists for (confirmed Sept 2026).
+
+    EXACTLY THE SAME RULE AS delete_client(), deliberately: a client
+    with quotes attached is refused, not force-deleted. That rule is not
+    a technical limitation to route around — it is a decision recorded
+    on that endpoint, that whether a job's history should be destroyed
+    is the Owner's call one quote at a time. Doing it silently for
+    twenty clients at once is the version of that mistake that cannot be
+    undone.
+
+    Partial success is the point: the deletable ones go, and every
+    refusal comes back named, with its quote count, so the answer is
+    "these four went, these two have jobs on them" rather than the whole
+    batch failing because one client had a quote.
+    """
+    deleted, skipped = [], []
+    with Session(engine) as session:
+        for client_id in dict.fromkeys(body.client_ids):    # de-duplicated, order kept
+            client = session.get(Client, client_id)
+            if not client or client.tenant_id != tenant_id:
+                skipped.append({"id": client_id, "name": f"#{client_id}",
+                                "reason": "not found"})
+                continue
+            quotes = session.exec(select(Quote).where(
+                Quote.client_id == client_id, Quote.tenant_id == tenant_id)).all()
+            if quotes:
+                skipped.append({"id": client_id, "name": client.name,
+                                "quote_count": len(quotes),
+                                "reason": f"{len(quotes)} quote(s) linked"})
+                continue
+            # Read off the row BEFORE deleting it: once the delete is
+            # issued, touching any attribute raises ObjectDeletedError
+            # rather than returning the value it had a line earlier.
+            name = client.name
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="Client",
+                entity_id=client.id, field="__deleted__",
+                old_value=f"Client — {name}", new_value="(bulk delete)"))
+            _cascade_delete_children(session, "client", client.id, tenant_id)
+            session.delete(client)
+            deleted.append({"id": client_id, "name": name})
+        session.commit()
+    return {"deleted": deleted, "skipped": skipped,
+            "deleted_count": len(deleted), "skipped_count": len(skipped)}
 
 
 def _job_workflow_info(quote: "Quote", today: date, materials_ordered: bool = False, last_follow_up_date: Optional[date] = None,
