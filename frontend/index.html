@@ -2950,17 +2950,17 @@ let stagedSupplierDefaults = {};   // supplier -> { fieldName: stagedValue }
 // which is what goes on a purchase order, and the running total is what
 // the invoice will say.
 //
-// ON THE DIAGRAMS, which the brief asked to be investigated rather than
-// assumed: Bolton can store real images (QuotePhoto keeps bytes and
-// archives to Dropbox), so catalogue diagrams were possible. They are
-// not here, deliberately. The stated purpose was "so I can recognize
-// what I'm ordering" — and someone ordering S2020 knows what an equal
-// angle looks like; what they need correct is the code, the size and
-// the finish. Real diagrams would mean sourcing ~45 images, storing and
-// serving them, and re-doing it every time the list reissues. A drawn
-// shape per category gets the recognition at none of that cost, and
-// carries the profile's real dimensions beside it, which a picture
-// does not.
+// ON THE DIAGRAMS (confirmed Sept 2026): the real technical line
+// drawings from the October 2025 Supertrim catalogue, with the
+// dimensions printed beside them. An earlier round used a drawn shape
+// per category instead; that judgement was overruled, and the drawings
+// were extracted from the catalogue PDF itself rather than redrawn, so
+// the screen shows what the supplier publishes.
+//
+// 41 of the 45 profiles on the April 2026 price list have one. The
+// category shape below is now the FALLBACK for the other four, not the
+// default — a profile the catalogue does not cover says so rather than
+// borrowing a drawing from something that merely looks similar.
 const SUPERTRIM_SHAPES = {
   angle:        { glyph: '\u2310', hint: 'Equal / unequal angle' },
   end_cap:      { glyph: '\u2319', hint: 'End cap' },
@@ -2981,6 +2981,16 @@ const SUPERTRIM_CAT_LABEL = {
   // book tree needed.
   corner_protector: 'Corner protectors', skirting: 'Skirting', quarter_round: 'Quarter round',
 };
+
+// The size as the catalogue states it, beside the drawing of it: width
+// and height off the catalogue, length off the price list (which is what
+// is actually being bought — S128g Short is the same profile at 900mm).
+function supertrimDims(p) {
+  const wh = (p.catalogue_width_mm && p.catalogue_height_mm)
+    ? `${p.catalogue_width_mm} &times; ${p.catalogue_height_mm}mm` : '';
+  const len = p.length_m ? `${p.length_m}m lengths` : '';
+  return `<span class="st-len">${[wh, len].filter(Boolean).join(' &middot; ')}</span>`;
+}
 
 let supertrimOrderData = null;
 // Quantities survive a refresh. An order is built over a morning, not
@@ -3193,7 +3203,7 @@ function supertrimStockPanel(summary, recent) {
       <summary><b>Stock bought</b> <span class="muted">this month ${m ? R(m.bought_ex_vat) : R(0)}</span></summary>
       <div style="padding:10px 2px 2px;">
         <p class="muted" style="margin:0 0 10px; font-size:12px;">${summary.basis}</p>
-        <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:12px;">
+        <div class="st-stat">
           <div><div class="oi-scope">Bought this month</div><b>${m ? R(m.bought_ex_vat) : R(0)}</b></div>
           <div><div class="oi-scope">Trim costed on jobs won this month</div><b>${m ? R(m.booked_on_jobs) : R(0)}</b></div>
           <div><div class="oi-scope">${movement >= 0 ? 'Went onto the shelf' : 'Came off the shelf'}</div>
@@ -3224,10 +3234,13 @@ async function renderSupertrimOrder(el) {
     const items = byCat[cat].map(p => `
       <div class="st-prod">
         <div class="st-prod-head">
-          <span class="st-shape" title="${shape.hint}">${shape.glyph}</span>
+          ${p.diagram
+            ? `<img class="st-diagram" src="${p.diagram}" alt="${p.profile_code} profile drawing"
+                    title="${p.catalogue_name || p.name}" loading="lazy">`
+            : `<span class="st-shape" title="${shape.hint}">${shape.glyph}</span>`}
           <span class="st-code">${p.profile_code}</span>
           <span class="st-name">${p.name}</span>
-          <span class="st-len">${p.length_m}m lengths</span>
+          ${supertrimDims(p)}
         </div>
         <div class="st-finishes">
           ${p.finishes.map(f => `

@@ -1423,9 +1423,24 @@
   .st-prod-list { margin-top: 10px; }
   .st-prod { padding: 9px 0; border-bottom: 1px solid var(--border); }
   .st-prod:last-child { border-bottom: none; }
-  .st-prod-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
-  /* A drawn shape per category, not a catalogue diagram — see
-     SUPERTRIM_SHAPES (index.html) for why. */
+  .st-prod-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  /* The catalogue's own technical line drawing (confirmed Sept 2026).
+     Height-capped rather than width-capped: these profiles range from
+     near-square angles to long flat reducers, and constraining the
+     height keeps a row of them on one visual baseline while each keeps
+     its true proportions. The white plate matters — the drawings are
+     black line art on white, so they need their own ground rather than
+     the card's, which is dark in dark mode. */
+  .st-diagram {
+    /* 44px, not 30: at 30 an equal angle is a smudge, and the whole
+       point of using the catalogue drawing is recognising the profile
+       without reading the code. */
+    height: 44px; width: auto; max-width: 170px; flex: none;
+    background: #fff; border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 4px; object-fit: contain;
+  }
+  /* The fallback for the four profiles the October 2025 catalogue does
+     not cover — a category shape, not a borrowed drawing. */
   .st-shape {
     font-size: 17px; line-height: 1; color: var(--teal); width: 20px;
     text-align: center; flex: none;
@@ -1434,6 +1449,12 @@
   .st-name { font-size: 13px; color: var(--ink-soft, #6b7280); flex: 1 1 180px; }
   .st-len { font-size: 11px; color: var(--ink-faint, #8A93A0); }
   .st-finishes { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 29px; }
+  /* Stock bought: a label above its figure, with room between the
+     three of them — run together they read as one long number. */
+  .st-stat { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 12px; }
+  .st-stat > div { min-width: 150px; }
+  .st-stat .oi-scope { display: block; margin: 0 0 3px; }
+  .st-stat b { font-size: 15px; }
   .st-finish {
     display: flex; align-items: center; gap: 7px; background: var(--bg, #f5f6f8);
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11.5px;

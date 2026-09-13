@@ -7309,6 +7309,47 @@ class CommitRequest(BaseModel):
 # about the supplier, printed on their price list, and a minimum-order
 # warning hardcoded into a screen is a number nobody will find when it
 # changes.
+# The October 2025 product catalogue, read once: each profile's technical
+# line drawing and the dimensions printed beside it (confirmed Sept 2026,
+# "use the technical line drawings from the Supertrim catalogue, with
+# dimensions shown").
+#
+# The drawings were lifted out of the catalogue PDF itself rather than
+# redrawn, so what the screen shows is what the supplier publishes. They
+# are static files under frontend/img/supertrim/ and referenced by path
+# here — 41 small PNGs, about 108 KB in total, which belongs in the asset
+# pipeline rather than in the database or in base64 inside an API
+# response.
+_SUPERTRIM_CATALOGUE_PATH = os.path.join(os.path.dirname(__file__), "pricelists",
+                                         "supertrim_profiles_oct2025.json")
+with open(_SUPERTRIM_CATALOGUE_PATH, encoding="utf-8") as _f:
+    SUPERTRIM_CATALOGUE = json.load(_f)
+
+# Codes the price list sells under a variant of the catalogue's own code.
+# Each is the SAME profile — a shorter length, another finish family, or
+# the carpet range's prefix — so it shows the same drawing. Listed
+# explicitly rather than matched by a prefix rule, because the one case
+# that looks like it belongs here and does not (CT323, the contractor
+# straight edge) would be swept up by any rule loose enough to catch
+# these, and it is a different profile from ST323. A profile with no
+# drawing shows the category shape instead, which is the honest answer.
+SUPERTRIM_DIAGRAM_ALIASES = {
+    "S128g Short": "S128g",     # same reducer, 900mm instead of 2700mm
+    "S068g": "S068",            # same multicover, grooved finish code
+    "SC1007": "S1007",          # carpet naplok; the catalogue drops the C
+    # The same short reducer as above, spelled the way the older
+    # price-book rows spell it. Both forms are real and in use.
+    "S128g-short": "S128g",
+}
+
+
+def supertrim_catalogue_entry(profile_code: str) -> dict:
+    """The catalogue's own record for a profile code, or {}."""
+    code = (profile_code or "").strip()
+    profiles = SUPERTRIM_CATALOGUE.get("profiles", {})
+    return profiles.get(code) or profiles.get(SUPERTRIM_DIAGRAM_ALIASES.get(code, ""), {}) or {}
+
+
 SUPERTRIM_TERMS = {
     "supplier": "Supertrim",
     "order_email": "orders@supertrim.co.za",
@@ -7339,8 +7380,18 @@ def supertrim_stock_order(role: str = Depends(require_owner), tenant_id: str = D
         by_profile = {}
         for r in rows:
             code = (r.profile_code or "").strip() or r.product_name
+            cat = supertrim_catalogue_entry(code)
             g = by_profile.setdefault(code, {
                 "profile_code": code,
+                # The catalogue's drawing and printed dimensions. None
+                # rather than a placeholder when the profile is not in the
+                # October 2025 catalogue — the screen says so plainly
+                # instead of showing a drawing of something else.
+                "diagram": cat.get("diagram"),
+                "catalogue_width_mm": cat.get("width_mm"),
+                "catalogue_height_mm": cat.get("height_mm"),
+                "catalogue_name": cat.get("name") or None,
+                "use_example": cat.get("use_example") or None,
                 # The description without the " — Finish" suffix the
                 # loader appended, so the profile reads once and its
                 # finishes list underneath it.
@@ -7360,7 +7411,9 @@ def supertrim_stock_order(role: str = Depends(require_owner), tenant_id: str = D
         profiles = sorted(by_profile.values(), key=lambda g: (g["category"], g["profile_code"]))
         return {"terms": SUPERTRIM_TERMS, "profiles": profiles,
                 "profile_count": len(profiles),
-                "line_count": sum(len(g["finishes"]) for g in profiles)}
+                "line_count": sum(len(g["finishes"]) for g in profiles),
+                "catalogue_issue": SUPERTRIM_CATALOGUE.get("issue"),
+                "diagram_count": sum(1 for g in profiles if g.get("diagram"))}
 
 
 # ===== Stock purchases (confirmed Sept 2026, "Supertrim Visual Order

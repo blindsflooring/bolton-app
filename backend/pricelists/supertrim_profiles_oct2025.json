@@ -1,0 +1,651 @@
+{
+ "issue": "October 2025",
+ "profiles": {
+  "S065": {
+   "code": "S065",
+   "diagram": "img/supertrim/S065.png",
+   "diagram_bytes": 4195,
+   "diagram_px": [
+    163,
+    46
+   ],
+   "height_mm": 8.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer",
+   "page": 9,
+   "use_example": "Gap/intersection between any floor type where there is a height difference 9",
+   "width_mm": 51.0
+  },
+  "S068": {
+   "code": "S068",
+   "diagram": "img/supertrim/S068.png",
+   "diagram_bytes": 3000,
+   "diagram_px": [
+    137,
+    34
+   ],
+   "height_mm": 5.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Aluminium Multicover Product",
+   "page": 9,
+   "use_example": "Gap/intersection between any floor Use example Where there is no height difference",
+   "width_mm": 40.0
+  },
+  "S070": {
+   "code": "S070",
+   "diagram": "img/supertrim/S070.png",
+   "diagram_bytes": 5074,
+   "diagram_px": [
+    230,
+    52
+   ],
+   "height_mm": 9.9,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer",
+   "page": 10,
+   "use_example": "Gap/intersection between any floor type where there is a height difference",
+   "width_mm": 70.0
+  },
+  "S1007": {
+   "code": "S1007",
+   "diagram": "img/supertrim/S1007.png",
+   "diagram_bytes": 3564,
+   "diagram_px": [
+    149,
+    55
+   ],
+   "height_mm": null,
+   "length_mm": null,
+   "name": "Aluminium Carpet Naplok Smooth surface with teeth",
+   "page": 14,
+   "use_example": "End of carpet does not overlap other floor type 14",
+   "width_mm": null
+  },
+  "S1010": {
+   "code": "S1010",
+   "diagram": "img/supertrim/S1010.png",
+   "diagram_bytes": 760,
+   "diagram_px": [
+    36,
+    32
+   ],
+   "height_mm": 10.0,
+   "length_mm": 2700.0,
+   "name": "Equal Angle Product",
+   "page": 3,
+   "use_example": "Corner cover Use example ______________ ____________________________ ___________________________ ______________",
+   "width_mm": 10.0
+  },
+  "S1035": {
+   "code": "S1035",
+   "diagram": "img/supertrim/S1035.png",
+   "diagram_bytes": 1843,
+   "diagram_px": [
+    110,
+    33
+   ],
+   "height_mm": 10.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap",
+   "page": 6,
+   "use_example": "Gap/intersection between a +/- 8-10mm thick floor type 6",
+   "width_mm": 35.0
+  },
+  "S1125": {
+   "code": "S1125",
+   "diagram": "img/supertrim/S1125.png",
+   "diagram_bytes": 2302,
+   "diagram_px": [
+    82,
+    41
+   ],
+   "height_mm": 11.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose Grooved Product top surface",
+   "page": 12,
+   "use_example": "Overlap / Retro fit Stair Nose Use example ______________ ____________________________ ___________________________ ______________",
+   "width_mm": 25.0
+  },
+  "S12": {
+   "code": "S12",
+   "diagram": "img/supertrim/S12.png",
+   "diagram_bytes": 1003,
+   "diagram_px": [
+    42,
+    21
+   ],
+   "height_mm": 4.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Micro T/Mould Product",
+   "page": 8,
+   "use_example": "Gap/intersection between a Luxury Use example vinyl tile (LVT) and Ceramic tile ______________ ____________________________ ___________________________ ________",
+   "width_mm": 12.0
+  },
+  "S120": {
+   "code": "S120",
+   "diagram": "img/supertrim/S120.png",
+   "diagram_bytes": 1499,
+   "diagram_px": [
+    65,
+    23
+   ],
+   "height_mm": 3.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer Product",
+   "page": 8,
+   "use_example": "Gap/intersection between a Luxury Use example vinyl tile (LVT) and Ceramic tile",
+   "width_mm": 20.0
+  },
+  "S1235": {
+   "code": "S1235",
+   "diagram": "img/supertrim/S1235.png",
+   "diagram_bytes": 1917,
+   "diagram_px": [
+    105,
+    42
+   ],
+   "height_mm": 12.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap Product",
+   "page": 7,
+   "use_example": "Gap/intersection between a Use example +/- 10-12mm thick floor type",
+   "width_mm": 35.0
+  },
+  "S128g": {
+   "code": "S128g",
+   "diagram": "img/supertrim/S128g.png",
+   "diagram_bytes": 2764,
+   "diagram_px": [
+    131,
+    32
+   ],
+   "height_mm": 5.7,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer Product",
+   "page": 9,
+   "use_example": "Gap/intersection between any floor Use example type where there is a height difference ______________ ____________________________ ___________________________ _",
+   "width_mm": 40.0
+  },
+  "S129": {
+   "code": "S129",
+   "diagram": "img/supertrim/S129.png",
+   "diagram_bytes": 3853,
+   "diagram_px": [
+    134,
+    33
+   ],
+   "height_mm": 5.7,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer",
+   "page": 9,
+   "use_example": "Gap/intersection between any floor type where there is a height difference ______________ ___________________________",
+   "width_mm": 51.0
+  },
+  "S130": {
+   "code": "S130",
+   "diagram": "img/supertrim/S130.png",
+   "diagram_bytes": 2141,
+   "diagram_px": [
+    106,
+    35
+   ],
+   "height_mm": 4.3,
+   "length_mm": 2700.0,
+   "name": "Aluminium Reducer",
+   "page": 8,
+   "use_example": "Gap/intersection between a Luxury vinyl tile (LVT) and Ceramic tile 8",
+   "width_mm": 30.0
+  },
+  "S133": {
+   "code": "S133",
+   "diagram": "img/supertrim/S133.png",
+   "diagram_bytes": 748,
+   "diagram_px": [
+    78,
+    17
+   ],
+   "height_mm": null,
+   "length_mm": null,
+   "name": "Aluminium Flat Cover Strip",
+   "page": 8,
+   "use_example": "Gap/intersection between a Luxury vinyl tile (LVT) and Ceramic tile ______________ ___________________________",
+   "width_mm": null
+  },
+  "S1515": {
+   "code": "S1515",
+   "diagram": "img/supertrim/S1515.png",
+   "diagram_bytes": 835,
+   "diagram_px": [
+    47,
+    51
+   ],
+   "height_mm": 15.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Corner Protector / Equal Angle",
+   "page": 3,
+   "use_example": "Overlap stair nose for thin floor type / Corner cover Light foot traffic (due to gluing surface area) ______________ ___________________________",
+   "width_mm": 15.0
+  },
+  "S1535": {
+   "code": "S1535",
+   "diagram": "img/supertrim/S1535.png",
+   "diagram_bytes": 1918,
+   "diagram_px": [
+    107,
+    51
+   ],
+   "height_mm": 15.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap",
+   "page": 7,
+   "use_example": "Gap/intersection between a +/- 13-15mm thick floor type 7",
+   "width_mm": 35.0
+  },
+  "S201": {
+   "code": "S201",
+   "diagram": "img/supertrim/S201.png",
+   "diagram_bytes": 5144,
+   "diagram_px": [
+    238,
+    120
+   ],
+   "height_mm": 10.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap / Unequal Angle",
+   "page": 5,
+   "use_example": "Gap/intersection between a +/- 8-10mm thick floor type / Corner cover ______________ ___________________________",
+   "width_mm": 20.0
+  },
+  "S202": {
+   "code": "S202",
+   "diagram": "img/supertrim/S202.png",
+   "diagram_bytes": 659,
+   "diagram_px": [
+    46,
+    25
+   ],
+   "height_mm": 6.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap / Unequal Product Angle",
+   "page": 5,
+   "use_example": "Gap/intersection between a Use example +/- 5mm thick floor type / Corner cover ______________ ____________________________ ___________________________ _________",
+   "width_mm": 15.0
+  },
+  "S2020": {
+   "code": "S2020",
+   "diagram": "img/supertrim/S2020.png",
+   "diagram_bytes": 1114,
+   "diagram_px": [
+    68,
+    67
+   ],
+   "height_mm": 20.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Equal Angle Product",
+   "page": 3,
+   "use_example": "Overlap stair nose / Corner cover Use example Medium foot traffic (due to gluing surface area)",
+   "width_mm": 20.0
+  },
+  "S231": {
+   "code": "S231",
+   "diagram": "img/supertrim/S231.png",
+   "diagram_bytes": 7686,
+   "diagram_px": [
+    628,
+    155
+   ],
+   "height_mm": 12.9,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair nose Product reversible for 4.5 \u2013 6mm flooring",
+   "page": 11,
+   "use_example": "Stair nose with SPC (Rigid core vinyl) or Use example +/- 4.5 \u2013 6mm thick floor type ______________ ____________________________ ___________________________ ___",
+   "width_mm": 53.0
+  },
+  "S2515": {
+   "code": "S2515",
+   "diagram": "img/supertrim/S2515.png",
+   "diagram_bytes": 5553,
+   "diagram_px": [
+    297,
+    179
+   ],
+   "height_mm": 15.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Unequal Angle Product",
+   "page": 5,
+   "use_example": "Overlap stair nose / Corner cover Use example",
+   "width_mm": 25.0
+  },
+  "S2525": {
+   "code": "S2525",
+   "diagram": "img/supertrim/S2525.png",
+   "diagram_bytes": 950,
+   "diagram_px": [
+    78,
+    78
+   ],
+   "height_mm": 25.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Equal Angle",
+   "page": 3,
+   "use_example": "Overlap stair nose / Corner cover Heavy foot traffic (due to gluing surface area) 3",
+   "width_mm": 25.0
+  },
+  "S287": {
+   "code": "S287",
+   "diagram": "img/supertrim/S287.png",
+   "diagram_bytes": 4419,
+   "diagram_px": [
+    125,
+    88
+   ],
+   "height_mm": 23.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Closed sided steps for 2-3mm thick flooring",
+   "page": 11,
+   "use_example": "Stair nose for LVT flooring <3mm thick floor type ______________ ___________________________",
+   "width_mm": 37.0
+  },
+  "S297": {
+   "code": "S297",
+   "diagram": "img/supertrim/S297.png",
+   "diagram_bytes": 3465,
+   "diagram_px": [
+    142,
+    67
+   ],
+   "height_mm": 16.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium Open sided steps Product For 2-3mm thick flooring",
+   "page": 11,
+   "use_example": "Stair nose for LVT flooring Use example <3mm thick floor type",
+   "width_mm": 45.0
+  },
+  "S299": {
+   "code": "S299",
+   "diagram": "img/supertrim/S299.png",
+   "diagram_bytes": 2204,
+   "diagram_px": [
+    163,
+    70
+   ],
+   "height_mm": 20.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair nose reversible for 8 \u2013 10mm flooring",
+   "page": 11,
+   "use_example": "Stair nose with Laminate or +/- 8 \u2013 10mm thick floor type 11",
+   "width_mm": 53.0
+  },
+  "S3020": {
+   "code": "S3020",
+   "diagram": "img/supertrim/S3020.png",
+   "diagram_bytes": 943,
+   "diagram_px": [
+    92,
+    61
+   ],
+   "height_mm": 20.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Unequal Angle",
+   "page": 5,
+   "use_example": "Overlap stair nose / Corner cover 5",
+   "width_mm": 30.0
+  },
+  "S3030": {
+   "code": "S3030",
+   "diagram": "img/supertrim/S3030.png",
+   "diagram_bytes": 1175,
+   "diagram_px": [
+    96,
+    96
+   ],
+   "height_mm": 30.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Equal Angle Product",
+   "page": 4,
+   "use_example": "Overlap stair nose / Corner cover Use example Heavy foot traffic (due to gluing surface area) ______________ ____________________________",
+   "width_mm": 30.0
+  },
+  "S4030": {
+   "code": "S4030",
+   "diagram": "img/supertrim/S4030.png",
+   "diagram_bytes": 805,
+   "diagram_px": [
+    122,
+    90
+   ],
+   "height_mm": 30.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Unequal Angle",
+   "page": 6,
+   "use_example": "Overlap stair nose / Corner cover ______________ ____________________________ ___________________________ ______________",
+   "width_mm": 40.0
+  },
+  "S4040": {
+   "code": "S4040",
+   "diagram": "img/supertrim/S4040.png",
+   "diagram_bytes": 946,
+   "diagram_px": [
+    122,
+    125
+   ],
+   "height_mm": 40.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Equal Angle",
+   "page": 4,
+   "use_example": "Overlap stair nose / Corner cover Heavy foot traffic (due to gluing surface area) 4",
+   "width_mm": 40.0
+  },
+  "S5050": {
+   "code": "S5050",
+   "diagram": "img/supertrim/S5050.png",
+   "diagram_bytes": 1214,
+   "diagram_px": [
+    152,
+    156
+   ],
+   "height_mm": 50.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Equal Angle",
+   "page": 4,
+   "use_example": "Overlap stair nose / Corner cover Heavy foot traffic (due to gluing surface area)",
+   "width_mm": 50.0
+  },
+  "S635": {
+   "code": "S635",
+   "diagram": "img/supertrim/S635.png",
+   "diagram_bytes": 1610,
+   "diagram_px": [
+    106,
+    25
+   ],
+   "height_mm": 6.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium End Cap Product",
+   "page": 6,
+   "use_example": "Gap/intersection between a Use example +/- 5mm thick floor type",
+   "width_mm": 35.0
+  },
+  "SC1006": {
+   "code": "SC1006",
+   "diagram": "img/supertrim/SC1006.png",
+   "diagram_bytes": 4533,
+   "diagram_px": [
+    171,
+    43
+   ],
+   "height_mm": null,
+   "length_mm": null,
+   "name": "Aluminium Carpet Vari-strip Product Smooth surface with teeth",
+   "page": 14,
+   "use_example": "Between carpet and a different floor Use example type \u2013 overlaps other floor type ______________ ____________________________",
+   "width_mm": null
+  },
+  "SC6625": {
+   "code": "SC6625",
+   "diagram": "img/supertrim/SC6625.png",
+   "diagram_bytes": 1960,
+   "diagram_px": [
+    82,
+    31
+   ],
+   "height_mm": null,
+   "length_mm": null,
+   "name": "Aluminium Rounded Edge Smooth surface with no teeth",
+   "page": 14,
+   "use_example": "Edge between a vinyl / carpet tile and a different floor type does not overlap other floor type",
+   "width_mm": null
+  },
+  "SS217": {
+   "code": "SS217",
+   "diagram": "img/supertrim/SS217.png",
+   "diagram_bytes": 4151,
+   "diagram_px": [
+    143,
+    86
+   ],
+   "height_mm": 22.5,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose Deep Product Grooved top surface",
+   "page": 12,
+   "use_example": "Overlap / Retro fit Stair Nose Use example ______________ ____________________________",
+   "width_mm": 44.0
+  },
+  "SS293": {
+   "code": "SS293",
+   "diagram": "img/supertrim/SS293.png",
+   "diagram_bytes": 3281,
+   "diagram_px": [
+    135,
+    88
+   ],
+   "height_mm": 25.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose Grooved top surface",
+   "page": 12,
+   "use_example": "Overlap / Retro fit Stair Nose ______________ ___________________________",
+   "width_mm": 40.0
+  },
+  "SS5520": {
+   "code": "SS5520",
+   "diagram": "img/supertrim/SS5520.png",
+   "diagram_bytes": 3710,
+   "diagram_px": [
+    178,
+    72
+   ],
+   "height_mm": 20.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose Single Product rubber insert",
+   "page": 13,
+   "use_example": "Overlap / Retro fit Stair Nose Use example adjustment based on different thickness of flooring product. The SClip can be cut at different heights and different ",
+   "width_mm": 55.0
+  },
+  "SS807": {
+   "code": "SS807",
+   "diagram": "img/supertrim/SS807.png",
+   "diagram_bytes": 5291,
+   "diagram_px": [
+    230,
+    87
+   ],
+   "height_mm": 25.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose 4 Anti-slip grip",
+   "page": 12,
+   "use_example": "Overlap / Retro fit Stair Nose 12",
+   "width_mm": 75.0
+  },
+  "SS811": {
+   "code": "SS811",
+   "diagram": "img/supertrim/SS811.png",
+   "diagram_bytes": 3919,
+   "diagram_px": [
+    238,
+    68
+   ],
+   "height_mm": 21.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose 2 Anti-slip Grip & Fluorescent strip",
+   "page": 12,
+   "use_example": "Overlap / Retro fit Stair Nose",
+   "width_mm": 77.0
+  },
+  "SS8520": {
+   "code": "SS8520",
+   "diagram": "img/supertrim/SS8520.png",
+   "diagram_bytes": 4548,
+   "diagram_px": [
+    260,
+    67
+   ],
+   "height_mm": 20.0,
+   "length_mm": 2700.0,
+   "name": "Aluminium Stair Nose Double rubber insert",
+   "page": 13,
+   "use_example": "Overlap / Retro fit Stair Nose and different angles, according to the installation & S1535. 13",
+   "width_mm": 85.0
+  },
+  "ST1023": {
+   "code": "ST1023",
+   "diagram": "img/supertrim/ST1023.png",
+   "diagram_bytes": 1150,
+   "diagram_px": [
+    77,
+    42
+   ],
+   "height_mm": 10.0,
+   "length_mm": 2500.0,
+   "name": "Aluminium Straight Edge Product",
+   "page": 15,
+   "use_example": "Between tile and a different floor Use example type or edge of tiling. Straight edge & does not overlap other floor type",
+   "width_mm": 23.0
+  },
+  "ST1223": {
+   "code": "ST1223",
+   "diagram": "img/supertrim/ST1223.png",
+   "diagram_bytes": 1231,
+   "diagram_px": [
+    78,
+    46
+   ],
+   "height_mm": 12.5,
+   "length_mm": 2500.0,
+   "name": "Aluminium Straight Edge",
+   "page": 15,
+   "use_example": "Between tile and a different floor type or edge of tiling. Straight edge & does not overlap other floor type 15",
+   "width_mm": 23.0
+  },
+  "ST323": {
+   "code": "ST323",
+   "diagram": "img/supertrim/ST323.png",
+   "diagram_bytes": 713,
+   "diagram_px": [
+    72,
+    20
+   ],
+   "height_mm": 3.0,
+   "length_mm": 2500.0,
+   "name": "Aluminium Formable Edge Product",
+   "page": 15,
+   "use_example": "Between tile and a different floor Use example type or edge of tiling. Formable edge & does not overlap other floor type ______________ ________________________",
+   "width_mm": 23.0
+  },
+  "ST623": {
+   "code": "ST623",
+   "diagram": "img/supertrim/ST623.png",
+   "diagram_bytes": 914,
+   "diagram_px": [
+    73,
+    26
+   ],
+   "height_mm": 6.0,
+   "length_mm": 2500.0,
+   "name": "Aluminium Formable Edge",
+   "page": 15,
+   "use_example": "Between tile and a different floor type or edge of tiling. Formable edge & does not overlap other floor type ______________ ___________________________",
+   "width_mm": 23.0
+  }
+ },
+ "source": "Supertrim brochure - October 2025.pdf"
+}
