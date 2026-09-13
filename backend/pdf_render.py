@@ -106,6 +106,56 @@ def _strip_at_rule_blocks(css: str, at_rule: str) -> str:
     return "".join(result)
 
 
+# xhtml2pdf's CSS parser predates the functional pseudo-classes a modern
+# stylesheet uses, and it does not skip a rule it cannot read -- it
+# raises, out of pisa.CreatePDF() itself. So one phone-only style added
+# to styles.css can stop every quote, invoice and order sheet in the app
+# from being archived, which is exactly what happened (see
+# render_html_to_pdf below).
+#
+# These are all screen affordances -- a hover state, a checked radio, a
+# collapsed table row on a narrow viewport. None of them can mean
+# anything in a static PDF, so dropping the whole rule loses nothing and
+# is what the parser would do if it could.
+UNSUPPORTED_SELECTOR_TOKENS = (":has(", ":not(", ":is(", ":where(")
+
+
+def _strip_unsupported_selector_rules(css: str) -> str:
+    """Drops every top-level rule whose SELECTOR contains a construct
+    xhtml2pdf cannot parse, leaving the rest of the stylesheet intact.
+
+    Brace-depth aware like _strip_at_rule_blocks, and deliberately
+    selector-only: a declaration that merely mentions one of these
+    strings inside a value (a content: ":not(" string, say) is left
+    alone, because it is the SELECTOR the parser chokes on.
+    """
+    out = []
+    i = 0
+    n = len(css)
+    while i < n:
+        brace = css.find("{", i)
+        if brace == -1:
+            out.append(css[i:])
+            break
+        selector = css[i:brace]
+        depth = 1
+        j = brace + 1
+        while j < n and depth > 0:
+            if css[j] == "{":
+                depth += 1
+            elif css[j] == "}":
+                depth -= 1
+            j += 1
+        if any(tok in selector for tok in UNSUPPORTED_SELECTOR_TOKENS):
+            # Keep whatever came before this rule on the same line/run,
+            # drop the rule itself.
+            out.append("")
+        else:
+            out.append(css[i:j])
+        i = j
+    return "".join(out)
+
+
 def render_html_to_pdf(html: str, css: str = "") -> bytes:
     """html/css: exactly what the frontend's buildPrintDocHtml() (or
     equivalent) already produced for on-screen viewing — this function
@@ -156,7 +206,30 @@ def render_html_to_pdf(html: str, css: str = "") -> bytes:
     using the same variable set, extracted once from css's own :root
     block."""
     css = _strip_at_rule_blocks(css, "keyframes")
-    css = _strip_at_rule_blocks(css, "media print")
+    # EVERY @media block, not only "media print" (fixed Sept 2026).
+    #
+    # A REAL, LIVE FAILURE, not a precaution: a responsive rule added on
+    # 9 Sept 2026 for one-line Order Index rows on phones uses
+    # `tr:not(.oi-collapsed) > td` — a selector xhtml2pdf's CSS parser
+    # rejects outright ("Selector Pseudo Function closing ')' not
+    # found") — and since that rule lives in an @media (max-width: 640px)
+    # block, the old print-only strip left it in place. Every archive
+    # attempt since then has failed at rendering, before ever reaching
+    # Dropbox: "Could not render this document to PDF".
+    #
+    # Stripping all of them is the right rule rather than a wider net: a
+    # PDF has one fixed page width and no screen, so NO media query
+    # applies to it. The print block was already stripped for its own
+    # reason (it hides everything but #printArea). This closes the whole
+    # class — the next phone-only style cannot break document archiving
+    # either.
+    css = _strip_at_rule_blocks(css, "media")
+    # ...and any remaining rule whose selector the parser cannot read.
+    # @media stripping above removed the phone-only :not() rules; this
+    # catches the ones outside media blocks, e.g. the calendar's
+    # :has(input:checked) highlight — found the same way, by a real
+    # archive attempt failing on a real stylesheet.
+    css = _strip_unsupported_selector_rules(css)
     variables = _extract_css_variables(css)
     css = _substitute_var_refs(css, variables)
     html = _substitute_var_refs(html, variables)
