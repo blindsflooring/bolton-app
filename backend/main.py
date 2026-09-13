@@ -4162,6 +4162,70 @@ def _dropbox_safe(text: str, limit: int = 70) -> str:
     return cleaned[:limit].strip(" .")
 
 
+# What a job is FOR, in the filename (confirmed Sept 2026, "add product
+# category to Dropbox export filenames").
+#
+# The bucketing is a port of lineSummaryBucket() (quote-builder.js), not
+# a second opinion about what a category is: a carpet line is stored as
+# category "flooring" with carpet_category set, and a screed line as
+# "flooring" with flooring_pricing_type "screed" — so reading
+# line.category alone would file a carpet job and a screed job both as
+# "Flooring". The app already splits them one way on screen; the
+# filename now splits them the same way.
+#
+# Order is the quote builder's own tab order, not alphabetical, so a job
+# reads the way the business talks about it — "Flooring + Blinds", never
+# "Blinds + Flooring".
+CATEGORY_FILENAME_ORDER = ["flooring", "screed", "carpet", "blinds",
+                           "skirting", "trim", "stairwell"]
+CATEGORY_FILENAME_LABEL = {
+    "flooring": "Flooring", "screed": "Screed", "carpet": "Carpet",
+    "blinds": "Blinds", "skirting": "Skirting", "trim": "Trim",
+    "stairwell": "Stairwell",
+}
+# "misc" is deliberately absent. A misc line is a site extra — a call-out
+# fee, an odd consumable — not a product the job is for, and a job whose
+# only line is one of those is better off with no category in its name
+# than with "Misc" implying one.
+MAX_CATEGORIES_IN_FILENAME = 3
+
+
+def _line_category_bucket(line: "QuoteLineItem") -> str:
+    """One line's product bucket. A port of lineSummaryBucket()
+    (quote-builder.js) — carpet and screed live inside category
+    "flooring" and have to be told apart by their own stored fields,
+    never re-derived from the product record."""
+    if line.category == "flooring":
+        if line.carpet_category:
+            return "carpet"
+        return "screed" if line.flooring_pricing_type == "screed" else "flooring"
+    return line.category or ""
+
+
+def _quote_category_label(session: Session, tenant_id: str, quote_id: int) -> str:
+    """Every product category on a job, as one filename part.
+
+    Joined with " + " because " - " already separates the filename's own
+    elements; "Flooring + Blinds" cannot be mistaken for two fields.
+
+    A job with more than MAX_CATEGORIES_IN_FILENAME categories is named
+    for the first few and then counted ("+2"), rather than either running
+    to a 90-character filename or silently dropping the rest — a name
+    that quietly omits half the job is worse than one that says there is
+    more.
+    """
+    lines = session.exec(select(QuoteLineItem).where(
+        QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.quote_id == quote_id)).all()
+    present = {_line_category_bucket(l) for l in lines}
+    ordered = [CATEGORY_FILENAME_LABEL[c] for c in CATEGORY_FILENAME_ORDER if c in present]
+    if not ordered:
+        return ""
+    if len(ordered) > MAX_CATEGORIES_IN_FILENAME:
+        shown = ordered[:MAX_CATEGORIES_IN_FILENAME]
+        return " + ".join(shown) + f" +{len(ordered) - MAX_CATEGORIES_IN_FILENAME}"
+    return " + ".join(ordered)
+
+
 def _document_subject(session: Session, tenant_id: str, entity_type: str,
                       entity_id: int) -> dict:
     """Who the document is for and which job it belongs to, read from the
@@ -4172,12 +4236,13 @@ def _document_subject(session: Session, tenant_id: str, entity_type: str,
     every job and every client, and inventing a client name for it would
     be worse than leaving it out.
     """
-    client = job_ref = extra = ""
+    client = job_ref = extra = category = ""
     if entity_type in ("Quote", "Invoice"):
         quote = session.get(Quote, entity_id)
         if quote and quote.tenant_id == tenant_id:
             client = quote.client_name or ""
             job_ref = quote.job_number or f"Q-{quote.id}"
+            category = _quote_category_label(session, tenant_id, quote.id)
     elif entity_type == "OrderSheet":
         sheet = session.get(OrderSheet, entity_id)
         if sheet and sheet.tenant_id == tenant_id:
@@ -4192,7 +4257,12 @@ def _document_subject(session: Session, tenant_id: str, entity_type: str,
             if quote and quote.tenant_id == tenant_id:
                 client = quote.client_name or ""
                 job_ref = quote.job_number or f"Q-{quote.id}"
-    return {"client": client, "job_ref": job_ref, "extra": extra}
+                # The JOB's categories, not the sheet's own type. A sheet
+                # already names itself (its order number is in the
+                # filename), and what someone scanning the folder wants
+                # to know is what job it belongs to.
+                category = _quote_category_label(session, tenant_id, quote.id)
+    return {"client": client, "job_ref": job_ref, "extra": extra, "category": category}
 
 
 DOCUMENT_TYPE_LABEL = {
@@ -4203,7 +4273,7 @@ DOCUMENT_TYPE_LABEL = {
 
 def dropbox_filename(subject: dict, entity_type: str, suffix: str, ext: str,
                      fallback: str = "") -> str:
-    """[Client] - [Job ref] - [Document type] - [suffix].[ext]
+    """[Client] - [Job ref] - [Category] - [Document type] - [suffix].[ext]
 
     Parts that do not exist are dropped rather than written as empty
     separators, so a document with no client reads "J-0001 - Quote - v2"
@@ -4216,6 +4286,7 @@ def dropbox_filename(subject: dict, entity_type: str, suffix: str, ext: str,
     """
     parts = [_dropbox_safe(subject.get("client", "")),
              _dropbox_safe(subject.get("job_ref", "")),
+             _dropbox_safe(subject.get("category", ""), 46),
              DOCUMENT_TYPE_LABEL.get(entity_type, entity_type),
              _dropbox_safe(subject.get("extra", "")),
              _dropbox_safe(suffix, 40)]
@@ -6992,8 +7063,10 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     # quote is. A builder estimate has no Quote behind it, so it carries
     # its own reference in the job slot rather than being left unnamed.
     subject = ({"client": quote.client_name or "", "job_ref": quote.job_number or f"Q-{quote.id}",
-                "extra": ""} if quote else
-               {"client": "", "job_ref": f"Estimate-{builder_estimate_id}", "extra": ""})
+                "extra": "", "category": _quote_category_label(session, tenant_id, quote.id)}
+               if quote else
+               {"client": "", "job_ref": f"Estimate-{builder_estimate_id}",
+                "extra": "", "category": ""})
     # The original filename is kept as the suffix so the photo is still
     # recognisable, and a short uuid keeps two photos of the same wall on
     # the same job from colliding — mode=add never overwrites, so a
