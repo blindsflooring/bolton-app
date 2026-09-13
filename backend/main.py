@@ -12038,6 +12038,10 @@ def _blind_spec_json(blind_type: str, blind: dict) -> str:
     at all.
     """
     return json.dumps({
+        # Named from here on (Sept 2026, accessories) so a line says what
+        # it is. A spec written before accessories existed has no "kind"
+        # and is always a blind — see _line_spec_kind().
+        "kind": "blind",
         "blind_type": blind_type,
         "group": blind.get("group"),
         "wooden": bool(blind.get("wooden")),
@@ -12116,7 +12120,43 @@ def blinds_calculator_meta(role: str = Depends(get_current_role)):
                 "springAssist": key == "roller",
             },
         })
-    return {"products": out}
+    # Junction brackets (confirmed Sept 2026) — roller only, and said so
+    # here rather than in the card, because that IS the price list's
+    # position: it is the one blind type with documented junction pricing
+    # and the standalone deliberately shows a note instead of inventing
+    # numbers for the others.
+    junctions = [{
+        "key": key,
+        "label": label,
+        "sizes": blinds_calc.junction_sizes(key),
+        # NULL max means "chains in series" — carried through so the card
+        # can drop a bracket from the list once it cannot carry the run,
+        # instead of offering it and having the save refuse it.
+        "max_blinds": (blinds_calc.DATA["roller"]["junction_rules"].get(key) or {}).get("maxBlinds"),
+        "note": (blinds_calc.DATA["roller"]["junction_rules"].get(key) or {}).get("note"),
+    } for key, label in blinds_calc.JUNCTION_LABELS.items() if key != "none"]
+    return {
+        "products": out,
+        "junctions": junctions,
+        # Pelmets (confirmed Sept 2026): profiles, their per-metre rates
+        # and the colour list, served rather than hardcoded for the same
+        # reason as everything else here — they are facts about the
+        # supplier's list, and a colour typed into a screen is the one
+        # nobody finds when the list is reissued.
+        "pelmet": {
+            "profiles": blinds_calc.pelmet_profiles(),
+            "colours": blinds_calc.pelmet_colours(),
+            "fixings": [{"key": "recess", "label": "Recess fix"},
+                        {"key": "facefix", "label": "Face fix"}],
+            "max_length_mm": blinds_calc.DATA["pelmet"]["max_length_mm"],
+            "max_mitre_sides": blinds_calc.PELMET_MAX_MITRE_SIDES,
+        },
+        # The parts catalogue (confirmed Sept 2026) — all 104 SKUs, each
+        # carrying which blind types it fits and which of the three
+        # pricing shapes it is, so the card can ask for a size or a
+        # mechanism price only where one is actually needed.
+        "parts": blinds_calc.parts_catalog_for(),
+    }
 
 
 @app.get("/blinds/calculator/preview")
@@ -12232,6 +12272,266 @@ def add_blinds_calc_line(quote_id: int, blind_type: str, width_mm: float, drop_m
         return result
 
 
+# ===== Blinds accessories: junctions (confirmed Sept 2026, "confirm
+# scope, bring in remaining blind types") =====
+#
+# The standalone prices three things beside the blind itself — junction
+# brackets, pelmets and catalogue parts — all of them OUTSIDE
+# calcBlindLine(), because they are properties of a window or an order,
+# not of a blind. Bolton has no window object (one line is one blind, and
+# line_real_cost() depends on that), so each is quoted as its own line.
+#
+# One dispatcher rather than a set of near-identical endpoints per kind:
+# all three produce the same line shape, share the same cost rule, and
+# need the same edit-in-place and spec-storage behaviour. The differences
+# are entirely in the calculation, which is where they belong.
+#
+# COST NOTE, flagged rather than buried: these are priced off the same
+# TBS/Luminos list as the blinds themselves, so the same trade x
+# settlement rule is applied to them. If the supplier's account discount
+# does NOT cover accessories, this is the one line to change — the rule
+# lives in _blinds_cost_and_margin() and nowhere else.
+ACCESSORY_KINDS = ("junction", "pelmet", "part")
+
+
+def _calc_accessory(kind: str, spec: dict) -> dict:
+    """One accessory, priced. Same {rows, total, warnings} / {error}
+    contract every blinds calculation in this app returns, so the
+    endpoints below never need to know which kind they are handling."""
+    if kind == "junction":
+        return blinds_calc.calc_junction_line(
+            spec.get("junction_type") or "", spec.get("size") or "",
+            spec.get("blind_count") or 0)
+    if kind == "pelmet":
+        return blinds_calc.calc_pelmet_line(
+            spec.get("profile") or "", spec.get("width_mm") or 0,
+            spec.get("fixing") or "recess", spec.get("mitre_sides") or 0,
+            spec.get("colour") or "")
+    if kind == "part":
+        return blinds_calc.calc_part_line(
+            spec.get("part_id") or "", spec.get("part_size"),
+            spec.get("qty") or 1, spec.get("manual_price"))
+    return {"error": f"Unknown accessory: {kind}"}
+
+
+def _accessory_spec(kind: str, junction_type: Optional[str] = None, size: Optional[str] = None,
+                    blind_count: Optional[int] = None, profile: Optional[str] = None,
+                    width_mm: Optional[float] = None, fixing: Optional[str] = None,
+                    mitre_sides: Optional[int] = None, colour: Optional[str] = None,
+                    part_id: Optional[str] = None, part_size: Optional[str] = None,
+                    qty: Optional[int] = None, manual_price: Optional[float] = None) -> dict:
+    """Query parameters to a spec, in one place — the same reason
+    _blind_spec_from_query() exists: the preview, the save and the edit
+    must describe the same thing or they will price two different ones."""
+    if kind == "junction":
+        return {"kind": "junction", "junction_type": junction_type,
+                "size": str(size) if size is not None else None,
+                "blind_count": int(blind_count or 0)}
+    if kind == "pelmet":
+        return {"kind": "pelmet", "profile": profile, "width_mm": float(width_mm or 0),
+                "fixing": fixing or "recess", "mitre_sides": int(mitre_sides or 0),
+                "colour": colour or ""}
+    if kind == "part":
+        return {"kind": "part", "part_id": part_id,
+                "part_size": str(part_size) if part_size not in (None, "") else None,
+                "qty": int(qty or 1),
+                # None and 0 mean different things here: nobody typed a
+                # mechanism price vs somebody typed zero. Kept as None so
+                # the calculator can warn about the first.
+                "manual_price": (float(manual_price) if manual_price not in (None, "") else None)}
+    return {"kind": kind}
+
+
+def _accessory_line_fields(calc: dict, spec: dict, discount_pct: float,
+                           room: str, settings: BusinessSettings) -> dict:
+    """Every field an accessory line writes, built once — the accessory
+    twin of _blinds_calc_line_fields(), and deliberately the same shape:
+    a junction line has to reach the Order Index and the commission
+    engine through the same fields a blind does."""
+    unit_price = round(calc["total"] * (1 - (discount_pct or 0.0)), 2)
+    money = _blinds_cost_and_margin(calc["total"], settings, unit_price)
+    notes = "; ".join(f"{r['label']} R{r['val']:,.2f}" for r in calc["rows"])
+    if discount_pct:
+        notes += f"; less {discount_pct:.0%} discount"
+    if calc["warnings"]:
+        notes += " | " + "; ".join(calc["warnings"])
+    name = calc["product_label"]
+    if calc.get("group_label"):
+        name += f" - {calc['group_label']}"
+    return {
+        "product_name": name,
+        "line_notes": notes,
+        "section_label": (room.strip() or None),
+        "unit_price": unit_price,
+        "unit_cost": money["cost_ex_vat"],
+        "discount_pct": discount_pct or 0.0,
+        "line_total": unit_price,
+        "total_job_cost": money["cost_ex_vat"],
+        "margin_pct": money["margin_pct"],
+        "blind_spec_json": json.dumps(spec, sort_keys=True),
+    }
+
+
+def _line_spec_kind(line: "QuoteLineItem") -> str:
+    """What a blinds line actually is: a calculated blind, one of the
+    accessories, or neither (price-book / imported). Read from the stored
+    spec, so an accessory can never be re-priced through the blind edit
+    endpoint or the other way around — they would both 'work' and both
+    produce a different number."""
+    if not line.blind_spec_json:
+        return ""
+    try:
+        spec = json.loads(line.blind_spec_json)
+    except ValueError:
+        return ""
+    # Specs written before accessories existed carry no "kind" and are
+    # always blinds — that is the literal truth, not a default.
+    return spec.get("kind") or ("blind" if spec.get("blind_type") else "")
+
+
+@app.get("/blinds/calculator/accessory-preview")
+def blinds_accessory_preview(kind: str, junction_type: Optional[str] = None,
+                             size: Optional[str] = None, blind_count: Optional[int] = None,
+                             profile: Optional[str] = None, width_mm: Optional[float] = None,
+                             fixing: Optional[str] = None, mitre_sides: Optional[int] = None,
+                             colour: Optional[str] = None, part_id: Optional[str] = None,
+                             part_size: Optional[str] = None, qty: Optional[int] = None,
+                             manual_price: Optional[float] = None, discount_pct: float = 0.0,
+                             role: str = Depends(get_current_role),
+                             tenant_id: str = Depends(get_current_tenant)):
+    """Live price for an accessory, from the same call the save uses."""
+    if kind not in ACCESSORY_KINDS:
+        raise HTTPException(400, f"Unknown accessory: {kind}")
+    spec = _accessory_spec(kind, junction_type, size, blind_count,
+                           profile, width_mm, fixing, mitre_sides, colour,
+                           part_id, part_size, qty, manual_price)
+    calc = _calc_accessory(kind, spec)
+    if "error" in calc:
+        return {"error": calc["error"]}
+    with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
+    sell = round(calc["total"] * (1 - (discount_pct or 0.0)), 2)
+    money = _blinds_cost_and_margin(calc["total"], settings, sell)
+    out = {
+        "unit_price": sell,
+        "book_price": calc["total"],
+        "line_total": sell,
+        "product_label": calc["product_label"],
+        "group_label": calc.get("group_label"),
+        "warnings": calc["warnings"],
+        "margin_pct": money["margin_pct"],
+    }
+    # Same rule as the blind preview: the breakdown names the cost basis,
+    # so it is Owner-only.
+    if role == UserRole.owner:
+        out["unit_cost"] = money["cost_ex_vat"]
+        out["rows"] = calc["rows"]
+    else:
+        out.pop("margin_pct", None)
+    return out
+
+
+@app.post("/quotes/{quote_id}/lines/blinds-accessory")
+def add_blinds_accessory_line(quote_id: int, kind: str, junction_type: Optional[str] = None,
+                              size: Optional[str] = None, blind_count: Optional[int] = None,
+                              profile: Optional[str] = None, width_mm: Optional[float] = None,
+                              fixing: Optional[str] = None, mitre_sides: Optional[int] = None,
+                              colour: Optional[str] = None, part_id: Optional[str] = None,
+                              part_size: Optional[str] = None, qty: Optional[int] = None,
+                              manual_price: Optional[float] = None,
+                              discount_pct: float = 0.0, room: str = "",
+                              role: str = Depends(get_current_role),
+                              tenant_id: str = Depends(get_current_tenant),
+                              username: str = Depends(get_current_username)):
+    if kind not in ACCESSORY_KINDS:
+        raise HTTPException(400, f"Unknown accessory: {kind}")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
+        spec = _accessory_spec(kind, junction_type, size, blind_count,
+                               profile, width_mm, fixing, mitre_sides, colour,
+                               part_id, part_size, qty, manual_price)
+        calc = _calc_accessory(kind, spec)
+        if "error" in calc:
+            raise HTTPException(400, calc["error"])
+
+        fields = _accessory_line_fields(calc, spec, discount_pct, room, settings)
+        line = QuoteLineItem(
+            tenant_id=tenant_id, quote_id=quote_id, category="blinds",
+            product_id=0,
+            # A pelmet has a real colour and gets ordered by it, so it is
+            # stored in the same field a blind's colour is rather than
+            # only inside the spec.
+            colour=(colour or "") if kind == "pelmet" else "",
+            original_colour=(colour or "") if kind == "pelmet" else "",
+            **fields,
+        )
+        session.add(line)
+        _log_quote_line_audit(session, quote, username, "added",
+                              f"Blinds - {line.product_name}, R{line.line_total:,.2f}")
+        session.commit()
+        session.refresh(line)
+        return strip_sensitive_fields(line.dict(), role, settings)
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/blinds-accessory")
+def edit_blinds_accessory_line(quote_id: int, line_id: int, kind: str,
+                               junction_type: Optional[str] = None, size: Optional[str] = None,
+                               blind_count: Optional[int] = None, profile: Optional[str] = None,
+                               width_mm: Optional[float] = None, fixing: Optional[str] = None,
+                               mitre_sides: Optional[int] = None, colour: Optional[str] = None,
+                               part_id: Optional[str] = None, part_size: Optional[str] = None,
+                               qty: Optional[int] = None, manual_price: Optional[float] = None,
+                               discount_pct: float = 0.0,
+                               room: str = "", role: str = Depends(get_current_role),
+                               tenant_id: str = Depends(get_current_tenant),
+                               username: str = Depends(get_current_username)):
+    if kind not in ACCESSORY_KINDS:
+        raise HTTPException(400, f"Unknown accessory: {kind}")
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        existing_kind = _line_spec_kind(line)
+        if existing_kind != kind:
+            raise HTTPException(400, f"This line is not a {kind} line.")
+        settings = get_settings(session, tenant_id)
+
+        spec = _accessory_spec(kind, junction_type, size, blind_count,
+                               profile, width_mm, fixing, mitre_sides, colour,
+                               part_id, part_size, qty, manual_price)
+        calc = _calc_accessory(kind, spec)
+        if "error" in calc:
+            raise HTTPException(400, calc["error"])
+
+        spec_changed = json.dumps(spec, sort_keys=True) != line.blind_spec_json
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = line.product_name
+
+        fields = _accessory_line_fields(calc, spec, discount_pct, room, settings)
+        for field, value in fields.items():
+            setattr(line, field, value)
+        if kind == "pelmet":
+            line.colour = colour or ""
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
+
+        override_result = _reapply_line_calc_respecting_override(
+            line, fields["line_total"], spec_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total
+
+        _log_quote_line_edit_audit(session, quote, username, old_desc, line.product_name)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        result["override_cleared"] = override_result["override_cleared"]
+        return result
+
+
 @app.put("/quotes/{quote_id}/lines/{line_id}/blinds-calc")
 def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm: float, drop_mm: float,
                            group: Optional[str] = None, discount_pct: float = 0.0,
@@ -12264,6 +12564,11 @@ def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm
         if not line.blind_spec_json:
             raise HTTPException(400, "This blind wasn't priced by the calculator (it came from the "
                                      "price book or an imported quote), so it can't be re-priced here.")
+        if _line_spec_kind(line) != "blind":
+            # A junction/pelmet/part line is a blinds line too. Re-pricing
+            # one as a blind would succeed and return a different number,
+            # so the two edit paths refuse each other's lines outright.
+            raise HTTPException(400, "This line is a blinds accessory, not a blind.")
         settings = get_settings(session, tenant_id)
 
         blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
