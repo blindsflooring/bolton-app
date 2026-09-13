@@ -48,16 +48,82 @@
 // the other direction (INCLUDE only the one matching type).
 const CARPET_ONLY_CATEGORIES = ['carpet_tufted_broadloom', 'carpet_needlepunch_broadloom', 'carpet_tile', 'cushion_vinyl'];
 
+// One trim option, written to be SCANNED (confirmed Sept 2026, Burgert:
+// "this is such a massive dropdown list its heavy on the eye").
+//
+// Leads with the profile code, because that is the handle -- it is what
+// the price list prints, what Supertrim take an order in, and what
+// someone quoting already has in their head. Then the name, then the
+// finish.
+//
+// The Supertrim load wrote the finish into product_name as well as into
+// its own column, so a raw name would read "Aluminium Equal Angle --
+// Anodized Silver -- Anodized Silver" once the finish is appended. The
+// duplicate suffix is stripped, but ONLY when it genuinely matches the
+// finish column, so a product whose name happens to end in something
+// else is never quietly truncated.
+function trimOptionLabel(p) {
+  let name = (p.product_name || '').trim();
+  const finish = (p.finish || '').trim();
+  if (finish) {
+    const suffix = ' — ' + finish;
+    if (name.toLowerCase().endsWith(suffix.toLowerCase())) name = name.slice(0, -suffix.length).trim();
+  }
+  const code = (p.profile_code || '').trim();
+  const head = code && !name.toLowerCase().startsWith(code.toLowerCase()) ? code + ' · ' + name : (code || name);
+  return head + (finish ? ' — ' + finish : '');
+}
+
+// Trim lists, grouped by what the thing IS (confirmed Sept 2026, "the
+// trims should be grouped better").
+//
+// Category is the grouping because that is how the choice is actually
+// made: you know you need a stair nose, and you are then choosing which
+// one. Supplier would have been the wrong axis here -- unlike carpet,
+// where Belgotex and Nouwens sell competing ranges of the same thing,
+// nearly every aluminium trim comes from Supertrim, so grouping by
+// supplier would produce one enormous heading and change nothing.
+//
+// Categories are ordered by size, biggest first, consistent with the
+// carpet split above and with how this app orders comparable things
+// generally. Within a group: by profile code, then finish, so all six
+// finishes of S299 sit together instead of scattered through the list.
+function groupedTrimOptionsHtml(list) {
+  const byCat = {};
+  list.forEach(p => {
+    const key = (p.category || '').trim() || 'other';
+    (byCat[key] = byCat[key] || []).push(p);
+  });
+  return Object.keys(byCat)
+    .sort((a, b) => byCat[b].length - byCat[a].length
+      || (TRIM_CATEGORY_LABELS[a] || a).localeCompare(TRIM_CATEGORY_LABELS[b] || b))
+    .map(cat => {
+      const opts = byCat[cat]
+        .slice()
+        .sort((a, b) => (a.profile_code || '').localeCompare(b.profile_code || '', undefined, {numeric: true})
+          || (a.finish || '').localeCompare(b.finish || '')
+          || (a.product_name || '').localeCompare(b.product_name || ''))
+        .map(p => `<option value="${p.id}">${trimOptionLabel(p)}</option>`).join('');
+      const label = TRIM_CATEGORY_LABELS[cat] || cat;
+      return `<optgroup label="${label} (${byCat[cat].length})">${opts}</optgroup>`;
+    }).join('');
+}
+
 function refreshLineProductOptions() {
   const cat = document.getElementById('line_category').value;
   const sel = document.getElementById('line_product');
+  // Blinds keep the plain flat list: it is a short one, and it has no
+  // trim category to group by in the first place.
+  if (cat === 'blinds') {
+    const list = sortByPriority ? sortByPriority(blindsProducts) : blindsProducts;
+    sel.innerHTML = list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+    return;
+  }
   let list;
-  if (cat === 'blinds') list = blindsProducts;
-  else if (cat === 'skirting') list = trimProducts.filter(p => p.category === 'skirting' || p.category === 'quarter_round');
+  if (cat === 'skirting') list = trimProducts.filter(p => p.category === 'skirting' || p.category === 'quarter_round');
   else if (cat === 'trim') list = trimProducts.filter(p => p.category !== 'skirting' && p.category !== 'quarter_round');
   else list = trimProducts;
-  sel.innerHTML = sortByPriority ? sortByPriority(list).map(p => `<option value="${p.id}">${p.product_name}</option>`).join('')
-    : list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+  sel.innerHTML = groupedTrimOptionsHtml(list);
 }
 
 // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal
@@ -537,7 +603,10 @@ async function toggleLineFields() {
   document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
   if (cat === 'stairwell') {
     populateStairwellVinylDropdown();
-    document.getElementById('line_nosing_product').innerHTML = trimProducts.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+    // Same grouping as the trim dropdown above -- this is the same 200+
+    // row table, and there was no reason for the nosing picker to stay
+    // the one flat, unreadable list on the card.
+    document.getElementById('line_nosing_product').innerHTML = groupedTrimOptionsHtml(trimProducts);
   } else if (cat !== 'misc') {
     refreshLineProductOptions();
   }
@@ -623,29 +692,47 @@ function populateCarpetTypeProducts(type, preselectRange) {
   // reported. addCarpetLine() already guards on `!productId`
   // ("Pick a product first."), so this placeholder is enough on its
   // own — no other change needed to block an accidental add.
-  sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>— Choose a product —</option>` +
-    products.map(p => {
-      // Supplier and the discontinuing flag, on the option itself
-      // (confirmed Sept 2026, Nouwens Carpets brief). Two things
-      // changed with a second carpet supplier arriving:
-      //
-      // The list used to show the range name alone, which was
-      // unambiguous while every broadloom carpet came from one
-      // supplier. It no longer does — Nouwens and Belgotex both sell
-      // ranges, at different roll widths and different cutting fees, so
-      // picking the wrong one is a real pricing error and the name on
-      // its own does not let anyone tell them apart.
-      //
-      // And the brief asks for a discontinuing range to be flagged
-      // here rather than hidden, "since it may still be quotable while
-      // stock lasts" — which is exactly what the discontinued field
-      // already means (models.py: flagged, never hidden, still fully
-      // usable). This is where that flag becomes visible at the moment
-      // of choosing.
-      const bits = [p.product_name];
-      if (p.colour) bits.push(p.colour);
-      const tail = [p.supplier, p.discontinued ? 'discontinuing' : ''].filter(Boolean).join(', ');
-      return `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${bits.join(' — ')}${tail ? `  (${tail})` : ''}</option>`;
+  // Split by supplier (confirmed Sept 2026, Burgert: "every carpet is
+  // jumbled up together in the dropdown... split it under Belgotex and
+  // Nouwens as 2 separate selectables").
+  //
+  // <optgroup>, the same shape populateStairwellVinylDropdown() already
+  // uses for exactly this problem, rather than two separate <select>
+  // boxes: every reader of this control takes #carpet_product.value
+  // (previewCarpetLine, addCarpetLine, editQuoteLine's prefill), and
+  // one value is what keeps all three working untouched. Two boxes
+  // would mean deciding which one is authoritative on every read.
+  //
+  // Built from whatever suppliers are actually in the book rather than
+  // a hardcoded Belgotex/Nouwens pair -- a third carpet supplier should
+  // appear as its own heading the day their products are loaded, not
+  // the day someone remembers to edit this line.
+  //
+  // Biggest group first, then alphabetical: the house supplier is the
+  // one being picked most of the day, and it should not be below a
+  // smaller range you scroll past to reach it.
+  //
+  // The supplier is no longer repeated on every option -- it is the
+  // heading now, and the whole point is that the eye stops having to
+  // read it 60 times. "discontinuing" stays on the option, because that
+  // is about the individual range, not the supplier.
+  const bySupplier = {};
+  products.forEach(p => {
+    const key = (p.supplier || '').trim() || 'Other';
+    (bySupplier[key] = bySupplier[key] || []).push(p);
+  });
+  const supplierOrder = Object.keys(bySupplier).sort((a, b) =>
+    bySupplier[b].length - bySupplier[a].length || a.localeCompare(b));
+
+  sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>&mdash; Choose a product &mdash;</option>` +
+    supplierOrder.map(supplier => {
+      const opts = bySupplier[supplier].map(p => {
+        const bits = [p.product_name];
+        if (p.colour) bits.push(p.colour);
+        const tail = p.discontinued ? '  (discontinuing)' : '';
+        return `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${bits.join(' — ')}${tail}</option>`;
+      }).join('');
+      return `<optgroup label="${supplier} (${bySupplier[supplier].length})">${opts}</optgroup>`;
     }).join('');
   scheduleCarpetPreview();
 }

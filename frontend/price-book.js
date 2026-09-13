@@ -6,8 +6,10 @@
 // used by this file's renderFlooringTree AND by renderFlooringDrill()
 // (a landing-page browsing view, staying in index.html) — a real
 // cross-file dependency, not something that could cleanly live in only
-// one feature file. TRIM_CATEGORY_LABELS has no such second caller, so
-// it stays local to this file.
+// one feature file. TRIM_CATEGORY_LABELS used to stay local here for
+// exactly that reason -- it had no second caller. It does now (the quote
+// builder groups its trim dropdowns by category, Sept 2026), so by this
+// same rule it moved to shared.js rather than being duplicated.
 
 async function loadFlooring() {
   const res = await fetch(`${API}/price-book/flooring`);
@@ -138,16 +140,6 @@ function toggleTrimPricingFields() {
   document.getElementById('tr_vat_field').style.display = mode === 'markup' ? '' : 'none';
 }
 
-const TRIM_CATEGORY_LABELS = {
-  skirting: 'Skirting', quarter_round: 'Quarter Round', stair_nose: 'Stair Nose',
-  reducer: 'Reducer', carpet_strip: 'Carpet Strip', corner_protector: 'Corner Protector/Angle',
-  // Supertrim April 2026 categories (confirmed Sept 2026). Without
-  // these the tree fell back to the raw key, so the price book listed a
-  // tidy "Stair Nose (26)" next to a bare "end_cap (36)" — the same
-  // screen speaking two languages.
-  angle: 'Angle', end_cap: 'End Cap', cover_strip: 'Cover Strip',
-  tile_edge: 'Tile Edge', rail: 'Rail', clip: 'Clip',
-};
 
 async function loadTrims() {
   const res = await fetch(`${API}/price-book/trims`);
