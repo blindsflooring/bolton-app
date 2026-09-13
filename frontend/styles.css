@@ -1451,6 +1451,16 @@
   .st-finishes { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 29px; }
   /* Stock bought: a label above its figure, with room between the
      three of them — run together they read as one long number. */
+  /* Clients: bulk selection (confirmed Sept 2026). The bar only exists
+     while something is ticked, so it never takes space from the list
+     itself. */
+  .client-select-bar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--teal); border-radius: 8px;
+    padding: 8px 12px; margin: 10px 0; font-size: 13px;
+  }
+  /* A ticked row stays visibly ticked while scrolling a long list. */
+  tr.row-selected > td { background: rgba(0, 170, 178, .07); }
   .st-stat { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 12px; }
   .st-stat > div { min-width: 150px; }
   .st-stat .oi-scope { display: block; margin: 0 0 3px; }
