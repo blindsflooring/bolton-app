@@ -889,7 +889,21 @@ function populateCarpetTypeProducts(type, preselectRange) {
 
   sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>&mdash; Choose a product &mdash;</option>` +
     supplierOrder.map(supplier => {
-      const opts = bySupplier[supplier].map(p => {
+      // Alphabetical WITHIN the supplier, explicitly (confirmed Sept
+      // 2026: "then alphabetically within each supplier group").
+      //
+      // This deliberately does not use sortByPriority() the way the rest
+      // of this file does. That sorts on display_order first and only
+      // falls back to the name, so a product someone had pinned with a
+      // display_order would jump the queue and the group would read as
+      // very-nearly-alphabetical -- which is worse than either, because
+      // you stop being able to predict where a name is. A dropdown you
+      // scan by name should be ordered by name.
+      const opts = bySupplier[supplier]
+        .slice()
+        .sort((a, b) => (a.product_name || '').localeCompare(b.product_name || '')
+          || (a.colour || '').localeCompare(b.colour || ''))
+        .map(p => {
         const bits = [p.product_name];
         if (p.colour) bits.push(p.colour);
         const tail = p.discontinued ? '  (discontinuing)' : '';
