@@ -2232,12 +2232,13 @@ async function printInvoiceForQuote(quoteId) {
     const qRes = await fetch(`${API}/quotes/${quoteId}?role=${currentRole()}`);
     if (qRes.ok) {
       const qData = await qRes.json();
-      // Dropbox Filenames: Client Name + Job Name (confirmed Sept 2026)
-      // — same reasoning as acceptQuoteAction()'s own reference
-      // (order-index.js) — a single hyphen, no surrounding spaces, so
-      // _create_and_upload_archive()'s sanitizer (main.py) produces a
-      // clean filename like "INV-J-0001-John_Smith_v1.pdf".
-      const reference = 'INV-' + (qData.quote.job_number || quoteId) + '-' + qData.quote.client_name;
+      // The filename is NOT built here any more (Sept 2026): the server
+      // composes "[Client] - [Job ref] - [Document type]" from the entity
+      // itself, in _create_and_upload_archive() (main.py). Five screens
+      // each assembling that string is exactly how it drifted into five
+      // different spellings. `reference` is now just this screen's own
+      // label for the version, shown in the document history.
+      const reference = 'INV-' + (qData.quote.job_number || quoteId);
       const { html } = await buildPrintDocHtml(quoteId, 'invoice');
       const cssRes = await fetch('styles.css');
       const css = cssRes.ok ? await cssRes.text() : '';

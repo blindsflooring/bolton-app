@@ -4119,6 +4119,113 @@ ARCHIVE_FILE_EXTENSION = {"OrderIndexSnapshot": "csv"}   # everything else defau
 ARCHIVE_MEDIA_TYPE = {"pdf": "application/pdf", "csv": "text/csv"}
 
 
+# ===== Dropbox filenames (confirmed Sept 2026, "Dropbox export
+# filenames — client name + job reference") =====
+#
+# CLIENT — JOB REFERENCE — DOCUMENT TYPE, in that order, every time.
+#
+# BUILT HERE, SERVER-SIDE, AT THE POINT OF SAVE, and that is the whole
+# fix. A previous round added the client name to the filename by having
+# each screen assemble the `reference` string it posts, and the result is
+# the problem this brief describes: five call sites, five spellings.
+# Printing an invoice sent "INV-J-0001-John Smith"; saving the same
+# invoice from the document panel sent "INV-J-0001" with no client on it
+# at all; accepting a quote sent "J-0001-John Smith" with no document
+# type. Nobody did anything wrong — the name was simply being written in
+# five places, so it drifted in five directions.
+#
+# The server already knows the client and the job from the entity id it
+# is handed, so it no longer takes the frontend's word for any of it. A
+# new screen that archives a document gets the right filename without
+# knowing the convention exists, which is the only version of this that
+# stays true.
+#
+# `reference` is still stored on the row and still shown in the version
+# history — it is the caller's own label for the document, and this
+# changes none of that. It just no longer decides what the file is
+# called.
+DROPBOX_FORBIDDEN = r'\/:?*"<>|'
+
+
+def _dropbox_safe(text: str, limit: int = 70) -> str:
+    """One filename part, safe for Dropbox and readable by a person.
+
+    Spaces are KEPT: Dropbox handles them, and "John Smith - J-0001 -
+    Invoice" is what someone scanning a folder can actually read, which
+    is the entire point of the brief. Only the characters Dropbox
+    genuinely rejects are replaced, plus the trailing dots and spaces
+    that make a path awkward on Windows.
+    """
+    cleaned = "".join(" " if ch in DROPBOX_FORBIDDEN or ord(ch) < 32 else ch
+                      for ch in (text or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:limit].strip(" .")
+
+
+def _document_subject(session: Session, tenant_id: str, entity_type: str,
+                      entity_id: int) -> dict:
+    """Who the document is for and which job it belongs to, read from the
+    entity itself rather than from anything the caller passed.
+
+    Returns {"client", "job_ref", "extra"} with empty strings where a
+    document genuinely has no such thing — an Order Index snapshot spans
+    every job and every client, and inventing a client name for it would
+    be worse than leaving it out.
+    """
+    client = job_ref = extra = ""
+    if entity_type in ("Quote", "Invoice"):
+        quote = session.get(Quote, entity_id)
+        if quote and quote.tenant_id == tenant_id:
+            client = quote.client_name or ""
+            job_ref = quote.job_number or f"Q-{quote.id}"
+    elif entity_type == "OrderSheet":
+        sheet = session.get(OrderSheet, entity_id)
+        if sheet and sheet.tenant_id == tenant_id:
+            # The order number rides along AFTER the three required
+            # elements: one job can produce two sheets (flooring to one
+            # supplier, floor prep to Azura — see OrderSheet, models.py),
+            # and without it they would differ only by version number,
+            # which would read as two versions of one document instead of
+            # two different documents.
+            extra = sheet.order_number or ""
+            quote = session.get(Quote, sheet.quote_id)
+            if quote and quote.tenant_id == tenant_id:
+                client = quote.client_name or ""
+                job_ref = quote.job_number or f"Q-{quote.id}"
+    return {"client": client, "job_ref": job_ref, "extra": extra}
+
+
+DOCUMENT_TYPE_LABEL = {
+    "Quote": "Quote", "Invoice": "Invoice", "OrderSheet": "Order Sheet",
+    "OrderIndexSnapshot": "Order Index Snapshot", "Photo": "Photo",
+}
+
+
+def dropbox_filename(subject: dict, entity_type: str, suffix: str, ext: str,
+                     fallback: str = "") -> str:
+    """[Client] - [Job ref] - [Document type] - [suffix].[ext]
+
+    Parts that do not exist are dropped rather than written as empty
+    separators, so a document with no client reads "J-0001 - Quote - v2"
+    instead of " - J-0001 - Quote - v2". The order of whatever IS present
+    never changes, which is what makes a folder sortable and scannable.
+
+    fallback covers the one case with neither client nor job: the nightly
+    Order Index snapshot, which is named for what it is and the day it
+    covers.
+    """
+    parts = [_dropbox_safe(subject.get("client", "")),
+             _dropbox_safe(subject.get("job_ref", "")),
+             DOCUMENT_TYPE_LABEL.get(entity_type, entity_type),
+             _dropbox_safe(subject.get("extra", "")),
+             _dropbox_safe(suffix, 40)]
+    name = " - ".join(p for p in parts if p)
+    if not subject.get("client") and not subject.get("job_ref") and fallback:
+        name = " - ".join(p for p in [DOCUMENT_TYPE_LABEL.get(entity_type, entity_type),
+                                      _dropbox_safe(fallback), _dropbox_safe(suffix, 40)] if p)
+    return f"{name}.{ext}"
+
+
 def _branch_folder_name(branch: Optional[str]) -> str:
     """Folder-flatten pass (confirmed Aug 2026) — every Quote/Invoice/
     Order for a branch lands directly in one flat Dropbox folder named
@@ -4170,11 +4277,16 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
     correct."""
     version = _next_archive_version(session, tenant_id, entity_type, entity_id)
     ext = ARCHIVE_FILE_EXTENSION.get(entity_type, "pdf")
-    safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", reference)
-    # Brief §3 own example: B-1042_Smith_ACCEPTED.pdf — a distinct,
-    # findable-by-name filename for the accepted version, not just
-    # another _v{N} in the ordinary sequence.
-    filename = f"{safe_reference}_ACCEPTED.{ext}" if mark_as_accepted else f"{safe_reference}_v{version}.{ext}"
+    # Client - job - document type, read off the entity (Sept 2026). The
+    # caller's `reference` is still recorded on the row below; it just no
+    # longer names the file. See the block above _branch_folder_name()
+    # for why that moved.
+    subject = _document_subject(session, tenant_id, entity_type, entity_id)
+    # The accepted version stays distinctly named rather than being
+    # another _v{N} in the sequence — the original brief's own
+    # requirement, kept.
+    suffix = "ACCEPTED" if mark_as_accepted else f"v{version}"
+    filename = dropbox_filename(subject, entity_type, suffix, ext, fallback=reference)
     folder = ARCHIVE_CATEGORY_FOLDER[entity_type] if entity_type == "OrderIndexSnapshot" else _branch_folder_name(branch)
     dropbox_path = f"/Bolton/{folder}/{filename}"
     if mark_as_accepted:
@@ -4305,11 +4417,23 @@ def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current
         archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
         if archive.status == "uploaded":
             raise HTTPException(400, "This version is already uploaded — nothing to retry.")
-        folder = ARCHIVE_CATEGORY_FOLDER.get(archive.entity_type, archive.entity_type)
         ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
-        safe_reference = re.sub(r"[^A-Za-z0-9_-]", "_", archive.reference)
-        now = datetime.utcnow()
-        dropbox_path = archive.dropbox_path or f"/Bolton/{folder}/{now.year}/{now.month:02d}-{now.strftime('%B')}/{safe_reference}_v{archive.version}.{ext}"
+        # A row always carries the path it was given at save time, so this
+        # fallback is for rows that somehow have none. It rebuilds through
+        # the SAME naming helper the save path uses (Sept 2026) rather
+        # than the old reconstruction it replaced, which reproduced a
+        # retired format — and a retry is exactly when nobody is watching
+        # closely enough to notice a differently-named file appearing.
+        if archive.dropbox_path:
+            dropbox_path = archive.dropbox_path
+        else:
+            folder = (ARCHIVE_CATEGORY_FOLDER[archive.entity_type]
+                      if archive.entity_type == "OrderIndexSnapshot"
+                      else _branch_folder_name(None))
+            subject = _document_subject(session, tenant_id, archive.entity_type, archive.entity_id)
+            suffix = "ACCEPTED" if archive.is_accepted_version else f"v{archive.version}"
+            dropbox_path = f"/Bolton/{folder}/" + dropbox_filename(
+                subject, archive.entity_type, suffix, ext, fallback=archive.reference)
         upload_result = dropbox_archive.upload_document(archive.pdf_bytes, dropbox_path)
         if upload_result["ok"]:
             archive.status = "uploaded"
@@ -6863,8 +6987,21 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     photo_storage.py directly: SUPABASE_URL/SUPABASE_SERVICE_KEY was
     never configured)."""
     folder = _branch_folder_name(quote.branch) if quote else "Builder Estimates"
-    reference = (quote.job_number or f"Q-{quote.id}") if quote else f"Estimate-{builder_estimate_id}"
-    dropbox_path = f"/Bolton/Photos/{folder}/{reference}_{uuid.uuid4().hex}_{safe_name}"
+    # Same naming rule as every archived document (Sept 2026): a photo in
+    # the Dropbox archive is as hard to place without a client name as a
+    # quote is. A builder estimate has no Quote behind it, so it carries
+    # its own reference in the job slot rather than being left unnamed.
+    subject = ({"client": quote.client_name or "", "job_ref": quote.job_number or f"Q-{quote.id}",
+                "extra": ""} if quote else
+               {"client": "", "job_ref": f"Estimate-{builder_estimate_id}", "extra": ""})
+    # The original filename is kept as the suffix so the photo is still
+    # recognisable, and a short uuid keeps two photos of the same wall on
+    # the same job from colliding — mode=add never overwrites, so a
+    # collision is a failed upload, not a silently replaced photo.
+    stem, dot, photo_ext = safe_name.rpartition(".")
+    suffix = f"{_dropbox_safe(stem or safe_name, 40)} {uuid.uuid4().hex[:8]}"
+    filename = dropbox_filename(subject, "Photo", suffix, photo_ext or "jpg")
+    dropbox_path = f"/Bolton/Photos/{folder}/{filename}"
     upload_result = dropbox_archive.upload_document(data, dropbox_path)
     photo = QuotePhoto(
         tenant_id=tenant_id, quote_id=quote.id if quote else None, builder_estimate_id=builder_estimate_id,
