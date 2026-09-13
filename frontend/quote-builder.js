@@ -185,6 +185,10 @@ async function populateBlindTypes() {
   }
   sel.innerHTML = meta.products.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
   onBlindTypeChange();
+  // Category switching shows every .blinds-field, including the
+  // accessory ones -- this puts the card back to showing only the fields
+  // the selected line type actually uses.
+  onBlindKindChange();
 }
 
 // Groups and option checkboxes are rebuilt per type, because they differ:
@@ -220,6 +224,202 @@ function onBlindTypeChange() {
   box.innerHTML = bits.join('');
   document.getElementById('blind_options_field').style.display = bits.length ? '' : 'none';
   scheduleBlindsPreview();
+}
+
+// ===== Blinds accessories (confirmed Sept 2026) =====
+//
+// Same card, a different thing on it. The accessories the standalone
+// prices beside a blind -- junction brackets today, pelmets and parts
+// next -- are their own lines here, because Bolton quotes one line per
+// thing rather than per window.
+function currentBlindKind() {
+  const el = document.getElementById('line_blind_kind');
+  return el ? el.value : 'blind';
+}
+
+function onBlindKindChange() {
+  const kind = currentBlindKind();
+  document.querySelectorAll('.blind-only-field').forEach(el => {
+    el.style.display = kind === 'blind' ? '' : 'none';
+  });
+  document.querySelectorAll('.junction-field').forEach(el => {
+    el.style.display = kind === 'junction' ? '' : 'none';
+  });
+  document.querySelectorAll('.pelmet-field').forEach(el => {
+    el.style.display = kind === 'pelmet' ? '' : 'none';
+  });
+  document.querySelectorAll('.part-field').forEach(el => {
+    el.style.display = kind === 'part' ? '' : 'none';
+  });
+  if (kind === 'junction') populateJunctionTypes();
+  if (kind === 'pelmet') populatePelmetFields();
+  if (kind === 'part') populatePartsFits();
+  scheduleBlindsPreview();
+}
+
+// The catalogue, filtered the way the standalone filters it: by the
+// blind the part is for. The blind list is the same server registry the
+// Blind line type uses, so a new blind type brings its parts with it.
+function populatePartsFits() {
+  const meta = blindsCalcMeta;
+  const fits = document.getElementById('line_part_fits');
+  if (!meta || !fits) return;
+  if (!fits.options.length) {
+    fits.innerHTML = meta.products
+      .map(p => `<option value="${p.key}">${p.label}</option>`).join('');
+  }
+  populatePartsCatalog();
+}
+
+function populatePartsCatalog(keep) {
+  const meta = blindsCalcMeta;
+  const sel = document.getElementById('line_part_id');
+  if (!meta || !sel) return;
+  const fits = document.getElementById('line_part_fits').value;
+  const items = (meta.parts || []).filter(p => p.blind_types.includes(fits));
+  // Grouped exactly as the price list groups them (Rails, Components,
+  // Repairs...) -- 104 SKUs in one flat list is a list nobody reads.
+  const groups = {};
+  items.forEach(i => { (groups[i.group] = groups[i.group] || []).push(i); });
+  sel.innerHTML = Object.keys(groups).map(g =>
+    `<optgroup label="${g}">` + groups[g].map(i =>
+      `<option value="${i.id}">${i.label}</option>`).join('') + '</optgroup>').join('');
+  if (keep && items.some(i => i.id === keep)) sel.value = keep;
+  onPartItemChange();
+}
+
+// Size and mechanism price are shown only for the items that have them:
+// 12 of the 104 are priced per tube size, and exactly one is a labour
+// base plus a mechanism price that is in no list.
+function onPartItemChange(keepSize) {
+  const meta = blindsCalcMeta;
+  const sel = document.getElementById('line_part_id');
+  if (!meta || !sel) return;
+  const item = (meta.parts || []).find(p => p.id === sel.value);
+  const sizeField = document.getElementById('part_size_field');
+  const sizeSel = document.getElementById('line_part_size');
+  const manualField = document.getElementById('part_manual_field');
+  const hasSizes = !!(item && item.variants);
+  sizeField.style.display = hasSizes ? '' : 'none';
+  manualField.style.display = (item && item.manual_price) ? '' : 'none';
+  if (hasSizes) {
+    const sizes = Object.keys(item.variants).sort((a, b) => a - b);
+    sizeSel.innerHTML = sizes.map(sz =>
+      `<option value="${sz}">${sz}mm — R${item.variants[sz].toFixed(2)}</option>`).join('');
+    if (keepSize && sizes.includes(String(keepSize))) sizeSel.value = String(keepSize);
+  } else {
+    sizeSel.innerHTML = '';
+  }
+  scheduleBlindsPreview();
+}
+
+function partParams() {
+  const discountEl = document.getElementById('line_discount');
+  const sizeSel = document.getElementById('line_part_size');
+  const manual = document.getElementById('line_part_manual_price');
+  const p = new URLSearchParams({
+    kind: 'part',
+    part_id: document.getElementById('line_part_id').value || '',
+    qty: document.getElementById('line_part_qty').value || 1,
+    discount_pct: (parseFloat(discountEl ? discountEl.value : '') || 0) / 100,
+  });
+  if (document.getElementById('part_size_field').style.display !== 'none' && sizeSel.value) {
+    p.set('part_size', sizeSel.value);
+  }
+  if (document.getElementById('part_manual_field').style.display !== 'none' && manual.value !== '') {
+    p.set('manual_price', manual.value);
+  }
+  return p;
+}
+
+// Profiles, fixings, colours and the mitre limit all come from the
+// server's meta -- the same rule the blind types follow, so a reissued
+// price list changes one file and not two.
+function populatePelmetFields(keep) {
+  const meta = blindsCalcMeta;
+  if (!meta || !meta.pelmet) return;
+  const want = keep || {};
+  const profile = document.getElementById('line_pelmet_profile');
+  const fixing = document.getElementById('line_pelmet_fixing');
+  const mitre = document.getElementById('line_pelmet_mitre');
+  const colour = document.getElementById('line_pelmet_colour');
+  if (!profile.options.length || keep) {
+    profile.innerHTML = meta.pelmet.profiles
+      .map(p => `<option value="${p.key}">${p.label} — R${p.price_per_m}/m</option>`).join('');
+    fixing.innerHTML = meta.pelmet.fixings
+      .map(f => `<option value="${f.key}">${f.label}</option>`).join('');
+    mitre.innerHTML = Array.from({length: meta.pelmet.max_mitre_sides + 1}, (_, n) =>
+      `<option value="${n}">${n === 0 ? 'None' : n + (n === 1 ? ' side' : ' sides')}</option>`).join('');
+    // Blank first: a colour nobody chose should read as unchosen, which
+    // is what the server warns about, rather than silently quoting the
+    // first colour in the list.
+    colour.innerHTML = '<option value="">— not chosen yet —</option>'
+      + meta.pelmet.colours.map(c => `<option value="${c}">${c}</option>`).join('');
+  }
+  if (want.profile) profile.value = want.profile;
+  if (want.fixing) fixing.value = want.fixing;
+  if (want.mitre_sides !== undefined) mitre.value = String(want.mitre_sides || 0);
+  if (want.colour !== undefined) colour.value = want.colour || '';
+}
+
+function pelmetParams() {
+  const discountEl = document.getElementById('line_discount');
+  return new URLSearchParams({
+    kind: 'pelmet',
+    profile: document.getElementById('line_pelmet_profile').value || '',
+    width_mm: document.getElementById('line_pelmet_width').value || 0,
+    fixing: document.getElementById('line_pelmet_fixing').value || 'recess',
+    mitre_sides: document.getElementById('line_pelmet_mitre').value || 0,
+    colour: document.getElementById('line_pelmet_colour').value || '',
+    discount_pct: (parseFloat(discountEl ? discountEl.value : '') || 0) / 100,
+  });
+}
+
+// Which brackets are offered depends on how many blinds are being
+// joined -- the price list's own rule, enforced by leaving the bracket
+// out of the list rather than offering it and refusing the save.
+function populateJunctionTypes(keep) {
+  const meta = blindsCalcMeta;
+  const sel = document.getElementById('line_junction_type');
+  if (!meta || !sel) return;
+  const count = parseInt(document.getElementById('line_junction_count').value, 10) || 2;
+  const usable = (meta.junctions || []).filter(j => j.max_blinds == null || count <= j.max_blinds);
+  const wanted = keep || sel.value;
+  sel.innerHTML = usable.map(j => `<option value="${j.key}">${j.label}</option>`).join('');
+  if (wanted && usable.some(j => j.key === wanted)) sel.value = wanted;
+  onJunctionTypeChange();
+}
+
+function onJunctionCountChange() {
+  populateJunctionTypes();
+}
+
+// Tube sizes come from the bracket itself: the three brackets are not
+// all listed at the same sizes, and a size with no listed price is not
+// a price of zero.
+function onJunctionTypeChange() {
+  const meta = blindsCalcMeta;
+  const typeSel = document.getElementById('line_junction_type');
+  const sizeSel = document.getElementById('line_junction_size');
+  const note = document.getElementById('line_junction_note');
+  if (!meta || !typeSel || !sizeSel) return;
+  const j = (meta.junctions || []).find(x => x.key === typeSel.value);
+  const keep = sizeSel.value;
+  sizeSel.innerHTML = (j ? j.sizes : []).map(s => `<option value="${s}">${s}mm</option>`).join('');
+  if (keep && j && j.sizes.includes(keep)) sizeSel.value = keep;
+  if (note) note.textContent = (j && j.note) ? j.note : '';
+  scheduleBlindsPreview();
+}
+
+function junctionParams() {
+  const discountEl = document.getElementById('line_discount');
+  return new URLSearchParams({
+    kind: 'junction',
+    junction_type: document.getElementById('line_junction_type').value || '',
+    size: document.getElementById('line_junction_size').value || '',
+    blind_count: document.getElementById('line_junction_count').value || 0,
+    discount_pct: (parseFloat(discountEl ? discountEl.value : '') || 0) / 100,
+  });
 }
 
 function blindOptOn(id) {
@@ -261,6 +461,10 @@ async function previewBlindsCalcLine() {
   const seq = ++blindsPreviewSeq;
   const band = document.getElementById('line_blind_band');
   const springNote = document.getElementById('line_blind_spring_note');
+  // An accessory is priced by its own endpoint and has no size band to
+  // report, so it takes the short path rather than being squeezed
+  // through checks about width and drop it does not have.
+  if (currentBlindKind() !== 'blind') return previewBlindsAccessory(seq);
   const w = parseFloat(document.getElementById('line_width').value);
   const d = parseFloat(document.getElementById('line_drop').value);
   if (!w || !d) {
@@ -295,26 +499,86 @@ async function previewBlindsCalcLine() {
       springNote.textContent = data.spring_assist_recommended
         ? 'Spring assist is recommended at this size.' : '';
     }
-    let html = `<div style="display:flex; justify-content:space-between; font-weight:700;">
-        <span>Price (ex VAT)</span><span>R${data.line_total.toFixed(2)}</span></div>`;
-    if (data.margin_pct !== undefined) {
-      html += `<div class="muted" style="font-size:12px; margin-top:2px;">Margin: ${(data.margin_pct * 100).toFixed(1)}%</div>`;
-    }
-    // The book price and each named add-on, Owner-only because the
-    // server only sends it to an Owner -- the breakdown names the cost
-    // basis.
-    if (data.rows) {
-      html += '<div class="muted" style="font-size:12px; margin-top:4px;">'
-        + data.rows.map(r => `${r.label}: R${r.val.toFixed(2)}`).join('<br>') + '</div>';
-    }
-    (data.warnings || []).forEach(wn => {
-      html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${wn}</div>`;
-    });
-    box.innerHTML = html;
+    // The book price and each named add-on are Owner-only, because the
+    // server only sends them to an Owner -- the breakdown names the cost
+    // basis. Rendered by the same function the accessories use.
+    renderBlindsPreview(box, data);
   } catch (e) {
     if (seq !== blindsPreviewSeq) return;
     box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
   }
+}
+
+// One renderer for both, because the server answers both in the same
+// shape: price, margin (Owner only), breakdown (Owner only), warnings.
+function renderBlindsPreview(box, data) {
+  let html = `<div style="display:flex; justify-content:space-between; font-weight:700;">
+      <span>Price (ex VAT)</span><span>R${data.line_total.toFixed(2)}</span></div>`;
+  if (data.margin_pct !== undefined) {
+    html += `<div class="muted" style="font-size:12px; margin-top:2px;">Margin: ${(data.margin_pct * 100).toFixed(1)}%</div>`;
+  }
+  if (data.rows) {
+    html += '<div class="muted" style="font-size:12px; margin-top:4px;">'
+      + data.rows.map(r => `${r.label}: R${r.val.toFixed(2)}`).join('<br>') + '</div>';
+  }
+  (data.warnings || []).forEach(wn => {
+    html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${wn}</div>`;
+  });
+  box.innerHTML = html;
+}
+
+async function previewBlindsAccessory(seq) {
+  const box = document.getElementById('genericLinePreview');
+  const params = accessoryParams();
+  if (!params) return;
+  box.style.display = '';
+  box.innerHTML = '<span class="muted">Calculating…</span>';
+  try {
+    const res = await fetch(`${API}/blinds/calculator/accessory-preview?${params}`);
+    if (seq !== blindsPreviewSeq) return;
+    const data = await res.json();
+    if (seq !== blindsPreviewSeq) return;
+    if (!res.ok) {
+      box.innerHTML = `<span class="muted">${(data.detail || 'Could not calculate a preview.')}</span>`;
+      return;
+    }
+    if (data.error) {
+      // A rule the price list states outright (a bracket that cannot
+      // carry this many blinds) reads the same way an oversize blind
+      // does: the reason, not a number.
+      box.innerHTML = `<div style="color:var(--coral); font-weight:600;">${data.error}</div>`;
+      return;
+    }
+    renderBlindsPreview(box, data);
+  } catch (e) {
+    if (seq !== blindsPreviewSeq) return;
+    box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
+  }
+}
+
+// The spec for whichever accessory the card is on, in one place -- the
+// same single-source rule blindsCalcParams() follows for a blind.
+function accessoryParams() {
+  const kind = currentBlindKind();
+  if (kind === 'junction') return junctionParams();
+  if (kind === 'pelmet') return pelmetParams();
+  if (kind === 'part') return partParams();
+  return null;
+}
+
+async function addBlindsAccessoryLine() {
+  const p = accessoryParams();
+  if (!p) return false;
+  p.set('room', document.getElementById('line_blind_room').value || '');
+  p.set('role', currentRole());
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/blinds-accessory?${p}`, {method: 'POST'});
+  const line = await res.json();
+  if (!res.ok) {
+    alert(line.detail || 'Could not add this line.');
+    return false;
+  }
+  loadQuote();
+  return true;
 }
 
 // Reopening a saved blind. Everything the card asks for comes back from
@@ -335,6 +599,51 @@ async function prefillBlindsCalcEdit(line) {
   // server's registry), so this waits for it rather than racing it --
   // setting .value on an empty select silently keeps the empty value.
   await populateBlindTypes();
+
+  // Which KIND of line this is. A spec written before accessories
+  // existed has no kind and is always a blind -- the same reading the
+  // server takes in _line_spec_kind().
+  const kind = spec.kind || 'blind';
+  const kindEl = document.getElementById('line_blind_kind');
+  if (kindEl) kindEl.value = kind;
+  onBlindKindChange();
+  document.getElementById('line_blind_room').value = line.section_label || '';
+  document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+  if (kind === 'junction') {
+    document.getElementById('line_junction_count').value = spec.blind_count || 2;
+    // Rebuild the bracket list for that count FIRST, then ask for the
+    // saved bracket: the list is count-dependent, so setting the value
+    // against a stale list would silently land on the wrong bracket.
+    populateJunctionTypes(spec.junction_type);
+    const sizeEl = document.getElementById('line_junction_size');
+    if (spec.size && [...sizeEl.options].some(o => o.value === String(spec.size))) {
+      sizeEl.value = String(spec.size);
+    }
+    return true;
+  }
+  if (kind === 'pelmet') {
+    populatePelmetFields(spec);
+    document.getElementById('line_pelmet_width').value = spec.width_mm || '';
+    return true;
+  }
+  if (kind === 'part') {
+    // The catalogue is filtered by blind type, so the filter has to be
+    // set from the part itself before the item list is built -- the same
+    // order-of-operations the junction bracket list needs.
+    const meta = blindsCalcMeta;
+    const item = ((meta && meta.parts) || []).find(p => p.id === spec.part_id);
+    if (item) document.getElementById('line_part_fits').value = item.blind_types[0];
+    populatePartsFits();
+    populatePartsCatalog(spec.part_id);
+    onPartItemChange(spec.part_size);
+    document.getElementById('line_part_qty').value = spec.qty || 1;
+    if (spec.manual_price != null) {
+      document.getElementById('line_part_manual_price').value = spec.manual_price;
+    }
+    return true;
+  }
+  if (kind !== 'blind') return false;
+
   const typeEl = document.getElementById('line_blind_type');
   typeEl.value = spec.blind_type;
   onBlindTypeChange();                 // rebuilds the group list and the option checkboxes for this type
@@ -3045,11 +3354,18 @@ async function addLine() {
       // reason the add path has one: a calculated blind has no price-book
       // product id, which is all the old /blinds edit endpoint could work
       // from. Same spec the preview and the add send, from one place.
-      const params = blindsCalcParams();
-      params.set('colour', document.getElementById('line_blind_colour').value || '');
-      params.set('room', document.getElementById('line_blind_room').value || '');
-      params.set('role', role);
-      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds-calc?${params}`;
+      if (currentBlindKind() === 'blind') {
+        const params = blindsCalcParams();
+        params.set('colour', document.getElementById('line_blind_colour').value || '');
+        params.set('room', document.getElementById('line_blind_room').value || '');
+        params.set('role', role);
+        editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds-calc?${params}`;
+      } else {
+        const params = accessoryParams();
+        params.set('room', document.getElementById('line_blind_room').value || '');
+        params.set('role', role);
+        editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds-accessory?${params}`;
+      }
     } else if (cat === 'trim' || cat === 'skirting') {
       // Profile + finish resolved to one row, and lengths converted to
       // metres, both in one place (trimSelection/trimLengthMetres).
@@ -3107,7 +3423,10 @@ async function addLine() {
     // Its own endpoint, because a calculated blind is not a price-book
     // product line: it is priced from the book by size bracket and saved
     // with product_id 0, the same sentinel the spreadsheet import uses.
-    await addBlindsCalcLine();
+    // Accessories (junction brackets today) go to their own endpoint for
+    // the same reason -- a different calculation, the same line shape.
+    if (currentBlindKind() === 'blind') { await addBlindsCalcLine(); }
+    else { await addBlindsAccessoryLine(); }
     return;
   } else if (cat === 'trim' || cat === 'skirting') {
     const trimPick = trimSelection();
