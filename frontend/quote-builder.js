@@ -152,14 +152,243 @@ function groupedTrimOptionsHtml(list) {
     }).join('');
 }
 
+// ===== Blinds calculator (confirmed Sept 2026) =====
+//
+// The pricing lives on the server (blinds_calc.py, ported from the
+// standalone and proven against it). Nothing here computes a price --
+// this draws the card, collects the spec, and asks. Flooring has a
+// client-side shadow calculation and its own comments already call that
+// an accepted-but-real risk; there was no reason to open a second one
+// against a price list with 4,214 numbers in it.
+let blindsCalcMeta = null;
+let blindsPreviewTimer = null;
+let blindsPreviewSeq = 0;
+
+async function loadBlindsCalculatorMeta() {
+  if (blindsCalcMeta) return blindsCalcMeta;
+  try {
+    const res = await fetch(`${API}/blinds/calculator`);
+    if (!res.ok) return null;
+    blindsCalcMeta = await res.json();
+  } catch (e) { return null; }
+  return blindsCalcMeta;
+}
+
+async function populateBlindTypes() {
+  const sel = document.getElementById('line_blind_type');
+  if (!sel) return;
+  const meta = await loadBlindsCalculatorMeta();
+  if (!meta || !meta.products.length) {
+    // A real data problem said out loud rather than an empty box.
+    sel.innerHTML = '<option value="">Blinds calculator unavailable</option>';
+    return;
+  }
+  sel.innerHTML = meta.products.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
+  onBlindTypeChange();
+}
+
+// Groups and option checkboxes are rebuilt per type, because they differ:
+// venetian has colour tiers and wooden extras, roller has four groups and
+// four add-ons, and the wood venetians have neither.
+function onBlindTypeChange() {
+  const sel = document.getElementById('line_blind_type');
+  if (!sel || !blindsCalcMeta) return;
+  const p = blindsCalcMeta.products.find(x => x.key === sel.value);
+  if (!p) return;
+
+  const groupField = document.getElementById('blind_group_field');
+  const groupSel = document.getElementById('line_blind_group');
+  groupSel.innerHTML = p.groups.map(g => `<option value="${g.key}">${g.label}</option>`).join('');
+  groupField.style.display = p.groups.length ? '' : 'none';
+
+  const opts = p.options || {};
+  const box = document.getElementById('line_blind_options');
+  const bits = [];
+  const check = (id, label) =>
+    `<label style="font-weight:600; display:flex; align-items:center; gap:5px;">
+       <input type="checkbox" id="${id}" style="width:auto;" onchange="scheduleBlindsPreview()"> ${label}</label>`;
+  if (opts.wooden) bits.push(check('blind_opt_wooden', 'Wooden extras'));
+  if (opts.extraColours) bits.push(
+    `<label style="font-weight:600; display:flex; align-items:center; gap:5px;">
+       Extra colours
+       <input type="number" id="blind_opt_extra_colours" min="0" step="1" value="0"
+              style="width:64px;" oninput="scheduleBlindsPreview()"></label>`);
+  if (opts.steelChain) bits.push(check('blind_opt_steel_chain', 'Steel chain'));
+  if (opts.motor) bits.push(check('blind_opt_motor', 'Motorised'));
+  if (opts.tube55) bits.push(check('blind_opt_tube55', '55mm tube'));
+  if (opts.springAssist) bits.push(check('blind_opt_spring', 'Spring assist'));
+  box.innerHTML = bits.join('');
+  document.getElementById('blind_options_field').style.display = bits.length ? '' : 'none';
+  scheduleBlindsPreview();
+}
+
+function blindOptOn(id) {
+  const el = document.getElementById(id);
+  return !!(el && el.checked);
+}
+
+// One place that reads the card, so the preview and the save can never
+// describe two different blinds -- the same reasoning as trimSelection().
+function blindsCalcParams() {
+  const typeEl = document.getElementById('line_blind_type');
+  const groupEl = document.getElementById('line_blind_group');
+  const extra = document.getElementById('blind_opt_extra_colours');
+  const discountEl = document.getElementById('line_discount');
+  const p = new URLSearchParams({
+    blind_type: typeEl ? typeEl.value : '',
+    discount_pct: (parseFloat(discountEl ? discountEl.value : '') || 0) / 100,
+    width_mm: document.getElementById('line_width').value || 0,
+    drop_mm: document.getElementById('line_drop').value || 0,
+    wooden: blindOptOn('blind_opt_wooden'),
+    extra_colours: extra ? (parseInt(extra.value, 10) || 0) : 0,
+    steel_chain: blindOptOn('blind_opt_steel_chain'),
+    motor: blindOptOn('blind_opt_motor'),
+    tube55: blindOptOn('blind_opt_tube55'),
+    spring_assist: blindOptOn('blind_opt_spring'),
+  });
+  if (groupEl && groupEl.value) p.set('group', groupEl.value);
+  return p;
+}
+
+function scheduleBlindsPreview() {
+  clearTimeout(blindsPreviewTimer);
+  blindsPreviewTimer = setTimeout(previewBlindsCalcLine, 250);
+}
+
+async function previewBlindsCalcLine() {
+  const box = document.getElementById('genericLinePreview');
+  if (!box) return;
+  const seq = ++blindsPreviewSeq;
+  const band = document.getElementById('line_blind_band');
+  const springNote = document.getElementById('line_blind_spring_note');
+  const w = parseFloat(document.getElementById('line_width').value);
+  const d = parseFloat(document.getElementById('line_drop').value);
+  if (!w || !d) {
+    box.style.display = '';
+    box.innerHTML = '<span class="muted">Enter a width and drop to see a live price.</span>';
+    if (band) band.textContent = '';
+    if (springNote) springNote.textContent = '';
+    return;
+  }
+  box.style.display = '';
+  box.innerHTML = '<span class="muted">Calculating\u2026</span>';
+  try {
+    const res = await fetch(`${API}/blinds/calculator/preview?${blindsCalcParams()}`);
+    if (seq !== blindsPreviewSeq) return;   // a newer keystroke already went out
+    const data = await res.json();
+    if (seq !== blindsPreviewSeq) return;
+    if (!res.ok) {
+      box.innerHTML = `<span class="muted">${(data.detail || 'Could not calculate a preview.')}</span>`;
+      return;
+    }
+    if (data.error) {
+      // Outside the printed table. Said plainly, because the answer is
+      // "the factory quotes this", not a price.
+      box.innerHTML = `<div style="color:var(--coral); font-weight:600;">${data.error}</div>`;
+      if (band) band.textContent = '';
+      return;
+    }
+    if (band) {
+      band.textContent = `the ${data.used_width}\u00d7${data.used_drop}mm band`;
+    }
+    if (springNote) {
+      springNote.textContent = data.spring_assist_recommended
+        ? 'Spring assist is recommended at this size.' : '';
+    }
+    let html = `<div style="display:flex; justify-content:space-between; font-weight:700;">
+        <span>Price (ex VAT)</span><span>R${data.line_total.toFixed(2)}</span></div>`;
+    if (data.margin_pct !== undefined) {
+      html += `<div class="muted" style="font-size:12px; margin-top:2px;">Margin: ${(data.margin_pct * 100).toFixed(1)}%</div>`;
+    }
+    // The book price and each named add-on, Owner-only because the
+    // server only sends it to an Owner -- the breakdown names the cost
+    // basis.
+    if (data.rows) {
+      html += '<div class="muted" style="font-size:12px; margin-top:4px;">'
+        + data.rows.map(r => `${r.label}: R${r.val.toFixed(2)}`).join('<br>') + '</div>';
+    }
+    (data.warnings || []).forEach(wn => {
+      html += `<div style="color:var(--coral); font-size:12px; margin-top:4px; font-weight:600;">${wn}</div>`;
+    });
+    box.innerHTML = html;
+  } catch (e) {
+    if (seq !== blindsPreviewSeq) return;
+    box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
+  }
+}
+
+// Reopening a saved blind. Everything the card asks for comes back from
+// the line itself -- type/group/options out of blind_spec_json, sizes and
+// colour/room out of their own columns -- so nothing is re-picked from
+// memory and nothing is guessed at by parsing the product name.
+//
+// Returns false for a blinds line that has no spec: a price-book line or
+// an imported one was never priced by size bracket, and the calculator
+// cannot honestly reopen it. The caller says so plainly rather than
+// showing a card that would re-price it as something else.
+async function prefillBlindsCalcEdit(line) {
+  let spec = null;
+  try { spec = line.blind_spec_json ? JSON.parse(line.blind_spec_json) : null; } catch (e) { spec = null; }
+  if (!spec) return false;
+
+  // The type dropdown is filled asynchronously (it comes off the
+  // server's registry), so this waits for it rather than racing it --
+  // setting .value on an empty select silently keeps the empty value.
+  await populateBlindTypes();
+  const typeEl = document.getElementById('line_blind_type');
+  typeEl.value = spec.blind_type;
+  onBlindTypeChange();                 // rebuilds the group list and the option checkboxes for this type
+  const groupEl = document.getElementById('line_blind_group');
+  if (spec.group && groupEl) groupEl.value = spec.group;
+
+  const setCheck = (id, on) => { const el = document.getElementById(id); if (el) el.checked = !!on; };
+  setCheck('blind_opt_wooden', spec.wooden);
+  setCheck('blind_opt_steel_chain', spec.steelChain);
+  setCheck('blind_opt_motor', spec.motor);
+  setCheck('blind_opt_tube55', spec.tube55);
+  setCheck('blind_opt_spring', spec.springAssist);
+  const extra = document.getElementById('blind_opt_extra_colours');
+  if (extra) extra.value = spec.extraColours || 0;
+
+  document.getElementById('line_width').value = line.width_mm || '';
+  document.getElementById('line_drop').value = line.drop_mm || '';
+  document.getElementById('line_blind_colour').value = line.colour || '';
+  document.getElementById('line_blind_room').value = line.section_label || '';
+  document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+  return true;
+}
+
+async function addBlindsCalcLine() {
+  const p = blindsCalcParams();
+  p.set('colour', document.getElementById('line_blind_colour').value || '');
+  p.set('room', document.getElementById('line_blind_room').value || '');
+  p.set('role', currentRole());
+  const res = await fetch(`${API}/quotes/${currentQuoteId}/lines/blinds-calc?${p}`, {method: 'POST'});
+  const line = await res.json();
+  if (!res.ok) {
+    alert(line.detail || 'Could not add this blind.');
+    return false;
+  }
+  if (line.warning) alert(line.warning);
+  loadQuote();
+  return true;
+}
+
 function refreshLineProductOptions() {
   const cat = document.getElementById('line_category').value;
   const sel = document.getElementById('line_product');
   // Blinds keep the plain flat list of real product ids: short, nothing
   // to group by, and no finish to split off.
   if (cat === 'blinds') {
-    const list = sortByPriority ? sortByPriority(blindsProducts) : blindsProducts;
-    sel.innerHTML = list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+    // The price-book product dropdown is retired for Blinds (Sept 2026):
+    // blinds are quoted off the TBS/Luminos book by size bracket, which
+    // is what the calculator does, and leaving a second product-based
+    // path on the same card would be two ways to price the same blind at
+    // two different numbers. #product_field is hidden for this category
+    // in toggleLineFields(); this keeps the select empty rather than
+    // leaving stale options behind it.
+    sel.innerHTML = '';
+    populateBlindTypes();
     return;
   }
   sel.innerHTML = groupedTrimOptionsHtml(trimListForCategory(cat));
@@ -524,16 +753,12 @@ async function previewGenericLine() {
   const params = new URLSearchParams({ category: cat, role: currentRole() });
   let ready = false;
   if (cat === 'blinds') {
-    const productId = document.getElementById('line_product').value;
-    const width = document.getElementById('line_width').value;
-    const drop = document.getElementById('line_drop').value;
-    if (productId && width && drop) {
-      params.set('product_id', productId);
-      params.set('width_mm', width);
-      params.set('drop_mm', drop);
-      params.set('discount_pct', (parseFloat(document.getElementById('line_discount').value) || 0) / 100);
-      ready = true;
-    }
+    // Blinds have their own preview endpoint (the spec is a blind type,
+    // a group and six options, not a product id), so this hands off
+    // rather than trying to squeeze that onto the generic preview's
+    // parameter list.
+    previewBlindsCalcLine();
+    return;
   } else if (cat === 'trim' || cat === 'skirting') {
     // The Product dropdown holds a PROFILE key now, not a product id
     // (confirmed Sept 2026) -- resolved to the real row exactly the way
@@ -763,7 +988,10 @@ async function toggleLineFields() {
   document.querySelectorAll('.trim-colour-field').forEach(el => el.style.display = cat === 'trim' ? '' : 'none');
   document.querySelectorAll('.stairwell-field').forEach(el => el.style.display = cat === 'stairwell' ? '' : 'none');
   document.querySelectorAll('.misc-field').forEach(el => el.style.display = cat === 'misc' ? '' : 'none');
-  document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
+  // Blinds joined stairwell/misc here (Sept 2026): it no longer picks a
+  // price-book product at all, it picks a blind TYPE from the calculator,
+  // so the generic Product dropdown has nothing left to offer it.
+  document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc' || cat === 'blinds') ? 'none' : '';
   if (cat === 'stairwell') {
     populateStairwellVinylDropdown();
     // Same grouping as the trim dropdown above -- this is the same 200+
@@ -2813,11 +3041,15 @@ async function addLine() {
     if (cat === 'stairwell') {
       editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/stairwell?${stairwellParams}`;
     } else if (cat === 'blinds') {
-      const params = new URLSearchParams({
-        product_id: productId, width_mm: document.getElementById('line_width').value,
-        drop_mm: document.getElementById('line_drop').value, discount_pct: discount, role,
-      });
-      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds?${params}`;
+      // The calculator's own edit endpoint (Sept 2026), for the same
+      // reason the add path has one: a calculated blind has no price-book
+      // product id, which is all the old /blinds edit endpoint could work
+      // from. Same spec the preview and the add send, from one place.
+      const params = blindsCalcParams();
+      params.set('colour', document.getElementById('line_blind_colour').value || '');
+      params.set('room', document.getElementById('line_blind_room').value || '');
+      params.set('role', role);
+      editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds-calc?${params}`;
     } else if (cat === 'trim' || cat === 'skirting') {
       // Profile + finish resolved to one row, and lengths converted to
       // metres, both in one place (trimSelection/trimLengthMetres).
@@ -2843,6 +3075,16 @@ async function addLine() {
     }
     const res = await fetch(editUrl, {method:'PUT'});
     const line = await res.json();
+    // A refused edit says so and LEAVES THE CARD OPEN (Sept 2026). This
+    // used to fall straight through to cancelLineEdit()/loadQuote(),
+    // which redrew the unchanged line and looked exactly like a
+    // successful save — how a calculated blind's broken edit path went
+    // unnoticed. A blind outside the printed size table is refused by
+    // design, so this is a real, reachable answer, not just a safety net.
+    if (!res.ok) {
+      alert(line.detail || 'Could not save this change.');
+      return;
+    }
     if (line.warning) alert(line.warning);
     if (line.override_cleared) alert('This line had a Manual Override applied — because the product changed, the override was cleared and the price recalculated from the new figures. Reconfirm the override if one is still needed.');
     if (cat === 'stairwell' && stairwellLandingTotal > 0) clearLandingRows();
@@ -2862,11 +3104,11 @@ async function addLine() {
 
   let url;
   if (cat === 'blinds') {
-    const params = new URLSearchParams({
-      product_id: productId, width_mm: document.getElementById('line_width').value,
-      drop_mm: document.getElementById('line_drop').value, discount_pct: discount, role,
-    });
-    url = `${API}/quotes/${currentQuoteId}/lines/blinds?${params}`;
+    // Its own endpoint, because a calculated blind is not a price-book
+    // product line: it is priced from the book by size bracket and saved
+    // with product_id 0, the same sentinel the spreadsheet import uses.
+    await addBlindsCalcLine();
+    return;
   } else if (cat === 'trim' || cat === 'skirting') {
     const trimPick = trimSelection();
     const params = new URLSearchParams({
@@ -2983,10 +3225,19 @@ function editQuoteLine(lineId) {
     } else if (line.category === 'flooring') {
       prefillFlooringEdit(line);
     } else if (line.category === 'blinds') {
-      document.getElementById('line_product').value = line.product_id;
-      document.getElementById('line_width').value = line.width_mm || '';
-      document.getElementById('line_drop').value = line.drop_mm || '';
-      document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
+      // Calculated blinds reopen from their own saved spec (Sept 2026).
+      // A blinds line WITHOUT one predates the calculator or came from an
+      // imported quote — it was never editable here either (the old edit
+      // needed a price-book product this line has no id for, so it failed
+      // silently), and saying so beats reopening a card that would
+      // re-price it as a different blind.
+      prefillBlindsCalcEdit(line).then(ok => {
+        if (ok) { previewGenericLine(); return; }
+        cancelLineEdit();
+        alert('This blind was not priced by the calculator — it came from the price book or an '
+            + 'imported quote, so it can\'t be edited here. Delete the line and add it again if '
+            + 'the price needs to change.');
+      });
     } else if (line.category === 'trim' || line.category === 'skirting') {
       // Reopen on the PROFILE, then re-select the exact finish row the
       // line was saved against (confirmed Sept 2026). Same shape as the

@@ -1741,6 +1741,24 @@ class QuoteLineItem(SQLModel, table=True):
     # length_m (trims) and num_stairs (stairwell) — not a shared
     # `quantity` column, which none of those use either.
     blind_qty: Optional[int] = None      # blinds only
+    # The calculator spec this blind was priced from (confirmed Sept
+    # 2026, "Integrate standalone Blinds Calculator into Bolton") — blind
+    # type, price group and the option flags, as JSON.
+    #
+    # Stored because it is an INPUT that cannot be recovered from the
+    # outputs. Every other category can be reopened for editing from
+    # what the line already holds (a product id, a length, an area), but
+    # a calculated blind's type, group and six option toggles survive
+    # only as English inside product_name/line_notes. Without this,
+    # editing one means re-picking every option from memory, and
+    # anything forgotten silently re-prices the line as a different
+    # blind — the same class of silent money error the qty multiplier
+    # was (see add_blinds_calc_line(), main.py).
+    #
+    # NULL on every other kind of blinds line, which is the literal
+    # truth: price-book lines and imported-spreadsheet lines were never
+    # priced from a calculator spec and have none to record.
+    blind_spec_json: Optional[str] = None   # blinds only, calculator lines only
     quantity_m2: Optional[float] = None  # flooring only
     length_m: Optional[float] = None     # trims only
     # Manual quoting categories (confirmed Sept 2026, "Manual Quoting
