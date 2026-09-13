@@ -1786,7 +1786,7 @@ async function loadMyLeadsToday() {
     const leads = leadsRes.ok ? await leadsRes.json() : [];
     const todos = todosRes.ok ? await todosRes.json() : [];
     const needsAction = leads.filter(l => l.attention_priority);
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayLocalISO();   // NOT toISOString() -- see todayLocalISO(), shared.js
     const dueTodos = todos.filter(t => !t.due_date || t.due_date <= todayStr);
     // Cleared, not just skipped (fixed Sept 2026): this function is now
     // re-run after closing a lead from this very card
@@ -1794,27 +1794,50 @@ async function loadMyLeadsToday() {
     // empty result would leave the last-closed lead sitting on screen
     // looking like it hadn't worked.
     if (!needsAction.length && !dueTodos.length) { container.innerHTML = ''; return; }
-    // Link / Lost inline on the feed (confirmed Sept 2026, Burgert:
-    // "yes add the link and lost actions inline on the home feed").
-    // Both were already one tap away via the lead's own screen, but the
-    // whole point of this card is closing the day's work without
-    // navigating off Home. stopPropagation on each, since the row
-    // itself opens the lead. The quote picker renders into this row's
-    // OWN container — several leads show here at once, so a single
-    // shared picker div would collide.
+    // Link inline on the feed, Lost deliberately NOT (confirmed
+    // Sept 2026). Both were inline here originally, on Burgert's own
+    // earlier instruction ("yes add the link and lost actions inline
+    // on the home feed") -- reversed by him after living with it: a
+    // destructive, hard-to-undo action sitting alongside routine ones,
+    // on a panel that reappears on every single login, is an
+    // accidental misclick waiting to happen.
+    //
+    // A confirm() in the same spot was explicitly rejected as the fix,
+    // and rightly: this panel is worked at speed by muscle memory, and
+    // a dialog that always appears in the same place while you are
+    // clicking fast gets dismissed by the same reflex that opened it.
+    // Removing the click surface is the fix; a prompt is a speed bump.
+    // Lost still lives on the lead's own detail screen (Mark Lost /
+    // No Result, leads.js) and on the Leads list row -- both places
+    // you navigate to on purpose, which is the entire point.
+    //
+    // What is left is forward-moving only: Contact and Link to Quote.
+    // Nothing on this panel can now lose you a lead.
+    //
+    // stopPropagation on each, since the row itself opens the lead.
+    // The quote picker renders into this row's OWN container --
+    // several leads show here at once, so one shared picker div would
+    // collide.
+    //
+    // .attn-actions groups the buttons into one fixed row rather than
+    // letting them wrap in among the text (see .home-side-card
+    // .attention-item, styles.css): buttons that move depending on how
+    // long a client's name is are the other half of the same problem.
     const leadItems = needsAction.map(l => `
       <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
         <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
-        <span class="attn-detail">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
-        ${leadNextActionButton(l)}
-        <button onclick="event.stopPropagation(); openLinkQuotePicker(${l.id}, 'homeLeadPicker${l.id}')" style="font-size:11px; padding:2px 6px;">Link to Quote</button>
-        <button onclick="event.stopPropagation(); markLeadLostFromList(${l.id}, '${l.name.replace(/'/g,"\\'")}')" style="font-size:11px; padding:2px 6px; color:var(--coral); border-color:var(--coral);">Lost</button>
+        <span class="attn-detail" title="${l.name}${l.contact ? ' — ' + l.contact : ''}">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
+        <div class="attn-actions">
+          ${leadNextActionButton(l)}
+          <button onclick="event.stopPropagation(); openLinkQuotePicker(${l.id}, 'homeLeadPicker${l.id}')" style="font-size:11px; padding:2px 6px;">Link to Quote</button>
+        </div>
       </div>
       <div id="homeLeadPicker${l.id}" onclick="event.stopPropagation();"></div>`).join('');
     const todoItems = dueTodos.map(t => `
       <div class="attention-item ${t.due_date && t.due_date < todayStr ? 'priority-critical' : 'priority-notice'}" onclick="landingView='todos'; renderLanding();">
         <span class="attn-flag">${t.due_date && t.due_date < todayStr ? '🔴 Overdue' : '🟡 To-Do'}</span>
         <span class="attn-detail">${t.title}</span>
+        <div class="attn-actions"></div>
       </div>`).join('');
     container.innerHTML = `
       <div class="card home-side-card" style="border-color:var(--coral);">

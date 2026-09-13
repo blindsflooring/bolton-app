@@ -576,6 +576,33 @@ function R(n) { return 'R' + (n || 0).toLocaleString('en-ZA', {minimumFractionDi
 // file in a later Stage 2 step).
 function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : '—'; }
 
+// The date HERE, on this device, as a plain YYYY-MM-DD (found and fixed
+// Sept 2026 while working on the Home panel).
+//
+// new Date().toISOString().slice(0,10) is the obvious way to write this
+// and it is wrong for this business. toISOString() is UTC, and SAST is
+// UTC+2, so between midnight and 02:00 local the UTC date is still
+// YESTERDAY. Reproduced, not theorised: at 00:18 on 13 Sept it returned
+// 2026-09-12, and a to-do due that day was therefore filtered off the
+// "My Leads & To-Dos Today" panel entirely -- the one screen whose whole
+// job is telling you what is due today.
+//
+// It only misfires in a two-hour window, which is exactly why it had
+// survived: nobody is testing at 00:30, but someone finishing up late,
+// or a phone left open overnight, hits it.
+//
+// Built from the LOCAL parts rather than by shifting UTC by a fixed two
+// hours, so it stays correct wherever the device is actually set.
+// Mirrors the backend's own sast_today() convention (main.py) -- the
+// server already refuses to let UTC decide what day it is, and the
+// frontend should not disagree with it about something this basic.
+function todayLocalISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
 // Print scaffolding — confirmed Aug 2026: the "set printArea content,
 // then trigger the browser print dialog" pattern was repeated
 // identically three times (renderPrintDoc — shared by the Quote
