@@ -381,6 +381,26 @@ let currentQuoteId = null;
 let flooringProducts = [];   // price book cache — read by Price Book AND Quote Builder
 let blindsProducts = [];
 let trimProducts = [];
+
+
+// Trim categories in words. Lived in price-book.js while the price-book
+// tree was its only reader; moved here when the quote builder's own trim
+// dropdowns started grouping by the same categories (Sept 2026) -- the
+// convention this codebase already states out loud is that a label map
+// with two callers belongs in shared.js, and the alternative was the
+// price book and the quote builder each keeping their own idea of what
+// "end_cap" is called.
+const TRIM_CATEGORY_LABELS = {
+  skirting: 'Skirting', quarter_round: 'Quarter Round', stair_nose: 'Stair Nose',
+  reducer: 'Reducer', carpet_strip: 'Carpet Strip', corner_protector: 'Corner Protector/Angle',
+  // Supertrim April 2026 categories (confirmed Sept 2026). Without
+  // these the tree fell back to the raw key, so the price book listed a
+  // tidy "Stair Nose (26)" next to a bare "end_cap (36)" — the same
+  // screen speaking two languages.
+  angle: 'Angle', end_cap: 'End Cap', cover_strip: 'Cover Strip',
+  tile_edge: 'Tile Edge', rail: 'Rail', clip: 'Clip',
+};
+
 let landingView = 'tiles';   // which landing sub-view is showing — the app shell's own state
 // Moved here during the hr.js extraction — a real cross-file
 // dependency found during the pre-extraction scoping check: set from
@@ -596,12 +616,21 @@ function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : '�
 // Mirrors the backend's own sast_today() convention (main.py) -- the
 // server already refuses to let UTC decide what day it is, and the
 // frontend should not disagree with it about something this basic.
-function todayLocalISO() {
-  const d = new Date();
+// Any Date as a plain local YYYY-MM-DD. Split out from todayLocalISO()
+// during the sweep below, because the session-log range buttons need to
+// format a computed BOUNDARY date (the Monday of this week, the 1st of
+// this month), not just the current moment -- and those were the worst
+// of the toISOString() cases: both set a LOCAL midnight and then
+// converted it to UTC, so in SAST the range start landed two hours
+// earlier, i.e. the previous day, every single time rather than only
+// after midnight.
+function localISO(d) {
   return d.getFullYear() + '-' +
     String(d.getMonth() + 1).padStart(2, '0') + '-' +
     String(d.getDate()).padStart(2, '0');
 }
+
+function todayLocalISO() { return localISO(new Date()); }
 
 // Print scaffolding — confirmed Aug 2026: the "set printArea content,
 // then trigger the browser print dialog" pattern was repeated

@@ -48,16 +48,211 @@
 // the other direction (INCLUDE only the one matching type).
 const CARPET_ONLY_CATEGORIES = ['carpet_tufted_broadloom', 'carpet_needlepunch_broadloom', 'carpet_tile', 'cushion_vinyl'];
 
+// ===== Trim selection: the PROFILE, then the finish (confirmed Sept
+// 2026, Burgert: "the less is better... I need to get the types of trims
+// sorted and then the colour as a separate selector... dont group
+// everything under one dropdown") =====
+//
+// Grouping by category alone still left 215 options, because each profile
+// exists in up to six finishes and every one of them is its own priced
+// row. The list is now one option per PROFILE · about 47 · with the
+// finish chosen separately underneath, so the eye picks the shape first
+// and the colour second, which is the order the decision is actually made
+// in.
+//
+// Mechanically identical to the Stairwell vinyl picker already on this
+// card: the Product select holds a GROUP KEY, not a product id, and
+// trimSelection() resolves the pair to the single row to price against.
+// That is what stops the live preview and the saved line ever resolving
+// to different products.
+
+// product_name carries the finish as a suffix (the Supertrim load wrote
+// it into both), so the profile name is the name with that suffix taken
+// off — but only when it genuinely matches the finish column, never a
+// blind trim.
+function trimBaseName(p) {
+  let name = (p.product_name || '').trim();
+  const finish = (p.finish || '').trim();
+  if (finish) {
+    const suffix = ' — ' + finish;
+    if (name.toLowerCase().endsWith(suffix.toLowerCase())) name = name.slice(0, -suffix.length).trim();
+  }
+  return name;
+}
+
+// Category is part of the key deliberately: it is what the option is
+// grouped under, so two same-named profiles filed under different
+// categories stay two separate choices rather than silently merging.
+function trimGroupKey(p) {
+  return `${p.category || ''}||${(p.profile_code || '').trim()}||${trimBaseName(p)}`;
+}
+
+function trimGroupLabel(p) {
+  const code = (p.profile_code || '').trim();
+  const name = trimBaseName(p);
+  return code && !name.toLowerCase().startsWith(code.toLowerCase()) ? code + ' · ' + name : (code || name);
+}
+
+// The same filter the Product dropdown was built from, in one place, so
+// the resolver can never search a different set than the one on screen.
+function trimListForCategory(cat) {
+  if (cat === 'skirting') return trimProducts.filter(p => p.category === 'skirting' || p.category === 'quarter_round');
+  if (cat === 'trim') return trimProducts.filter(p => p.category !== 'skirting' && p.category !== 'quarter_round');
+  return trimProducts;
+}
+
+function trimRowsInSelectedGroup() {
+  const catEl = document.getElementById('line_category');
+  const sel = document.getElementById('line_product');
+  if (!catEl || !sel) return [];
+  const key = sel.value;
+  return trimListForCategory(catEl.value).filter(p => trimGroupKey(p) === key);
+}
+
+// The one row to price against, and the finish text to store on the line.
+// With a finish chosen it is that exact row. With none available (pine
+// skirting) the group has a single row and that is it. Mirrors
+// stairwellVinylSelection() deliberately.
+function trimSelection() {
+  const rows = trimRowsInSelectedGroup();
+  const finishSel = document.getElementById('line_trim_colour');
+  const chosenId = finishSel ? finishSel.value : '';
+  const chosen = chosenId ? rows.find(p => String(p.id) === String(chosenId)) : null;
+  const product = chosen || rows[0] || null;
+  return { productId: product ? product.id : '', colour: product ? (product.finish || '') : '', product };
+}
+
+// Grouped by what the thing IS. Category is the grouping because that is
+// how the choice is made: you know you need a stair nose, you are
+// choosing which one. Supplier would be the wrong axis — nearly every
+// aluminium trim is Supertrim, so it would be one huge heading and no
+// help. Biggest group first; profiles by code within it. The count on
+// each heading is PROFILES, which is what is now being picked from.
+function groupedTrimOptionsHtml(list) {
+  const byCat = {};
+  list.forEach(p => {
+    const key = (p.category || '').trim() || 'other';
+    (byCat[key] = byCat[key] || []).push(p);
+  });
+  return Object.keys(byCat)
+    .sort((a, b) => byCat[b].length - byCat[a].length
+      || (TRIM_CATEGORY_LABELS[a] || a).localeCompare(TRIM_CATEGORY_LABELS[b] || b))
+    .map(cat => {
+      const groups = {};
+      byCat[cat].forEach(p => {
+        const k = trimGroupKey(p);
+        if (!groups[k]) groups[k] = { key: k, label: trimGroupLabel(p), code: p.profile_code || '', rows: [] };
+        groups[k].rows.push(p);
+      });
+      const profiles = Object.values(groups).sort((a, b) =>
+        a.code.localeCompare(b.code, undefined, {numeric: true}) || a.label.localeCompare(b.label));
+      const opts = profiles.map(g => `<option value="${g.key}">${g.label}</option>`).join('');
+      const label = TRIM_CATEGORY_LABELS[cat] || cat;
+      return `<optgroup label="${label} (${profiles.length})">${opts}</optgroup>`;
+    }).join('');
+}
+
 function refreshLineProductOptions() {
   const cat = document.getElementById('line_category').value;
   const sel = document.getElementById('line_product');
-  let list;
-  if (cat === 'blinds') list = blindsProducts;
-  else if (cat === 'skirting') list = trimProducts.filter(p => p.category === 'skirting' || p.category === 'quarter_round');
-  else if (cat === 'trim') list = trimProducts.filter(p => p.category !== 'skirting' && p.category !== 'quarter_round');
-  else list = trimProducts;
-  sel.innerHTML = sortByPriority ? sortByPriority(list).map(p => `<option value="${p.id}">${p.product_name}</option>`).join('')
-    : list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+  // Blinds keep the plain flat list of real product ids: short, nothing
+  // to group by, and no finish to split off.
+  if (cat === 'blinds') {
+    const list = sortByPriority ? sortByPriority(blindsProducts) : blindsProducts;
+    sel.innerHTML = list.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+    return;
+  }
+  sel.innerHTML = groupedTrimOptionsHtml(trimListForCategory(cat));
+  onTrimProductChange();
+}
+
+// Finishes for whichever profile is selected. A profile with no finish on
+// file at all (pine skirting) hides the picker rather than showing an
+// empty box — there is genuinely nothing to choose.
+function onTrimProductChange(preselectProductId) {
+  const catEl = document.getElementById('line_category');
+  if (!catEl) return;
+  const cat = catEl.value;
+  // Shared control: for Blinds this select still holds a real product id
+  // and there is no finish to derive, so there is nothing to do here.
+  if (cat === 'blinds') return;
+  const rows = trimRowsInSelectedGroup();
+  const finishSel = document.getElementById('line_trim_colour');
+  if (!finishSel) return;
+  const withFinish = rows.filter(p => (p.finish || '').trim());
+  finishSel.innerHTML = withFinish
+    .slice()
+    .sort((a, b) => (a.finish || '').localeCompare(b.finish || ''))
+    .map(p => `<option value="${p.id}">${p.finish}</option>`).join('');
+  if (preselectProductId != null && withFinish.some(p => String(p.id) === String(preselectProductId))) {
+    finishSel.value = String(preselectProductId);
+  }
+  // toggleLineFields() decides this field by CATEGORY (trim yes, skirting
+  // no) and runs before this does; this only ever narrows that further,
+  // for a trim profile that has no finishes of its own.
+  document.querySelectorAll('.trim-colour-field').forEach(el => {
+    el.style.display = (cat === 'trim' && withFinish.length) ? '' : 'none';
+  });
+  onTrimSoldAsChange();
+}
+
+function onTrimFinishChange() {
+  // A different finish is a different priced row, so the mode note (which
+  // quotes the length) and the live preview both rebuild on it.
+  onTrimSoldAsChange();
+}
+
+// Full lengths are only offered for a product that HAS a length on file.
+// Pine skirting does not — it is bought by the metre — so offering
+// "2 lengths" of it would be a quantity with no meaning.
+function onTrimSoldAsChange() {
+  const modeSel = document.getElementById('line_trim_sold_as');
+  const label = document.getElementById('line_length_label');
+  const note = document.getElementById('line_trim_sold_as_note');
+  if (!modeSel || !label) return;
+  const sel = trimSelection();
+  const lengthOf = sel.product && sel.product.length_m ? Number(sel.product.length_m) : 0;
+  const lengthOpt = modeSel.querySelector('option[value="length"]');
+  if (lengthOpt) lengthOpt.disabled = !lengthOf;
+  if (!lengthOf && modeSel.value === 'length') modeSel.value = 'metre';
+  const byLength = modeSel.value === 'length';
+  label.textContent = byLength ? 'Number of lengths' : 'Length (m)';
+  if (note) {
+    note.textContent = !lengthOf
+      ? 'Sold by the metre — this product has no fixed length on file.'
+      : (byLength
+          ? `One length is ${lengthOf}m.`
+          : `Cut from ${lengthOf}m lengths; the metre rate comes off the full-length price.`);
+  }
+  onTrimQtyInput();
+}
+
+// What actually gets sent as length_m. Full lengths are converted here,
+// in ONE place, so the preview, the add and the edit all send the same
+// number. The line itself is always stored in metres, which is what the
+// trim calculator prices in.
+function trimLengthMetres() {
+  const qtyEl = document.getElementById('line_length');
+  const modeSel = document.getElementById('line_trim_sold_as');
+  const qty = parseFloat(qtyEl ? qtyEl.value : '') || 0;
+  if (!modeSel || modeSel.value !== 'length') return qty;
+  const sel = trimSelection();
+  const lengthOf = sel.product && sel.product.length_m ? Number(sel.product.length_m) : 0;
+  return lengthOf ? Math.round(qty * lengthOf * 10000) / 10000 : qty;
+}
+
+// Says the conversion out loud while it is being typed, so "3 lengths"
+// never reaches a quote without whoever typed it having seen the 8.1m it
+// actually is.
+function onTrimQtyInput() {
+  const note = document.getElementById('line_trim_qty_note');
+  const modeSel = document.getElementById('line_trim_sold_as');
+  if (note && modeSel) {
+    const metres = trimLengthMetres();
+    note.textContent = (modeSel.value === 'length' && metres)
+      ? `= ${metres}m, priced at the per-metre rate.` : '';
+  }
+  scheduleGenericPreview();
 }
 
 // Category tabs (confirmed Aug 2026, Vinyl Quoting UX Redesign proposal
@@ -298,9 +493,33 @@ function scheduleGenericLinePreview() {
   clearTimeout(genericPreviewDebounceTimer);
   genericPreviewDebounceTimer = setTimeout(previewGenericLine, 300);
 }
+// Debounce + last-one-wins for the live preview (added Sept 2026 with
+// the trim quantity box).
+//
+// This function had neither, and had never needed them: nothing on this
+// card fired it per keystroke -- it ran on a category or product change,
+// which nobody does three times a second. The trim quantity input now
+// DOES fire on every keystroke (you have to watch the price move as you
+// type a length), and that turns a harmless absence into a real bug:
+// typing "2.7" launches three overlapping requests and whichever the
+// server answers last wins the box, so the answer for "2" landing after
+// the answer for "2.7" puts a price on screen for a length nobody typed.
+// Seen while testing exactly that.
+//
+// The debounce cuts the traffic; the sequence number is what actually
+// makes it correct, since a slow earlier request can still land late.
+let genericPreviewTimer = null;
+let genericPreviewSeq = 0;
+
+function scheduleGenericPreview() {
+  clearTimeout(genericPreviewTimer);
+  genericPreviewTimer = setTimeout(previewGenericLine, 250);
+}
+
 async function previewGenericLine() {
   const box = document.getElementById('genericLinePreview');
   if (!box) return;
+  const seq = ++genericPreviewSeq;
   const cat = document.getElementById('line_category').value;
   const params = new URLSearchParams({ category: cat, role: currentRole() });
   let ready = false;
@@ -316,8 +535,13 @@ async function previewGenericLine() {
       ready = true;
     }
   } else if (cat === 'trim' || cat === 'skirting') {
-    const productId = document.getElementById('line_product').value;
-    const length = document.getElementById('line_length').value;
+    // The Product dropdown holds a PROFILE key now, not a product id
+    // (confirmed Sept 2026) -- resolved to the real row exactly the way
+    // the save path does, so the live preview and the saved line can
+    // never price off different rows. Same reasoning as the Stairwell
+    // branch below, which already had to do this.
+    const productId = trimSelection().productId;
+    const length = trimLengthMetres();
     if (productId && length) {
       params.set('product_id', productId);
       params.set('length_m', length);
@@ -351,12 +575,16 @@ async function previewGenericLine() {
   box.innerHTML = '<span class="muted">Calculating…</span>';
   try {
     const res = await fetch(`${API}/quotes/lines/preview?${params}`);
+    // A newer keystroke is already in flight -- this answer is about a
+    // length that is no longer in the box, so it must not paint.
+    if (seq !== genericPreviewSeq) return;
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       box.innerHTML = `<span class="muted">${(body.detail || 'Could not calculate a preview.').replace(/</g, '&lt;')}</span>`;
       return;
     }
     const data = await res.json();
+    if (seq !== genericPreviewSeq) return;
     // Margin Becomes Owner-Only; Price Gets a Colour Signal (confirmed
     // Aug 2026) — the price itself carries the colour signal for every
     // role, including roles that never receive data.margin_pct at all
@@ -376,6 +604,7 @@ async function previewGenericLine() {
     html += ownerBreakdownHtml(data);
     box.innerHTML = html;
   } catch (e) {
+    if (seq !== genericPreviewSeq) return;
     box.innerHTML = '<span class="muted">Could not calculate a preview.</span>';
   }
 }
@@ -537,7 +766,10 @@ async function toggleLineFields() {
   document.getElementById('product_field').style.display = (cat === 'stairwell' || cat === 'misc') ? 'none' : '';
   if (cat === 'stairwell') {
     populateStairwellVinylDropdown();
-    document.getElementById('line_nosing_product').innerHTML = trimProducts.map(p => `<option value="${p.id}">${p.product_name}</option>`).join('');
+    // Same grouping as the trim dropdown above -- this is the same 200+
+    // row table, and there was no reason for the nosing picker to stay
+    // the one flat, unreadable list on the card.
+    document.getElementById('line_nosing_product').innerHTML = groupedTrimOptionsHtml(trimProducts);
   } else if (cat !== 'misc') {
     refreshLineProductOptions();
   }
@@ -623,29 +855,61 @@ function populateCarpetTypeProducts(type, preselectRange) {
   // reported. addCarpetLine() already guards on `!productId`
   // ("Pick a product first."), so this placeholder is enough on its
   // own — no other change needed to block an accidental add.
-  sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>— Choose a product —</option>` +
-    products.map(p => {
-      // Supplier and the discontinuing flag, on the option itself
-      // (confirmed Sept 2026, Nouwens Carpets brief). Two things
-      // changed with a second carpet supplier arriving:
+  // Split by supplier (confirmed Sept 2026, Burgert: "every carpet is
+  // jumbled up together in the dropdown... split it under Belgotex and
+  // Nouwens as 2 separate selectables").
+  //
+  // <optgroup>, the same shape populateStairwellVinylDropdown() already
+  // uses for exactly this problem, rather than two separate <select>
+  // boxes: every reader of this control takes #carpet_product.value
+  // (previewCarpetLine, addCarpetLine, editQuoteLine's prefill), and
+  // one value is what keeps all three working untouched. Two boxes
+  // would mean deciding which one is authoritative on every read.
+  //
+  // Built from whatever suppliers are actually in the book rather than
+  // a hardcoded Belgotex/Nouwens pair -- a third carpet supplier should
+  // appear as its own heading the day their products are loaded, not
+  // the day someone remembers to edit this line.
+  //
+  // Biggest group first, then alphabetical: the house supplier is the
+  // one being picked most of the day, and it should not be below a
+  // smaller range you scroll past to reach it.
+  //
+  // The supplier is no longer repeated on every option -- it is the
+  // heading now, and the whole point is that the eye stops having to
+  // read it 60 times. "discontinuing" stays on the option, because that
+  // is about the individual range, not the supplier.
+  const bySupplier = {};
+  products.forEach(p => {
+    const key = (p.supplier || '').trim() || 'Other';
+    (bySupplier[key] = bySupplier[key] || []).push(p);
+  });
+  const supplierOrder = Object.keys(bySupplier).sort((a, b) =>
+    bySupplier[b].length - bySupplier[a].length || a.localeCompare(b));
+
+  sel.innerHTML = `<option value="" ${!preselectRange ? 'selected' : ''}>&mdash; Choose a product &mdash;</option>` +
+    supplierOrder.map(supplier => {
+      // Alphabetical WITHIN the supplier, explicitly (confirmed Sept
+      // 2026: "then alphabetically within each supplier group").
       //
-      // The list used to show the range name alone, which was
-      // unambiguous while every broadloom carpet came from one
-      // supplier. It no longer does — Nouwens and Belgotex both sell
-      // ranges, at different roll widths and different cutting fees, so
-      // picking the wrong one is a real pricing error and the name on
-      // its own does not let anyone tell them apart.
-      //
-      // And the brief asks for a discontinuing range to be flagged
-      // here rather than hidden, "since it may still be quotable while
-      // stock lasts" — which is exactly what the discontinued field
-      // already means (models.py: flagged, never hidden, still fully
-      // usable). This is where that flag becomes visible at the moment
-      // of choosing.
-      const bits = [p.product_name];
-      if (p.colour) bits.push(p.colour);
-      const tail = [p.supplier, p.discontinued ? 'discontinuing' : ''].filter(Boolean).join(', ');
-      return `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${bits.join(' — ')}${tail ? `  (${tail})` : ''}</option>`;
+      // This deliberately does not use sortByPriority() the way the rest
+      // of this file does. That sorts on display_order first and only
+      // falls back to the name, so a product someone had pinned with a
+      // display_order would jump the queue and the group would read as
+      // very-nearly-alphabetical -- which is worse than either, because
+      // you stop being able to predict where a name is. A dropdown you
+      // scan by name should be ordered by name.
+      const opts = bySupplier[supplier]
+        .slice()
+        .sort((a, b) => (a.product_name || '').localeCompare(b.product_name || '')
+          || (a.colour || '').localeCompare(b.colour || ''))
+        .map(p => {
+        const bits = [p.product_name];
+        if (p.colour) bits.push(p.colour);
+        const tail = p.discontinued ? '  (discontinuing)' : '';
+        return `<option value="${p.id}" ${p.product_name === preselectRange ? 'selected' : ''}>${bits.join(' — ')}${tail}</option>`;
+      }).join('');
+      return `<optgroup label="${supplier} (${bySupplier[supplier].length})">${opts}</optgroup>`;
     }).join('');
   scheduleCarpetPreview();
 }
@@ -2555,12 +2819,17 @@ async function addLine() {
       });
       editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/blinds?${params}`;
     } else if (cat === 'trim' || cat === 'skirting') {
+      // Profile + finish resolved to one row, and lengths converted to
+      // metres, both in one place (trimSelection/trimLengthMetres).
+      const trimPick = trimSelection();
       const params = new URLSearchParams({
-        product_id: productId, length_m: document.getElementById('line_length').value,
+        product_id: trimPick.productId, length_m: trimLengthMetres(),
         discount_pct: discount, role,
       });
-      // Trim Colours (confirmed Aug 2026) — only Trim sends a colour; Skirting has none to send.
-      if (cat === 'trim') { params.set('colour', document.getElementById('line_trim_colour').value); }
+      // Only Trim sends a colour; Skirting has none to send. The value is
+      // the real finish off the chosen row now, not one of two hardcoded
+      // names that were never what the price list calls them.
+      if (cat === 'trim') { params.set('colour', trimPick.colour); }
       editUrl = `${API}/quotes/${currentQuoteId}/lines/${editingLineId}/trims?${params}`;
     } else if (cat === 'misc') {
       if (!document.getElementById('line_misc_desc').value) { alert('Enter a description first.'); return; }
@@ -2599,12 +2868,13 @@ async function addLine() {
     });
     url = `${API}/quotes/${currentQuoteId}/lines/blinds?${params}`;
   } else if (cat === 'trim' || cat === 'skirting') {
+    const trimPick = trimSelection();
     const params = new URLSearchParams({
-      product_id: productId, length_m: document.getElementById('line_length').value,
+      product_id: trimPick.productId, length_m: trimLengthMetres(),
       discount_pct: discount, role,
     });
-    // Trim Colours (confirmed Aug 2026) — only Trim sends a colour; Skirting has none to send.
-    if (cat === 'trim') { params.set('colour', document.getElementById('line_trim_colour').value); }
+    // Only Trim sends a colour; Skirting has none to send.
+    if (cat === 'trim') { params.set('colour', trimPick.colour); }
     url = `${API}/quotes/${currentQuoteId}/lines/trims?${params}`;
   } else if (cat === 'misc') {
     const params = new URLSearchParams({
@@ -2718,14 +2988,25 @@ function editQuoteLine(lineId) {
       document.getElementById('line_drop').value = line.drop_mm || '';
       document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
     } else if (line.category === 'trim' || line.category === 'skirting') {
-      document.getElementById('line_product').value = line.product_id;
+      // Reopen on the PROFILE, then re-select the exact finish row the
+      // line was saved against (confirmed Sept 2026). Same shape as the
+      // Stairwell prefill: set the group, then hand the product id to the
+      // group change handler so the second dropdown lands on the right
+      // row rather than defaulting to the first finish.
+      const savedTrim = trimProducts.find(p => String(p.id) === String(line.product_id));
+      if (savedTrim) {
+        document.getElementById('line_product').value = trimGroupKey(savedTrim);
+        onTrimProductChange(savedTrim.id);
+      }
+      // Always reopened by the METRE, because metres is what the line
+      // stores — a line entered as 3 lengths is 8.1m on the quote, and
+      // showing "3" beside a mode of "per metre" would be a lie. The
+      // number shown is the number that was quoted.
+      const soldAs = document.getElementById('line_trim_sold_as');
+      if (soldAs) { soldAs.value = 'metre'; }
       document.getElementById('line_length').value = line.length_m || '';
       document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
-      // Trim Colours (confirmed Aug 2026) — re-select the real saved
-      // colour on reopen, same as every other field on this line;
-      // toggleLineFields() (already awaited above) has the .trim-colour-
-      // field visible by now if this line is genuinely 'trim'.
-      if (line.category === 'trim' && line.colour) { document.getElementById('line_trim_colour').value = line.colour; }
+      onTrimSoldAsChange();
     } else if (line.category === 'misc') {
       document.getElementById('line_misc_desc').value = line.product_name || '';
       document.getElementById('line_misc_amount').value = line.unit_price || 0;
