@@ -3019,6 +3019,10 @@ function supertrimOrderLines() {
     const qty = supertrimQty[f.id];
     if (!qty) return;
     out.push({
+      // The price-book row id, carried so a recorded purchase line can
+      // point back at the product it bought (Sept 2026). The email and
+      // the printed sheet ignore it, as they always did.
+      id: f.id,
       code: p.profile_code, name: p.name, finish: f.finish,
       length_m: f.length_m, qty, unit: f.price_ex_vat || 0,
       total: (f.price_ex_vat || 0) * qty,
@@ -3052,6 +3056,7 @@ function supertrimRenderTotals() {
       <button class="primary" onclick="supertrimCopy()" ${lines.length ? '' : 'disabled'}>Copy for email</button>
       <button onclick="supertrimEmail()" ${lines.length ? '' : 'disabled'}>Open in email</button>
       <button onclick="supertrimPrint()" ${lines.length ? '' : 'disabled'}>Print / PDF</button>
+      <button onclick="supertrimRecord()" ${lines.length ? '' : 'disabled'}>Record as placed</button>
       <button class="delete-btn" onclick="supertrimClear()" ${lines.length ? '' : 'disabled'}>Clear</button>
     </div>`;
 }
@@ -3127,10 +3132,88 @@ function supertrimPrint() {
     </div>`);
 }
 
+// Recording an order that was actually placed (confirmed Sept 2026,
+// Part 2 of the order-sheet brief).
+//
+// A SEPARATE, DELIBERATE ACTION rather than a side-effect of pressing
+// Copy or Print: building a basket and placing an order are different
+// events, and someone pricing up a possible order must not silently
+// create a purchase record by looking at the total.
+//
+// Nothing here is subtracted from any job's profit or from commission.
+// The trim cost of a job is already carried by that job's own lines --
+// see StockPurchase (models.py) for the full reasoning. What this adds
+// is the other half: cash out, on the date it went out.
+async function supertrimRecord() {
+  const lines = supertrimOrderLines();
+  if (!lines.length) return;
+  const total = lines.reduce((a, l) => a + l.total, 0);
+  if (!confirm(`Record this as an order placed with Supertrim?\n\n`
+      + `${lines.length} line(s), ${R(total)} ex VAT.\n\n`
+      + `This records what you SPENT. It does not change any job's profit or `
+      + `commission — the trim a job uses is already costed on that job.`)) return;
+
+  const res = await fetch(`${API}/stock-purchases`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      supplier: supertrimOrderData.terms.supplier,
+      // Every line straight off the same function the email and the
+      // printed sheet read, so what is recorded is what was sent.
+      lines: lines.map(l => ({
+        product_id: l.id ?? null, product_code: l.code, description: l.name,
+        finish: l.finish, length_m: l.length_m, qty: l.qty, unit: 'length',
+        unit_price_ex_vat: l.unit,
+      })),
+    }),
+  });
+  const saved = await res.json();
+  if (!res.ok) { alert(saved.detail || 'Could not record this order.'); return; }
+  alert(`Recorded: ${R(saved.total_ex_vat)} ex VAT on ${saved.ordered_on}.\n\n`
+      + `The quantities stay on the sheet — clear them when you're ready to start the next order.`);
+  renderSupertrimOrder(document.getElementById('landing'));
+}
+
+// Stock bought, beside what jobs actually consumed. Two figures that are
+// never subtracted from one another: the gap between them IS the
+// information (bought ahead, or eating into the shelf).
+function supertrimStockPanel(summary, recent) {
+  if (!summary) return '';
+  const m = summary.this_month;
+  const rows = (recent || []).slice(0, 5).map(p => `
+    <tr>
+      <td>${p.ordered_on}</td>
+      <td>${p.line_count} line${p.line_count === 1 ? '' : 's'}${p.supplier_ref ? ' &middot; ' + p.supplier_ref : ''}</td>
+      <td>${p.status === 'ordered' ? 'Ordered' : p.status === 'received' ? 'Received' : 'Cancelled'}</td>
+      <td class="num">${R(p.total_ex_vat)}</td>
+    </tr>`).join('');
+  const movement = m ? m.stock_movement : 0;
+  return `
+    <details class="card st-cat">
+      <summary><b>Stock bought</b> <span class="muted">this month ${m ? R(m.bought_ex_vat) : R(0)}</span></summary>
+      <div style="padding:10px 2px 2px;">
+        <p class="muted" style="margin:0 0 10px; font-size:12px;">${summary.basis}</p>
+        <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><div class="oi-scope">Bought this month</div><b>${m ? R(m.bought_ex_vat) : R(0)}</b></div>
+          <div><div class="oi-scope">Trim costed on jobs won this month</div><b>${m ? R(m.booked_on_jobs) : R(0)}</b></div>
+          <div><div class="oi-scope">${movement >= 0 ? 'Went onto the shelf' : 'Came off the shelf'}</div>
+               <b>${R(Math.abs(movement))}</b></div>
+        </div>
+        ${rows ? `<table class="mth-table"><thead><tr><th>Placed</th><th>Order</th><th>Status</th><th class="num">Ex VAT</th></tr></thead><tbody>${rows}</tbody></table>`
+               : '<p class="muted" style="margin:0;">No orders recorded yet.</p>'}
+      </div>
+    </details>`;
+}
+
 async function renderSupertrimOrder(el) {
   await renderWithRetry(el, 'Supertrim Order', async () => {
   el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span><div class="card"><p class="muted">Loading...</p></div>`;
-  supertrimOrderData = await fetch(`${API}/suppliers/supertrim/stock-order`).then(r => r.json());
+  const [order, summary, recent] = await Promise.all([
+    fetch(`${API}/suppliers/supertrim/stock-order`).then(r => r.json()),
+    fetch(`${API}/stock-purchases/summary?months=6`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${API}/stock-purchases?supplier=Supertrim&limit=5`).then(r => r.ok ? r.json() : []).catch(() => []),
+  ]);
+  supertrimOrderData = order;
   const d = supertrimOrderData;
   if (!d || !d.profiles) { el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">\u2190 Back</span><div class="card"><p class="muted">No Supertrim products in the price book yet.</p></div>`; return; }
 
@@ -3177,6 +3260,7 @@ async function renderSupertrimOrder(el) {
       <span class="muted">${d.terms.min_order_note}</span>
     </div>
     <div id="supertrimTotals" class="st-totals"></div>
+    ${supertrimStockPanel(summary, recent)}
     ${sections}`;
   supertrimRenderTotals();
   });

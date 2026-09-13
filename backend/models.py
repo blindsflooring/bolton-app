@@ -2118,3 +2118,96 @@ class DatabaseBackupRecord(SQLModel, table=True):
     size_bytes: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
     uploaded_at: Optional[datetime] = None
+
+
+class StockPurchase(SQLModel, table=True):
+    """Stock bought from a supplier (confirmed Sept 2026, "Supertrim
+    Visual Order Sheet + Cost/KPI Integration", Part 2).
+
+    THE FIRST RECORD IN THIS APP OF MONEY LEAVING THE BUSINESS, and it
+    is deliberately REPORTED, never SUBTRACTED from job profit. The
+    reason is specific rather than cautious: the cost of a Supertrim
+    trim is ALREADY in every profit figure Bolton shows. A trim line on
+    a quote books cost_ex_vat_per_lm x length x (1 + wastage)
+    (calculate_trim_line(), calculations.py), line_real_cost() returns
+    it, and analytics_overview()'s profit_by_quote subtracts it from
+    ex-VAT turnover — which is also what commission is paid on. Taking
+    the purchase off profit as well would count the same rand twice,
+    once when the stock was bought and again when a length off that
+    stock went onto a job.
+
+    So what is new here is not "a cost" — Bolton tracks costs
+    everywhere. It is CASH LEAVING ON A DIFFERENT DATE than the job that
+    consumes it. Bolton is accrual per job; a stock order is cash out
+    for stock that sits on a shelf until jobs eat it. Both are true at
+    once, they are different numbers, and neither replaces the other.
+
+    The number that makes this one source of truth rather than a second
+    ledger is DERIVED, not stored: trim cost booked on jobs in a period
+    versus trim actually bought in that period. The gap is real stock
+    movement — bought ahead, or eating into the shelf — and it comes out
+    of two figures that already exist (stock_purchase_summary(),
+    main.py).
+
+    SUPPLIER-AGNOSTIC ON PURPOSE. Only the Supertrim screen writes here
+    today, but nothing about this record is Supertrim-specific: supplier
+    is a field, not a table name. The Azura/Nouwens order sheets can
+    write into this same table later without a migration or a second
+    concept — which is the whole point of not building a
+    Supertrim-shaped thing for a general problem.
+
+    NOT an expenses ledger. Wages (HoursWorked), rent and vehicles are
+    also money leaving and none of them are here. It is called stock
+    bought because that is all it is.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    supplier: str = Field(index=True)
+    # The date the ORDER was placed, as a real date rather than a
+    # timestamp: it is reported against calendar months, and every
+    # month-boundary bug in this app so far came from a UTC timestamp
+    # deciding what day it was (see sast_date(), main.py).
+    ordered_on: date = Field(index=True)
+    total_ex_vat: float = 0.0
+    # "ordered" | "received" | "cancelled". A cancelled order is kept,
+    # not deleted — an order that was placed and pulled is real history,
+    # and it is excluded from every figure by status rather than by
+    # disappearing.
+    status: str = Field(default="ordered", index=True)
+    received_on: Optional[date] = None
+    supplier_ref: str = ""      # the supplier's own order/invoice number, once there is one
+    notes: str = ""
+    # A REFERENCE, never arithmetic (the brief's own question, answered
+    # deliberately): a purchase can say which job prompted it, and that
+    # link changes no money anywhere. The job's margin keeps coming from
+    # the job's own lines, because a quote that cannot explain its own
+    # GP is a quote whose commission cannot be explained either.
+    quote_id: Optional[int] = Field(default=None, foreign_key="quote.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: str = ""
+
+
+class StockPurchaseLine(SQLModel, table=True):
+    """One line of a stock purchase — what was ordered, and at what.
+
+    Prices are snapshotted rather than read back off the product row, the
+    same denormalisation QuoteLineItem already uses for exactly the same
+    reason: a price list reissue must never silently rewrite what an
+    order that has already been placed says it cost.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    stock_purchase_id: int = Field(foreign_key="stockpurchase.id")
+    # The price-book row this came from, where there is one. Optional
+    # because a stock purchase is not required to be something Bolton
+    # already sells — deliberately no foreign key, so retiring a product
+    # can never block or rewrite a real order that was placed.
+    product_id: Optional[int] = None
+    product_code: str = ""      # "S299" — what the supplier's list calls it
+    description: str = ""
+    finish: str = ""
+    length_m: Optional[float] = None
+    qty: float = 0.0
+    unit: str = "length"
+    unit_price_ex_vat: float = 0.0
+    line_total_ex_vat: float = 0.0
