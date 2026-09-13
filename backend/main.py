@@ -4479,32 +4479,43 @@ def download_archived_document(archive_id: int, tenant_id: str = Depends(get_cur
 @app.post("/documents/archive/{archive_id}/retry")
 def retry_document_archive(archive_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Brief §7's own explicit requirement — "allow the system to
-    retry." Re-uploads the SAME already-stored pdf_bytes (never
-    regenerates from current live data — brief §10's historical-
-    pricing-integrity rule) to the SAME dropbox_path this row was
-    already assigned, so a retry genuinely resumes this exact version
-    rather than silently creating a parallel one."""
+    retry." Re-uploads the SAME already-stored pdf_bytes — never
+    regenerated from current live data (brief §10's historical-pricing-
+    integrity rule), so a retry resumes this exact version rather than
+    silently creating a parallel one.
+
+    THE FILENAME, THOUGH, IS RECOMPUTED (confirmed Sept 2026). A retry
+    only ever runs on a row that has NOT uploaded — the endpoint refuses
+    an already-uploaded one on the line below — so there is no file
+    sitting at the stored path for the name to stay consistent with, and
+    nothing is being renamed. What that stored path records is the name
+    an upload WOULD have had when it was first attempted, which for
+    every row predating the client/job/category convention is the old
+    format. Reusing it would file the entire failed backlog under the
+    names this convention exists to replace, at the exact moment those
+    documents finally reach Dropbox for the first time. Found by
+    retrying a real one and watching it land as
+    "J-0006-Tony_Prinsloo_ACCEPTED.pdf".
+
+    The FOLDER is kept from the stored path where there is one — that
+    carries the branch the document belonged to, which is a fact about
+    the job, not about naming."""
     with Session(engine) as session:
         archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
         if archive.status == "uploaded":
             raise HTTPException(400, "This version is already uploaded — nothing to retry.")
         ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
-        # A row always carries the path it was given at save time, so this
-        # fallback is for rows that somehow have none. It rebuilds through
-        # the SAME naming helper the save path uses (Sept 2026) rather
-        # than the old reconstruction it replaced, which reproduced a
-        # retired format — and a retry is exactly when nobody is watching
-        # closely enough to notice a differently-named file appearing.
-        if archive.dropbox_path:
-            dropbox_path = archive.dropbox_path
+        if archive.dropbox_path and "/" in archive.dropbox_path:
+            folder_path = archive.dropbox_path.rsplit("/", 1)[0]
         else:
             folder = (ARCHIVE_CATEGORY_FOLDER[archive.entity_type]
                       if archive.entity_type == "OrderIndexSnapshot"
                       else _branch_folder_name(None))
-            subject = _document_subject(session, tenant_id, archive.entity_type, archive.entity_id)
-            suffix = "ACCEPTED" if archive.is_accepted_version else f"v{archive.version}"
-            dropbox_path = f"/Bolton/{folder}/" + dropbox_filename(
-                subject, archive.entity_type, suffix, ext, fallback=archive.reference)
+            folder_path = f"/Bolton/{folder}"
+        subject = _document_subject(session, tenant_id, archive.entity_type, archive.entity_id)
+        suffix = "ACCEPTED" if archive.is_accepted_version else f"v{archive.version}"
+        dropbox_path = folder_path + "/" + dropbox_filename(
+            subject, archive.entity_type, suffix, ext, fallback=archive.reference)
         upload_result = dropbox_archive.upload_document(archive.pdf_bytes, dropbox_path)
         if upload_result["ok"]:
             archive.status = "uploaded"
