@@ -37,6 +37,7 @@ from models import (
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead, JobWorkDay, ToDo,
+    StockPurchase, StockPurchaseLine,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
 import blinds_calc
@@ -7362,6 +7363,310 @@ def supertrim_stock_order(role: str = Depends(require_owner), tenant_id: str = D
                 "line_count": sum(len(g["finishes"]) for g in profiles)}
 
 
+# ===== Stock purchases (confirmed Sept 2026, "Supertrim Visual Order
+# Sheet + Cost/KPI Integration", Part 2) =====
+#
+# Recorded here, REPORTED in stock_purchase_summary() below, and
+# deliberately absent from analytics_overview()'s profit figures and
+# from the commission engine. See StockPurchase (models.py) for why
+# subtracting one from job profit would count the same rand twice.
+#
+# Owner-only throughout, the same rule the Supertrim order screen and
+# every other cost surface in this app already follow.
+
+
+class StockPurchaseLineIn(BaseModel):
+    product_id: Optional[int] = None
+    product_code: str = ""
+    description: str = ""
+    finish: str = ""
+    length_m: Optional[float] = None
+    qty: float = 0.0
+    unit: str = "length"
+    unit_price_ex_vat: float = 0.0
+
+
+class StockPurchaseIn(BaseModel):
+    supplier: str
+    lines: List[StockPurchaseLineIn]
+    ordered_on: Optional[str] = None      # ISO date; defaults to today in SAST
+    supplier_ref: str = ""
+    notes: str = ""
+    quote_id: Optional[int] = None
+    status: str = "ordered"
+
+
+STOCK_PURCHASE_STATUSES = ("ordered", "received", "cancelled")
+
+
+def _stock_purchase_dict(purchase: "StockPurchase", lines: List["StockPurchaseLine"]) -> dict:
+    out = purchase.dict()
+    out["lines"] = [l.dict() for l in lines]
+    out["line_count"] = len(lines)
+    out["qty_total"] = round(sum(l.qty for l in lines), 2)
+    return out
+
+
+@app.post("/stock-purchases")
+def record_stock_purchase(body: StockPurchaseIn, role: str = Depends(require_owner),
+                          tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
+    """Record an order that was placed.
+
+    The total is computed HERE from the lines, never taken from the
+    request: a total that arrives alongside the lines it is supposed to
+    summarise is a second number that can disagree with them, which is
+    the thing this whole brief asked not to create.
+    """
+    if not body.lines:
+        raise HTTPException(400, "An order needs at least one line.")
+    if body.status not in STOCK_PURCHASE_STATUSES:
+        raise HTTPException(400, f"Unknown status: {body.status}")
+    try:
+        ordered_on = (date.fromisoformat(body.ordered_on) if body.ordered_on
+                      else sast_today())
+    except ValueError:
+        raise HTTPException(400, "ordered_on must be an ISO date (YYYY-MM-DD).")
+
+    with Session(engine) as session:
+        if body.quote_id is not None:
+            # Checked, so a link can never point at nothing. It stays a
+            # reference either way -- nothing about this changes the
+            # job's margin.
+            get_or_404(session, Quote, body.quote_id, tenant_id, "Quote")
+
+        purchase = StockPurchase(
+            tenant_id=tenant_id, supplier=body.supplier.strip(), ordered_on=ordered_on,
+            status=body.status, supplier_ref=body.supplier_ref.strip(),
+            notes=body.notes.strip(), quote_id=body.quote_id, created_by=username,
+        )
+        session.add(purchase)
+        session.commit()
+        session.refresh(purchase)
+
+        total = 0.0
+        saved = []
+        for l in body.lines:
+            line_total = round(l.qty * l.unit_price_ex_vat, 2)
+            total += line_total
+            row = StockPurchaseLine(
+                tenant_id=tenant_id, stock_purchase_id=purchase.id,
+                product_id=l.product_id, product_code=l.product_code,
+                description=l.description, finish=l.finish, length_m=l.length_m,
+                qty=l.qty, unit=l.unit, unit_price_ex_vat=l.unit_price_ex_vat,
+                line_total_ex_vat=line_total,
+            )
+            session.add(row)
+            saved.append(row)
+        purchase.total_ex_vat = round(total, 2)
+        session.add(purchase)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="StockPurchase",
+            entity_id=purchase.id, field="__recorded__", old_value="",
+            new_value=f"{purchase.supplier} — {len(saved)} line(s), R{purchase.total_ex_vat:,.2f} ex VAT",
+        ))
+        session.commit()
+        session.refresh(purchase)
+        # Re-read the lines rather than returning the objects built
+        # above: commit expires them, and an expired SQLModel row
+        # serialises as {} — which is a silently empty "lines" array in
+        # the response, not an error anyone would notice.
+        lines = session.exec(select(StockPurchaseLine).where(
+            StockPurchaseLine.stock_purchase_id == purchase.id)).all()
+        return _stock_purchase_dict(purchase, lines)
+
+
+@app.get("/stock-purchases")
+def list_stock_purchases(supplier: Optional[str] = None, limit: int = 50,
+                         role: str = Depends(require_owner),
+                         tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        q = select(StockPurchase).where(StockPurchase.tenant_id == tenant_id)
+        if supplier:
+            q = q.where(StockPurchase.supplier == supplier)
+        rows = session.exec(q).all()
+        rows.sort(key=lambda p: (p.ordered_on, p.id or 0), reverse=True)
+        rows = rows[:max(1, min(limit, 500))]
+        out = []
+        for p in rows:
+            lines = session.exec(select(StockPurchaseLine).where(
+                StockPurchaseLine.stock_purchase_id == p.id)).all()
+            out.append(_stock_purchase_dict(p, lines))
+        return out
+
+
+@app.patch("/stock-purchases/{purchase_id}")
+def update_stock_purchase(purchase_id: int, status: Optional[str] = None,
+                          received_on: Optional[str] = None, supplier_ref: Optional[str] = None,
+                          notes: Optional[str] = None, quote_id: Optional[int] = None,
+                          role: str = Depends(require_owner),
+                          tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
+    """Status, the supplier's own reference, notes and the job link.
+
+    The LINES are deliberately not editable here. An order that has been
+    sent to a supplier is a record of what was sent; if it changes, that
+    is a new order or a cancelled one, not a quiet rewrite of history.
+    """
+    with Session(engine) as session:
+        purchase = get_or_404(session, StockPurchase, purchase_id, tenant_id, "Stock purchase")
+        if status is not None:
+            if status not in STOCK_PURCHASE_STATUSES:
+                raise HTTPException(400, f"Unknown status: {status}")
+            old = purchase.status
+            purchase.status = status
+            session.add(AuditLog(
+                tenant_id=tenant_id, username=username, entity_type="StockPurchase",
+                entity_id=purchase.id, field="status", old_value=old, new_value=status))
+        if received_on is not None:
+            try:
+                purchase.received_on = date.fromisoformat(received_on) if received_on else None
+            except ValueError:
+                raise HTTPException(400, "received_on must be an ISO date (YYYY-MM-DD).")
+        if supplier_ref is not None:
+            purchase.supplier_ref = supplier_ref.strip()
+        if notes is not None:
+            purchase.notes = notes.strip()
+        if quote_id is not None:
+            # 0 clears the link — the job reference is optional and has
+            # to be removable without deleting the purchase.
+            if quote_id:
+                get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+                purchase.quote_id = quote_id
+            else:
+                purchase.quote_id = None
+        session.add(purchase)
+        session.commit()
+        session.refresh(purchase)
+        lines = session.exec(select(StockPurchaseLine).where(
+            StockPurchaseLine.stock_purchase_id == purchase.id)).all()
+        return _stock_purchase_dict(purchase, lines)
+
+
+@app.delete("/stock-purchases/{purchase_id}")
+def delete_stock_purchase(purchase_id: int, role: str = Depends(require_owner),
+                          tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
+    """For an order recorded by mistake. An order that was really placed
+    and then pulled should be marked cancelled instead — it happened,
+    and the record of it happening is worth keeping."""
+    with Session(engine) as session:
+        purchase = get_or_404(session, StockPurchase, purchase_id, tenant_id, "Stock purchase")
+        _cascade_delete_children(session, "stockpurchase", purchase.id, tenant_id, force=True)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="StockPurchase",
+            entity_id=purchase.id, field="__deleted__",
+            old_value=f"{purchase.supplier} — R{purchase.total_ex_vat:,.2f} ex VAT "
+                      f"ordered {purchase.ordered_on.isoformat()}", new_value=""))
+        session.delete(purchase)
+        session.commit()
+        return {"deleted": purchase_id}
+
+
+@app.get("/stock-purchases/summary")
+def stock_purchase_summary(months: int = 6, role: str = Depends(require_owner),
+                           tenant_id: str = Depends(get_current_tenant)):
+    """Stock bought per month, and what it reconciles against.
+
+    TWO FIGURES, SIDE BY SIDE, NEVER SUBTRACTED FROM EACH OTHER:
+
+      bought_ex_vat   cash out — orders placed in that month, by the date
+                      they were placed. Cancelled orders excluded.
+      booked_on_jobs  the same supplier's material cost already carried
+                      by jobs WON in that month — read through
+                      line_real_cost(), the identical helper
+                      analytics_overview() and the commission engine use,
+                      on the identical basis (accepted_at read through sast_date()), so
+                      the two sit honestly beside the profit figures.
+
+    The gap between them is the point. Bought more than jobs consumed and
+    the shelf grew; booked more than was bought and jobs are eating stock
+    that was paid for in an earlier month. Neither is a problem by
+    itself — together they are the first real view of stock movement this
+    app has had, and both sides are derived from records that already
+    exist rather than being separately maintained.
+
+    A NOTE ON WHAT booked_on_jobs CAN AND CANNOT SEE: it counts trim and
+    skirting line costs, which is what this supplier sells. It matches
+    the supplier by the product rows the lines point at, so a trim line
+    quoted against another supplier's product is correctly not counted
+    here.
+    """
+    months = max(1, min(months, 24))
+    today = sast_today()
+    with Session(engine) as session:
+        purchases = session.exec(select(StockPurchase).where(
+            StockPurchase.tenant_id == tenant_id,
+            StockPurchase.status != "cancelled")).all()
+
+        # Which trim products belong to which supplier, once, rather than
+        # a lookup per line.
+        supplier_by_product = {
+            p.id: p.supplier for p in session.exec(select(TrimProduct).where(
+                TrimProduct.tenant_id == tenant_id)).all()
+        }
+        won = session.exec(select(Quote).where(
+            Quote.tenant_id == tenant_id, Quote.accepted_at != None)).all()  # noqa: E711
+        lines_by_quote = {}
+        for line in session.exec(select(QuoteLineItem).where(
+                QuoteLineItem.tenant_id == tenant_id,
+                QuoteLineItem.category.in_(("trim", "skirting")))).all():
+            lines_by_quote.setdefault(line.quote_id, []).append(line)
+
+    # The last `months` calendar months, ending with the current one.
+    buckets = {}
+    year, month = today.year, today.month
+    for _ in range(months):
+        buckets[(year, month)] = {
+            "year": year, "month": month,
+            "label": date(year, month, 1).strftime("%b %Y"),
+            "bought_ex_vat": 0.0, "booked_on_jobs": 0.0, "orders": 0,
+        }
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    by_supplier = {}
+    for p in purchases:
+        key = (p.ordered_on.year, p.ordered_on.month)
+        by_supplier.setdefault(p.supplier, 0.0)
+        by_supplier[p.supplier] += p.total_ex_vat
+        if key in buckets:
+            buckets[key]["bought_ex_vat"] += p.total_ex_vat
+            buckets[key]["orders"] += 1
+
+    for q in won:
+        won_day = sast_date(q.accepted_at)
+        if won_day is None:
+            continue
+        key = (won_day.year, won_day.month)
+        if key not in buckets:
+            continue
+        for line in lines_by_quote.get(q.id, []):
+            # Only this supplier's material. A line whose product came
+            # from somewhere else is somebody else's money.
+            if supplier_by_product.get(line.product_id) != SUPERTRIM_TERMS["supplier"]:
+                continue
+            buckets[key]["booked_on_jobs"] += line_real_cost(line)
+
+    series = sorted(buckets.values(), key=lambda b: (b["year"], b["month"]))
+    for b in series:
+        b["bought_ex_vat"] = round(b["bought_ex_vat"], 2)
+        b["booked_on_jobs"] = round(b["booked_on_jobs"], 2)
+        # Positive: more went onto the shelf than came off it this month.
+        b["stock_movement"] = round(b["bought_ex_vat"] - b["booked_on_jobs"], 2)
+    this_month = series[-1] if series else None
+    return {
+        "months": series,
+        "this_month": this_month,
+        "by_supplier": [{"supplier": k, "total_ex_vat": round(v, 2)}
+                        for k, v in sorted(by_supplier.items())],
+        # Said out loud in the payload, not only in a comment: nothing
+        # here is subtracted from job profit or from commission.
+        "basis": "Stock bought is cash out, reported beside job profit and never inside it — "
+                 "the material cost of stock used on a job is already in that job's own lines.",
+    }
+
+
 @app.post("/admin/supplier-console/commit")
 def commit_supplier_console_changes(
     body: CommitRequest, role: str = Depends(require_owner),
@@ -11422,6 +11727,15 @@ _CASCADE_POLICY = {
         # somebody's reminder. Same reasoning as Lead.converted_quote_id
         # directly above.
         (ToDo, "quote_id", "nullify", None),
+        # Stock purchases (confirmed Sept 2026) — NULLIFY, and for the
+        # strongest reason on this list: the money was actually spent.
+        # A deleted job cannot un-buy the trim that was bought for it,
+        # so the purchase survives with only its dead link cleared.
+        # Same shape as Lead.converted_quote_id and ToDo.quote_id above.
+        (StockPurchase, "quote_id", "nullify", None),
+    ],
+    "stockpurchase": [
+        (StockPurchaseLine, "stock_purchase_id", "cascade", None),
     ],
     "quotelineitem": [
         (ColourChangeLog, "quote_line_item_id", "cascade", None),
