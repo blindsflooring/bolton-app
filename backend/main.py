@@ -5182,9 +5182,19 @@ def session_log(start_date: Optional[str] = None, end_date: Optional[str] = None
         now = datetime.utcnow()
         result = []
         for sess, user in rows:
-            if start_date and sess.created_at.date() < date.fromisoformat(start_date):
+            # sast_date(), not .date() (fixed Sept 2026, during the
+            # UTC-for-SAST sweep). created_at is stored naive UTC like
+            # every other timestamp here, so .date() asked "what day was
+            # it in London" -- and the frontend's own "This week" /
+            # "This month" buttons are now sending real SAST boundary
+            # dates. Both sides have to name the same day or the filter
+            # quietly drops the first two hours of each day: a 00:30
+            # SAST login is 22:30 UTC the day before, and was being
+            # filed under yesterday.
+            login_day = sast_date(sess.created_at)
+            if start_date and login_day < date.fromisoformat(start_date):
                 continue
-            if end_date and sess.created_at.date() > date.fromisoformat(end_date):
+            if end_date and login_day > date.fromisoformat(end_date):
                 continue
             if sess.ended_at is not None:
                 logout_time = sess.ended_at

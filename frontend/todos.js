@@ -22,7 +22,7 @@ function todoAssigneeSelectHtml(t) {
 
 function todoDueLabel(t) {
   if (!t.due_date) return '<span class="muted">—</span>';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocalISO();   // NOT toISOString() -- see localISO(), shared.js
   const overdue = !t.done && t.due_date < today;
   return `<span style="${overdue ? 'color:var(--coral); font-weight:700;' : ''}">${new Date(t.due_date + 'T00:00:00').toLocaleDateString('en-ZA')}${overdue ? ' (overdue)' : ''}</span>`;
 }

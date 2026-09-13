@@ -596,12 +596,21 @@ function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : 'â
 // Mirrors the backend's own sast_today() convention (main.py) -- the
 // server already refuses to let UTC decide what day it is, and the
 // frontend should not disagree with it about something this basic.
-function todayLocalISO() {
-  const d = new Date();
+// Any Date as a plain local YYYY-MM-DD. Split out from todayLocalISO()
+// during the sweep below, because the session-log range buttons need to
+// format a computed BOUNDARY date (the Monday of this week, the 1st of
+// this month), not just the current moment -- and those were the worst
+// of the toISOString() cases: both set a LOCAL midnight and then
+// converted it to UTC, so in SAST the range start landed two hours
+// earlier, i.e. the previous day, every single time rather than only
+// after midnight.
+function localISO(d) {
   return d.getFullYear() + '-' +
     String(d.getMonth() + 1).padStart(2, '0') + '-' +
     String(d.getDate()).padStart(2, '0');
 }
+
+function todayLocalISO() { return localISO(new Date()); }
 
 // Print scaffolding â€” confirmed Aug 2026: the "set printArea content,
 // then trigger the browser print dialog" pattern was repeated

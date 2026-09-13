@@ -173,7 +173,7 @@ async function renderHRHours(el, summaryEmployeeId, summaryYear, summaryMonth) {
       <h2>Capture Hours</h2>
       <div class="grid">
         <div class="field"><label>Employee</label><select id="hr_employee">${employeeOptionsHtml()}</select></div>
-        <div class="field"><label>Date</label><input id="hr_date" type="date" value="${now.toISOString().slice(0,10)}"></div>
+        <div class="field"><label>Date</label><input id="hr_date" type="date" value="${todayLocalISO()}"></div>
         <div class="field"><label>Hours</label><input id="hr_hours" type="number" step="0.25" placeholder="8"></div>
         <div class="field"><label>Type</label>
           <select id="hr_type">

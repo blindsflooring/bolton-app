@@ -641,7 +641,7 @@ function showEditLeadForm(leadId) {
 let leadsDayListDate = null;
 let leadsDayListCache = [];   // last-fetched day's leads — the Print button reads from here rather than re-serializing data into an onclick attribute (a name/note containing a quote or apostrophe would break that), same "cache the fetch, don't re-embed it in markup" convention as leadsCache/orderIndexQuotesCache elsewhere in this codebase
 function openLeadsDayList() {
-  leadsDayListDate = new Date().toISOString().slice(0, 10);   // today, local ISO date — matches the <input type="date"> value shape
+  leadsDayListDate = todayLocalISO();   // today, genuinely local now — the comment here used to say "local ISO date" of a toISOString() call, which is UTC; matches the <input type="date"> value shape
   landingView = 'leadsDayList';
   renderLanding();
 }

@@ -2155,7 +2155,7 @@ function renderWeeklyGraphCard() {
   const bars = days.map(d => {
     const v = d[weeklyGraphMetric];
     const heightPct = Math.max(2, Math.round((v / maxVal) * 100));   // floor of 2% so a R0 day still shows a visible sliver, not nothing
-    const isToday = d.date === new Date().toISOString().slice(0, 10);
+    const isToday = d.date === todayLocalISO();   // d.date is a SAST date from the server (weekly_graph, main.py), so compare a local one
     return `
       <div style="display:flex; flex-direction:column; align-items:center; flex:1; gap:6px;">
         <div class="muted" style="font-size:11px; font-family:'Poppins',sans-serif; font-weight:700;">${R(v)}</div>
@@ -2550,11 +2550,16 @@ function sessionLogDateRange(range) {
     const day = now.getDay();   // 0=Sunday
     const diffToMonday = day === 0 ? 6 : day - 1;
     const start = new Date(now); start.setDate(now.getDate() - diffToMonday); start.setHours(0,0,0,0);
-    return {start_date: start.toISOString().slice(0,10), end_date: now.toISOString().slice(0,10)};
+    // localISO, not toISOString: start is LOCAL midnight on Monday,
+    // which in SAST is 22:00 UTC on Sunday -- so this range used to
+    // begin on the Sunday, always, not just after midnight.
+    return {start_date: localISO(start), end_date: todayLocalISO()};
   }
   if (range === 'month') {
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    return {start_date: start.toISOString().slice(0,10), end_date: now.toISOString().slice(0,10)};
+    // Same again, and worse to read: local midnight on the 1st is the
+    // LAST DAY OF THE PREVIOUS MONTH once converted to UTC.
+    return {start_date: localISO(start), end_date: todayLocalISO()};
   }
   return {};   // 'all' — no date filter
 }

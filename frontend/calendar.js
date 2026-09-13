@@ -248,7 +248,7 @@ const CAL_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 function renderCalendarView(el) {
   const year = calendarViewYear, month = calendarViewMonth;
   const byDay = calendarJobsForMonth(year, month);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = todayLocalISO();   // NOT toISOString() -- see localISO(), shared.js
 
   // Standard month-grid build: start on the Sunday on/before the 1st,
   // run 6 full weeks (42 cells) so every month lays out consistently
