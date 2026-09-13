@@ -39,6 +39,7 @@ from models import (
     FlaggedRecord, Lead, JobWorkDay, ToDo,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
+import blinds_calc
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
 from spreadsheet_import import parse_master_spreadsheet
@@ -665,6 +666,11 @@ def _ensure_new_columns():
         ("todo", "category", "VARCHAR", "'general'"),
         ("todo", "client_id", "INTEGER", "NULL"),
         ("todo", "quote_id", "INTEGER", "NULL"),
+        # Blinds calculator (confirmed Sept 2026). NULL everywhere is the
+        # truth: no existing blinds line was priced from a calculator
+        # spec — they came from the price book or a spreadsheet import,
+        # neither of which has one. See QuoteLineItem.blind_spec_json.
+        ("quotelineitem", "blind_spec_json", "TEXT", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -11947,6 +11953,362 @@ def _trim_line_category(product: "TrimProduct") -> str:
     everywhere else this distinction is made (refreshLineProductOptions(),
     quote-builder.js; the on_startup() backfill just above)."""
     return "skirting" if product.category in ("skirting", "quarter_round") else "trim"
+
+
+# ===== Blinds calculator (confirmed Sept 2026, "Integrate standalone
+# Blinds Calculator into Bolton") =====
+#
+# The standalone calculator's engine, ported to blinds_calc.py and proven
+# against the original before being wired up here (67,822 cases, every
+# width x drop bracket of every grid with every option combination, zero
+# mismatches; plus the brief's own ten regression cases, 10/10 --
+# tests/test_blinds_calc_regression.py).
+#
+# This sits BESIDE the existing /lines/blinds endpoint rather than
+# replacing it. That one prices from a BlindsProduct row in the price
+# book; this prices from the TBS/Luminos book by size bracket, which is
+# how blinds are actually quoted. Neither is a migration of the other and
+# the spreadsheet-import path is untouched.
+
+
+def _blinds_cost_and_margin(book_price_ex_vat: float, settings: BusinessSettings,
+                             sell_price_ex_vat: Optional[float] = None) -> dict:
+    """Cost and margin for a blinds line, from the SAME rule and the same
+    two settings the spreadsheet import uses (_blinds_import_rates /
+    parse_blinds_quote) -- deliberately, because the brief's own
+    requirement is that a native blinds quote and an imported one feed
+    the Order Index, the KPIs and commission identically. Two code paths
+    reaching the same figure by different arithmetic is exactly how that
+    stops being true six months from now.
+
+    Book price IS the ex-VAT selling price ("sell at book",
+    calculate_blinds_line); cost is the book less the trade discount and
+    then less settlement, which multiply rather than add
+    (0.55 x 0.925 = 0.50875, a 49.125% reduction -- not 52.5%).
+
+    margin_pct is stored as a FRACTION (0.4913), which is what every
+    other line in this app stores and what the quote line list renders
+    with (l.margin_pct * 100). Note the spreadsheet import stores a
+    PERCENTAGE here instead -- see the note raised with that brief; this
+    path deliberately follows the app-wide convention rather than copying
+    that.
+    """
+    keep = 1.0 - settings.blinds_trade_discount_pct
+    settle = 1.0 - settings.blinds_settlement_discount_pct
+    # Cost always comes off the BOOK price, never off the discounted one:
+    # a discount given to the client does not change what the supplier
+    # charges. Same reason calculate_blinds_line() derives net_cost from
+    # book_price and applies discount_pct only to the selling price.
+    cost_ex_vat = round(book_price_ex_vat * keep * settle, 2)
+    sell = book_price_ex_vat if sell_price_ex_vat is None else sell_price_ex_vat
+    margin = ((sell - cost_ex_vat) / sell) if sell else 0.0
+    return {"cost_ex_vat": cost_ex_vat, "margin_pct": round(margin, 4)}
+
+
+def _blind_spec_from_query(blind_type: str, group: Optional[str], width_mm: float, drop_mm: float,
+                            wooden: bool, extra_colours: int, steel_chain: bool, motor: bool,
+                            tube55: bool, spring_assist: bool) -> dict:
+    """One place that turns query parameters into the blind dict the
+    engine expects, so the preview and the save can never build a
+    differently-shaped blind and price two different things."""
+    return {
+        "group": group, "width": width_mm, "drop": drop_mm,
+        "wooden": wooden, "extraColours": extra_colours,
+        "steelChain": steel_chain, "motor": motor,
+        "tube55": tube55, "springAssist": spring_assist,
+    }
+
+
+def _blind_description(calc: dict, blind_type: str, colour: str) -> str:
+    bits = [calc["product_label"]]
+    if calc.get("group_label"):
+        bits.append(calc["group_label"])
+    if colour:
+        bits.append(colour)
+    return " - ".join(bits)
+
+
+def _blind_spec_json(blind_type: str, blind: dict) -> str:
+    """What the line has to remember to be reopened and re-priced.
+
+    Only the parts that are NOT already columns on the line: width and
+    drop live in width_mm/drop_mm and are deliberately not duplicated
+    here, so there is one place to change a size and no way for the two
+    to disagree. See QuoteLineItem.blind_spec_json for why this is stored
+    at all.
+    """
+    return json.dumps({
+        "blind_type": blind_type,
+        "group": blind.get("group"),
+        "wooden": bool(blind.get("wooden")),
+        "extraColours": int(blind.get("extraColours") or 0),
+        "steelChain": bool(blind.get("steelChain")),
+        "motor": bool(blind.get("motor")),
+        "tube55": bool(blind.get("tube55")),
+        "springAssist": bool(blind.get("springAssist")),
+    }, sort_keys=True)
+
+
+def _blinds_calc_line_fields(calc: dict, blind: dict, blind_type: str, discount_pct: float,
+                              colour: str, room: str, settings: BusinessSettings) -> dict:
+    """Every field a calculated blind writes onto its line, built once.
+
+    Shared by the add and the edit endpoints deliberately: an edit that
+    recomputed these separately is how the two drift into pricing the
+    same blind differently, which is the same reason
+    _blind_spec_from_query() exists one level up.
+    """
+    unit_price = round(calc["total"] * (1 - (discount_pct or 0.0)), 2)
+    money = _blinds_cost_and_margin(calc["total"], settings, unit_price)
+
+    # The breakdown, kept on the line. A blinds price is a book price
+    # plus named add-ons, and a line showing only a total cannot be
+    # checked against the supplier's list months later.
+    notes = "; ".join(f"{r['label']} R{r['val']:,.2f}" for r in calc["rows"])
+    if discount_pct:
+        notes += f"; less {discount_pct:.0%} discount"
+    if calc["warnings"]:
+        notes += " | " + "; ".join(calc["warnings"])
+
+    return {
+        "product_name": _blind_description(calc, blind_type, colour),
+        "colour": colour or "",
+        "width_mm": blind["width"],
+        "drop_mm": blind["drop"],
+        "line_notes": notes,
+        "section_label": (room.strip() or None),
+        "unit_price": unit_price,
+        "unit_cost": money["cost_ex_vat"],
+        "discount_pct": discount_pct or 0.0,
+        "line_total": unit_price,
+        "total_job_cost": money["cost_ex_vat"],
+        "margin_pct": money["margin_pct"],
+        "blind_spec_json": _blind_spec_json(blind_type, blind),
+    }
+
+
+@app.get("/blinds/calculator")
+def blinds_calculator_meta(role: str = Depends(get_current_role)):
+    """Everything the Blinds tab needs to draw itself: the blind types,
+    their price groups, and which options each one actually has.
+
+    Served from the engine's own registry rather than hardcoded in the
+    frontend, so adding a product to blinds_calc.PRODUCTS makes it
+    appear in the quote builder without a second edit in a second
+    language -- the same reason the Supertrim terms live server-side.
+    """
+    out = []
+    for key, p in blinds_calc.PRODUCTS.items():
+        out.append({
+            "key": key,
+            "label": p["label"],
+            "groups": [{"key": g, "label": blinds_calc.GROUP_LABELS.get(key, {}).get(g, g)}
+                       for g in p["groups"]],
+            # Which option checkboxes this product should show. Driven by
+            # the registry so the UI cannot offer an option the engine
+            # would silently ignore.
+            "options": {
+                "wooden": key == "venetian25",
+                "extraColours": key == "venetian25",
+                "steelChain": key == "roller",
+                "motor": key == "roller",
+                "tube55": key == "roller",
+                "springAssist": key == "roller",
+            },
+        })
+    return {"products": out}
+
+
+@app.get("/blinds/calculator/preview")
+def blinds_calculator_preview(blind_type: str, width_mm: float, drop_mm: float,
+                               group: Optional[str] = None, discount_pct: float = 0.0,
+                               wooden: bool = False, extra_colours: int = 0,
+                               steel_chain: bool = False, motor: bool = False,
+                               tube55: bool = False, spring_assist: bool = False,
+                               role: str = Depends(get_current_role),
+                               tenant_id: str = Depends(get_current_tenant)):
+    """Live price, from the same engine call the save uses.
+
+    Deliberately NOT a client-side reimplementation. Flooring has one of
+    those (fjCalc) and its own comments already call it an accepted-but-
+    real shadow calculation; there was no reason to open a second one,
+    least of all for a price list with 4,214 numbers in it.
+    """
+    blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
+                                   extra_colours, steel_chain, motor, tube55, spring_assist)
+    calc = blinds_calc.calc_blind_line(blind_type, blind)
+    if "error" in calc:
+        return {"error": calc["error"]}
+    with Session(engine) as session:
+        settings = get_settings(session, tenant_id)
+    sell = round(calc["total"] * (1 - (discount_pct or 0.0)), 2)
+    money = _blinds_cost_and_margin(calc["total"], settings, sell)
+    out = {
+        "unit_price": sell,
+        "book_price": calc["total"],
+        "line_total": sell,
+        "used_width": calc["used_width"],
+        "used_drop": calc["used_drop"],
+        "product_label": calc["product_label"],
+        "group_label": calc["group_label"],
+        "warnings": calc["warnings"],
+        "spring_assist_recommended": calc["spring_assist_recommended"],
+        "margin_pct": money["margin_pct"],
+    }
+    # Cost and the price breakdown are Owner-only, the same rule
+    # strip_sensitive_fields applies everywhere else -- a breakdown that
+    # names the book price is a cost disclosure by another route.
+    if role == UserRole.owner:
+        out["unit_cost"] = money["cost_ex_vat"]
+        out["rows"] = calc["rows"]
+    else:
+        out.pop("margin_pct", None)
+    return out
+
+
+# ONE LINE = ONE BLIND, and there is deliberately no quantity here.
+#
+# This shipped with a quantity multiplier for about an hour and it was
+# wrong: line_real_cost() (calculations.py) returns line.unit_cost for a
+# blinds line, documented right there as "blinds — priced per unit,
+# qty=1". A line of two blinds therefore had its COST counted once while
+# its PRICE counted twice, which overstates GP and so overstates
+# commission. Caught on the KPI figure, not by reading the code: a quote
+# of R4,078 ex VAT reported R2,742.02 profit, implying R1,335.98 of cost
+# when the two lines really cost R2,074.69.
+#
+# Two identical blinds are two lines. That matches the invariant every
+# other consumer of a blinds line already relies on, and it matches how
+# the quote reads anyway, since each blind has its own window.
+@app.post("/quotes/{quote_id}/lines/blinds-calc")
+def add_blinds_calc_line(quote_id: int, blind_type: str, width_mm: float, drop_mm: float,
+                          group: Optional[str] = None, discount_pct: float = 0.0,
+                          colour: str = "", room: str = "",
+                          wooden: bool = False, extra_colours: int = 0,
+                          steel_chain: bool = False, motor: bool = False,
+                          tube55: bool = False, spring_assist: bool = False,
+                          role: str = Depends(get_current_role),
+                          tenant_id: str = Depends(get_current_tenant),
+                          username: str = Depends(get_current_username)):
+    """A calculated blind, written as exactly the same shape of line the
+    spreadsheet import writes: category "blinds", product_id 0 (the
+    no-price-book-product sentinel add_manual_line and the import both
+    use), width/drop, and a room in section_label. That is what makes the
+    brief's "no divergent data flow" true rather than merely intended --
+    the Order Index, the KPI screens and the commission engine read a
+    calculated blind and an imported one through the same fields.
+    """
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        settings = get_settings(session, tenant_id)
+        blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
+                                       extra_colours, steel_chain, motor, tube55, spring_assist)
+        calc = blinds_calc.calc_blind_line(blind_type, blind)
+        if "error" in calc:
+            # A size outside the printed table is a real answer -- the
+            # factory quotes it -- so it is refused here rather than
+            # rounded to the nearest row and quietly mispriced.
+            raise HTTPException(400, calc["error"])
+
+        fields = _blinds_calc_line_fields(calc, blind, blind_type, discount_pct,
+                                          colour, room, settings)
+
+        line = QuoteLineItem(
+            tenant_id=tenant_id, quote_id=quote_id, category="blinds",
+            product_id=0,
+            original_colour=colour or "",
+            **fields,
+        )
+        session.add(line)
+        _log_quote_line_audit(session, quote, username, "added",
+                              f"Blinds - {line.product_name}, "
+                              f"{width_mm:g}x{drop_mm:g}mm, R{line.line_total:,.2f}")
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        if calc["warnings"] and role == UserRole.owner:
+            result["warning"] = " ".join(calc["warnings"])
+        return result
+
+
+@app.put("/quotes/{quote_id}/lines/{line_id}/blinds-calc")
+def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm: float, drop_mm: float,
+                           group: Optional[str] = None, discount_pct: float = 0.0,
+                           colour: str = "", room: str = "",
+                           wooden: bool = False, extra_colours: int = 0,
+                           steel_chain: bool = False, motor: bool = False,
+                           tube55: bool = False, spring_assist: bool = False,
+                           role: str = Depends(get_current_role),
+                           tenant_id: str = Depends(get_current_tenant),
+                           username: str = Depends(get_current_username)):
+    """The same line, re-priced in place — the Edit Quote Line In Place
+    rule (confirmed Aug 2026) applied to calculated blinds, which the
+    existing edit_blinds_line() above cannot do: that one resolves a real
+    BlindsProduct row, and a calculated blind deliberately has none
+    (product_id 0). Editing one used to reach that endpoint, fail, and
+    show nothing — the change appeared to save and didn't.
+
+    Refuses a blinds line that has no calculator spec rather than
+    inventing one. An imported or price-book blinds line was never priced
+    by size bracket, so "re-price it with the calculator" would silently
+    replace a real number with a different real number.
+    """
+    with Session(engine) as session:
+        quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        line = session.get(QuoteLineItem, line_id)
+        if not line or line.quote_id != quote_id or line.tenant_id != tenant_id:
+            raise HTTPException(404, "Quote line not found")
+        if line.category != "blinds":
+            raise HTTPException(400, "This line is not a blinds line.")
+        if not line.blind_spec_json:
+            raise HTTPException(400, "This blind wasn't priced by the calculator (it came from the "
+                                     "price book or an imported quote), so it can't be re-priced here.")
+        settings = get_settings(session, tenant_id)
+
+        blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
+                                       extra_colours, steel_chain, motor, tube55, spring_assist)
+        calc = blinds_calc.calc_blind_line(blind_type, blind)
+        if "error" in calc:
+            raise HTTPException(400, calc["error"])
+
+        # "Product changed" for a blind is its SPEC changing — type,
+        # group or any option — not a product id it doesn't have. Size
+        # alone is the dimensions-only case, which is exactly the split
+        # _reapply_line_calc_respecting_override() already draws for
+        # every other category.
+        new_spec = _blind_spec_json(blind_type, blind)
+        spec_changed = (new_spec != line.blind_spec_json) or ((colour or "") != (line.colour or ""))
+        existing_override_total = line.line_total if line.pre_override_line_total is not None else None
+        old_desc = f"{line.product_name}, {line.width_mm:g}×{line.drop_mm:g}mm"
+
+        fields = _blinds_calc_line_fields(calc, blind, blind_type, discount_pct,
+                                          colour, room, settings)
+        for field, value in fields.items():
+            setattr(line, field, value)
+        # Same reasoning as edit_blinds_line() above: a fresh
+        # recalculation is a fresh pricing decision, so a reason recorded
+        # against the previous number no longer applies.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
+
+        override_result = _reapply_line_calc_respecting_override(
+            line, fields["line_total"], spec_changed, session, tenant_id, username)
+        if not override_result["override_cleared"] and existing_override_total is not None:
+            line.line_total = existing_override_total
+
+        new_desc = f"{line.product_name}, {line.width_mm:g}×{line.drop_mm:g}mm"
+        _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
+        session.add(line)
+        session.commit()
+        session.refresh(line)
+
+        result = strip_sensitive_fields(line.dict(), role, settings)
+        result["override_cleared"] = override_result["override_cleared"]
+        if calc["warnings"] and role == UserRole.owner:
+            result["warning"] = " ".join(calc["warnings"])
+        return result
 
 
 @app.post("/quotes/{quote_id}/lines/trims")

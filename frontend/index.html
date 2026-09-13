@@ -937,8 +937,36 @@ itself is). -->
         <div class="field stairwell-field" style="display:none;"><label>Vinyl range <span class="adj">(grouped by supplier)</span></label><select id="line_stair_vinyl" onchange="onStairwellVinylChange()"></select><div id="line_stair_vinyl_note" class="stair-vinyl-note" style="display:none;"></div></div>
         <div class="field stairwell-field" style="display:none;"><label>Colour <span class="adj">(can be left TBC and set later)</span></label><select id="line_stair_colour"></select></div>
         <div class="field stairwell-field" style="display:none;"><label>Nosing product</label><select id="line_nosing_product"></select></div>
-        <div class="field blinds-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number"></div>
-        <div class="field blinds-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number"></div>
+        <!-- Blinds calculator (confirmed Sept 2026, "Integrate standalone
+        Blinds Calculator into Bolton"). The standalone's own layout is
+        deliberately not preserved -- only its logic, per the brief -- so
+        this is the same Add Line card every other category uses, with the
+        blind type and its price group in front of the measurements.
+
+        Which blind types exist, which groups each has, and which option
+        checkboxes each one shows all come from GET /blinds/calculator,
+        read off the engine's own product registry. Hardcoding them here
+        would mean a new blind type needed editing in two languages, and
+        would let this card offer an option the engine silently ignores. -->
+        <div class="field blinds-field" style="display:none;"><label>Blind type</label>
+          <select id="line_blind_type" onchange="onBlindTypeChange()"></select>
+        </div>
+        <div class="field blinds-field" id="blind_group_field" style="display:none;"><label>Price group</label>
+          <select id="line_blind_group" onchange="scheduleBlindsPreview()"></select>
+        </div>
+        <div class="field blinds-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number" oninput="scheduleBlindsPreview()"></div>
+        <div class="field blinds-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number" oninput="scheduleBlindsPreview()"></div>
+        <!-- The size actually charged. Blinds price by size BAND, so a
+        1420mm blind is charged at the 1500mm column; showing the band
+        being used is what stops "why is this more than I measured"
+        becoming a phone call. -->
+        <div class="field blinds-field" style="display:none;"><label>Charged at</label><p id="line_blind_band" class="muted" style="margin:6px 0 0; font-size:12px;">&mdash;</p></div>
+        <div class="field blinds-field" style="display:none;"><label>Colour / fabric <span class="adj">(optional, shows on the quote)</span></label><input id="line_blind_colour" type="text" placeholder="e.g. Charcoal"></div>
+        <div class="field blinds-field" style="display:none;"><label>Room <span class="adj">(optional, groups the quote like the Excel sheet does)</span></label><input id="line_blind_room" type="text" placeholder="e.g. Lounge"></div>
+        <div class="field blinds-field" id="blind_options_field" style="display:none; grid-column:1/-1;"><label>Options</label>
+          <div id="line_blind_options" style="display:flex; gap:14px; flex-wrap:wrap; align-items:center;"></div>
+          <p id="line_blind_spring_note" class="muted" style="margin:4px 0 0; font-size:11.5px;"></p>
+        </div>
         <!-- Sold as (confirmed Sept 2026, Burgert: "another selector for
         per meter or full length... some clients want to buy a full length
         and some jobs only need a meter on certain areas").
