@@ -430,6 +430,7 @@ function blindOptOn(id) {
 // One place that reads the card, so the preview and the save can never
 // describe two different blinds -- the same reasoning as trimSelection().
 function blindsCalcParams() {
+  const windowEl = document.getElementById('line_blind_window');
   const typeEl = document.getElementById('line_blind_type');
   const groupEl = document.getElementById('line_blind_group');
   const extra = document.getElementById('blind_opt_extra_colours');
@@ -447,6 +448,9 @@ function blindsCalcParams() {
     spring_assist: blindOptOn('blind_opt_spring'),
   });
   if (groupEl && groupEl.value) p.set('group', groupEl.value);
+  // Which window this is for — sent with the preview too, so the price
+  // panel and the saved line are built from the same spec.
+  if (windowEl && windowEl.value.trim()) p.set('window', windowEl.value.trim());
   return p;
 }
 
@@ -662,6 +666,7 @@ async function prefillBlindsCalcEdit(line) {
   document.getElementById('line_width').value = line.width_mm || '';
   document.getElementById('line_drop').value = line.drop_mm || '';
   document.getElementById('line_blind_colour').value = line.colour || '';
+  document.getElementById('line_blind_window').value = spec.window || '';
   document.getElementById('line_blind_room').value = line.section_label || '';
   document.getElementById('line_discount').value = ((line.discount_pct || 0) * 100);
   return true;

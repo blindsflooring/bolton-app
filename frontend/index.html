@@ -962,8 +962,59 @@ itself is). -->
             <option value="part">Extra part or repair</option>
           </select>
         </div>
-        <div class="field blinds-field blind-only-field" style="display:none;"><label>Blind type</label>
+        <!-- THE ORDER OF THESE FIELDS IS THE POINT (confirmed Sept
+        2026): room, then which window in it, then what the blind is,
+        then its price group, then the measurements — the sequence
+        someone actually follows standing in a house with a tape
+        measure, rather than the order the fields happened to be built
+        in.
+
+        FLAGGED AS PROVISIONAL, deliberately: Burgert's own framing was
+        "let's try this first", not a specification. Every field below
+        already existed bar Window(s); nothing about the pricing,
+        the calculation or the stored shape of a line changed to make
+        this order possible, and nothing would have to change to
+        reorder it again after real use. Do not build anything on top
+        of this sequence that would make it expensive to alter. -->
+        <div class="field blinds-field"><label>Room <span class="adj">(groups the quote, like the Excel sheet does)</span></label>
+          <input id="line_blind_room" type="text" placeholder="e.g. Lounge">
+        </div>
+        <!-- Window(s) — which opening in that room this blind is for.
+        Free text on purpose: real sheets say "Venster 1", "Voordeur",
+        "Agter Deur Links", and a dropdown of invented window names
+        would be wrong within a day. Carried in the line's description
+        and in blind_spec_json so an edit reopens on it; no new column,
+        no data model change. -->
+        <div class="field blinds-field blind-only-field" style="display:none;"><label>Window(s) <span class="adj">(optional — which opening this is for)</span></label>
+          <input id="line_blind_window" type="text" placeholder="e.g. Window 1, or Sliding door">
+        </div>
+        <div class="field blinds-field blind-only-field" style="display:none;"><label>Type</label>
           <select id="line_blind_type" onchange="onBlindTypeChange()"></select>
+        </div>
+        <!-- Colour/fabric sits ABOVE the price group on purpose: for a
+        roller the fabric is what decides which group (Gr1-Gr4) the blind
+        falls into, so choosing it first is the order the decision
+        actually happens in. Provisional like the rest of this sequence. -->
+        <div class="field blinds-field blind-only-field" style="display:none;"><label>Colour / fabric <span class="adj">(optional, shows on the quote)</span></label>
+          <input id="line_blind_colour" type="text" placeholder="e.g. Charcoal">
+        </div>
+        <div class="field blinds-field blind-only-field" id="blind_group_field" style="display:none;"><label>Price group</label>
+          <select id="line_blind_group" onchange="scheduleBlindsPreview()"></select>
+        </div>
+        <!-- Width and Drop on ONE row. They are a single measurement
+        taken in one go, and splitting them across rows made the card
+        read as two unrelated numbers. The wrapper takes a full grid row
+        and lays the pair out itself, which also keeps them together on
+        a phone instead of the auto-fill grid separating them. -->
+        <div class="field blinds-field blind-only-field measure-pair" style="display:none;">
+          <div>
+            <label>Width (mm)</label>
+            <input id="line_width" type="number" inputmode="numeric" oninput="scheduleBlindsPreview()">
+          </div>
+          <div>
+            <label>Drop (mm)</label>
+            <input id="line_drop" type="number" inputmode="numeric" oninput="scheduleBlindsPreview()">
+          </div>
         </div>
         <!-- Junction bracket. The number asked for is the number of
         BLINDS in the reveal, not the number of brackets: N blinds meet
@@ -1023,18 +1074,11 @@ itself is). -->
         <div class="field blinds-field part-field" style="display:none;"><label>Quantity</label>
           <input id="line_part_qty" type="number" min="1" step="1" value="1" oninput="scheduleBlindsPreview()">
         </div>
-        <div class="field blinds-field blind-only-field" id="blind_group_field" style="display:none;"><label>Price group</label>
-          <select id="line_blind_group" onchange="scheduleBlindsPreview()"></select>
-        </div>
-        <div class="field blinds-field blind-only-field" style="display:none;"><label>Width (mm)</label><input id="line_width" type="number" oninput="scheduleBlindsPreview()"></div>
-        <div class="field blinds-field blind-only-field" style="display:none;"><label>Drop (mm)</label><input id="line_drop" type="number" oninput="scheduleBlindsPreview()"></div>
         <!-- The size actually charged. Blinds price by size BAND, so a
         1420mm blind is charged at the 1500mm column; showing the band
         being used is what stops "why is this more than I measured"
         becoming a phone call. -->
         <div class="field blinds-field blind-only-field" style="display:none;"><label>Charged at</label><p id="line_blind_band" class="muted" style="margin:6px 0 0; font-size:12px;">&mdash;</p></div>
-        <div class="field blinds-field blind-only-field" style="display:none;"><label>Colour / fabric <span class="adj">(optional, shows on the quote)</span></label><input id="line_blind_colour" type="text" placeholder="e.g. Charcoal"></div>
-        <div class="field blinds-field" style="display:none;"><label>Room <span class="adj">(optional, groups the quote like the Excel sheet does)</span></label><input id="line_blind_room" type="text" placeholder="e.g. Lounge"></div>
         <div class="field blinds-field blind-only-field" id="blind_options_field" style="display:none; grid-column:1/-1;"><label>Options</label>
           <div id="line_blind_options" style="display:flex; gap:14px; flex-wrap:wrap; align-items:center;"></div>
           <p id="line_blind_spring_note" class="muted" style="margin:4px 0 0; font-size:11.5px;"></p>

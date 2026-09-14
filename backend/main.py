@@ -12896,7 +12896,7 @@ def _blinds_cost_and_margin(book_price_ex_vat: float, settings: BusinessSettings
 
 def _blind_spec_from_query(blind_type: str, group: Optional[str], width_mm: float, drop_mm: float,
                             wooden: bool, extra_colours: int, steel_chain: bool, motor: bool,
-                            tube55: bool, spring_assist: bool) -> dict:
+                            tube55: bool, spring_assist: bool, window: str = "") -> dict:
     """One place that turns query parameters into the blind dict the
     engine expects, so the preview and the save can never build a
     differently-shaped blind and price two different things."""
@@ -12905,11 +12905,27 @@ def _blind_spec_from_query(blind_type: str, group: Optional[str], width_mm: floa
         "wooden": wooden, "extraColours": extra_colours,
         "steelChain": steel_chain, "motor": motor,
         "tube55": tube55, "springAssist": spring_assist,
+        # Which opening this blind is for (confirmed Sept 2026, input
+        # flow restructure). Not a pricing input — calc_blind_line()
+        # never reads it — but it travels with the spec so the line can
+        # be reopened on it.
+        "window": (window or "").strip(),
     }
 
 
-def _blind_description(calc: dict, blind_type: str, colour: str) -> str:
-    bits = [calc["product_label"]]
+def _blind_description(calc: dict, blind_type: str, colour: str, window: str = "") -> str:
+    """The window LEADS the description when one was given.
+
+    A blinds quote is read window by window — the imported spreadsheets
+    name each line "Venster 1", "Voordeur", "Agter Deur Links", and the
+    room is already the section heading above it. So a hand-built line
+    reads the same way an imported one does: the opening first, then
+    what is going in it.
+    """
+    bits = []
+    if (window or "").strip():
+        bits.append(window.strip())
+    bits.append(calc["product_label"])
     if calc.get("group_label"):
         bits.append(calc["group_label"])
     if colour:
@@ -12931,6 +12947,10 @@ def _blind_spec_json(blind_type: str, blind: dict) -> str:
         # it is. A spec written before accessories existed has no "kind"
         # and is always a blind — see _line_spec_kind().
         "kind": "blind",
+        # Free text, stored rather than parsed back out of the line name
+        # later. "" on every line saved before Sept 2026 and on any line
+        # where nobody typed one.
+        "window": (blind.get("window") or "").strip(),
         "blind_type": blind_type,
         "group": blind.get("group"),
         "wooden": bool(blind.get("wooden")),
@@ -12964,7 +12984,8 @@ def _blinds_calc_line_fields(calc: dict, blind: dict, blind_type: str, discount_
         notes += " | " + "; ".join(calc["warnings"])
 
     return {
-        "product_name": _blind_description(calc, blind_type, colour),
+        "product_name": _blind_description(calc, blind_type, colour,
+                                           blind.get("window", "")),
         "colour": colour or "",
         "width_mm": blind["width"],
         "drop_mm": blind["drop"],
@@ -13051,6 +13072,7 @@ def blinds_calculator_meta(role: str = Depends(get_current_role)):
 @app.get("/blinds/calculator/preview")
 def blinds_calculator_preview(blind_type: str, width_mm: float, drop_mm: float,
                                group: Optional[str] = None, discount_pct: float = 0.0,
+                               window: str = "",
                                wooden: bool = False, extra_colours: int = 0,
                                steel_chain: bool = False, motor: bool = False,
                                tube55: bool = False, spring_assist: bool = False,
@@ -13064,7 +13086,8 @@ def blinds_calculator_preview(blind_type: str, width_mm: float, drop_mm: float,
     least of all for a price list with 4,214 numbers in it.
     """
     blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
-                                   extra_colours, steel_chain, motor, tube55, spring_assist)
+                                   extra_colours, steel_chain, motor, tube55, spring_assist,
+                                   window)
     calc = blinds_calc.calc_blind_line(blind_type, blind)
     if "error" in calc:
         return {"error": calc["error"]}
@@ -13112,7 +13135,7 @@ def blinds_calculator_preview(blind_type: str, width_mm: float, drop_mm: float,
 @app.post("/quotes/{quote_id}/lines/blinds-calc")
 def add_blinds_calc_line(quote_id: int, blind_type: str, width_mm: float, drop_mm: float,
                           group: Optional[str] = None, discount_pct: float = 0.0,
-                          colour: str = "", room: str = "",
+                          colour: str = "", room: str = "", window: str = "",
                           wooden: bool = False, extra_colours: int = 0,
                           steel_chain: bool = False, motor: bool = False,
                           tube55: bool = False, spring_assist: bool = False,
@@ -13131,7 +13154,8 @@ def add_blinds_calc_line(quote_id: int, blind_type: str, width_mm: float, drop_m
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         settings = get_settings(session, tenant_id)
         blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
-                                       extra_colours, steel_chain, motor, tube55, spring_assist)
+                                       extra_colours, steel_chain, motor, tube55, spring_assist,
+                                       window)
         calc = blinds_calc.calc_blind_line(blind_type, blind)
         if "error" in calc:
             # A size outside the printed table is a real answer -- the
@@ -13424,7 +13448,7 @@ def edit_blinds_accessory_line(quote_id: int, line_id: int, kind: str,
 @app.put("/quotes/{quote_id}/lines/{line_id}/blinds-calc")
 def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm: float, drop_mm: float,
                            group: Optional[str] = None, discount_pct: float = 0.0,
-                           colour: str = "", room: str = "",
+                           colour: str = "", room: str = "", window: str = "",
                            wooden: bool = False, extra_colours: int = 0,
                            steel_chain: bool = False, motor: bool = False,
                            tube55: bool = False, spring_assist: bool = False,
@@ -13461,7 +13485,8 @@ def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm
         settings = get_settings(session, tenant_id)
 
         blind = _blind_spec_from_query(blind_type, group, width_mm, drop_mm, wooden,
-                                       extra_colours, steel_chain, motor, tube55, spring_assist)
+                                       extra_colours, steel_chain, motor, tube55, spring_assist,
+                                       window)
         calc = blinds_calc.calc_blind_line(blind_type, blind)
         if "error" in calc:
             raise HTTPException(400, calc["error"])

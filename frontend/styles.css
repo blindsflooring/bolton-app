@@ -1457,6 +1457,13 @@
   /* Archive failures (Sept 2026). Coral border, not a coral card: it
      has to read as "deal with this" without shouting over the money
      figures underneath it. */
+  /* Width and Drop, side by side (confirmed Sept 2026). Its own row in
+     the card's grid so the auto-fill tracks cannot split the pair, and
+     capped rather than stretched — two 400px-wide boxes for a
+     four-digit millimetre reading would look like a mistake. */
+  .measure-pair { grid-column: 1 / -1; display: flex; gap: 10px; max-width: 340px; }
+  .measure-pair > div { flex: 1 1 0; min-width: 0; }
+  .measure-pair input { width: 100%; }
   .archive-health { border-left: 3px solid var(--coral); }
   .archive-health h2 { color: var(--coral); }
   .client-select-bar {
