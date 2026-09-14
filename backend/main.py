@@ -716,6 +716,131 @@ def _ensure_new_columns():
             print(f"Migration: FAILED to add {column} to {table} ({e}) — skipped, remaining columns still applied")
 
 
+def _column_default_sql(column) -> Optional[str]:
+    """A literal for a model column's own default, or None.
+
+    Only scalar defaults — a callable default (datetime.utcnow, uuid) is
+    the application's business at insert time and has no meaning as a
+    stored DDL default.
+    """
+    default = getattr(column, "default", None)
+    if default is None or getattr(default, "is_callable", False):
+        return None
+    arg = getattr(default, "arg", None)
+    if arg is None or callable(arg):
+        return None
+    if isinstance(arg, bool):
+        return "true" if arg else "false"
+    if isinstance(arg, (int, float)):
+        return str(arg)
+    if isinstance(arg, str):
+        escaped = arg.replace("'", "''")
+        return f"'{escaped}'"
+    return None
+
+
+def _reconcile_model_columns() -> list:
+    """Add any column the MODELS declare that the live database lacks.
+
+    WHY THIS EXISTS, stated plainly because it replaces something that
+    failed in production: _ensure_new_columns() above is a hand-written
+    list of roughly 120 tuples, and it has exactly two failure modes.
+    Somebody adds a field to models.py and forgets the list — or the
+    entry is there and its ALTER fails for its own reason, gets logged,
+    and the boot carries on. Both end the same way: a column that exists
+    in the ORM and not in Postgres, which is invisible until some query
+    touches that table and every screen reading it returns a 500.
+
+    That is not hypothetical. On 14 Sept 2026 quotelineitem.nosing_product_id
+    was listed in that hand list, was not created, and took the Order
+    Index and the KPI dashboard down — every query against quotelineitem
+    failed with UndefinedColumn while quoting itself carried on working,
+    which is what made it look like a screen bug rather than a schema
+    one.
+
+    This derives the expected columns from SQLModel's own metadata
+    instead, so it cannot be forgotten: a field added to a model IS the
+    instruction. It runs AFTER the hand list deliberately — those
+    entries carry considered defaults and backfills this cannot infer
+    ("'general'", 0.30, a seeded string) — and only fills what is still
+    missing.
+
+    Columns are added NULLABLE regardless of what the model says, and
+    that is deliberate: an existing table with rows cannot take a NOT
+    NULL column without a default, and failing the boot over it would
+    be worse than a nullable column the application immediately starts
+    writing. A scalar default from the model is applied where there is
+    one.
+
+    Returns the list of columns added, for the caller to log.
+    """
+    added = []
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table_name, table in SQLModel.metadata.tables.items():
+        if table_name not in existing_tables:
+            continue   # create_all() handles a brand-new table, whole
+        live = {c["name"] for c in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name in live:
+                continue
+            try:
+                type_sql = column.type.compile(dialect=engine.dialect)
+            except Exception as e:
+                print(f"Schema: cannot render a type for {table_name}.{column.name} ({e}) — skipped")
+                continue
+            default_sql = _column_default_sql(column)
+            ddl = f'ALTER TABLE {table_name} ADD COLUMN {column.name} {type_sql}'
+            if default_sql is not None:
+                ddl += f" DEFAULT {default_sql}"
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(ddl))
+                added.append(f"{table_name}.{column.name}")
+                print(f"Schema: added missing column {table_name}.{column.name} ({type_sql})"
+                      + (f" default {default_sql}" if default_sql else ""))
+            except Exception as e:
+                print(f"Schema: FAILED to add {table_name}.{column.name} ({e})")
+    return added
+
+
+def _assert_schema_matches_models():
+    """Fail the BOOT if the database is still missing a column a model
+    declares — rather than letting one screen 500 in production days
+    later (confirmed Sept 2026, after exactly that).
+
+    This is deliberately a hard failure. A half-migrated schema does not
+    announce itself: quoting kept working through the nosing_product_id
+    outage while the Order Index and the KPI dashboard were dead, so the
+    shape of the problem was invisible from the symptom. A service that
+    refuses to start, naming the column, is a five-minute fix; a service
+    that starts and serves 500s on two screens took a day to notice.
+
+    It runs after both migration passes, so reaching it at all means
+    something could not be repaired automatically and needs a person.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    missing = []
+    for table_name, table in SQLModel.metadata.tables.items():
+        if table_name not in existing_tables:
+            continue
+        live = {c["name"] for c in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name not in live:
+                missing.append(f"{table_name}.{column.name}")
+    if missing:
+        raise RuntimeError(
+            "Schema does not match the models — the database is missing: "
+            + ", ".join(missing)
+            + ". Every query touching those tables will fail at runtime, so this "
+              "refuses to start rather than serving 500s on whichever screen reads "
+              "them first. The startup log above names why each ALTER failed; add "
+              "the column by hand in Supabase if it cannot be added automatically."
+        )
+    print(f"Schema: verified — every column on {len(existing_tables)} table(s) matches the models")
+
+
 def _next_job_number(session: Session, tenant_id: str) -> str:
     """Job Workflow (confirmed Aug 2026) — sequential J-0001 format
     (confirmed directly), tenant-wide, never reused. Shared by the
@@ -1262,6 +1387,13 @@ def on_startup():
     _verify_cascade_policy_complete()
     _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
+    # The hand list above carries considered defaults; this catches
+    # anything it missed or failed to apply, derived from the models
+    # themselves — then the boot refuses to continue if the schema still
+    # does not match. See _reconcile_model_columns() for the outage that
+    # produced this.
+    _reconcile_model_columns()
+    _assert_schema_matches_models()
     _enable_row_level_security()
     # Payments as a List (confirmed Sept 2026) — after create_all, since
     # it writes into the table that call just created.
