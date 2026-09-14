@@ -1574,6 +1574,10 @@
   .fin-capture-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; font-weight: 600; flex: 1 1 130px; }
   .fin-capture-fields input { font-size: 13px; }
   .fin-capture-fields input[readonly] { background: var(--border); opacity: .8; }
+  /* Only the balance is locked now (Sept 2026, deposit-amount brief) --
+     the greyed-out treatment above should read as "this one figure is
+     not yours to set", not as the default state of every amount. */
+  .fin-capture-hint { font-size: 11px; color: var(--ink-faint, #8A93A0); margin: 8px 0 0; line-height: 1.45; }
   .fin-capture-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .fin-remove { margin-left: auto; color: var(--coral); font-size: 11.5px; }
   @media (max-width: 560px) {
