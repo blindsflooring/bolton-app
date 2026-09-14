@@ -264,7 +264,7 @@ function renderEstimateForm(resultHtml) {
       ${jobTypeFieldHtml()}
       ${trimFieldHtml()}
       <label>Site photos (optional, up to ${MAX_PHOTOS})</label>
-      <input type="file" id="site_photos" accept="image/*" multiple>
+      <input type="file" id="site_photos" accept="image/jpeg,image/png" multiple>
       <button id="submitBtn" onclick="submitEstimate()">Get Estimate</button>
       <div id="formError" class="error"></div>
       ${resultHtml || ''}

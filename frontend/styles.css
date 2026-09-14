@@ -1577,6 +1577,14 @@
   /* Only the balance is locked now (Sept 2026, deposit-amount brief) --
      the greyed-out treatment above should read as "this one figure is
      not yours to set", not as the default state of every amount. */
+  /* A photo that uploaded fine but cannot be drawn (Sept 2026, HEIC).
+     Deliberately not styled as an error: nothing failed. */
+  .photo-unviewable {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; font-size: 12px; font-weight: 700; color: var(--navy);
+    background: var(--bg); width: 100%; height: 100%; text-align: center; padding: 6px;
+  }
+  .photo-unviewable span { font-size: 10px; font-weight: 500; color: var(--ink-faint, #8A93A0); line-height: 1.3; }
   .fin-capture-hint { font-size: 11px; color: var(--ink-faint, #8A93A0); margin: 8px 0 0; line-height: 1.45; }
   .fin-capture-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .fin-remove { margin-left: auto; color: var(--coral); font-size: 11.5px; }

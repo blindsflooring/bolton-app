@@ -7472,22 +7472,70 @@ def builder_statement(slug: str):
 # response" rules, not this section's staff-auth ones).
 MAX_PHOTO_SIZE_BYTES = 10 * 1024 * 1024   # 10MB per photo — brief's own suggested default, not confirmed otherwise
 MAX_PHOTOS_PER_SUBMISSION = 5             # brief's own suggested default, not confirmed otherwise
-ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif"}
+ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/jpg", "image/png"}
+
+# HEIC/HEIF were accepted until Sept 2026 and should never have been.
+# Bolton stored them perfectly — byte-identical, backed up to Dropbox,
+# the lot — and then no browser on earth could draw one, so 20 photos on
+# J-0021 sat in the gallery as broken icons while being, technically, in
+# perfect health. Storing a file the app cannot display is not support;
+# it is a silent failure with a progress bar.
+#
+# Rejected at upload rather than converted: converting means pillow +
+# pillow-heif, the first native image dependency in this codebase, and
+# the deploy that introduces it is not the deploy to also fix this in.
+# The camera setting below costs ten seconds and nothing else.
+HEIC_CONTENT_TYPES = {"image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"}
+
+# iPhones default to HEIC, so this is the common case, not an edge one.
+# The message has to say what to actually DO — "unsupported format" on
+# its own just moves the problem to a phone call.
+HEIC_ADVICE = ("HEIC photos can't be shown by any web browser, so Bolton no longer accepts them. "
+               "On an iPhone: Settings → Camera → Formats → Most Compatible, and the camera "
+               "saves JPG from then on. For photos already taken, share them to yourself "
+               "(WhatsApp, email) first — that converts them to JPG — then upload those.")
 
 
-def _validate_photo_upload(content_type: str, size_bytes: int):
+def _looks_like_heic(data: bytes) -> bool:
+    """HEIC detected from the FILE, not from what the browser claimed.
+
+    A HEIC renamed to .jpg arrives labelled image/jpeg and would sail
+    straight past a content-type check, then sit in the gallery as a
+    broken icon — the exact outcome this exists to prevent. HEIC is
+    ISO base media format: bytes 4-8 are the literal 'ftyp' followed by
+    a four-character brand. JPEG and PNG carry no 'ftyp' at that offset,
+    so this cannot misfire on a format Bolton does accept.
+    """
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        return False
+    return data[8:12] in {b"heic", b"heix", b"heim", b"heis",
+                          b"hevc", b"hevx", b"mif1", b"msf1"}
+
+
+def _validate_photo_upload(content_type: str, data: bytes):
     """Shared by both the staff upload endpoint and the public
     builder-submission one — the public endpoint is unauthenticated, so
     this is the actual abuse guardrail the brief requires, not just a
     UX nicety. Raises a clean 400 with a specific message either way
     (brief's own required verification: "oversized files and non-image
-    files are rejected cleanly... not a silent failure")."""
-    if content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
-        raise HTTPException(400, f"'{content_type or 'unknown'}' isn't a supported photo type — use JPG, PNG, or HEIC/HEIF.")
-    if size_bytes > MAX_PHOTO_SIZE_BYTES:
-        raise HTTPException(400, f"That photo is too large ({size_bytes // (1024*1024)}MB) — the limit is {MAX_PHOTO_SIZE_BYTES // (1024*1024)}MB per photo.")
+    files are rejected cleanly... not a silent failure").
+
+    Takes the real bytes, not just a length, so HEIC is caught by what
+    the file IS rather than by what it claims to be — see
+    _looks_like_heic()."""
+    size_bytes = len(data)
     if size_bytes == 0:
         raise HTTPException(400, "That file appears to be empty.")
+    # HEIC first, and by content: a HEIC mislabelled image/jpeg would
+    # otherwise pass the type check below and land as a broken
+    # thumbnail, and a HEIC labelled honestly deserves the message that
+    # actually helps rather than the generic one.
+    if content_type in HEIC_CONTENT_TYPES or _looks_like_heic(data):
+        raise HTTPException(400, HEIC_ADVICE)
+    if content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+        raise HTTPException(400, f"'{content_type or 'unknown'}' isn't a supported photo type — use JPG or PNG.")
+    if size_bytes > MAX_PHOTO_SIZE_BYTES:
+        raise HTTPException(400, f"That photo is too large ({size_bytes // (1024*1024)}MB) — the limit is {MAX_PHOTO_SIZE_BYTES // (1024*1024)}MB per photo.")
 
 
 def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"], builder_estimate_id: Optional[int],
@@ -7594,7 +7642,7 @@ async def upload_quote_photo(quote_id: int, file: UploadFile = File(...),
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         data = await file.read()
         content_type = file.content_type or ""
-        _validate_photo_upload(content_type, len(data))
+        _validate_photo_upload(content_type, data)
         safe_name = os.path.basename(file.filename or "photo.jpg")
         photo = _upload_job_photo(session, tenant_id, quote, None, data, content_type, safe_name, "staff")
         session.commit()
@@ -7734,7 +7782,7 @@ async def upload_builder_estimate_photos(slug: str, estimate_id: int, files: Lis
         for f in files:
             data = await f.read()
             content_type = f.content_type or ""
-            _validate_photo_upload(content_type, len(data))
+            _validate_photo_upload(content_type, data)
             safe_name = os.path.basename(f.filename or "photo.jpg")
             # Same Dropbox-backed, never-block-on-Dropbox path the staff
             # upload endpoint uses (confirmed Sept 2026) — _upload_job_photo()

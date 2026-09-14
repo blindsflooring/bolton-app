@@ -1488,3 +1488,28 @@ async function loadInBatches(items, limit, fn) {
   });
   await Promise.all(workers);
 }
+
+
+// ===== Photos a browser cannot draw (confirmed Sept 2026) =====
+//
+// HEIC is the iPhone camera default. Bolton accepted it until Sept 2026,
+// stored it perfectly, and then no browser could render it -- 20 photos
+// on J-0021 showed as broken icons while the files themselves were
+// byte-perfect and safely backed up. Upload now rejects HEIC outright
+// (_validate_photo_upload, main.py), but the ones already stored are
+// still there and must not keep masquerading as corruption: they are
+// fine, they are in Dropbox, they simply cannot be displayed here.
+function isUnviewablePhoto(contentType) {
+  return /^image\/(heic|heif)/i.test(contentType || '');
+}
+
+function markPhotoUnviewable(thumbId) {
+  const thumbEl = document.getElementById(thumbId);
+  if (!thumbEl) return;
+  const loadingEl = thumbEl.querySelector('.photo-loading');
+  if (!loadingEl) return;
+  loadingEl.classList.add('photo-unviewable');
+  loadingEl.innerHTML = 'HEIC<span>can’t be shown in a browser — the file is safe in Dropbox</span>';
+  loadingEl.title = 'This photo uploaded correctly and is backed up, but HEIC is not a format browsers can display. '
+    + 'Re-upload it as JPG to see it here.';
+}
