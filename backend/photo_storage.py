@@ -1,3 +1,20 @@
+# -*- coding: utf-8 -*-
+# ============================================================================
+# DEAD MODULE — NOT IMPORTED BY ANYTHING (confirmed Sept 2026, architecture
+# review item 7).
+#
+# Job photos are stored as bytes on QuotePhoto and archived to Dropbox by
+# _upload_job_photo() (main.py). This Supabase Storage path was never
+# configured — SUPABASE_URL/SUPABASE_SERVICE_KEY have never been set — so
+# every call it ever made raised. That is the real root cause behind the
+# "upload failed" reports this module's own docstring describes.
+#
+# Kept rather than deleted for one reason only: it is a complete, working
+# reference for talking to Supabase Storage if object storage is ever
+# wanted again. Nothing imports it; deleting it would break nothing.
+# If you are reading this looking for how photos work today, you are in
+# the wrong file — see _upload_job_photo() in main.py.
+# ============================================================================
 """
 RETIRED (Sept 2026, Photo Gallery + Job Context brief) — no longer
 imported or called anywhere in main.py. Investigating Madri's reported

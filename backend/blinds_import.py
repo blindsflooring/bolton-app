@@ -496,7 +496,23 @@ def parse_blinds_quote(file_bytes: bytes, trade_discount_pct: float,
             cost_ex_vat = round(book * keep * settle, 2)
             line["cost_ex_vat"] = cost_ex_vat
             line["cost_incl_vat"] = round(cost_ex_vat * (1 + vat_pct), 2)
-            line["margin_pct"] = round((book - cost_ex_vat) / book * 100, 2) if book else 0.0
+            # A FRACTION (0.4913), not a percentage — fixed Sept 2026.
+            #
+            # This wrote `* 100` for months, and it was the one place in
+            # the app that did. Every calculator in calculations.py and
+            # blinds_calc.py stores a fraction, the quote line table
+            # renders margin_pct * 100, and margin_band_for() compares
+            # margin_pct < 0.30 to raise the low-margin warning. So an
+            # imported line stored as 49.13 displayed as ~4,900% AND
+            # could never fall below either warning threshold: the
+            # margin signal silently never fired on a single imported
+            # blinds job. 225 real lines on production were affected —
+            # corrected by _fix_mis_scaled_margin_pct() (main.py).
+            #
+            # NOTE the quote-level summary further down this file
+            # deliberately still uses `* 100`: it is display-only, never
+            # stored, and blinds-import.js renders it straight as "%".
+            line["margin_pct"] = round((book - cost_ex_vat) / book, 4) if book else 0.0
 
         # The description leads with the ALLOCATION (column C), because
         # that is what the sheet itself leads with and what the client

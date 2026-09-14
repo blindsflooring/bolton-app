@@ -1332,6 +1332,12 @@ class Quote(SQLModel, table=True):
     transport_levy: float = 0.0
     deposit_pct: float = 0.70   # confirmed Aug 2026: 70% deposit, balance on completion
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Xero is NOT integrated (confirmed Sept 2026, architecture review
+    # item 7). Nothing reads or writes this field anywhere in the app —
+    # it is a placeholder from the original scaffold, kept because
+    # dropping a column from a live Postgres table earns nothing and the
+    # name still describes what it would hold if that integration is
+    # ever built.
     xero_quote_id: Optional[str] = None   # populated once pushed to Xero (Phase 2)
     # Order tracking fields, confirmed Aug 2026 — "know everything at a
     # glance" from Order Index without opening each quote individually.
@@ -1818,7 +1824,27 @@ class QuoteLineItem(SQLModel, table=True):
     num_stairs: Optional[int] = None
     stairwell_type: Optional[str] = None
     nosing_length_m: Optional[float] = None
-    boxes_needed: Optional[int] = None
+    # WHICH nosing, not just how much of it (added Sept 2026,
+    # architecture review item 6). Only nosing_length_m was ever stored —
+    # a derived figure — so the "is this product still used on a quote"
+    # guard could not see a TrimProduct used as a nosing, and deleting
+    # one in active use was allowed. It also meant a stairwell line
+    # could not be reopened with its real nosing selected; the edit form
+    # fell back to whatever the dropdown happened to default to.
+    #
+    # NULL on every line saved before this, and deliberately not
+    # backfilled: the id was never recorded and the product name is
+    # baked into a formatted string that cannot be reversed to an id
+    # safely. Re-saving an older stairwell line records it.
+    nosing_product_id: Optional[int] = None
+    # boxes_needed is NOT redeclared here (fixed Sept 2026, architecture
+    # review item 5). It was, identically, and Python simply kept the
+    # second definition — one column quietly serving two features with
+    # nothing linking them. The single declaration lives in the flooring
+    # block above and is shared deliberately: on a flooring line it is
+    # boxes of flooring, on a stairwell line it is boxes of the vinyl
+    # that stairwell uses. Same unit, same purpose, same order-sheet
+    # consumer — one field is right, two would be two names for a box.
     billed_vinyl_area_m2: Optional[float] = None
     glue_area_m2: Optional[float] = None
     vinyl_sell_total: Optional[float] = None

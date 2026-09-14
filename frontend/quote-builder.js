@@ -1297,6 +1297,17 @@ async function toggleLineFields() {
   document.querySelectorAll('.trim-colour-field').forEach(el => el.style.display = cat === 'trim' ? '' : 'none');
   document.querySelectorAll('.stairwell-field').forEach(el => el.style.display = cat === 'stairwell' ? '' : 'none');
   document.querySelectorAll('.misc-field').forEach(el => el.style.display = cat === 'misc' ? '' : 'none');
+  // Stairwell cannot be discounted — the calculation takes no discount
+  // and the request never sent one, so showing the field meant accepting
+  // a number and silently ignoring it (Sept 2026, architecture review
+  // item 2). Reset to 0 on the way out so a value typed on another tab
+  // can't ride along into a stairwell line either.
+  const discountField = document.querySelector('.discount-field');
+  if (discountField) discountField.style.display = cat === 'stairwell' ? 'none' : '';
+  if (cat === 'stairwell') {
+    const d = document.getElementById('line_discount');
+    if (d) d.value = 0;
+  }
   // Blinds joined stairwell/misc here (Sept 2026): it no longer picks a
   // price-book product at all, it picks a blind TYPE from the calculator,
   // so the generic Product dropdown has nothing left to offer it.
