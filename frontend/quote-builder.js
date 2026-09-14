@@ -4294,7 +4294,7 @@ function renderQuotePhotoGallery() {
   // that header (same reason a plain <a href> download link never
   // could either — see the HR Documents download-link fix alongside
   // this brief for the other place that same gap was found live).
-  currentQuotePhotos.forEach(async (p) => {
+  loadInBatches(currentQuotePhotos, PHOTO_FETCH_CONCURRENCY, async (p) => {
     try {
       const res = await fetch(`${API}/quotes/${currentQuoteId}/photos/${p.id}/file`);
       if (!res.ok) throw new Error('fetch failed');

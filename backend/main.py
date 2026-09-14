@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
-from sqlalchemy import inspect, text, or_
+from sqlalchemy import inspect, text, or_, func
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
@@ -4723,10 +4723,15 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
 
 
 def _next_archive_version(session: Session, tenant_id: str, entity_type: str, entity_id: int) -> int:
-    existing = session.exec(select(DocumentArchive).where(
-        DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
-    )).all()
-    return len(existing) + 1
+    """A COUNT, not a fetch (confirmed Sept 2026, memory investigation).
+    This used to load every prior version of the document -- full PDF
+    bytes and all -- purely to take len() of the list, on every single
+    document save."""
+    existing = session.exec(select(func.count()).select_from(DocumentArchive).where(
+        DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type,
+        DocumentArchive.entity_id == entity_id,
+    )).one()
+    return existing + 1
 
 
 class ArchiveDocumentRequest(BaseModel):
@@ -4779,7 +4784,12 @@ def list_document_archive(entity_type: str, entity_id: int, tenant_id: str = Dep
     several versions; see the dedicated download endpoint below for
     the actual file)."""
     with Session(engine) as session:
-        rows = session.exec(select(DocumentArchive).where(
+        rows = session.exec(select(
+            DocumentArchive.id, DocumentArchive.version, DocumentArchive.reference,
+            DocumentArchive.status, DocumentArchive.dropbox_path, DocumentArchive.failure_reason,
+            DocumentArchive.is_accepted_version, DocumentArchive.created_at,
+            DocumentArchive.uploaded_at, DocumentArchive.created_by,
+        ).where(
             DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
         ).order_by(DocumentArchive.version.desc())).all()
         return [{
@@ -4908,26 +4918,36 @@ def archive_health(session: Session, tenant_id: str) -> dict:
     failed is "Dropbox refused this". One is a waiting state, the other
     needs somebody.
 
-    Read-only, and cheap enough for the dashboard — it counts rows and
-    reads one timestamp, never the stored PDF bytes.
+    Read-only, and genuinely cheap: five aggregates, computed by
+    Postgres. It previously SELECTed every DocumentArchive and every
+    QuotePhoto row in full — PDF and image bytes included — to count
+    them in Python, on the dashboard and again nightly in the
+    consistency monitor. With 58MB of photos on one job that was enough
+    on its own to push the instance into its memory limit (14 Sept
+    2026). It counts rows and reads one timestamp; it never loads a
+    stored byte.
     """
-    archives = session.exec(select(DocumentArchive).where(
-        DocumentArchive.tenant_id == tenant_id)).all()
-    failed = [a for a in archives if a.status == "failed"]
-    pending = [a for a in archives if a.status == "pending"]
-    photos = session.exec(select(QuotePhoto).where(
-        QuotePhoto.tenant_id == tenant_id)).all()
-    photo_failed = [p for p in photos if p.dropbox_status in ("failed", "pending")]
-    last_ok = max((a.uploaded_at for a in archives if a.uploaded_at), default=None)
+    def archive_count(*conditions):
+        return session.exec(select(func.count()).select_from(DocumentArchive).where(
+            DocumentArchive.tenant_id == tenant_id, *conditions)).one()
+
+    failed = archive_count(DocumentArchive.status == "failed")
+    pending = archive_count(DocumentArchive.status == "pending")
+    total = archive_count()
+    photo_failed = session.exec(select(func.count()).select_from(QuotePhoto).where(
+        QuotePhoto.tenant_id == tenant_id,
+        QuotePhoto.dropbox_status.in_(("failed", "pending")))).one()
+    last_ok = session.exec(select(func.max(DocumentArchive.uploaded_at)).where(
+        DocumentArchive.tenant_id == tenant_id)).one()
     return {
-        "failed": len(failed),
-        "pending": len(pending),
-        "photos_not_uploaded": len(photo_failed),
-        "total": len(archives),
+        "failed": failed,
+        "pending": pending,
+        "photos_not_uploaded": photo_failed,
+        "total": total,
         "last_successful_upload": last_ok.isoformat() if last_ok else None,
         # One number for the dashboard to react to, so the frontend does
         # not have to decide what counts as a problem.
-        "needs_attention": len(failed) + len(pending) + len(photo_failed),
+        "needs_attention": failed + pending + photo_failed,
     }
 
 
@@ -7501,7 +7521,33 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     return photo
 
 
-def _photo_out(photo: "QuotePhoto") -> dict:
+# Every column on QuotePhoto EXCEPT photo_bytes (confirmed Sept 2026,
+# memory investigation). Listing them is the point: select(QuotePhoto)
+# loads the BLOB whether or not the caller wants it, and the callers
+# below only ever want the metadata. Measured on production before
+# changing anything -- GET /quotes/259/photos returned an 8KB JSON body
+# in 2 903ms because it pulled ~57MB of image data out of Postgres to
+# build it, then threw the images away in _photo_out(). The same
+# pattern, on archive_health(), put every photo AND every archived PDF
+# in memory to count how many had failed to reach Dropbox, on the
+# dashboard and again nightly. That is what exceeded the instance's
+# memory ceiling on 14 Sept, twelve minutes AFTER the upload that was
+# blamed for it had already finished.
+#
+# deferred()/load_only() were the obvious alternative and are wrong
+# here: _photo_out() calls .dict(), which touches every attribute and
+# would fire one lazy SELECT per row for the bytes -- turning one big
+# query into N worse ones.
+PHOTO_META_COLUMNS = (
+    QuotePhoto.id, QuotePhoto.tenant_id, QuotePhoto.quote_id,
+    QuotePhoto.builder_estimate_id, QuotePhoto.storage_path,
+    QuotePhoto.original_filename, QuotePhoto.content_type,
+    QuotePhoto.size_bytes, QuotePhoto.uploaded_by, QuotePhoto.created_at,
+    QuotePhoto.dropbox_status, QuotePhoto.dropbox_failure_reason,
+)
+
+
+def _photo_out(photo) -> dict:
     """photo_bytes deliberately excluded from every API response
     (confirmed Sept 2026, same reasoning DocumentArchive's own
     pdf_bytes already follows, list_document_archive() above) — real
@@ -7509,6 +7555,12 @@ def _photo_out(photo: "QuotePhoto") -> dict:
     serialization tries to JSON-encode the whole model, and raw binary
     (a JPEG's own magic bytes) isn't valid UTF-8 — a real 500 the very
     first time this was tested end-to-end, not a hypothetical."""
+    # A metadata Row (PHOTO_META_COLUMNS) has no photo_bytes to drop;
+    # a full ORM object still does. Both shapes reach here -- the upload
+    # endpoint returns the object it just saved, every list endpoint
+    # returns rows.
+    if hasattr(photo, "_mapping"):
+        return dict(photo._mapping)
     d = photo.dict()
     d.pop("photo_bytes", None)
     return d
@@ -7534,7 +7586,7 @@ def list_quote_photos(quote_id: int, role: str = Depends(get_current_role), tena
     with Session(engine) as session:
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         photos = session.exec(
-            select(QuotePhoto).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
+            select(*PHOTO_META_COLUMNS).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
             .order_by(QuotePhoto.created_at)
         ).all()
         return [_photo_out(p) for p in photos]
@@ -7568,7 +7620,8 @@ def list_all_job_photos(tenant_id: str = Depends(get_current_tenant)):
     as it always did — nothing to open for a photo with no quote yet."""
     with Session(engine) as session:
         photos = session.exec(
-            select(QuotePhoto).where(QuotePhoto.tenant_id == tenant_id).order_by(QuotePhoto.created_at.desc())
+            select(*PHOTO_META_COLUMNS).where(QuotePhoto.tenant_id == tenant_id)
+            .order_by(QuotePhoto.created_at.desc())
         ).all()
         quote_ids = {p.quote_id for p in photos if p.quote_id}
         quotes_by_id = {q.id: q for q in session.exec(select(Quote).where(Quote.id.in_(quote_ids))).all()} if quote_ids else {}
@@ -7652,7 +7705,8 @@ async def upload_builder_estimate_photos(slug: str, estimate_id: int, files: Lis
         ).first()
         if not estimate:
             raise HTTPException(404, "Estimate not found.")
-        already = len(session.exec(select(QuotePhoto).where(QuotePhoto.builder_estimate_id == estimate_id)).all())
+        already = session.exec(select(func.count()).select_from(QuotePhoto).where(
+            QuotePhoto.builder_estimate_id == estimate_id)).one()
         if already + len(files) > MAX_PHOTOS_PER_SUBMISSION:
             raise HTTPException(400, f"At most {MAX_PHOTOS_PER_SUBMISSION} photos per submission.")
         saved = 0
