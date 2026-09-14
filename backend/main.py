@@ -1392,7 +1392,6 @@ def _fix_orphaned_quotes_remediation():
         print(f"Migration: orphaned-quotes sweep FAILED ({e}) — needs manual review")
 
 
-@app.on_event("startup")
 def _fix_mis_scaled_margin_pct():
     """One-time data correction (confirmed Sept 2026, architecture review
     item 1) — imported blinds lines stored margin_pct as a PERCENTAGE
@@ -1431,6 +1430,28 @@ def _fix_mis_scaled_margin_pct():
         print(f"Margin scale: correction FAILED ({e}) — needs manual review")
 
 
+# EVERY startup action hangs off this ONE handler, and nothing else in
+# this file carries @app.on_event (asserted by a test — see
+# .claude/verify_startup_wired.py). That is not style: on 13 Sept 2026 a
+# new function, _fix_mis_scaled_margin_pct(), was added directly beneath
+# this decorator and silently STOLE it. Python applies a decorator to
+# whatever def follows it, so on_startup() quietly stopped being
+# registered at all, and with it went every migration, the schema
+# reconciler, row-level security, the payments backfill and the whole
+# scheduler — no nightly Order Index snapshot, no daily database backup,
+# no consistency monitor.
+#
+# Nothing announced it. What it looked like from the outside was the
+# quotelineitem.nosing_product_id outage: the column was correctly
+# listed in _ensure_new_columns() and simply never created, because the
+# code that creates columns was no longer being called. That was
+# originally diagnosed as an ALTER failing silently. It was not. This
+# was the cause.
+#
+# If another startup action is ever needed, CALL IT FROM INSIDE HERE.
+# Do not add a second @app.on_event, and never insert a function between
+# this comment and the def below it.
+@app.on_event("startup")
 def on_startup():
     _verify_cascade_policy_complete()
     _ensure_new_columns()
