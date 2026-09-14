@@ -110,6 +110,30 @@ def sast_date(value) -> Optional[date]:
     return (value + SAST_OFFSET).date() if value else None
 
 
+@app.get("/health/schema")
+def schema_health():
+    """What the startup schema check found (confirmed Sept 2026).
+
+    Reports the check's recorded result rather than re-running it: the
+    question being answered is "did this deploy come up with a database
+    matching its models", which is a fact about the boot, not about now.
+
+    No Depends() here, and not because it is public — it is not. The
+    require_auth middleware is closed by default and covers this like
+    everything outside PUBLIC_PATHS. An explicit role dependency cannot
+    be used at this point in the file anyway: get_current_role is
+    defined some 2,000 lines below, and a default argument is evaluated
+    at definition time. Same reason /version directly below carries
+    none.
+    """
+    return {
+        "ok": not SCHEMA_CHECK["missing"],
+        "missing_columns": SCHEMA_CHECK["missing"],
+        "tables_checked": SCHEMA_CHECK["tables_checked"],
+        "checked_at": SCHEMA_CHECK["checked_at"],
+    }
+
+
 @app.get("/version")
 def get_version():
     """Version badge fix (confirmed Aug 2026) — the badge had shown a
@@ -804,20 +828,36 @@ def _reconcile_model_columns() -> list:
     return added
 
 
-def _assert_schema_matches_models():
-    """Fail the BOOT if the database is still missing a column a model
-    declares — rather than letting one screen 500 in production days
-    later (confirmed Sept 2026, after exactly that).
+# The result of the last startup schema check, held in memory so the
+# dashboard and the health endpoint can report it without re-querying
+# the database on every page load. Written once at boot.
+SCHEMA_CHECK = {"checked_at": None, "missing": [], "tables_checked": 0}
 
-    This is deliberately a hard failure. A half-migrated schema does not
-    announce itself: quoting kept working through the nosing_product_id
-    outage while the Order Index and the KPI dashboard were dead, so the
-    shape of the problem was invisible from the symptom. A service that
-    refuses to start, naming the column, is a five-minute fix; a service
-    that starts and serves 500s on two screens took a day to notice.
 
-    It runs after both migration passes, so reaching it at all means
-    something could not be repaired automatically and needs a person.
+def _check_schema_matches_models():
+    """Compare every model-declared column against the live database and
+    RECORD what is missing (confirmed Sept 2026, architecture review —
+    second occurrence of this bug class).
+
+    REVERSED FROM THE PREVIOUS VERSION, and worth saying why rather than
+    quietly swapping it: this function used to raise, killing the boot.
+    That was my call a day earlier, on the reasoning that a service
+    refusing to start is louder than one serving 500s. The outage that
+    followed proved it wrong on the specific point that matters — when
+    nosing_product_id went missing, QUOTING KEPT WORKING. Only the Order
+    Index and the KPI dashboard were down. A hard failure would have
+    taken the whole business offline to fix two screens, and would have
+    left no UI in which to say what was wrong, forcing exactly the log
+    archaeology this is meant to end.
+
+    So it now records instead: the boot completes, the log carries one
+    unmistakable line, and the state is surfaced in the app itself —
+    archive_health()'s panel already proved that pattern works.
+
+    Raising is still the right answer for a structural contradiction
+    that no data depends on — see _verify_cascade_policy_complete(),
+    which does raise. A missing column is not that: it is a data problem
+    with a five-minute manual fix, and the app is more useful up.
     """
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -829,16 +869,24 @@ def _assert_schema_matches_models():
         for column in table.columns:
             if column.name not in live:
                 missing.append(f"{table_name}.{column.name}")
+    SCHEMA_CHECK["checked_at"] = datetime.utcnow().isoformat()
+    SCHEMA_CHECK["missing"] = missing
+    SCHEMA_CHECK["tables_checked"] = len(existing_tables)
     if missing:
-        raise RuntimeError(
-            "Schema does not match the models — the database is missing: "
-            + ", ".join(missing)
-            + ". Every query touching those tables will fail at runtime, so this "
-              "refuses to start rather than serving 500s on whichever screen reads "
-              "them first. The startup log above names why each ALTER failed; add "
-              "the column by hand in Supabase if it cannot be added automatically."
-        )
-    print(f"Schema: verified — every column on {len(existing_tables)} table(s) matches the models")
+        # Deliberately shouty and deliberately one line: this has to be
+        # findable in a wall of startup output, and greppable.
+        print("=" * 70)
+        print(f"SCHEMA MISMATCH: {len(missing)} column(s) declared by the models do "
+              f"NOT exist in the database: {', '.join(missing)}")
+        print("Every query touching those tables will fail at runtime. Add them by "
+              "hand in the Supabase SQL editor, e.g.:")
+        for item in missing:
+            table_name, column_name = item.split(".", 1)
+            print(f"    ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} <type>;")
+        print("This is also shown on the Business Overview and at GET /health/schema.")
+        print("=" * 70)
+    else:
+        print(f"Schema: verified — every column on {len(existing_tables)} table(s) matches the models")
 
 
 def _next_job_number(session: Session, tenant_id: str) -> str:
@@ -1393,7 +1441,7 @@ def on_startup():
     # does not match. See _reconcile_model_columns() for the outage that
     # produced this.
     _reconcile_model_columns()
-    _assert_schema_matches_models()
+    _check_schema_matches_models()
     _enable_row_level_security()
     # Payments as a List (confirmed Sept 2026) — after create_all, since
     # it writes into the table that call just created.
@@ -3712,6 +3760,15 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             # dashboard and the flagged record can never disagree about
             # how many documents are stuck.
             "archive_health": archive_health(session, tenant_id),
+            # Schema drift (Sept 2026, second occurrence of that bug
+            # class). Same reasoning as archive_health above it: a
+            # failure nothing displays is a failure nobody finds until a
+            # client-facing screen breaks.
+            "schema_health": {
+                "ok": not SCHEMA_CHECK["missing"],
+                "missing_columns": SCHEMA_CHECK["missing"],
+                "checked_at": SCHEMA_CHECK["checked_at"],
+            },
             "by_branch": by_branch,
             "by_rep": by_rep,
             "today": sales_profit_for(today_quotes),

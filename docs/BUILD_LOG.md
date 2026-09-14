@@ -18,6 +18,35 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-14
+
+Schema/model drift caught at startup and shown in the app — written after it took production down, and after the same bug class had already been recorded once.
+
+### What shipped
+- **`_reconcile_model_columns()`** — every column SQLModel's metadata declares is compared against the live table and added if missing, with a dialect-correct type and the model's own scalar default where it has one. Columns are added NULLABLE whatever the model says: an existing table with rows cannot take a NOT NULL column without a default, and failing a boot over that is worse than a nullable column the app immediately starts writing.
+- **`_check_schema_matches_models()`** — after both migration passes, anything still missing is recorded and printed as a banner-delimited `SCHEMA MISMATCH` line naming every table and column, followed by the exact `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` needed to fix each one.
+- **`GET /health/schema`** — the recorded result of that check, readable without touching a single table.
+- **A red panel on Home**, fed by that endpoint, naming the missing columns and carrying the SQL.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Two occurrences of one bug class, which is what triggered this** under the standing "same bug class twice → automate a regression check" rule:
+  1. **`margin_pct` mis-scaling** — the blinds importer wrote a percentage where every other writer wrote a fraction. Undetected for months; the low-margin warning never fired on a single imported line, and 225 production rows needed correcting.
+  2. **`quotelineitem.nosing_product_id`** — declared on the model, never created in Postgres. Every query against that table failed; the Order Index and the KPI dashboard were dead while quoting carried on working, which made it read as a screen bug rather than a schema one. Diagnosed from a Render traceback and fixed with a hand-run `ALTER TABLE`.
+  Both are the same shape: a fact about the system maintained in two places, with nothing checking the two agree.
+- **Why the hand list was not enough, stated precisely.** `_ensure_new_columns()` logs when it adds a column and when an ALTER fails — but a skip is a bare `continue` with no output, and it never verifies the end state. A forgotten entry is therefore indistinguishable from "nothing needed doing": silence either way. It is **preserved, not superseded** — its ~120 entries carry considered defaults and backfills that cannot be inferred from a model (`'general'`, `0.30`, a seeded string) — and the reconciler runs after it, filling only what remains.
+- **A hard-failing boot was tried first and reversed within a day.** The previous version raised, on the reasoning that a service refusing to start is louder than one serving 500s. The outage disproved it on the point that matters: quoting kept working throughout. Refusing to boot would have taken the whole business offline to fix two screens, and left no UI in which to say why — forcing exactly the log archaeology this exists to end. Raising remains right for a structural contradiction no data depends on (`_verify_cascade_policy_complete()` still raises); a missing column is a data problem with a five-minute manual fix, and the app is more useful up.
+- **The alert is on Home, not on Business Overview, and that was found by testing rather than by planning.** The first version rode along on the Business Overview payload — which reads `quotelineitem`, so the screen carrying the warning was itself one of the screens returning 500. `/health/schema` reads only the in-memory result of the startup check, so it answers while every data screen is failing.
+
+### Deferred / parked (and why)
+- **No alerting outside the app** (email/push on a bad boot). The Home panel and the startup banner cover the stated goal — caught within seconds of a deploy rather than by a client-facing crash. Anything push-based is a new mechanism and was not asked for.
+- **The `Migration: backfilled job workflow for 125 existing quote(s)` line still prints on every boot.** Idempotent, but it is exactly the startup noise that makes a real line hard to spot. Noted, not fixed.
+
+### Open going into next session
+- The original `ALTER` failure for `nosing_product_id` was never explained — the column was in the hand list, correctly formed. The startup log of the build that first carried it would say why, and that log has not been read. Now moot in effect, since the reconciler and the check cover it either way, but the cause is genuinely unknown.
+- Several commits appear not to have deployed for a period; worth confirming auto-deploy is reliable on `bolton-backend`.
+
+---
+
 ## 2026-09-04
 
 Builder Portal, second pass — everything Burgert asked for after actually using the Builders screen: opening a builder, editing and deleting their estimates, deleting the builder, the missing screed and trim on the portal itself, the stairwell exclusion, and the real financials.
