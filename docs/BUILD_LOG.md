@@ -18,6 +18,97 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-14 — Photo storage, the memory ceiling, and HEIC
+
+Investigation only. Triggered by a Render memory-limit restart on `bolton-backend`, 14 photos on J-0021 (Amanda De Vos) showing as broken images, and Bolton feeling generally slow. Two of the three turned out to have a different cause than the brief assumed, so nothing was changed until this was written down.
+
+### What the photos actually are — nothing was lost
+- **All 20 rows on J-0021 are byte-perfect.** Every photo's served length equals its recorded `size_bytes` exactly, every request returns 200, and every one also reached Dropbox at the identical size. There is no truncated or partial write anywhere in the set, so the memory restart did **not** corrupt them.
+- **20 rows, not 14** — 14 distinct photos plus 6 re-uploads of ones already there, almost certainly a retry after they appeared broken. About 17 MB of duplicate bytes.
+- **They are broken on screen because they are HEIC.** The first photo's magic bytes read `ftypheic` — a genuine, valid HEIC file — and the browser cannot decode it (tested directly: `Image.onerror` fires). Every broken photo is `image/heic`; all 9 photos that display correctly elsewhere are `image/jpeg`. `ALLOWED_PHOTO_CONTENT_TYPES` accepts HEIC/HEIF, and Bolton has no conversion step, so an iPhone on its default camera setting produces files Bolton stores perfectly and no browser will draw.
+
+### The real memory driver — it is the READ path, not the upload
+Uploads are already sequential: `uploadJobPhotos()` awaits one `POST` per file, so a batch never holds more than one photo in memory. The problem is the opposite direction.
+
+**Every `select(QuotePhoto)` and `select(DocumentArchive)` loads the full byte column, whether or not the caller wants it** — 13 call sites. Measured against production:
+
+| Endpoint | Response | Time |
+|---|---|---|
+| `GET /quotes/259/photos` | 8 KB | **2,903 ms** |
+| `GET /photos` | 13 KB | 1,931 ms |
+| `GET /analytics/overview` | 8 KB | 2,538 ms |
+| `GET /price-book/flooring` (control, 232 rows, no bytes) | 230 KB | 418 ms |
+
+`/quotes/259/photos` pulls roughly **57 MB out of Postgres to build an 8 KB JSON response that then discards the bytes** (`_photo_out()` pops `photo_bytes`). The control returns 28× more data 7× faster. The worst offenders are the ones nobody would suspect:
+- **`archive_health()`** selects every `DocumentArchive` *and* every `QuotePhoto` row — full bytes — to count how many failed to reach Dropbox. It runs on the Business Overview **and** nightly in the consistency monitor.
+- **`_next_archive_version()`** loads every prior version's PDF bytes purely to do `len(existing) + 1`, on every single document save.
+
+Then the gallery compounds it: `loadJobPhotos()` fires a `/file` request for **every** photo concurrently (`forEach(async …)`), so opening J-0021's Photos tab asks for ~57 MB of list query plus up to 20 simultaneous multi-MB reads, on a 512 MB instance.
+
+**This one cause explains both symptoms** — the memory ceiling and the general slowness are the same query pattern, not two problems.
+
+### Scale, honestly stated
+Total photo storage is **58.5 MB across 29 photos — and ~57 MB of it is this single job.** HEIC files run 2–4 MB each against the ~200 KB JPEGs uploaded before. So this is not gradual growth finally catching up; one ordinary job's photo batch is now enough to matter on its own. PDF archive bytes are negligible by comparison (76 rows, ~25 KB each). The nightly database backup dumps and gzips the whole database including these columns, so it inherits the same growth.
+
+### Dual storage: keep the bytes in Postgres, or point at Dropbox?
+Surfaced explicitly, as the brief asked, and **not decided here — it is Burgert's call.**
+- **Keeping both** is why the photos survived the restart intact and why viewing never depends on Dropbox being reachable. That was a deliberate decision (see `QuotePhoto`'s own docstring) taken after Supabase storage silently failed every upload.
+- **Reference-only** removes the growth problem at its root but makes every photo view depend on Dropbox — the same dependency that has already broken twice this month (an expired token, then an app-folder scope change).
+- **Recommendation: keep dual storage, and fix the queries instead.** The bytes are not the problem; loading them when nobody asked for them is. Stop selecting byte columns in metadata queries and the 2.9 s call becomes a normal one, without giving up the guarantee that made this design right in the first place. Revisit only if photo volume outgrows the instance on real usage rather than on one job.
+
+### Sequencing, confirmed from Render Events
+The restart was **13:39 SAST (11:39 UTC)**. The upload window was 13:24–13:27 SAST. So the instance died **twelve minutes after the last photo finished writing** — not during it. That is the read path, not the write path, and it corroborates the diagnosis above rather than the mid-write theory: the photos were already safely stored when the memory ceiling was hit, which is exactly why all 20 survived byte-perfect.
+
+### What shipped
+- **`archive_health()` now counts in Postgres** — five aggregates instead of two full-table SELECTs. It used to load every archived PDF and every photo into memory to count how many had failed to reach Dropbox, on the Business Overview and again nightly in the consistency monitor.
+- **`_next_archive_version()` is a `COUNT`** — it was loading every prior version's PDF bytes purely to take `len()` of the list, on every document save.
+- **`PHOTO_META_COLUMNS`** — one named list of every `QuotePhoto` column except `photo_bytes`, used by `GET /quotes/{id}/photos` and `GET /photos`. `_photo_out()` accepts either a metadata row or a full ORM object, so the upload response is unchanged.
+- **`list_document_archive()`** selects its ten metadata columns rather than whole rows.
+- **`loadInBatches()` (shared.js)** — all three galleries fired `forEach(async … fetch())`, starting every image request simultaneously; a 20-photo job asked for 20 full-size images at once. Now three at a time, with per-photo failure handling preserved.
+
+**`deferred()`/`load_only()` were considered and rejected**: `_photo_out()` calls `.dict()`, which touches every attribute and would fire one lazy SELECT per row for the bytes — turning one oversized query into N worse ones.
+
+### Verified
+26 checks. The proof is the SQL itself — every statement the server emits is captured and the listing endpoints are asserted never to name `photo_bytes` or `pdf_bytes`, because timing SQLite would only prove SQLite is fast. Run against **a job with eight photos already attached**, per the acceptance criteria: metadata intact, bytes still served identically on the file and download endpoints, version numbering still increments, upload still works end to end, and in a real browser all nine thumbnails render with a measured peak concurrency of exactly 3. Archive naming, category folders, schema, technical-debt, deposit and blinds-engine suites all still green.
+
+### Deliberately not changed
+Five remaining `select()` sites still load byte columns — deleting a builder estimate's photos, backfilling `quote_id` when an estimate is linked, clearing a prior accepted version, the invoice-date backfill, and the Dropbox purge on quote delete. All are rare, operate on a handful of rows, and several need real ORM objects to mutate or delete. Fixing them would add risk without moving the number that mattered. Recorded here so the next person knows the omission was a decision.
+
+### Still open
+- **HEIC rejection on upload** — agreed as the next step, explicitly lower priority: Burgert's own Samsung saves JPEG, so this only bites if someone uploads from an iPhone. No auto-convert for now (it would mean `pillow` + `pillow-heif`, the first native image dependency in this codebase).
+- **The 6 duplicate photos on J-0021** (~17 MB) are still there, from the retry when they appeared broken. Harmless, but worth deleting.
+
+---
+
+## 2026-09-14
+
+Schema/model drift caught at startup and shown in the app — written after it took production down, and after the same bug class had already been recorded once.
+
+### What shipped
+- **`_reconcile_model_columns()`** — every column SQLModel's metadata declares is compared against the live table and added if missing, with a dialect-correct type and the model's own scalar default where it has one. Columns are added NULLABLE whatever the model says: an existing table with rows cannot take a NOT NULL column without a default, and failing a boot over that is worse than a nullable column the app immediately starts writing.
+- **`_check_schema_matches_models()`** — after both migration passes, anything still missing is recorded and printed as a banner-delimited `SCHEMA MISMATCH` line naming every table and column, followed by the exact `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` needed to fix each one.
+- **`GET /health/schema`** — the recorded result of that check, readable without touching a single table.
+- **A red panel on Home**, fed by that endpoint, naming the missing columns and carrying the SQL.
+
+### Why (root causes, decisions, rejected alternatives)
+- **Two occurrences of one bug class, which is what triggered this** under the standing "same bug class twice → automate a regression check" rule:
+  1. **`margin_pct` mis-scaling** — the blinds importer wrote a percentage where every other writer wrote a fraction. Undetected for months; the low-margin warning never fired on a single imported line, and 225 production rows needed correcting.
+  2. **`quotelineitem.nosing_product_id`** — declared on the model, never created in Postgres. Every query against that table failed; the Order Index and the KPI dashboard were dead while quoting carried on working, which made it read as a screen bug rather than a schema one. Diagnosed from a Render traceback and fixed with a hand-run `ALTER TABLE`.
+  Both are the same shape: a fact about the system maintained in two places, with nothing checking the two agree.
+- **Why the hand list was not enough, stated precisely.** `_ensure_new_columns()` logs when it adds a column and when an ALTER fails — but a skip is a bare `continue` with no output, and it never verifies the end state. A forgotten entry is therefore indistinguishable from "nothing needed doing": silence either way. It is **preserved, not superseded** — its ~120 entries carry considered defaults and backfills that cannot be inferred from a model (`'general'`, `0.30`, a seeded string) — and the reconciler runs after it, filling only what remains.
+- **A hard-failing boot was tried first and reversed within a day.** The previous version raised, on the reasoning that a service refusing to start is louder than one serving 500s. The outage disproved it on the point that matters: quoting kept working throughout. Refusing to boot would have taken the whole business offline to fix two screens, and left no UI in which to say why — forcing exactly the log archaeology this exists to end. Raising remains right for a structural contradiction no data depends on (`_verify_cascade_policy_complete()` still raises); a missing column is a data problem with a five-minute manual fix, and the app is more useful up.
+- **The alert is on Home, not on Business Overview, and that was found by testing rather than by planning.** The first version rode along on the Business Overview payload — which reads `quotelineitem`, so the screen carrying the warning was itself one of the screens returning 500. `/health/schema` reads only the in-memory result of the startup check, so it answers while every data screen is failing.
+
+### Deferred / parked (and why)
+- **No alerting outside the app** (email/push on a bad boot). The Home panel and the startup banner cover the stated goal — caught within seconds of a deploy rather than by a client-facing crash. Anything push-based is a new mechanism and was not asked for.
+- **The `Migration: backfilled job workflow for 125 existing quote(s)` line still prints on every boot.** Idempotent, but it is exactly the startup noise that makes a real line hard to spot. Noted, not fixed.
+
+### Open going into next session
+- The original `ALTER` failure for `nosing_product_id` was never explained — the column was in the hand list, correctly formed. The startup log of the build that first carried it would say why, and that log has not been read. Now moot in effect, since the reconciler and the check cover it either way, but the cause is genuinely unknown.
+- Several commits appear not to have deployed for a period; worth confirming auto-deploy is reliable on `bolton-backend`.
+
+---
+
 ## 2026-09-04
 
 Builder Portal, second pass — everything Burgert asked for after actually using the Builders screen: opening a builder, editing and deleting their estimates, deleting the builder, the missing screed and trim on the portal itself, the stairwell exclusion, and the real financials.

@@ -1895,6 +1895,38 @@ function renderLanding() {
 // architecture review item 4). Rendered only when there is something
 // wrong — a permanent "0 failed" badge is a thing people stop seeing,
 // and the entire point of this is to be noticed.
+// A column the database is missing (confirmed Sept 2026, second time
+// this bug class reached production). Sits above everything, including
+// the archive panel: when this is showing, some screens are returning
+// 500s and no figure on this page can be trusted until it is fixed.
+//
+// Renders nothing when the schema is fine — same rule as the archive
+// panel, for the same reason: a permanent "all good" badge is one
+// nobody reads.
+function schemaHealthHtml(schema) {
+  if (!schema || schema.ok !== false) return '';
+  const cols = (schema.missing_columns || []);
+  const sql = cols.map(c => {
+    const [table, column] = c.split('.');
+    return `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} &lt;type&gt;;`;
+  }).join('\n');
+  return `
+    <div class="card schema-alert">
+      <h2>Database is missing ${cols.length} column${cols.length === 1 ? '' : 's'}</h2>
+      <p>The app expects ${cols.length === 1 ? 'a column that does' : 'columns that do'} not exist in the database.
+         <b>Any screen reading ${cols.length === 1 ? 'that table' : 'those tables'} will fail to load</b> until this is fixed —
+         everything else keeps working.</p>
+      <p class="schema-cols">${cols.join('<br>')}</p>
+      <p class="muted" style="font-size:12px; margin:6px 0 0;">
+        Fix it in the Supabase SQL editor:</p>
+      <pre class="schema-sql">${sql}</pre>
+      <p class="muted" style="font-size:11.5px; margin:6px 0 0;">
+        Checked at startup${schema.checked_at ? ' — ' + new Date(schema.checked_at).toLocaleString('en-ZA') : ''}.
+        No restart needed after adding the column.
+      </p>
+    </div>`;
+}
+
 function archiveHealthHtml(health) {
   if (!health || !health.needs_attention) return '';
   const bits = [];
@@ -1915,10 +1947,31 @@ function archiveHealthHtml(health) {
     </div>`;
 }
 
+// ON HOME, NOT ON BUSINESS OVERVIEW — and that placement is the whole
+// point (confirmed Sept 2026, found by testing rather than by planning).
+// The first version of this panel rode along on the Business Overview
+// payload, which reads quotelineitem — so the moment a column on that
+// table went missing, the screen carrying the warning was itself one of
+// the screens returning 500. The alert has to come from somewhere the
+// broken table cannot take down.
+//
+// /health/schema reads nothing but the result the startup check left in
+// memory, so it answers even when every data screen is failing.
+async function renderSchemaAlert() {
+  const host = document.getElementById('schemaAlertHost');
+  if (!host) return;
+  try {
+    const res = await fetch(`${API}/health/schema`);
+    if (!res.ok) return;
+    host.innerHTML = schemaHealthHtml(await res.json());
+  } catch (e) { /* best-effort — never block Home over this */ }
+}
+
 function renderLandingTiles(el) {
   setPageTitle('Home');
   document.body.classList.add('home-active');
   el.innerHTML = `
+    <div id="schemaAlertHost"></div>
     <div class="landing-welcome home-welcome">
       <h1>Blinds &amp; Flooring Studio</h1>
       <p>Pick where you're working today.</p>
@@ -1953,6 +2006,9 @@ function renderLandingTiles(el) {
     </div>
   `;
   loadMyLeadsToday();
+  // Async, after the tiles are already on screen — same reasoning as
+  // loadMyLeadsToday() above: Home must never wait on a health check.
+  renderSchemaAlert();
 }
 
 // Assigned Leads, Stage 1 (confirmed Sept 2026) — Burgert's own real

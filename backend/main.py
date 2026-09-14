@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
-from sqlalchemy import inspect, text, or_
+from sqlalchemy import inspect, text, or_, func
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
@@ -108,6 +108,30 @@ def sast_date(value) -> Optional[date]:
     None out — an absent accepted_at means the job was never sold, which
     is a real answer, not a missing one."""
     return (value + SAST_OFFSET).date() if value else None
+
+
+@app.get("/health/schema")
+def schema_health():
+    """What the startup schema check found (confirmed Sept 2026).
+
+    Reports the check's recorded result rather than re-running it: the
+    question being answered is "did this deploy come up with a database
+    matching its models", which is a fact about the boot, not about now.
+
+    No Depends() here, and not because it is public — it is not. The
+    require_auth middleware is closed by default and covers this like
+    everything outside PUBLIC_PATHS. An explicit role dependency cannot
+    be used at this point in the file anyway: get_current_role is
+    defined some 2,000 lines below, and a default argument is evaluated
+    at definition time. Same reason /version directly below carries
+    none.
+    """
+    return {
+        "ok": not SCHEMA_CHECK["missing"],
+        "missing_columns": SCHEMA_CHECK["missing"],
+        "tables_checked": SCHEMA_CHECK["tables_checked"],
+        "checked_at": SCHEMA_CHECK["checked_at"],
+    }
 
 
 @app.get("/version")
@@ -804,20 +828,36 @@ def _reconcile_model_columns() -> list:
     return added
 
 
-def _assert_schema_matches_models():
-    """Fail the BOOT if the database is still missing a column a model
-    declares — rather than letting one screen 500 in production days
-    later (confirmed Sept 2026, after exactly that).
+# The result of the last startup schema check, held in memory so the
+# dashboard and the health endpoint can report it without re-querying
+# the database on every page load. Written once at boot.
+SCHEMA_CHECK = {"checked_at": None, "missing": [], "tables_checked": 0}
 
-    This is deliberately a hard failure. A half-migrated schema does not
-    announce itself: quoting kept working through the nosing_product_id
-    outage while the Order Index and the KPI dashboard were dead, so the
-    shape of the problem was invisible from the symptom. A service that
-    refuses to start, naming the column, is a five-minute fix; a service
-    that starts and serves 500s on two screens took a day to notice.
 
-    It runs after both migration passes, so reaching it at all means
-    something could not be repaired automatically and needs a person.
+def _check_schema_matches_models():
+    """Compare every model-declared column against the live database and
+    RECORD what is missing (confirmed Sept 2026, architecture review —
+    second occurrence of this bug class).
+
+    REVERSED FROM THE PREVIOUS VERSION, and worth saying why rather than
+    quietly swapping it: this function used to raise, killing the boot.
+    That was my call a day earlier, on the reasoning that a service
+    refusing to start is louder than one serving 500s. The outage that
+    followed proved it wrong on the specific point that matters — when
+    nosing_product_id went missing, QUOTING KEPT WORKING. Only the Order
+    Index and the KPI dashboard were down. A hard failure would have
+    taken the whole business offline to fix two screens, and would have
+    left no UI in which to say what was wrong, forcing exactly the log
+    archaeology this is meant to end.
+
+    So it now records instead: the boot completes, the log carries one
+    unmistakable line, and the state is surfaced in the app itself —
+    archive_health()'s panel already proved that pattern works.
+
+    Raising is still the right answer for a structural contradiction
+    that no data depends on — see _verify_cascade_policy_complete(),
+    which does raise. A missing column is not that: it is a data problem
+    with a five-minute manual fix, and the app is more useful up.
     """
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -829,16 +869,24 @@ def _assert_schema_matches_models():
         for column in table.columns:
             if column.name not in live:
                 missing.append(f"{table_name}.{column.name}")
+    SCHEMA_CHECK["checked_at"] = datetime.utcnow().isoformat()
+    SCHEMA_CHECK["missing"] = missing
+    SCHEMA_CHECK["tables_checked"] = len(existing_tables)
     if missing:
-        raise RuntimeError(
-            "Schema does not match the models — the database is missing: "
-            + ", ".join(missing)
-            + ". Every query touching those tables will fail at runtime, so this "
-              "refuses to start rather than serving 500s on whichever screen reads "
-              "them first. The startup log above names why each ALTER failed; add "
-              "the column by hand in Supabase if it cannot be added automatically."
-        )
-    print(f"Schema: verified — every column on {len(existing_tables)} table(s) matches the models")
+        # Deliberately shouty and deliberately one line: this has to be
+        # findable in a wall of startup output, and greppable.
+        print("=" * 70)
+        print(f"SCHEMA MISMATCH: {len(missing)} column(s) declared by the models do "
+              f"NOT exist in the database: {', '.join(missing)}")
+        print("Every query touching those tables will fail at runtime. Add them by "
+              "hand in the Supabase SQL editor, e.g.:")
+        for item in missing:
+            table_name, column_name = item.split(".", 1)
+            print(f"    ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} <type>;")
+        print("This is also shown on the Business Overview and at GET /health/schema.")
+        print("=" * 70)
+    else:
+        print(f"Schema: verified — every column on {len(existing_tables)} table(s) matches the models")
 
 
 def _next_job_number(session: Session, tenant_id: str) -> str:
@@ -1393,7 +1441,7 @@ def on_startup():
     # does not match. See _reconcile_model_columns() for the outage that
     # produced this.
     _reconcile_model_columns()
-    _assert_schema_matches_models()
+    _check_schema_matches_models()
     _enable_row_level_security()
     # Payments as a List (confirmed Sept 2026) — after create_all, since
     # it writes into the table that call just created.
@@ -3712,6 +3760,15 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
             # dashboard and the flagged record can never disagree about
             # how many documents are stuck.
             "archive_health": archive_health(session, tenant_id),
+            # Schema drift (Sept 2026, second occurrence of that bug
+            # class). Same reasoning as archive_health above it: a
+            # failure nothing displays is a failure nobody finds until a
+            # client-facing screen breaks.
+            "schema_health": {
+                "ok": not SCHEMA_CHECK["missing"],
+                "missing_columns": SCHEMA_CHECK["missing"],
+                "checked_at": SCHEMA_CHECK["checked_at"],
+            },
             "by_branch": by_branch,
             "by_rep": by_rep,
             "today": sales_profit_for(today_quotes),
@@ -4666,10 +4723,15 @@ def _create_and_upload_archive(session: Session, tenant_id: str, username: str, 
 
 
 def _next_archive_version(session: Session, tenant_id: str, entity_type: str, entity_id: int) -> int:
-    existing = session.exec(select(DocumentArchive).where(
-        DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
-    )).all()
-    return len(existing) + 1
+    """A COUNT, not a fetch (confirmed Sept 2026, memory investigation).
+    This used to load every prior version of the document -- full PDF
+    bytes and all -- purely to take len() of the list, on every single
+    document save."""
+    existing = session.exec(select(func.count()).select_from(DocumentArchive).where(
+        DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type,
+        DocumentArchive.entity_id == entity_id,
+    )).one()
+    return existing + 1
 
 
 class ArchiveDocumentRequest(BaseModel):
@@ -4722,7 +4784,12 @@ def list_document_archive(entity_type: str, entity_id: int, tenant_id: str = Dep
     several versions; see the dedicated download endpoint below for
     the actual file)."""
     with Session(engine) as session:
-        rows = session.exec(select(DocumentArchive).where(
+        rows = session.exec(select(
+            DocumentArchive.id, DocumentArchive.version, DocumentArchive.reference,
+            DocumentArchive.status, DocumentArchive.dropbox_path, DocumentArchive.failure_reason,
+            DocumentArchive.is_accepted_version, DocumentArchive.created_at,
+            DocumentArchive.uploaded_at, DocumentArchive.created_by,
+        ).where(
             DocumentArchive.tenant_id == tenant_id, DocumentArchive.entity_type == entity_type, DocumentArchive.entity_id == entity_id,
         ).order_by(DocumentArchive.version.desc())).all()
         return [{
@@ -4851,26 +4918,36 @@ def archive_health(session: Session, tenant_id: str) -> dict:
     failed is "Dropbox refused this". One is a waiting state, the other
     needs somebody.
 
-    Read-only, and cheap enough for the dashboard — it counts rows and
-    reads one timestamp, never the stored PDF bytes.
+    Read-only, and genuinely cheap: five aggregates, computed by
+    Postgres. It previously SELECTed every DocumentArchive and every
+    QuotePhoto row in full — PDF and image bytes included — to count
+    them in Python, on the dashboard and again nightly in the
+    consistency monitor. With 58MB of photos on one job that was enough
+    on its own to push the instance into its memory limit (14 Sept
+    2026). It counts rows and reads one timestamp; it never loads a
+    stored byte.
     """
-    archives = session.exec(select(DocumentArchive).where(
-        DocumentArchive.tenant_id == tenant_id)).all()
-    failed = [a for a in archives if a.status == "failed"]
-    pending = [a for a in archives if a.status == "pending"]
-    photos = session.exec(select(QuotePhoto).where(
-        QuotePhoto.tenant_id == tenant_id)).all()
-    photo_failed = [p for p in photos if p.dropbox_status in ("failed", "pending")]
-    last_ok = max((a.uploaded_at for a in archives if a.uploaded_at), default=None)
+    def archive_count(*conditions):
+        return session.exec(select(func.count()).select_from(DocumentArchive).where(
+            DocumentArchive.tenant_id == tenant_id, *conditions)).one()
+
+    failed = archive_count(DocumentArchive.status == "failed")
+    pending = archive_count(DocumentArchive.status == "pending")
+    total = archive_count()
+    photo_failed = session.exec(select(func.count()).select_from(QuotePhoto).where(
+        QuotePhoto.tenant_id == tenant_id,
+        QuotePhoto.dropbox_status.in_(("failed", "pending")))).one()
+    last_ok = session.exec(select(func.max(DocumentArchive.uploaded_at)).where(
+        DocumentArchive.tenant_id == tenant_id)).one()
     return {
-        "failed": len(failed),
-        "pending": len(pending),
-        "photos_not_uploaded": len(photo_failed),
-        "total": len(archives),
+        "failed": failed,
+        "pending": pending,
+        "photos_not_uploaded": photo_failed,
+        "total": total,
         "last_successful_upload": last_ok.isoformat() if last_ok else None,
         # One number for the dashboard to react to, so the frontend does
         # not have to decide what counts as a problem.
-        "needs_attention": len(failed) + len(pending) + len(photo_failed),
+        "needs_attention": failed + pending + photo_failed,
     }
 
 
@@ -7444,7 +7521,33 @@ def _upload_job_photo(session: Session, tenant_id: str, quote: Optional["Quote"]
     return photo
 
 
-def _photo_out(photo: "QuotePhoto") -> dict:
+# Every column on QuotePhoto EXCEPT photo_bytes (confirmed Sept 2026,
+# memory investigation). Listing them is the point: select(QuotePhoto)
+# loads the BLOB whether or not the caller wants it, and the callers
+# below only ever want the metadata. Measured on production before
+# changing anything -- GET /quotes/259/photos returned an 8KB JSON body
+# in 2 903ms because it pulled ~57MB of image data out of Postgres to
+# build it, then threw the images away in _photo_out(). The same
+# pattern, on archive_health(), put every photo AND every archived PDF
+# in memory to count how many had failed to reach Dropbox, on the
+# dashboard and again nightly. That is what exceeded the instance's
+# memory ceiling on 14 Sept, twelve minutes AFTER the upload that was
+# blamed for it had already finished.
+#
+# deferred()/load_only() were the obvious alternative and are wrong
+# here: _photo_out() calls .dict(), which touches every attribute and
+# would fire one lazy SELECT per row for the bytes -- turning one big
+# query into N worse ones.
+PHOTO_META_COLUMNS = (
+    QuotePhoto.id, QuotePhoto.tenant_id, QuotePhoto.quote_id,
+    QuotePhoto.builder_estimate_id, QuotePhoto.storage_path,
+    QuotePhoto.original_filename, QuotePhoto.content_type,
+    QuotePhoto.size_bytes, QuotePhoto.uploaded_by, QuotePhoto.created_at,
+    QuotePhoto.dropbox_status, QuotePhoto.dropbox_failure_reason,
+)
+
+
+def _photo_out(photo) -> dict:
     """photo_bytes deliberately excluded from every API response
     (confirmed Sept 2026, same reasoning DocumentArchive's own
     pdf_bytes already follows, list_document_archive() above) — real
@@ -7452,6 +7555,12 @@ def _photo_out(photo: "QuotePhoto") -> dict:
     serialization tries to JSON-encode the whole model, and raw binary
     (a JPEG's own magic bytes) isn't valid UTF-8 — a real 500 the very
     first time this was tested end-to-end, not a hypothetical."""
+    # A metadata Row (PHOTO_META_COLUMNS) has no photo_bytes to drop;
+    # a full ORM object still does. Both shapes reach here -- the upload
+    # endpoint returns the object it just saved, every list endpoint
+    # returns rows.
+    if hasattr(photo, "_mapping"):
+        return dict(photo._mapping)
     d = photo.dict()
     d.pop("photo_bytes", None)
     return d
@@ -7477,7 +7586,7 @@ def list_quote_photos(quote_id: int, role: str = Depends(get_current_role), tena
     with Session(engine) as session:
         get_or_404(session, Quote, quote_id, tenant_id, "Quote")
         photos = session.exec(
-            select(QuotePhoto).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
+            select(*PHOTO_META_COLUMNS).where(QuotePhoto.quote_id == quote_id, QuotePhoto.tenant_id == tenant_id)
             .order_by(QuotePhoto.created_at)
         ).all()
         return [_photo_out(p) for p in photos]
@@ -7511,7 +7620,8 @@ def list_all_job_photos(tenant_id: str = Depends(get_current_tenant)):
     as it always did — nothing to open for a photo with no quote yet."""
     with Session(engine) as session:
         photos = session.exec(
-            select(QuotePhoto).where(QuotePhoto.tenant_id == tenant_id).order_by(QuotePhoto.created_at.desc())
+            select(*PHOTO_META_COLUMNS).where(QuotePhoto.tenant_id == tenant_id)
+            .order_by(QuotePhoto.created_at.desc())
         ).all()
         quote_ids = {p.quote_id for p in photos if p.quote_id}
         quotes_by_id = {q.id: q for q in session.exec(select(Quote).where(Quote.id.in_(quote_ids))).all()} if quote_ids else {}
@@ -7595,7 +7705,8 @@ async def upload_builder_estimate_photos(slug: str, estimate_id: int, files: Lis
         ).first()
         if not estimate:
             raise HTTPException(404, "Estimate not found.")
-        already = len(session.exec(select(QuotePhoto).where(QuotePhoto.builder_estimate_id == estimate_id)).all())
+        already = session.exec(select(func.count()).select_from(QuotePhoto).where(
+            QuotePhoto.builder_estimate_id == estimate_id)).one()
         if already + len(files) > MAX_PHOTOS_PER_SUBMISSION:
             raise HTTPException(400, f"At most {MAX_PHOTOS_PER_SUBMISSION} photos per submission.")
         saved = 0

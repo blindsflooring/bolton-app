@@ -1458,3 +1458,33 @@ function closeClientPicker(result) {
   if (panel) panel.innerHTML = '';
   if (clientPickerResolve) { clientPickerResolve(result); clientPickerResolve = null; }
 }
+
+
+// ===== Photo loading, a few at a time (confirmed Sept 2026, memory
+// investigation) =====
+//
+// All three photo galleries used to do `photos.forEach(async p => fetch(...))`,
+// which starts EVERY request at once. Opening a job with 20 photos on it
+// asked the server for 20 full-size images simultaneously; each one is
+// read whole into memory server-side before a byte is sent, so a single
+// gallery view could ask a 512MB instance for 60MB+ of image data in one
+// breath. That is what tipped bolton-backend over its memory limit on
+// 14 Sept 2026 -- twelve minutes AFTER the upload that got the blame.
+//
+// Three at a time keeps thumbnails filling in visibly fast while
+// bounding what the server is ever holding at once. Failures stay
+// per-photo: one broken image must not stop the rest of the gallery
+// loading, which is exactly what the old per-item try/catch gave and
+// what this preserves.
+const PHOTO_FETCH_CONCURRENCY = 3;
+
+async function loadInBatches(items, limit, fn) {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
