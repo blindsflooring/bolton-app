@@ -1454,6 +1454,11 @@
   /* Clients: bulk selection (confirmed Sept 2026). The bar only exists
      while something is ticked, so it never takes space from the list
      itself. */
+  /* Archive failures (Sept 2026). Coral border, not a coral card: it
+     has to read as "deal with this" without shouting over the money
+     figures underneath it. */
+  .archive-health { border-left: 3px solid var(--coral); }
+  .archive-health h2 { color: var(--coral); }
   .client-select-bar {
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
     background: var(--card); border: 1px solid var(--teal); border-radius: 8px;

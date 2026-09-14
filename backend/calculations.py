@@ -9,6 +9,50 @@ from models import (
 
 FLOORING_MARGIN_WARN_THRESHOLD = 0.30  # warn if a discount pushes margin below this
 
+# ===== WHAT "DISCOUNT" MEANS, PER CATEGORY =====
+# (documented Sept 2026, architecture review item 3 — the behaviour below
+# was already true; what was missing was anywhere saying so, which made
+# an intentional difference indistinguishable from an accident.)
+#
+# discount_pct is always a CLIENT-FACING discount on the selling price.
+# It is never a supplier discount — trade_discount_pct and
+# settlement_discount_pct are separate, apply to COST, and never move the
+# client's price. The base it comes off differs by category:
+#
+#   Vinyl / SPC / laminate   (marked_up x (1 - discount)) + labour
+#   Carpet                   (marked_up x (1 - discount)) + labour
+#       Labour is deliberately NOT discounted in either. Labour is
+#       charged at a flat rate per m2 that reflects what the job costs
+#       to install; discounting it discounts the installer's time, which
+#       is not what "10% off the floor" means.
+#
+#   Screed                   base x job-type multiplier x (1 - discount)
+#       The whole line, because a screed line has no separate labour
+#       component to hold back — the job-type multiplier already IS its
+#       labour and complexity. Discounting the line discounts the job.
+#
+#   Trim / skirting          unit_price x (1 - discount), x length
+#   Blinds (price book)      book x (1 - discount)
+#   Blinds (calculator)      (book + options) x (1 - discount)
+#       Supply-only categories with no labour line, so there is nothing
+#       to hold back and the whole price moves.
+#
+#   Stairwell                NOT DISCOUNTABLE.
+#       calculate_stairwell_line() takes no discount_pct and the add/edit
+#       requests never send one. As of Sept 2026 the Discount % field is
+#       hidden on the Stairwell tab rather than accepting a number and
+#       silently ignoring it (architecture review item 2). If stairwells
+#       should become discountable, that is a pricing decision, and the
+#       open question is whether the per-stair labour moves with it —
+#       the answer for every other category is no.
+#
+# ONE CONSEQUENCE WORTH KNOWING, checked and deliberately left alone:
+# on a discounted flooring or carpet line, unit_price is the marked-up
+# per-m2 rate BEFORE the discount, so unit_price x quantity does not
+# equal line_total. That is safe because nothing shows it as a rate to a
+# client — the quote line table and the printed document both render
+# line_total. It is an informational figure for the person quoting.
+
 # Screed / smoothing compound allowance (confirmed Aug 2026, iTe LEVELiTe F10
 # 20kg bags at R235 ex VAT — coverage varies by substrate, deeper fill needed
 # for rougher prep):

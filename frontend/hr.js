@@ -12,17 +12,15 @@
 // there) and READ here in renderHR()/hrSubnav(). Same category as
 // CATEGORY_LABELS and sortByPriority in earlier rounds.
 //
-// currentEmployeeDetailId below is carried over as-is but is dead code
-// — confirmed by search before moving it: declared, never read or
-// written anywhere in the app. Left in place since removing unrelated
-// dead code wasn't part of this extraction; flagged here rather than
-// silently dropped or silently kept without comment.
+// currentEmployeeDetailId was carried through this extraction as
+// declared-but-never-read dead code, flagged rather than silently
+// dropped. Removed Sept 2026 (architecture review item 7) after a
+// second search confirmed nothing reads or writes it.
 //
 // Checked and confirmed nothing outside this file reads employee or
 // commission data directly — Quote Builder, Order Index, Clients, and
 // Price Book have no dependency on anything here.
 
-let currentEmployeeDetailId = null;
 
 function hrSubnav(active) {
   const sections = [

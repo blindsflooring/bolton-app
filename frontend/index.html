@@ -1097,7 +1097,17 @@ itself is). -->
           <button type="button" onclick="addLandingRow()">+ Add landing</button>
           <div class="muted" style="margin-top:6px; font-size:12px;">Total landing area: <b id="landing_total_display">0.00</b> m² — billed as a normal flooring material line (same vinyl product, standard per-m² rate, no stair-tread markup/logic).</div>
         </div>
-        <div class="field"><label>Discount %</label><input id="line_discount" type="number" step="1" value="0"></div>
+        <!-- Discount % is hidden on the Stairwell tab (confirmed Sept
+        2026, architecture review item 2). calculate_stairwell_line()
+        takes no discount and the stairwell request never sent one, so
+        this field accepted a number and silently dropped it — the quote
+        went out at full price with nothing to show a discount had been
+        asked for. Hidden rather than wired up: whether a stairwell
+        should be discountable, and whether the per-stair labour moves
+        with it, is a pricing decision, not a bug fix. The rule for
+        every other category is written down at the top of
+        calculations.py. -->
+        <div class="field discount-field"><label>Discount %</label><input id="line_discount" type="number" step="1" value="0"></div>
       </div>
       <!-- Live price preview (confirmed Aug 2026, Vinyl Quoting UX
       Redesign proposal §01/§10, Phase 4, approved) — "the core of what
@@ -1837,6 +1847,30 @@ function renderLanding() {
   if (landingView === 'flaggedItems') return renderFlaggedItems(el);
 }
 
+// Documents that never reached Dropbox (confirmed Sept 2026,
+// architecture review item 4). Rendered only when there is something
+// wrong — a permanent "0 failed" badge is a thing people stop seeing,
+// and the entire point of this is to be noticed.
+function archiveHealthHtml(health) {
+  if (!health || !health.needs_attention) return '';
+  const bits = [];
+  if (health.failed) bits.push(`<b>${health.failed}</b> failed to upload`);
+  if (health.pending) bits.push(`<b>${health.pending}</b> pending (Dropbox not connected)`);
+  if (health.photos_not_uploaded) bits.push(`<b>${health.photos_not_uploaded}</b> job photo${health.photos_not_uploaded === 1 ? '' : 's'} not uploaded`);
+  const last = health.last_successful_upload
+    ? new Date(health.last_successful_upload).toLocaleDateString('en-ZA', {day:'numeric', month:'short', year:'numeric'})
+    : 'never';
+  return `
+    <div class="card archive-health">
+      <h2>Documents not in Dropbox</h2>
+      <p>${bits.join(' &middot; ')}</p>
+      <p class="muted" style="font-size:12px; margin:4px 0 0;">
+        Last successful upload: ${last}. Open the job and press <b>Retry</b> in its document history —
+        the PDF is already saved in Bolton, so a retry re-sends it without regenerating anything.
+      </p>
+    </div>`;
+}
+
 function renderLandingTiles(el) {
   setPageTitle('Home');
   document.body.classList.add('home-active');
@@ -2525,6 +2559,13 @@ async function renderBusinessOverview(el) {
   el.innerHTML = `
     <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
     <div class="landing-welcome"><h1>Business Overview</h1><p>Live, built from real quote data — nothing here is estimated.</p></div>
+
+    <!-- Documents that never reached Dropbox (Sept 2026, architecture
+         review item 4). Sits directly under the heading, above the
+         money, because a silent archive failure is the one thing on
+         this screen that needs acting on rather than reading. Renders
+         nothing at all when everything is uploaded. -->
+    ${archiveHealthHtml(data.archive_health)}
 
     <!-- Today/Monthly Sales & Profit (confirmed Aug 2026) -- Sales in
          teal, Profit in coral throughout this page (same two colours

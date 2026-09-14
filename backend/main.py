@@ -672,6 +672,10 @@ def _ensure_new_columns():
         # spec — they came from the price book or a spreadsheet import,
         # neither of which has one. See QuoteLineItem.blind_spec_json.
         ("quotelineitem", "blind_spec_json", "TEXT", "NULL"),
+        # Architecture review item 6 (Sept 2026). NULL everywhere is the
+        # truth: no stairwell line before this recorded which nosing it
+        # used. See QuoteLineItem.nosing_product_id.
+        ("quotelineitem", "nosing_product_id", "INTEGER", "NULL"),
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -1216,6 +1220,44 @@ def _fix_orphaned_quotes_remediation():
 
 
 @app.on_event("startup")
+def _fix_mis_scaled_margin_pct():
+    """One-time data correction (confirmed Sept 2026, architecture review
+    item 1) — imported blinds lines stored margin_pct as a PERCENTAGE
+    while every other writer stored a fraction. See blinds_import.py for
+    the full reasoning; this fixes the rows already written.
+
+    THE DISCRIMINATOR IS `> 1`, STRICTLY, and that matters. margin_pct is
+    (sell - cost) / sell, which cannot exceed 1 for any non-negative
+    cost — so anything above 1 is certainly mis-scaled. It cannot be
+    `>= 1`: production carries three real misc lines at exactly 1.0
+    (zero-cost lines, a genuine 100% margin), and dividing those by 100
+    would corrupt correct data to fix incorrect data.
+
+    Idempotent by construction: every row it touches ends below 1, so a
+    second run finds nothing. Safe to leave in startup permanently, same
+    as every other remediation here.
+    """
+    try:
+        with Session(engine) as session:
+            rows = session.exec(select(QuoteLineItem).where(
+                QuoteLineItem.margin_pct > 1.0)).all()
+            if not rows:
+                print("Margin scale: no mis-scaled margin_pct rows — nothing to do")
+                return
+            by_category = {}
+            for line in rows:
+                by_category[line.category] = by_category.get(line.category, 0) + 1
+                line.margin_pct = round(line.margin_pct / 100.0, 4)
+                session.add(line)
+            session.commit()
+            detail = ", ".join(f"{n} {cat}" for cat, n in sorted(by_category.items()))
+            print(f"Margin scale: corrected {len(rows)} line(s) from percentage to fraction ({detail})")
+    except Exception as e:
+        # Same isolation as every other startup remediation: a failure
+        # here must never stop the app coming up.
+        print(f"Margin scale: correction FAILED ({e}) — needs manual review")
+
+
 def on_startup():
     _verify_cascade_policy_complete()
     _ensure_new_columns()
@@ -1224,6 +1266,7 @@ def on_startup():
     # Payments as a List (confirmed Sept 2026) — after create_all, since
     # it writes into the table that call just created.
     _backfill_quote_payments()
+    _fix_mis_scaled_margin_pct()
     with Session(engine) as session:
         if not session.exec(select(CommissionRate)).first():
             # Confirmed Aug 2026: seeding the brief's own recommended GP
@@ -3086,13 +3129,17 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
     understate the real win rate. "Won" = accepted, invoiced, or paid.
     "Lost" = declined only.
 
-    Trusted Tester Accounts brief (confirmed Aug 2026): explicitly
-    blocked for trusted_tester specifically — this endpoint had NO role
-    restriction at all before this (Sales could already reach it via a
-    direct API call despite the frontend hiding the tile; that
-    pre-existing gap is untouched here, out of this brief's scope —
-    this only ADDS a new exclusion for trusted_tester, never removes
-    existing access from Owner/Admin/Sales). Every figure below also
+    ROLE ACCESS, as it stands now: Owner only. It was Owner/Admin/Sales
+    with a known hole — Sales could reach it by direct API call even
+    though the frontend hid the tile — and that was closed in Sept 2026
+    after an audit confirmed Ryno and Madri both received the whole
+    business's won value, top sellers and per-rep performance. The
+    original wording of this paragraph described the hole as still open
+    long after it was shut; it has been replaced rather than annotated
+    (architecture review item 8).
+
+    Trusted tester accounts are excluded separately and for a different
+    reason: every figure below also
     excludes quotes created by a Trusted Tester account entirely, for
     every role that CAN see this dashboard — a family member's test
     quote must never inflate real Won Value even from Burgert's own
@@ -3528,6 +3575,11 @@ def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = D
 
         return {
             "overall": summarize(quotes),
+            # Dropbox archive health (Sept 2026, item 4) — the same
+            # helper the nightly consistency monitor uses, so the
+            # dashboard and the flagged record can never disagree about
+            # how many documents are stuck.
+            "archive_health": archive_health(session, tenant_id),
             "by_branch": by_branch,
             "by_rep": by_rep,
             "today": sales_profit_for(today_quotes),
@@ -4105,9 +4157,20 @@ def delete_order_sheet_line(order_sheet_id: int, line_id: int, tenant_id: str = 
 # Order Sheets (finalize), and the nightly Order Index CSV snapshot
 # (APScheduler — confirmed always-on Render plan, so an in-process
 # scheduler is reliable; no separate Render Cron Job service needed).
+# Only ONE of these four values still names a real Dropbox folder
+# (clarified Sept 2026, architecture review item 7). Quotes/Invoices/
+# Orders have not been folder names since the Aug 2026 folder flatten —
+# those three file under /Bolton/{Branch}/{Category}/ instead (see
+# _archive_folder_path()). Their entries survive because this dict is
+# also the list of VALID entity types, which archive_document() checks
+# against. OrderIndexSnapshot is the one whose value is still a real
+# folder: a snapshot spans every branch and category, so neither level
+# applies to it.
 ARCHIVE_CATEGORY_FOLDER = {
-    "Quote": "Quotes", "Invoice": "Invoices", "OrderSheet": "Orders",
-    "OrderIndexSnapshot": "Order Index Snapshots",
+    "Quote": "Quotes",                 # not a folder — valid-type entry only
+    "Invoice": "Invoices",             # not a folder — valid-type entry only
+    "OrderSheet": "Orders",            # not a folder — valid-type entry only
+    "OrderIndexSnapshot": "Order Index Snapshots",   # a real folder
 }   # NOTE (confirmed Aug 2026, folder-flatten pass): these labels are no
     # longer used as real folder names for Quote/Invoice/OrderSheet — see
     # _branch_folder_name() below — this dict now only (a) validates
@@ -4639,6 +4702,46 @@ def _order_index_snapshot_csv(session: Session, tenant_id: str) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def archive_health(session: Session, tenant_id: str) -> dict:
+    """How many documents did NOT reach Dropbox (confirmed Sept 2026,
+    architecture review item 4).
+
+    THE REASON THIS EXISTS. A failed upload deliberately never blocks a
+    save — the row is written, the status becomes "failed" or "pending",
+    and the person carries on. That is the right behaviour and it is
+    also exactly how document archiving stopped working for weeks with
+    nobody noticing: first an expired Dropbox token, then a CSS selector
+    that broke PDF rendering. Two unrelated causes, the same silence.
+    Nothing anywhere counted the failures.
+
+    "pending" and "failed" are kept apart because they mean different
+    things: pending is "no credential configured yet, will retry",
+    failed is "Dropbox refused this". One is a waiting state, the other
+    needs somebody.
+
+    Read-only, and cheap enough for the dashboard — it counts rows and
+    reads one timestamp, never the stored PDF bytes.
+    """
+    archives = session.exec(select(DocumentArchive).where(
+        DocumentArchive.tenant_id == tenant_id)).all()
+    failed = [a for a in archives if a.status == "failed"]
+    pending = [a for a in archives if a.status == "pending"]
+    photos = session.exec(select(QuotePhoto).where(
+        QuotePhoto.tenant_id == tenant_id)).all()
+    photo_failed = [p for p in photos if p.dropbox_status in ("failed", "pending")]
+    last_ok = max((a.uploaded_at for a in archives if a.uploaded_at), default=None)
+    return {
+        "failed": len(failed),
+        "pending": len(pending),
+        "photos_not_uploaded": len(photo_failed),
+        "total": len(archives),
+        "last_successful_upload": last_ok.isoformat() if last_ok else None,
+        # One number for the dashboard to react to, so the frontend does
+        # not have to decide what counts as a problem.
+        "needs_attention": len(failed) + len(pending) + len(photo_failed),
+    }
+
+
 def _run_consistency_checks(session: Session, tenant_id: str) -> list:
     """Live Consistency Monitor (confirmed Aug 2026) — "reuse the exact
     same category-consistency checks already proposed in the Category-
@@ -4653,6 +4756,31 @@ def _run_consistency_checks(session: Session, tenant_id: str) -> list:
     rather than building a second one (see run_consistency_monitor_job()
     below for where these actually get written)."""
     findings = []
+
+    # Documents that never reached Dropbox (Sept 2026, item 4). Raised
+    # here as well as on the dashboard because the dashboard only helps
+    # if somebody opens it — this one lands in the same flagged-records
+    # list every other consistency finding does, once per day, without
+    # anyone looking. De-duplication is handled by the caller: an
+    # identical still-open finding is never re-raised, so this stays one
+    # row until it is dealt with rather than one row per day.
+    health = archive_health(session, tenant_id)
+    if health["needs_attention"]:
+        bits = []
+        if health["failed"]:
+            bits.append(f"{health['failed']} document(s) FAILED to upload")
+        if health["pending"]:
+            bits.append(f"{health['pending']} pending (no Dropbox credential configured)")
+        if health["photos_not_uploaded"]:
+            bits.append(f"{health['photos_not_uploaded']} job photo(s) not uploaded")
+        last = health["last_successful_upload"] or "never"
+        findings.append({
+            "entity_type": "DocumentArchive", "entity_id": 0,
+            "note": ("Dropbox archive: " + "; ".join(bits)
+                     + f". Last successful upload: {last}. "
+                       "Each failed document can be retried from its job's document history."),
+        })
+
     lines = session.exec(select(QuoteLineItem).where(
         QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.category == "flooring",
     )).all()
@@ -7368,11 +7496,21 @@ ENTITY_TYPE_MODELS = {
 # "is this product actually used on a real quote" before a delete is
 # allowed to proceed. FlooringProduct covers both regular flooring lines
 # AND stairwell lines (a stairwell line's product_id is the vinyl
-# product — see add_stairwell_line). Known gap, not fixed here: a
-# TrimProduct used only as a stairwell's NOSING product isn't tracked by
-# id on QuoteLineItem (only nosing_length_m, a computed value survives),
-# so this check can't catch that specific usage — deleting a nosing
-# product still in active use on a stairwell quote would not be blocked.
+# product — see add_stairwell_line).
+#
+# THE NOSING GAP IS CLOSED (Sept 2026, architecture review item 6). It
+# used to read: a TrimProduct used only as a stairwell's nosing was not
+# tracked by id — only the derived nosing_length_m survived — so
+# deleting a nosing still in use was allowed. QuoteLineItem now stores
+# nosing_product_id, and _product_in_use() checks it alongside
+# product_id.
+#
+# HISTORICAL LINES CANNOT BE BACKFILLED and this is stated rather than
+# glossed: the id was never recorded, and the product name is baked into
+# a formatted product_name string that cannot be reversed to an id
+# safely. So the guard protects every stairwell line saved from Sept
+# 2026 onward; a nosing used only on an older line is still deletable.
+# Re-saving that line records the id.
 ENTITY_TYPE_LINE_CATEGORIES = {
     "FlooringProduct": ["flooring", "stairwell"],
     "BlindsProduct": ["blinds"],
@@ -8066,6 +8204,17 @@ def commit_supplier_console_changes(
                     QuoteLineItem.tenant_id == tenant_id,
                 )
             ).first()
+            # A trim used as a stairwell's NOSING is referenced by
+            # nosing_product_id, not product_id (that one holds the vinyl),
+            # so it needs its own look — see item 6's comment on
+            # ENTITY_TYPE_LINE_CATEGORIES above.
+            if not ref and d.entity_type == "TrimProduct":
+                ref = session.exec(
+                    select(QuoteLineItem).where(
+                        QuoteLineItem.nosing_product_id == d.entity_id,
+                        QuoteLineItem.tenant_id == tenant_id,
+                    )
+                ).first()
             if ref:
                 label = f"{entity.supplier} — {entity.product_name}" if hasattr(entity, "product_name") else f"{d.entity_type} #{d.entity_id}"
                 raise HTTPException(400, f"Can't delete {label} — it's used on quote #{ref.quote_id}. Remove it from that quote first if you really need to delete this product.")
@@ -13738,6 +13887,9 @@ def add_stairwell_line(quote_id: int, vinyl_product_id: int, nosing_product_id: 
             line_total=combined_line_total, margin_pct=combined_margin_pct,
             total_job_cost=combined_total_job_cost,
             num_stairs=num_stairs, stairwell_type=stairwell_type,
+            # Which nosing, recorded (Sept 2026, item 6) so the delete
+            # guard can see it and the edit form can reopen on it.
+            nosing_product_id=nosing_product_id,
             nosing_length_m=calc["nosing_length_m"], boxes_needed=calc["boxes_needed"],
             billed_vinyl_area_m2=calc["billed_vinyl_area_m2"],
             glue_area_m2=calc["glue_area_m2"],
@@ -14277,6 +14429,7 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
             line.colour = colour
         line.num_stairs = num_stairs
         line.stairwell_type = stairwell_type
+        line.nosing_product_id = nosing_product_id
         line.nosing_length_m = calc["nosing_length_m"]
         line.boxes_needed = calc["boxes_needed"]
         line.billed_vinyl_area_m2 = calc["billed_vinyl_area_m2"]
