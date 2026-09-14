@@ -74,9 +74,21 @@ The restart was **13:39 SAST (11:39 UTC)**. The upload window was 13:24–13:27 
 ### Deliberately not changed
 Five remaining `select()` sites still load byte columns — deleting a builder estimate's photos, backfilling `quote_id` when an estimate is linked, clearing a prior accepted version, the invoice-date backfill, and the Dropbox purge on quote delete. All are rare, operate on a handful of rows, and several need real ORM objects to mutate or delete. Fixing them would add risk without moving the number that mattered. Recorded here so the next person knows the omission was a decision.
 
+### HEIC, closed out
+Rejected at upload, and — the part that was still outstanding from the original brief — the photos already stored now explain themselves instead of sitting as unexplained broken icons.
+
+- **`_looks_like_heic()` reads the file, not the label.** A HEIC renamed to `.jpg` arrives claiming `image/jpeg` and a content-type check alone waves it straight through, producing exactly the broken thumbnail this exists to prevent. HEIC is ISO base media format: bytes 4–8 are the literal `ftyp` followed by a four-character brand. JPEG and PNG carry no `ftyp` at that offset, so it cannot misfire on a format Bolton accepts (asserted both ways).
+- **The message says what to do**, because "unsupported format" on its own just moves the problem to a phone call: the iPhone setting (Settings → Camera → Formats → Most Compatible) and how to rescue photos already taken (share them to yourself first, which converts to JPG).
+- **Existing HEIC photos are labelled, not hidden or deleted** — "HEIC / can't be shown in a browser — the file is safe in Dropbox", deliberately not styled as an error, because nothing failed. The gallery also skips fetching them, so no bandwidth is spent on bytes no browser can draw.
+- **File pickers narrowed** from `image/*` to `image/jpeg,image/png` across Job Detail, Quote Builder and the Builder Portal.
+
+**Not converted, deliberately.** Auto-conversion means `pillow` + `pillow-heif`, the first native image dependency in this codebase, and the deploy that introduces it should not also be the deploy fixing this. The camera setting costs ten seconds.
+
+27 checks, including every HEIC brand (`heic`/`heix`/`heim`/`heis`/`mif1`/`msf1`/`hevc`), the mislabelled case, no false positives on real JPEG/PNG, the empty and oversized rejections still behaving, and confirmation in a real browser that the three viewable photos still render while the two HEIC ones carry their label.
+
 ### Still open
-- **HEIC rejection on upload** — agreed as the next step, explicitly lower priority: Burgert's own Samsung saves JPEG, so this only bites if someone uploads from an iPhone. No auto-convert for now (it would mean `pillow` + `pillow-heif`, the first native image dependency in this codebase).
-- **The 6 duplicate photos on J-0021** (~17 MB) are still there, from the retry when they appeared broken. Harmless, but worth deleting.
+- **The 6 duplicate photos on J-0021** (~17 MB) are still there, from the retry when they appeared broken. Harmless, but deleting them reclaims nearly a third of total photo storage.
+- **The 14 original HEIC photos still need re-uploading as JPG** if Burgert wants to see them in Bolton. They are not lost — full-size copies are in Dropbox under `Apps/Bolton Archive 2/Bolton/Photos/Hermanus/Flooring/`.
 
 ---
 
