@@ -2831,15 +2831,20 @@ async function renderHistoricalComparison() {
   if (!card) return;
   if (currentRole() !== 'owner') { card.style.display = 'none'; return; }
 
-  let data;
-  try {
-    const res = await fetch(`${API}/analytics/historical-comparison`);
-    if (!res.ok) { card.style.display = 'none'; return; }
-    data = await res.json();
-  } catch (e) { card.style.display = 'none'; return; }
+  let data = historicalData;
+  if (!data) {
+    try {
+      const res = await fetch(`${API}/analytics/historical-comparison`);
+      if (!res.ok) { card.style.display = 'none'; return; }
+      data = await res.json();
+    } catch (e) { card.style.display = 'none'; return; }
+  }
 
   if (!data.enabled || !data.years.length) { card.style.display = 'none'; return; }
   card.style.display = '';
+  // Held so the year picker can re-render the chart without going back to
+  // the server for a payload that has not changed.
+  historicalData = data;
 
   const cur = data.current;
   const money = R;
@@ -2918,7 +2923,10 @@ async function renderHistoricalComparison() {
     <p style="display:none;">
     </p>
 
-    <h3 style="font-size:13px; margin:16px 0 4px;">Where this year sits</h3>
+    ${historicalBarChartHtml(data)}
+    ${historicalLineChartHtml(data)}
+
+    <h3 style="font-size:13px; margin:22px 0 4px;">Where this year sits</h3>
     <div style="overflow-x:auto;">
       <table class="mobile-card-table">
         <thead><tr>
@@ -2948,6 +2956,317 @@ async function renderHistoricalComparison() {
       ${cur.label} is live Bolton data only and was never imported, so nothing here is counted twice.
     </p>`;
 }
+
+// ===== Historical Comparison charts (confirmed Sept 2026) =====
+// Added ALONGSIDE the tables, never instead of them — the brief's own
+// requirement, and the right one: the charts answer "what shape is this"
+// at a glance, the tables answer "what exactly was it", and neither does
+// the other's job. The tables are also what makes a contrast-marginal
+// series colour acceptable, since no value is ever reachable only by
+// looking at a coloured mark.
+//
+// Inline SVG rather than the CSS-div bars used by the weekly graph
+// above. That pattern is right for seven fixed bars with no axis; it
+// cannot do a multi-series line with gridlines and a shared crosshair
+// without becoming a pile of absolutely-positioned divs. Both charts
+// here are SVG so they share one geometry, and no library is added.
+//
+// COLOUR IS FIXED PER FISCAL YEAR, never by position in the current
+// selection. Deselecting 2021/22 must not repaint 2019/20 into its
+// colour — somebody who has learned "the orange line is last year"
+// would be misled by their own filter. HISTORICAL_SERIES_COLOURS is
+// indexed by a year's place in the full descending list of years that
+// have a curve, computed once from the data and independent of what is
+// currently ticked.
+//
+// The palette was validated, not eyeballed (dataviz validator, light
+// surface, 8 categorical slots): lightness band, chroma floor, CVD
+// separation, normal-vision floor all pass. Slot 5's contrast against
+// white is 2.62:1, which obliges every value to be readable without
+// relying on the colour — satisfied by the legend, the end-of-line
+// labels and the tables directly below. The current year keeps the
+// teal this page already uses for sales everywhere else.
+const HISTORICAL_CURRENT_COLOUR = '#00949C';
+const HISTORICAL_SERIES_COLOURS = ['#EF663C', '#6C4FD8', '#A87C00', '#e87ba4',
+                                   '#008300', '#2a78d6', '#e34948'];
+const HISTORICAL_MAX_COMPARE_YEARS = 3;   // the brief's own cap — all nine at once is unreadable
+const HIST_GRID = '#e6e6e6';              // one step off the card surface, hairline, solid
+const HIST_AXIS_TEXT = '#6b7280';
+
+let historicalSelectedYears = null;   // Set of fiscal_year ints; null = "not chosen yet, use the default"
+let historicalData = null;
+
+// R1,2m / R850k / R1 234 — axis ticks and compact labels only. The exact
+// rand is always in the table.
+function histShortMoney(v) {
+  const n = Math.abs(v);
+  if (n >= 1000000) return 'R' + (v / 1000000).toFixed(1).replace('.', ',') + 'm';
+  if (n >= 1000) return 'R' + Math.round(v / 1000) + 'k';
+  return 'R' + Math.round(v);
+}
+
+// "Nice" axis maximum, so ticks land on readable numbers instead of
+// R8 362 408,17 divided by four.
+function histNiceMax(value) {
+  if (value <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(value)));
+  const n = value / pow;
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+  return step * pow;
+}
+
+function histEscape(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// ---------- Bar chart: full-year sales by fiscal year ----------
+// ONE series, so one colour for every bar and no legend — the heading
+// says what is plotted. Deliberately NOT a darker-bar-for-bigger ramp:
+// that would encode the bar's length twice and say nothing new.
+//
+// The current year is the one bar that is not comparable to the others,
+// because it is seven months against twelve. It is drawn as an outline
+// with a wash instead of a solid fill, and labelled YTD, so it reads as
+// unfinished rather than as a bad year.
+function historicalBarChartHtml(data) {
+  const years = data.years.slice().sort((a, b) => a.fiscal_year - b.fiscal_year);
+  const cur = data.current;
+  const bars = years.map(y => ({
+    label: y.label, short: String(y.fiscal_year).slice(2) + '/' + String(y.fiscal_year + 1).slice(2),
+    value: y.total_sales, partial: false,
+  }));
+  bars.push({
+    label: cur.label, short: String(cur.fiscal_year).slice(2) + '/' + String(cur.fiscal_year + 1).slice(2),
+    value: cur.total_sales, partial: true,
+  });
+
+  const W = 760, H = 260, padL = 54, padR = 14, padT = 16, padB = 42;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxVal = histNiceMax(Math.max(...bars.map(b => b.value), 1));
+  const band = plotW / bars.length;
+  const barW = Math.min(24, band - 8);          // capped at 24px, the rest is air
+  const y = v => padT + plotH - (v / maxVal) * plotH;
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const v = maxVal * f;
+    return `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="${HIST_GRID}" stroke-width="1"/>
+            <text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="${HIST_AXIS_TEXT}" style="font-variant-numeric:tabular-nums;">${histShortMoney(v)}</text>`;
+  }).join('');
+
+  // Label selectively — the year that stands out and the one that is
+  // still running. A number over all ten bars is noise nobody reads.
+  const biggest = bars.reduce((a, b) => (b.partial ? a : (b.value > a.value ? b : a)), bars[0]);
+
+  const rects = bars.map((b, i) => {
+    const cx = padL + band * i + band / 2;
+    const x = cx - barW / 2;
+    const top = y(b.value);
+    const h = Math.max(1, padT + plotH - top);
+    const showLabel = b.partial || b === biggest;
+    const label = showLabel
+      ? `<text x="${cx}" y="${top - 7}" text-anchor="middle" font-size="10.5" font-weight="700" fill="${HIST_AXIS_TEXT}" style="font-variant-numeric:tabular-nums;">${histShortMoney(b.value)}</text>`
+      : '';
+    // rx on the data end only; the baseline end stays square. Drawn as a
+    // rounded rect clipped at the baseline by the axis line sitting on it.
+    const fill = b.partial
+      ? `fill="${HISTORICAL_CURRENT_COLOUR}" fill-opacity="0.15" stroke="${HISTORICAL_CURRENT_COLOUR}" stroke-width="2"`
+      : `fill="${HISTORICAL_CURRENT_COLOUR}"`;
+    return `<g>
+      <rect x="${x}" y="${top}" width="${barW}" height="${h}" rx="4" ${fill}><title>${histEscape(b.label)}${b.partial ? ' (year to date)' : ''}: ${histEscape(R(b.value))}</title></rect>
+      ${label}
+      <text x="${cx}" y="${H - padB + 16}" text-anchor="middle" font-size="10" fill="${HIST_AXIS_TEXT}">${b.short}</text>
+      ${b.partial ? `<text x="${cx}" y="${H - padB + 29}" text-anchor="middle" font-size="9" font-weight="700" fill="${HISTORICAL_CURRENT_COLOUR}">YTD</text>` : ''}
+    </g>`;
+  }).join('');
+
+  return `
+    <h3 style="font-size:13px; margin:18px 0 2px;">Full year sales</h3>
+    <p class="muted" style="margin:0 0 6px; font-size:12px;">
+      One bar per fiscal year. ${histEscape(cur.label)} is outlined and marked YTD because it is
+      ${cur.month_index + 1} months against everyone else's twelve — it is not finished, not a fall.
+    </p>
+    <div style="overflow-x:auto;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%; min-width:520px; height:auto; display:block;" role="img"
+           aria-label="Full year sales by fiscal year. The current year is partial.">
+        ${ticks}
+        <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="${HIST_GRID}" stroke-width="1"/>
+        ${rects}
+      </svg>
+    </div>`;
+}
+
+// ---------- Line chart: cumulative running total by month ----------
+// The direct visual answer to "where do we sit against previous years
+// right now": every line starts at March and accumulates, so the gap
+// between this year's line and a prior year's AT THE CURRENT MONTH is
+// the thing being read.
+//
+// A year with no monthly curve simply has no line and cannot be picked —
+// the same honest omission the table makes, never interpolated into a
+// smooth line that would look like data. Which years those are, and why,
+// is said underneath rather than left as an absence to notice.
+function historicalLineChartHtml(data) {
+  const cur = data.current;
+  const curveYears = data.years.filter(y => y.monthly_complete)
+                               .sort((a, b) => b.fiscal_year - a.fiscal_year);
+  if (!curveYears.length) return '';
+
+  const colourOf = {};
+  curveYears.forEach((y, i) => { colourOf[y.fiscal_year] = HISTORICAL_SERIES_COLOURS[i % HISTORICAL_SERIES_COLOURS.length]; });
+
+  const selected = historicalSelectedYears
+    ? curveYears.filter(y => historicalSelectedYears.has(y.fiscal_year))
+    : curveYears.slice(0, HISTORICAL_MAX_COMPARE_YEARS);
+
+  const MONTHS = cur.months.map(m => m.label);
+  const series = [{
+    key: 'current', label: cur.label, colour: HISTORICAL_CURRENT_COLOUR, width: 2.5,
+    points: cur.months.map(m => m.running_sales),
+  }].concat(selected.map(y => ({
+    key: String(y.fiscal_year), label: y.label, colour: colourOf[y.fiscal_year], width: 2,
+    points: MONTHS.map((_, i) => {
+      const m = y.months.find(x => x.month_index === i);
+      return m ? m.running_sales : null;
+    }),
+  })));
+
+  const W = 760, H = 300, padL = 54, padR = 66, padT = 14, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const allVals = series.flatMap(s => s.points.filter(v => v !== null && v !== undefined));
+  const maxVal = histNiceMax(Math.max(...allVals, 1));
+  const x = i => padL + (plotW / (MONTHS.length - 1)) * i;
+  const y = v => padT + plotH - (v / maxVal) * plotH;
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const v = maxVal * f;
+    return `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="${HIST_GRID}" stroke-width="1"/>
+            <text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="${HIST_AXIS_TEXT}" style="font-variant-numeric:tabular-nums;">${histShortMoney(v)}</text>`;
+  }).join('');
+
+  const monthLabels = MONTHS.map((m, i) =>
+    `<text x="${x(i)}" y="${H - padB + 16}" text-anchor="middle" font-size="10" fill="${HIST_AXIS_TEXT}">${m}</text>`).join('');
+
+  const paths = series.map(s => {
+    // The current year's line STOPS at the current month. Its later
+    // months are null, not zero — drawing them would show a cliff.
+    const pts = [];
+    s.points.forEach((v, i) => { if (v !== null && v !== undefined) pts.push([x(i), y(v)]); });
+    if (!pts.length) return '';
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+    const last = pts[pts.length - 1];
+    return `
+      <path d="${d}" fill="none" stroke="${s.colour}" stroke-width="${s.width}" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="${last[0]}" cy="${last[1]}" r="4" fill="${s.colour}" stroke="#ffffff" stroke-width="2"/>
+      <text x="${last[0] + 9}" y="${last[1] + 4}" font-size="10.5" font-weight="700" fill="${s.colour}">${histEscape(s.label)}</text>`;
+  }).join('');
+
+  // Hover: one full-height hit band per month, wider than any mark, so
+  // the crosshair and the readout come up without having to land on a
+  // 4px dot. Values are ALSO in the table below — the tooltip only ever
+  // saves a scroll, it never gates a number.
+  const hit = MONTHS.map((m, i) => {
+    const bandW = plotW / (MONTHS.length - 1);
+    const payload = series.map(s => ({
+      label: s.label, colour: s.colour,
+      value: (s.points[i] === null || s.points[i] === undefined) ? null : s.points[i],
+    }));
+    return `<rect x="${x(i) - bandW / 2}" y="${padT}" width="${bandW}" height="${plotH}" fill="transparent"
+             onmouseenter="histHover(${i}, ${x(i).toFixed(1)}, ${JSON.stringify(payload).replace(/"/g, '&quot;')})"
+             onmouseleave="histHoverOut()"></rect>`;
+  }).join('');
+
+  const legend = series.map(s =>
+    `<span style="display:inline-flex; align-items:center; gap:5px; margin-right:12px; font-size:11.5px;">
+       <span style="width:10px; height:10px; border-radius:2px; background:${s.colour}; display:inline-block;"></span>
+       <span style="color:${HIST_AXIS_TEXT};">${histEscape(s.label)}</span>
+     </span>`).join('');
+
+  const noCurve = data.years.filter(y => !y.monthly_complete);
+  const picker = curveYears.map(y => {
+    const on = selected.some(s => s.fiscal_year === y.fiscal_year);
+    return `<button type="button" onclick="histToggleYear(${y.fiscal_year})"
+       style="font-size:11.5px; padding:3px 9px; border-radius:5px; cursor:pointer;
+              border:1.5px solid ${on ? colourOf[y.fiscal_year] : 'var(--border)'};
+              background:${on ? colourOf[y.fiscal_year] : 'transparent'};
+              color:${on ? '#fff' : HIST_AXIS_TEXT};">${histEscape(y.label)}</button>`;
+  }).join(' ');
+
+  return `
+    <h3 style="font-size:13px; margin:22px 0 2px;">Running total by month</h3>
+    <p class="muted" style="margin:0 0 8px; font-size:12px;">
+      Cumulative from March. Compare where ${histEscape(cur.label)} sits at ${histEscape(cur.through_month)}
+      against the same point in a previous year — pick up to ${HISTORICAL_MAX_COMPARE_YEARS}.
+    </p>
+    <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px;">
+      <span class="muted" style="font-size:11.5px; margin-right:4px;">Compare against:</span>${picker}
+    </div>
+    <div style="margin-bottom:6px;">${legend}</div>
+    <div id="histLineWrap" style="position:relative; overflow-x:auto;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%; min-width:560px; height:auto; display:block;" role="img"
+           aria-label="Cumulative sales by fiscal month, current year against selected prior years.">
+        ${ticks}
+        <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="${HIST_GRID}" stroke-width="1"/>
+        ${monthLabels}
+        <line id="histCrosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="${HIST_AXIS_TEXT}" stroke-width="1" opacity="0"/>
+        ${paths}
+        ${hit}
+      </svg>
+      <div id="histTooltip" style="position:absolute; display:none; pointer-events:none; background:var(--card);
+           border:1px solid var(--border); border-radius:6px; padding:7px 9px; font-size:11.5px;
+           box-shadow:0 2px 8px rgba(0,0,0,0.12); white-space:nowrap; z-index:5;"></div>
+    </div>
+    ${noCurve.length ? `<p class="muted" style="margin:8px 0 0; font-size:11px;">
+      ${noCurve.map(y => histEscape(y.label)).join(' and ')} ${noCurve.length > 1 ? 'have' : 'has'} no line:
+      too many orders in ${noCurve.length > 1 ? 'those years' : 'that year'} carry an unreadable date for a
+      month-by-month total to be honest. Their full-year figures above are unaffected.</p>` : ''}`;
+}
+
+function histToggleYear(fy) {
+  const curveYears = historicalData.years.filter(y => y.monthly_complete)
+                                         .sort((a, b) => b.fiscal_year - a.fiscal_year);
+  if (historicalSelectedYears === null) {
+    historicalSelectedYears = new Set(curveYears.slice(0, HISTORICAL_MAX_COMPARE_YEARS).map(y => y.fiscal_year));
+  }
+  if (historicalSelectedYears.has(fy)) {
+    historicalSelectedYears.delete(fy);
+  } else {
+    // At the cap, the oldest selected year makes way — picking a fourth
+    // silently doing nothing would read as a broken button.
+    if (historicalSelectedYears.size >= HISTORICAL_MAX_COMPARE_YEARS) {
+      const oldest = Math.min(...historicalSelectedYears);
+      historicalSelectedYears.delete(oldest);
+    }
+    historicalSelectedYears.add(fy);
+  }
+  renderHistoricalComparison();
+}
+
+function histHover(index, cx, payload) {
+  const wrap = document.getElementById('histLineWrap');
+  const tip = document.getElementById('histTooltip');
+  const cross = document.getElementById('histCrosshair');
+  if (!wrap || !tip || !cross) return;
+  cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('opacity', '0.35');
+  const svg = wrap.querySelector('svg');
+  const scale = svg.getBoundingClientRect().width / 760;
+  const rows = payload.map(p => `
+    <div style="display:flex; align-items:center; gap:6px;">
+      <span style="width:8px; height:8px; border-radius:2px; background:${p.colour}; display:inline-block;"></span>
+      <span style="color:var(--navy);">${p.label}</span>
+      <b style="margin-left:auto; font-variant-numeric:tabular-nums;">${p.value === null ? '—' : R(p.value)}</b>
+    </div>`).join('');
+  tip.innerHTML = `<div class="muted" style="font-size:10.5px; margin-bottom:3px;">${historicalData.current.months[index].label}</div>${rows}`;
+  tip.style.display = 'block';
+  const left = cx * scale + 12;
+  tip.style.left = Math.min(left, wrap.clientWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top = '8px';
+}
+
+function histHoverOut() {
+  const tip = document.getElementById('histTooltip');
+  const cross = document.getElementById('histCrosshair');
+  if (tip) tip.style.display = 'none';
+  if (cross) cross.setAttribute('opacity', '0');
+}
+
 
 
 // Login & Session Activity Log, Phase 1 (confirmed Aug 2026) — Owner-only
