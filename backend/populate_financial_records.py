@@ -193,6 +193,40 @@ STATEMENTS = [
             ("Workmans compensation", 10452),
         ],
     },
+    {
+        "cover_year": 2023, "fiscal_year": 2022,
+        "file": "Blinds and Flooring Studio (Pty) Ltd - 2023 AFS - Draft .pdf",
+        "status": "draft", "statement_type": "reviewed",
+        "source_note": "Year ended 28 Feb 2023. DRAFT, issued 31 Aug 2023. Independent Reviewer's "
+                       "Report p.5. Financial Position p.7, Comprehensive Income p.8, Cash Flows "
+                       "p.10, Detailed Comprehensive Income Statement p.18.",
+        "figures": {
+            "revenue": 5271071.0, "cost_of_sales": 3735152.0, "gross_profit": 1535919.0,
+            # No insurance claims this year; the R1 168 is interest
+            # received, which the Detailed statement totals as other income.
+            "other_income": 1168.0, "operating_expenses": 1546297.0,
+            "depreciation": 109312.0, "finance_costs": 67536.0,
+            # No taxation charge: the year is a loss.
+            "net_profit": -76746.0,
+            "total_assets": 687252.0, "total_liabilities": 624135.0, "total_equity": 63117.0,
+            "cash_from_operations": 237651.0, "cash_from_investing": -240484.0,
+            "cash_from_financing": 27416.0, "cash_at_year_end": -241650.0,
+        },
+        "expenses": [
+            ("Accounting fees", 24945), ("Advertising", 61153), ("Bad debts", 5104),
+            ("Bank charges", 14747), ("Cleaning", 2540), ("Computer expenses", 11296),
+            ("Consulting and professional fees", 9000), ("Depreciation", 109312),
+            ("Director's remuneration", 317295), ("Employee costs", 494033),
+            ("Entertainment", 39437), ("Fines and penalties", 7648),
+            ("Internet expenses", 4439), ("Insurance", 29930),
+            ("Lease rentals on operating lease", 67843), ("Municipal expenses", 16764),
+            ("Office expense", 1016), ("Petrol and oil", 153686), ("Postage", 24733),
+            ("Printing and stationery", 2633), ("Protective clothing", 9719),
+            ("Repairs and maintenance", 85640), ("Small tools", 8332), ("Staff welfare", 12780),
+            ("Telephone and fax", 16158), ("Travel - local", 9710),
+            ("Workmans compensation", 6404),
+        ],
+    },
 ]
 
 ENTITY = "Blinds & Flooring Studio (Pty) Ltd"
@@ -298,6 +332,6 @@ if __name__ == "__main__":
     if not good:
         print("One or more checks failed - nothing should be trusted until they are resolved.")
         raise SystemExit(1)
-    print("All four statements reconcile against their own arithmetic.")
+    print("All %d statements reconcile against their own arithmetic." % len(STATEMENTS))
     if "--apply" not in sys.argv:
         print("Re-run with --apply to store them.")
