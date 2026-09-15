@@ -2237,3 +2237,117 @@ class StockPurchaseLine(SQLModel, table=True):
     unit: str = "length"
     unit_price_ex_vat: float = 0.0
     line_total_ex_vat: float = 0.0
+
+
+# ===== Historical Performance Comparison (confirmed Sept 2026) =====
+# FEATURE FLAG / REMOVAL NOTE — read this first if the request is
+# "take the historical comparison out again".
+#
+# This whole feature is deliberately built to be removable in one small,
+# contained change. Everything it touches is listed here:
+#
+#   1. These two tables (HistoricalYearTotal / HistoricalMonthTotal).
+#      They hold ONLY imported spreadsheet totals. Nothing else in the
+#      app reads them, nothing writes to them at runtime, and they have
+#      NO foreign key to Quote or anything else — dropping them cannot
+#      affect a single live record.
+#   2. HISTORICAL_COMPARISON_ENABLED (main.py) — set it to False and the
+#      endpoint returns disabled and the KPI section disappears. That is
+#      the whole off-switch; no other code needs touching.
+#   3. GET /analytics/historical-comparison (main.py), owner-only.
+#   4. renderHistoricalComparison() and its one call site inside
+#      renderBusinessOverview() (index.html).
+#   5. backend/import_historical.py — the one-time import script. Never
+#      runs automatically; it is not wired into startup.
+#
+# WHY A SEPARATE TABLE, never merged into Quote (the brief's own
+# requirement, and the right call): these are ANNUAL AND MONTHLY TOTALS
+# transcribed from years of manually-kept Order Index spreadsheets. They
+# are not quotes, they have no line items, no client, no workflow state,
+# and several of their own source figures are known to be imperfect (see
+# monthly_coverage_pct below). Putting them anywhere near Quote would
+# corrupt every live KPI in the app the moment somebody forgot to filter
+# them out.
+class HistoricalYearTotal(SQLModel, table=True):
+    """One completed fiscal year, imported once from the historical
+    Order Index export. Fiscal year runs MARCH to FEBRUARY, so
+    fiscal_year 2025 means Mar 2025 - Feb 2026.
+
+    Import covers fiscal 2017 through fiscal 2025 ONLY. Fiscal 2026
+    (Mar 2026 onward) is deliberately absent and must stay that way —
+    that period is live Quote data, and importing the spreadsheet's own
+    2026 YTD column alongside it would double-count every rand. See
+    import_historical.py, which refuses to write it.
+
+    WHICH FIGURE IS STORED, and why there are two of each
+    (confirmed with Burgert before importing): the source workbook has a
+    "Yearly Summary" sheet carrying each original spreadsheet's own
+    PRINTED annual total row, and 6 296 individual order rows behind it.
+    For 2019-2025 the two agree to the cent. For 2017 and 2018 they do
+    not, and the printed figure is the wrong one:
+
+        2017 printed R1 588 943 == the Blinds sheet only; the entire
+             Flooring side (R1 666 827) is missing from it.
+        2018 printed R3 310 053 == the Gansbaai branch only; the entire
+             Hermanus branch (R1 257 416) is missing from it.
+
+    So total_sales/total_cost/gross_profit hold the ORDER-ROW totals —
+    the real whole-business numbers, and what the app displays. The
+    printed_* fields keep the spreadsheet's own figure alongside purely
+    as an audit trail, so the discrepancy stays visible and checkable
+    rather than being quietly corrected away.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    fiscal_year: int = Field(index=True)     # 2017 == Mar 2017 - Feb 2018
+    total_sales: float = 0.0
+    total_cost: float = 0.0
+    gross_profit: float = 0.0
+    margin_pct: float = 0.0                  # gross_profit / total_sales
+    # The source spreadsheet's own printed annual row — audit only, never
+    # displayed as the headline figure. None where the source had none.
+    printed_sales: Optional[float] = None
+    printed_cost: Optional[float] = None
+    printed_gross_profit: Optional[float] = None
+    order_count: int = 0
+    # What share of this year's sales sits on an order row with a READABLE
+    # date, and therefore appears in the month-by-month curve.
+    #
+    # This is the honest reason some years have no curve. 495 of the 6 296
+    # order rows carry an unreadable or missing date (typos in the
+    # original sheets). That is spread thinly across most years, but it
+    # lands hard on two: fiscal 2023 keeps only 52% of its revenue in the
+    # monthly view and fiscal 2024 only 83%.
+    #
+    # A running-total curve missing half its year is not merely
+    # incomplete, it is ACTIVELY MISLEADING for the one thing this
+    # feature exists to do — comparing the current year's pace against a
+    # prior year's. Plotted unlabelled, 2026 would appear to be running
+    # far ahead of 2023 when it is not. So monthly_complete gates the
+    # curve, and an incomplete year still shows its (correct) annual
+    # total.
+    monthly_coverage_pct: float = 0.0
+    monthly_complete: bool = True
+    source_file: str = ""
+    imported_at: datetime = Field(default_factory=datetime.utcnow)
+    notes: str = ""
+
+
+class HistoricalMonthTotal(SQLModel, table=True):
+    """One fiscal month of one imported year, built by summing the
+    individual order rows that carry a readable date.
+
+    fiscal_month_index is 0-based FROM MARCH: 0=Mar, 1=Apr ... 11=Feb.
+    Stored as an index rather than a calendar month number so the
+    running total sorts correctly across the Dec/Jan boundary without
+    every reader re-deriving the fiscal offset.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    fiscal_year: int = Field(index=True)
+    fiscal_month_index: int = 0     # 0 = March ... 11 = February
+    month_label: str = ""           # "Mar", "Apr", ...
+    sales: float = 0.0
+    cost: float = 0.0
+    gross_profit: float = 0.0
+    order_count: int = 0
