@@ -16,6 +16,7 @@ async function loadFlooring() {
   flooringProducts = await res.json();
   document.getElementById('flooringTree').innerHTML = renderFlooringTree(flooringProducts);
   refreshLineProductOptions();
+  refreshFlooringJobsPicker();   // same list, so the picker can never offer a product the book no longer has
 }
 
 function renderFlooringTree(products) {
@@ -39,7 +40,8 @@ function renderFlooringTree(products) {
           <td>R${(p.pricing_type === 'screed' ? p.base_cost_ex_vat*1 : p.base_cost_ex_vat*(p.sell_markup_multiplier||1)).toFixed(2)}</td>
           <td>R${(p.pricing_type === 'screed' ? p.base_cost_ex_vat*(p.over_tiles_multiplier||1.5) : p.base_cost_ex_vat*(p.sell_markup_multiplier||1)).toFixed(2)}</td>
           <td>R${(p.pricing_type === 'screed' ? p.base_cost_ex_vat*(p.removed_tiles_multiplier||2.0) : p.base_cost_ex_vat*(p.sell_markup_multiplier||1)).toFixed(2)}</td>
-          <td><button class="delete-btn" onclick="deleteFlooring(${p.id})">Delete</button></td>
+          <td><button onclick="showFlooringProductJobs(${p.id})" title="Which accepted/scheduled jobs are waiting on this product?" style="font-size:12px;">Jobs</button>
+              <button class="delete-btn" onclick="deleteFlooring(${p.id})">Delete</button></td>
         </tr>`).join('');
       return `<details class="tree-node supplier">
         <summary>${supplier} <span class="tree-count">(${bySupplier[supplier].length})</span></summary>
@@ -241,4 +243,133 @@ async function addTrim() {
   };
   await fetch(`${API}/price-book/trims`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   loadTrims();
+}
+
+// ===== Jobs waiting on a flooring product (confirmed Sept 2026) =====
+// The real question this answers, in Burgert's own framing: a product
+// has run short — who else is waiting on it? Before this, the only way
+// was opening every flooring quote one at a time.
+//
+// Lives on the Price Book page deliberately (the brief's own "likely the
+// flooring price book"): the moment you learn a product is short is the
+// moment you are looking at that product, so the answer belongs one
+// click from it rather than behind a separate screen to navigate to.
+// Two entry points, one code path — the picker below for "I know the
+// product", and a Jobs button on every price book row for "I am already
+// looking at it".
+//
+// Picking from the price book rather than typing a name is the whole
+// design, not a shortcut — see flooring_product_pending_jobs() (main.py)
+// for why a free-text name search gives a genuinely wrong answer here
+// (one product_name, e.g. "deZIGN series 200", spans five separate
+// price book entries that differ only by colour).
+
+function flooringProductLabel(p) {
+  const parts = [p.product_name];
+  if (p.product_variant) parts.push(p.product_variant);
+  if (p.colour) parts.push(p.colour);
+  return `${parts.join(' — ')} (${p.supplier})`;
+}
+
+// Rebuilt from flooringProducts (already loaded by loadFlooring()) — no
+// second fetch for a list the page is holding anyway.
+function refreshFlooringJobsPicker() {
+  const sel = document.getElementById('jobsProductPicker');
+  if (!sel) return;
+  const filter = (document.getElementById('jobsProductFilter')?.value || '').toLowerCase().trim();
+  const matches = sortByPriority(flooringProducts || []).filter(p =>
+    !filter || flooringProductLabel(p).toLowerCase().includes(filter));
+  const previous = sel.value;
+  sel.innerHTML = matches.length
+    ? matches.map(p => `<option value="${p.id}">${flooringProductLabel(p)}</option>`).join('')
+    : '<option value="">No product matches that</option>';
+  // Keep the current selection when it survived the filter, so typing to
+  // narrow the list doesn't silently re-point the button at a different
+  // product than the one already chosen.
+  if (previous && matches.some(p => String(p.id) === previous)) sel.value = previous;
+  const count = document.getElementById('jobsProductCount');
+  if (count) count.textContent = filter ? `${matches.length} of ${(flooringProducts || []).length} products` : '';
+}
+
+function showJobsForPickedProduct() {
+  const sel = document.getElementById('jobsProductPicker');
+  if (!sel || !sel.value) { alert('Pick a flooring product first.'); return; }
+  showFlooringProductJobs(parseInt(sel.value, 10));
+}
+
+// Called from the price book row button too — jumps the picker to that
+// product so the two entry points can never disagree about what is being
+// shown.
+async function showFlooringProductJobs(productId) {
+  const el = document.getElementById('flooringProductJobs');
+  if (!el) return;
+  // Keep the picker honest about what is actually shown below it. The
+  // row button can name a product the text filter currently excludes —
+  // leaving the picker on its old selection would put a product name in
+  // the control and a DIFFERENT one in the results directly beneath it,
+  // so the filter is cleared first and the list rebuilt, rather than
+  // silently letting the two disagree.
+  const sel = document.getElementById('jobsProductPicker');
+  if (sel) {
+    if (![...sel.options].some(o => o.value === String(productId))) {
+      const filter = document.getElementById('jobsProductFilter');
+      if (filter) filter.value = '';
+      refreshFlooringJobsPicker();
+    }
+    if ([...sel.options].some(o => o.value === String(productId))) sel.value = String(productId);
+  }
+  el.innerHTML = '<p class="muted">Loading...</p>';
+  el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  let data;
+  try {
+    const res = await fetch(`${API}/price-book/flooring/${productId}/pending-jobs`);
+    if (!res.ok) { el.innerHTML = '<p class="muted">Could not load jobs for this product.</p>'; return; }
+    data = await res.json();
+  } catch (e) {
+    el.innerHTML = '<p class="muted">Could not load jobs for this product — check your connection.</p>';
+    return;
+  }
+  el.innerHTML = flooringProductJobsHtml(data);
+}
+
+function flooringProductJobsHtml(data) {
+  const p = data.product;
+  const heading = `<h3 style="margin:0 0 2px;">${flooringProductLabel(p)}</h3>
+    <p class="muted" style="margin:0 0 12px; font-size:12px;">Jobs accepted or scheduled and not yet installed. Completed installs and quotes that haven't been accepted are excluded.</p>`;
+  // Manual lines carry no price book product (product_id 0 by design) so
+  // they cannot be matched here — stated plainly rather than leaving a
+  // silently short list to be trusted as complete.
+  const caveat = `<p class="muted" style="margin:12px 0 0; font-size:11px;">Hand-typed Engineered Wood / Laminate lines aren't included — those aren't linked to a price book product, so there's no product to match them on.</p>`;
+  if (!data.jobs.length) {
+    return `${heading}<p class="muted" style="margin:0;">No jobs are waiting on this product — nothing accepted or scheduled has it on.</p>${caveat}`;
+  }
+  const rows = data.jobs.map(j => {
+    // Only the quantities this job actually has, in the unit it's
+    // ordered in — a screed line's real number is bags, a material
+    // line's is boxes. A missing one is absent, never shown as 0.
+    const qty = [
+      j.quantity_m2 ? `${(+j.quantity_m2).toFixed(2).replace(/\.00$/, '')} m²` : null,
+      j.boxes_needed ? `${j.boxes_needed} boxes` : null,
+      j.bags_allowed ? `${j.bags_allowed} bags` : null,
+      j.length_m ? `${j.length_m} lm` : null,
+    ].filter(Boolean).join(' · ') || '—';
+    const colours = j.colours.length ? `<br><span style="font-size:11px; color:var(--teal); font-weight:700;">${j.colours.join(', ')}</span>` : '';
+    const multi = j.line_count > 1 ? `<br><span class="muted" style="font-size:11px;">across ${j.line_count} lines on this job</span>` : '';
+    const when = j.installation_date
+      ? new Date(j.installation_date).toLocaleDateString('en-ZA')
+      : '<span class="muted">not scheduled</span>';
+    return `<tr>
+      <td data-label="Client"><b>${j.client_name || '(no name)'}</b>${colours}</td>
+      <td data-label="Job"><a href="#" onclick="goToTab('landing'); openOrderDetailScreen(${j.quote_id}); return false;">${j.job_number || 'Q-' + j.quote_id}</a></td>
+      <td data-label="Qty needed">${qty}${multi}</td>
+      <td data-label="Status">${workflowStatusBadge(j)}</td>
+      <td data-label="Install date">${when}</td>
+    </tr>`;
+  }).join('');
+  return `${heading}
+    <p style="margin:0 0 8px; font-size:13px;"><b>${data.jobs.length}</b> job${data.jobs.length === 1 ? '' : 's'} waiting on this product.</p>
+    <table class="mobile-card-table">
+      <thead><tr><th>Client</th><th>Job</th><th>Qty needed</th><th>Status</th><th>Install date</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>${caveat}`;
 }

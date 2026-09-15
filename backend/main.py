@@ -38,6 +38,10 @@ from models import (
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead, JobWorkDay, ToDo,
     StockPurchase, StockPurchaseLine,
+    # Historical Performance Comparison (Sept 2026) — imported totals
+    # only, no link to Quote. See HistoricalYearTotal (models.py) for the
+    # full list of what this feature touches if it ever needs removing.
+    HistoricalYearTotal, HistoricalMonthTotal,
 )
 from calculations import calculate_flooring_line, calculate_blinds_line, calculate_trim_line, calculate_stairwell_line, calculate_carpet_line, line_real_cost
 import blinds_calc
@@ -3152,6 +3156,141 @@ def delete_flooring(product_id: int, tenant_id: str = Depends(get_current_tenant
         return {"deleted": product_id}
 
 
+# Jobs still waiting on a flooring product (confirmed Sept 2026, "Search
+# which pending jobs share a flooring product" brief) — the real need:
+# when a product runs short, find every other job waiting on it without
+# opening each quote one at a time.
+#
+# Keyed on QuoteLineItem.product_id, NOT a free-text product_name
+# search. That is a deliberate decision from the real book, not a
+# preference: product_name alone is genuinely ambiguous, because the
+# price book stores a range at a given colour as its OWN entry
+# (FlooringProduct.colour, models.py — "Same range at different colours
+# = separate price book entries"). On the live data "deZIGN series 200"
+# is the product_name of FIVE different price book entries (ids 2, 47,
+# 49, 56, 60), separated only by colour — so a text search for it would
+# return five different real products as if they were one, which is
+# exactly the wrong answer when the question is "who else is waiting on
+# THIS roll". Selecting a price book entry pins range AND colour in one
+# value, with no fuzzy matching to get wrong.
+#
+# The colour REPORTED per job is the line's own stored colour, not the
+# product's, when the two differ — a line's colour is a snapshot that
+# can legitimately be changed after quoting (a substitution when
+# something is out of stock; see ColourChangeLog), and on an
+# is-this-job-waiting-on-my-stock question the substituted colour is
+# the true one.
+#
+# Known, disclosed limitation: a MANUAL flooring line (Engineered Wood /
+# Laminate — _apply_manual_line_fields() sets product_id = 0 "by
+# design, no price-book record behind a manual line") cannot be found
+# this way, because it has no price book product to search by. Those
+# are hand-typed descriptions with no shared identity to match on;
+# surfacing them would mean exactly the fuzzy name matching this
+# endpoint deliberately avoids. Reported honestly by the UI rather than
+# silently omitted.
+PENDING_INSTALL_STATUSES = ("accepted", "scheduled")
+
+
+@app.get("/price-book/flooring/{product_id}/pending-jobs")
+def flooring_product_pending_jobs(product_id: int, tenant_id: str = Depends(get_current_tenant)):
+    """Every job that has this flooring product on it and has NOT been
+    installed yet — i.e. workflow_status accepted or scheduled.
+
+    Both exclusions are the brief's own: `completed` is an install that
+    already happened (its stock is long gone), and `quoted` has not been
+    accepted, so it is not a commitment anybody is waiting on. Those two
+    plus these two are the whole of workflow_status — exactly 4 values,
+    per the hard requirement on the field itself (models.py) — so this
+    is a complete partition, not a filter that could silently miss a
+    fifth state added later.
+
+    Price Checks are excluded for the same reason they are excluded from
+    the Order Index and every dashboard KPI (list_quotes(),
+    analytics_overview()): a Price Check is not a real tracked job.
+    They can never be `accepted`/`scheduled` today anyway, so this is
+    belt-and-braces, consistent with every other listing in this file.
+
+    An ON HOLD job IS included, and says so. A hold sits alongside
+    workflow_status rather than replacing it (hold_job(), models.py), so
+    such a job is still genuinely uninstalled and still genuinely
+    holding that stock — but it is also the single most useful thing to
+    see when deciding whose material to reallocate, so it is surfaced
+    rather than filtered out either way.
+
+    Quantities are SUMMED per job, not per line: the same product can
+    legitimately appear on several lines of one job (two rooms, two
+    areas), and "how much does this job need" is the sum of them. Each
+    quantity field is reported only when that job actually has one
+    (None, never a misleading 0.0) — m² and boxes for a material line,
+    bags for a screed line, linear m for a line measured that way.
+    """
+    with Session(engine) as session:
+        product = get_or_404(session, FlooringProduct, product_id, tenant_id, "Flooring product")
+        rows = session.exec(
+            select(QuoteLineItem, Quote)
+            .join(Quote, Quote.id == QuoteLineItem.quote_id)
+            .where(
+                QuoteLineItem.product_id == product_id,
+                QuoteLineItem.category == "flooring",
+                QuoteLineItem.tenant_id == tenant_id,
+                Quote.tenant_id == tenant_id,
+                Quote.workflow_status.in_(PENDING_INSTALL_STATUSES),
+                Quote.is_price_check == False,  # noqa: E712
+            )
+        ).all()
+
+        by_quote: dict = {}
+        for line, quote in rows:
+            job = by_quote.get(quote.id)
+            if job is None:
+                job = by_quote[quote.id] = {
+                    "quote_id": quote.id,
+                    # None, not a placeholder — job_number is assigned exactly
+                    # once at acceptance and never reused, so anything without
+                    # one genuinely has none to show.
+                    "job_number": quote.job_number,
+                    "client_name": quote.client_name,
+                    "workflow_status": quote.workflow_status,
+                    "installation_date": quote.installation_date,
+                    "branch": quote.branch,
+                    "installer_team": quote.installer_team,
+                    "on_hold_reason": quote.on_hold_reason,
+                    "colours": [],
+                    "line_count": 0,
+                    "quantity_m2": None, "boxes_needed": None,
+                    "bags_allowed": None, "length_m": None,
+                }
+            job["line_count"] += 1
+            colour = (line.colour or "").strip()
+            if colour and colour not in job["colours"]:
+                job["colours"].append(colour)
+            for field, value in (
+                ("quantity_m2", line.quantity_m2), ("boxes_needed", line.boxes_needed),
+                ("bags_allowed", line.bags_allowed or None), ("length_m", line.length_m),
+            ):
+                if value:
+                    job[field] = (job[field] or 0) + value
+
+        # Soonest install first — the job that needs the stock first is the
+        # one this decision is actually about. A job with no date yet sorts
+        # last (nothing is committed for it), then by job number for a
+        # stable order rather than whatever the database happened to return.
+        jobs = sorted(
+            by_quote.values(),
+            key=lambda j: (j["installation_date"] is None, j["installation_date"] or date.max, j["quote_id"]),
+        )
+        return {
+            "product": {
+                "id": product.id, "product_name": product.product_name,
+                "colour": product.colour, "product_variant": product.product_variant,
+                "supplier": product.supplier, "flooring_category": product.flooring_category,
+                "pricing_type": product.pricing_type,
+            },
+            "jobs": jobs,
+        }
+
+
 @app.post("/price-book/flooring/bulk-import")
 def bulk_import_flooring(products: List[FlooringProduct], tenant_id: str = Depends(get_current_tenant)):
     """Confirmed Aug 2026 — loading a full supplier range one product at
@@ -3889,6 +4028,46 @@ def _floor_prep_supplier(session: Session, tenant_id: str) -> str:
     return Counter(p.supplier for p in products if p.supplier).most_common(1)[0][0]
 
 
+def _flooring_material_order_quantity(product: "FlooringProduct", line: "QuoteLineItem") -> tuple:
+    """(quantity, unit) that a flooring MATERIAL line is actually ordered
+    and loaded in — boxes wherever a real box size exists, m² only when
+    one genuinely doesn't.
+
+    Extracted from generate_order_sheets()'s own material_line_data()
+    (confirmed Sept 2026, Job Card fallback brief) so the Job Card and
+    the Order Sheet can never state different quantities for the same
+    line. That mattered immediately: the Job Card's whole fallback exists
+    for jobs with no Order Sheet yet, and a job card printed today saying
+    "3 boxes" must not become "4 boxes" the moment a sheet is generated
+    from the same line. One derivation, two readers.
+
+    Deliberately price-free — it returns a quantity and a unit and
+    nothing else. The cost/discount breakdown stays in material_line_data()
+    where it belongs, so no caller can accidentally pull a cost through
+    this onto an installer-facing document.
+
+    The rules themselves are unchanged from material_line_data(), which
+    got them from Order Sheet Corrections §1 (confirmed Aug 2026, real
+    feedback on Order O-0001): prefer the box count frozen onto the quote
+    line at pricing time; recompute from the product's CURRENT
+    wastage_pct/m2_per_pack only for an older line from before
+    boxes_needed was reliably populated — on the real book that is 8 of
+    13 material lines, so without the recompute those job cards would
+    print no box count at all; and fall back to m² ONLY when there is no
+    product record or no box size to compute against, rather than
+    fabricating a box count from nothing.
+    """
+    if not product or not product.m2_per_pack:
+        return (line.quantity_m2 or 0.0, "m²")
+    if line.boxes_needed:
+        boxes = line.boxes_needed
+    elif line.quantity_m2:
+        boxes = math.ceil((line.quantity_m2 * (1 + product.wastage_pct)) / product.m2_per_pack)
+    else:
+        boxes = 0
+    return (float(boxes), "boxes")
+
+
 @app.post("/quotes/{quote_id}/generate-order-sheets")
 def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_tenant), username: str = Depends(get_current_username)):
     """Splitting/merging rule (Job Workflow Design Proposal Phase 1,
@@ -4027,34 +4206,25 @@ def generate_order_sheets(quote_id: int, tenant_id: str = Depends(get_current_te
 
         def material_line_data(l):
             product = session.get(FlooringProduct, l.product_id)
-            if not product or not product.m2_per_pack:
-                # No real product record / no box size on file to
-                # compute against — genuinely nothing to order by boxes
-                # with, so this falls back to the m² basis rather than
-                # a fabricated box count.
-                return {"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity_m2 or 0.0, "unit": "m²", "unit_cost": round(l.unit_cost or 0.0, 2), "pre_discount_unit_cost": None, "discount_pct": None}
-            # §1 — prefer the box count already stored on the quote
-            # line (calculate_flooring_line(), calculations.py — frozen
-            # at the wastage % actually used when this quote was
-            # priced, confirmed with Burgert as the right basis over a
-            # flat company-wide 8%); only recompute from the product's
-            # CURRENT wastage_pct as a fallback for an older line from
-            # before this was reliably populated, so it still orders in
-            # boxes rather than silently falling back to m² — the exact
-            # bug reported on O-0001.
-            if l.boxes_needed:
-                boxes = l.boxes_needed
-            elif l.quantity_m2:
-                boxes = math.ceil((l.quantity_m2 * (1 + product.wastage_pct)) / product.m2_per_pack)
-            else:
-                boxes = 0
+            # Quantity/unit (§1 — order in BOXES, never m², wherever a
+            # real box size exists) now comes from
+            # _flooring_material_order_quantity() above, shared with the
+            # Job Card so the two documents can never state different
+            # quantities for the same line. Behaviour here is unchanged;
+            # only its home moved. See that helper for the rules.
+            quantity, unit = _flooring_material_order_quantity(product, l)
+            if unit == "m²":
+                # No product record / no box size to compute against — the
+                # same "no fabricated box count" case as before, which
+                # also has no per-box cost basis to report.
+                return {"product_name": l.product_name, "colour": l.colour, "quantity": quantity, "unit": unit, "unit_cost": round(l.unit_cost or 0.0, 2), "pre_discount_unit_cost": None, "discount_pct": None}
             # §3+§4 — discount breakdown, same basis
             # calculate_flooring_line() itself uses for net_cost_per_box.
             pre_discount_cost_per_box = round(product.base_cost_ex_vat * product.m2_per_pack, 2)
             discount_pct = product.trade_discount_pct
             net_cost_per_box = round(pre_discount_cost_per_box * (1 - discount_pct), 2)
             return {
-                "product_name": l.product_name, "colour": l.colour, "quantity": float(boxes), "unit": "boxes",
+                "product_name": l.product_name, "colour": l.colour, "quantity": quantity, "unit": unit,
                 "unit_cost": net_cost_per_box, "pre_discount_unit_cost": pre_discount_cost_per_box, "discount_pct": discount_pct,
             }
 
@@ -8475,6 +8645,199 @@ def stock_purchase_summary(months: int = 6, role: str = Depends(require_owner),
         "basis": "Stock bought is cash out, reported beside job profit and never inside it — "
                  "the material cost of stock used on a job is already in that job's own lines.",
     }
+
+
+# ===== Historical Performance Comparison (confirmed Sept 2026) =====
+# THE OFF-SWITCH. Set this to False and the feature is gone: the endpoint
+# below returns {"enabled": false} and the KPI section stops rendering
+# (renderHistoricalComparison(), index.html, checks the same flag in the
+# response). Nothing else needs touching, no data is deleted, and turning
+# it back on is the same one-line change. See HistoricalYearTotal
+# (models.py) for the full list of everything this feature touches, kept
+# there deliberately so "revert this" stays a small, contained job.
+HISTORICAL_COMPARISON_ENABLED = True
+
+# Fiscal year runs MARCH to FEBRUARY, which is what the historical Order
+# Index sheets themselves use. Note this is NOT the same boundary as the
+# existing Month-by-month table on this screen, whose year-to-date resets
+# in January — that one is a calendar view and stays exactly as it is.
+# Mixing the two would compare nine months against twelve.
+FISCAL_YEAR_START_MONTH = 3
+FISCAL_MONTH_LABELS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                       "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+
+
+def _fiscal_year_of(d: date) -> int:
+    """The fiscal year a date falls in. Mar 2026 - Feb 2027 are all
+    fiscal 2026."""
+    return d.year if d.month >= FISCAL_YEAR_START_MONTH else d.year - 1
+
+
+def _fiscal_month_index_of(d: date) -> int:
+    """0 = March ... 11 = February."""
+    return d.month - FISCAL_YEAR_START_MONTH if d.month >= FISCAL_YEAR_START_MONTH else d.month + 9
+
+
+@app.get("/analytics/historical-comparison")
+def historical_comparison(role: str = Depends(require_owner),
+                          tenant_id: str = Depends(get_current_tenant)):
+    """Current fiscal year's running totals, against the same running
+    curve for each imported prior year. Owner-only.
+
+    OWNER-ONLY IS ENFORCED HERE, not just hidden in the UI
+    (require_owner). That dependency reads through get_current_role, so
+    an Owner using Preview-as-Sales is correctly refused too — the
+    preview is meant to show what Sales actually sees, and a screen that
+    stayed visible under it would make the preview lie.
+
+    CURRENT YEAR COMES ONLY FROM LIVE QUOTES. Fiscal 2026 was
+    deliberately never imported (import_historical.py enforces the
+    cutoff), so there is no path by which a spreadsheet figure and a live
+    figure can both count the same job. The two sources meet at the
+    fiscal-year boundary and never overlap.
+
+    The live side is bucketed on accepted_at in SAST and counts won,
+    not-declined jobs — deliberately the identical basis as the
+    Month-by-month table above it, so the two cannot report different
+    turnover for the same month on the same screen. Value comes from
+    _quote_totals() and profit from line_real_cost(), the same shared
+    helpers, never a second calculation.
+
+    STATED ASSUMPTION, because it cannot be verified from the source
+    data: the historical sheets' "Price Quoted" column is treated as the
+    client-facing, VAT-INCLUSIVE price, so the live side is compared on
+    total_incl_vat. sales_ex_vat is returned alongside every live month
+    so the basis can be switched in one line if that turns out to be
+    wrong. The historical sheets carry no VAT breakdown at all.
+    """
+    if not HISTORICAL_COMPARISON_ENABLED:
+        return {"enabled": False, "years": [], "current": None}
+
+    with Session(engine) as session:
+        today = sast_today()
+        current_fy = _fiscal_year_of(today)
+        current_month_index = _fiscal_month_index_of(today)
+
+        # ---- Prior years, from the one-time import ----
+        year_rows = session.exec(
+            select(HistoricalYearTotal)
+            .where(HistoricalYearTotal.tenant_id == tenant_id)
+            .order_by(HistoricalYearTotal.fiscal_year)
+        ).all()
+        month_rows = session.exec(
+            select(HistoricalMonthTotal)
+            .where(HistoricalMonthTotal.tenant_id == tenant_id)
+            .order_by(HistoricalMonthTotal.fiscal_year, HistoricalMonthTotal.fiscal_month_index)
+        ).all()
+        months_by_year = {}
+        for m in month_rows:
+            months_by_year.setdefault(m.fiscal_year, []).append(m)
+
+        years_out = []
+        for y in year_rows:
+            # Belt-and-braces: even if a 2026+ row were somehow written,
+            # it is never served next to live 2026 data.
+            if y.fiscal_year >= current_fy:
+                continue
+            running_sales = running_profit = 0.0
+            curve = []
+            for m in months_by_year.get(y.fiscal_year, []):
+                running_sales = round(running_sales + m.sales, 2)
+                running_profit = round(running_profit + m.gross_profit, 2)
+                curve.append({
+                    "month_index": m.fiscal_month_index, "label": m.month_label,
+                    "sales": round(m.sales, 2), "gross_profit": round(m.gross_profit, 2),
+                    "running_sales": running_sales, "running_gross_profit": running_profit,
+                })
+            years_out.append({
+                "fiscal_year": y.fiscal_year,
+                "label": "%d/%s" % (y.fiscal_year, str(y.fiscal_year + 1)[-2:]),
+                "total_sales": round(y.total_sales, 2),
+                "total_cost": round(y.total_cost, 2),
+                "gross_profit": round(y.gross_profit, 2),
+                "margin_pct": round(y.margin_pct, 6),
+                "order_count": y.order_count,
+                "monthly_complete": y.monthly_complete,
+                "monthly_coverage_pct": round(y.monthly_coverage_pct, 4),
+                "printed_sales": y.printed_sales,
+                "notes": y.notes or "",
+                "months": curve,
+            })
+
+        # ---- Current fiscal year, live ----
+        quotes = session.exec(
+            select(Quote).where(Quote.tenant_id == tenant_id, Quote.is_price_check == False)  # noqa: E712
+        ).all()
+        lines_by_quote = {}
+        for l in session.exec(select(QuoteLineItem).where(QuoteLineItem.tenant_id == tenant_id)).all():
+            lines_by_quote.setdefault(l.quote_id, []).append(l)
+        vat_pct = get_settings(session, tenant_id).vat_pct
+
+        buckets = [{"sales": 0.0, "sales_ex_vat": 0.0, "cost": 0.0, "profit": 0.0, "orders": 0}
+                   for _ in range(12)]
+        for q in quotes:
+            if q.accepted_at is None or q.declined_at is not None:
+                continue
+            accepted = (q.accepted_at + SAST_OFFSET).date()
+            if _fiscal_year_of(accepted) != current_fy:
+                continue
+            qlines = lines_by_quote.get(q.id, [])
+            totals = _quote_totals(sum(l.line_total for l in qlines) + q.transport_levy, q, vat_pct)
+            real_cost = sum(line_real_cost(l) for l in qlines)
+            b = buckets[_fiscal_month_index_of(accepted)]
+            b["sales"] += totals["total_incl_vat"]
+            b["sales_ex_vat"] += totals["total_ex_vat"]
+            b["cost"] += real_cost
+            b["profit"] += totals["total_ex_vat"] - real_cost
+            b["orders"] += 1
+
+        running_sales = running_profit = 0.0
+        current_curve = []
+        for i in range(12):
+            b = buckets[i]
+            # Months that have not happened yet are returned as null
+            # rather than zero, so the current year's line STOPS at today
+            # instead of flattening along the bottom of the chart and
+            # reading as a collapse in trade.
+            if i > current_month_index:
+                current_curve.append({"month_index": i, "label": FISCAL_MONTH_LABELS[i],
+                                      "sales": None, "gross_profit": None,
+                                      "running_sales": None, "running_gross_profit": None})
+                continue
+            running_sales = round(running_sales + b["sales"], 2)
+            running_profit = round(running_profit + b["profit"], 2)
+            current_curve.append({
+                "month_index": i, "label": FISCAL_MONTH_LABELS[i],
+                "sales": round(b["sales"], 2), "sales_ex_vat": round(b["sales_ex_vat"], 2),
+                "gross_profit": round(b["profit"], 2), "orders": b["orders"],
+                "running_sales": running_sales, "running_gross_profit": running_profit,
+            })
+
+        total_sales = round(sum(b["sales"] for b in buckets), 2)
+        total_cost = round(sum(b["cost"] for b in buckets), 2)
+        total_profit = round(sum(b["profit"] for b in buckets), 2)
+        current = {
+            "fiscal_year": current_fy,
+            "label": "%d/%s" % (current_fy, str(current_fy + 1)[-2:]),
+            "through_month": FISCAL_MONTH_LABELS[current_month_index],
+            "month_index": current_month_index,
+            "total_sales": total_sales, "total_cost": total_cost,
+            "gross_profit": total_profit,
+            "margin_pct": round(total_profit / total_sales, 6) if total_sales else 0.0,
+            "order_count": sum(b["orders"] for b in buckets),
+            "months": current_curve,
+        }
+
+        # Same point last year, for the one comparison that is actually
+        # actionable: pace. Computed here rather than in the browser so
+        # the rule for "the same point" lives with the data.
+        for y in years_out:
+            same_point = next((m for m in y["months"] if m["month_index"] == current_month_index), None)
+            y["running_sales_at_same_point"] = same_point["running_sales"] if same_point else None
+            y["running_gross_profit_at_same_point"] = same_point["running_gross_profit"] if same_point else None
+
+        return {"enabled": True, "current": current, "years": years_out,
+                "fiscal_year_note": "Fiscal year runs March to February."}
 
 
 @app.post("/admin/supplier-console/commit")
@@ -15379,6 +15742,93 @@ def get_quote(quote_id: int, request: Request, role: str = Depends(get_current_r
         return response
 
 
+# Job Card quote-line fallback (confirmed Sept 2026, Burgert: a job card
+# "should never be printed blank for an installer").
+#
+# The Job Card sources "what's being installed" from the job's Order
+# Sheet(s) by design — the spec's own "reuse the exact same data Order
+# Sheets already use, so the two can never disagree". That holds right up
+# until a job HAS no Order Sheet, and then the card printed nothing at
+# all: on the real book that is every blinds job (blinds never generate a
+# sheet), every job built from stock already on hand, and every accepted
+# job where the sheet simply hasn't been raised yet — J-0001 among them,
+# a real accepted job with a real flooring line that printed "No Order
+# Sheet generated for this job yet" and no products.
+#
+# So the fallback is exactly that — a FALLBACK, never a second source
+# competing with the first. Order Sheets still win whenever they exist,
+# which keeps the original "can never disagree" guarantee intact for
+# every job that has one; the quote's own lines are read only when there
+# is otherwise nothing to print. The card says which of the two it is
+# showing, because "ordered" and "quoted, not yet ordered" are genuinely
+# different facts for someone loading a van.
+#
+# Box counts come from _flooring_material_order_quantity() — the SAME
+# derivation the Order Sheet uses (Burgert, Sept 2026: "we need the box
+# counts on the job cards") — so a card printed from quote lines today
+# states the same boxes the Order Sheet will state tomorrow. Stored
+# boxes_needed is only populated on 5 of 13 real material lines, so
+# reading it alone would have printed no box count on most jobs, which
+# is the whole reason that helper recomputes.
+#
+# HARD CONSTRAINT, same as the rest of this document: no pricing. Every
+# field below is hand-picked — unit_price, line_total, unit_cost and
+# margin_pct are never read onto these dicts at all, the same structural
+# "cost fields cannot leak even if the model grows more of them"
+# approach get_job_card() already takes with Order Sheet lines.
+def _job_card_quote_line_data(session: Session, line: "QuoteLineItem") -> dict:
+    """One installer-facing {product_name, colour, quantity, unit, note}
+    for a quote line, in the unit that line is actually loaded in."""
+    category = line.category
+    quantity, unit, note = None, "", ""
+
+    if line.manual_category:
+        # Hand-quoted Engineered Wood / Laminate: no price book product
+        # behind it (product_id 0), so there is no box size to compute
+        # from — its quantity is whatever was typed, in the unit it was
+        # typed in.
+        quantity = line.manual_quantity
+        unit = MANUAL_LINE_UNITS.get(line.manual_unit or "", line.manual_unit or "")
+    elif category == "flooring":
+        if line.flooring_pricing_type == "screed":
+            # A screed line is loaded as BAGS of compound — the same
+            # figure the floor-prep Order Sheet orders by.
+            if line.bags_allowed:
+                quantity, unit = float(line.bags_allowed), "bags"
+                note = f"{line.quantity_m2:g} m²" if line.quantity_m2 else ""
+            else:
+                quantity, unit = line.quantity_m2, "m²"
+        elif line.carpet_category in ("carpet_tufted_broadloom", "carpet_needlepunch_broadloom", "cushion_vinyl"):
+            # Continuous roll goods are cut and loaded by linear metre,
+            # not by box — mirrors how the quote itself states them.
+            quantity, unit = line.quantity_lm, "LM"
+            note = f"{line.quantity_m2:g} m²" if line.quantity_m2 else ""
+        else:
+            # Vinyl/LVT and carpet TILE alike — carpet_tile deliberately
+            # reuses the ordinary box/material branch, exactly as
+            # calculate_flooring_line() does (models.py).
+            product = session.get(FlooringProduct, line.product_id)
+            quantity, unit = _flooring_material_order_quantity(product, line)
+            if unit == "boxes" and line.quantity_m2:
+                note = f"{line.quantity_m2:g} m²"
+    elif category in ("trim", "skirting"):
+        quantity, unit = line.length_m, "lm"
+    elif category == "stairwell":
+        quantity, unit = line.num_stairs, "stairs"
+        if line.landing_area_m2:
+            note = f"incl. {line.landing_area_m2:g} m² landing"
+    elif category == "blinds":
+        quantity, unit = float(line.blind_qty or 1), "units"
+        if line.width_mm and line.drop_mm:
+            note = f"{line.width_mm:g} × {line.drop_mm:g} mm"
+
+    return {
+        "product_name": line.product_name, "colour": line.colour,
+        "quantity": quantity, "unit": unit, "note": note,
+        "section_label": line.section_label, "line_notes": line.line_notes or "",
+    }
+
+
 @app.get("/quotes/{quote_id}/job-card")
 def get_job_card(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     """Job Card Content Spec (confirmed Aug 2026) — a printable,
@@ -15434,26 +15884,79 @@ def get_job_card(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
                 "lines": [{"product_name": l.product_name, "colour": l.colour, "quantity": l.quantity, "unit": l.unit} for l in lines],
             })
 
+        # Fallback: no Order Sheet (or one with no lines) means nothing to
+        # print, so read the job's own quote lines instead — see
+        # _job_card_quote_line_data() above for why, and for the
+        # no-pricing guarantee. materials_source tells the card which of
+        # the two it is looking at; "ordered" and "quoted, not yet
+        # ordered" are different facts on site.
+        has_sheet_lines = any(s["lines"] for s in order_sheets_out)
+        quote_lines_out = []
+        if not has_sheet_lines:
+            lines = session.exec(
+                select(QuoteLineItem).where(
+                    QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id,
+                )
+            ).all()
+            # Same Fixed Display Order the quote, the printed document and
+            # the preview all use — _quote_line_sort_key() itself, not a
+            # second copy of its rules (Floor/Vinyl -> Screed -> Trims ->
+            # Skirtings -> rest), so the job card lists materials in the
+            # order the rest of the app already agrees on.
+            lines = sorted(lines, key=lambda l: _quote_line_sort_key({
+                "category": l.category,
+                "flooring_pricing_type": l.flooring_pricing_type,
+                "trim_sub_category": l.trim_sub_category,
+            }))
+            quote_lines_out = [_job_card_quote_line_data(session, l) for l in lines]
+
         substrate_line = session.exec(
             select(QuoteLineItem).where(
                 QuoteLineItem.quote_id == quote_id, QuoteLineItem.tenant_id == tenant_id, QuoteLineItem.job_type.is_not(None),
             )
         ).first()
 
+        # Address falls back to the client's own address when the job has
+        # no site_address of its own (confirmed Sept 2026, Job Card
+        # printable brief — "Installation address" is one of the four
+        # things the card exists to carry, and a blank line on a printed
+        # card is the one failure an installer cannot work around on
+        # site).
+        #
+        # site_address is normally seeded FROM client.address at
+        # quote-create time (create_quote(), above), so this changes
+        # nothing for a job created that way — it closes the older/
+        # imported rows where that seeding never ran and the address
+        # therefore printed blank while the client record had one on
+        # file the whole time. Confirmed against the real book, not
+        # assumed: J-0001 returned an empty site_address with a real
+        # address sitting on its linked client.
+        #
+        # Same precedence the area backfill already uses (the job's own
+        # site_address first, the client's only as fallback — see
+        # on_startup()), never the reverse: a site_address that IS set is
+        # the deliberate one, e.g. a job installed somewhere other than
+        # where the client is billed.
         client_notes = None
+        client_address = ""
         if quote.client_id:
             client = session.get(Client, quote.client_id)
             if client and client.notes:
                 client_notes = client.notes
+            if client and client.address:
+                client_address = client.address
 
         lead = session.exec(select(Lead).where(Lead.converted_quote_id == quote_id, Lead.tenant_id == tenant_id)).first()
         lead_notes = lead.notes if lead and lead.notes else None
 
         return {
-            "job_number": quote.job_number, "client_name": quote.client_name, "site_address": quote.site_address,
+            "job_number": quote.job_number, "client_name": quote.client_name,
+            "site_address": (quote.site_address or "").strip() or client_address,
             "installation_date": quote.installation_date, "installer_team": quote.installer_team,
             "substrate": substrate_line.job_type if substrate_line else None,
             "order_sheets": order_sheets_out,
+            "materials_source": "order_sheets" if has_sheet_lines else "quote_lines",
+            "quote_lines": quote_lines_out,
             "installation_notes": quote.installation_notes,
             "client_notes": client_notes, "lead_notes": lead_notes,
         }

@@ -232,6 +232,28 @@ itself is). -->
       <p class="muted" id="bulkImportStatus" style="margin-top:8px;"></p>
     </div>
 
+    <!-- Jobs waiting on a product (confirmed Sept 2026) — answers "this
+         product has run short, who else is waiting on it?" without
+         opening every flooring quote one at a time. Sits directly above
+         the price book itself: every price book row also has its own
+         Jobs button, and both go through showFlooringProductJobs()
+         (price-book.js). Products are PICKED, never typed — one product
+         name can span several price book entries that differ only by
+         colour, so a free-text search would merge genuinely different
+         products into one wrong answer. -->
+    <div class="card">
+      <h2>Jobs Waiting on a Product</h2>
+      <p class="muted">Pick a flooring product to see every job that has it and hasn't been installed yet — accepted or scheduled. Completed installs and quotes that haven't been accepted are left out.</p>
+      <div class="grid">
+        <div class="field"><label>Find a product <span class="adj">(name, colour or supplier)</span></label>
+          <input id="jobsProductFilter" type="text" placeholder="e.g. deZIGN, Linen Oak, Azura" oninput="refreshFlooringJobsPicker()"></div>
+        <div class="field"><label>Product <span class="adj" id="jobsProductCount"></span></label>
+          <select id="jobsProductPicker"></select></div>
+      </div>
+      <button class="primary" onclick="showJobsForPickedProduct()" style="margin-top:6px;">Show jobs waiting</button>
+      <div id="flooringProductJobs" style="margin-top:16px;"></div>
+    </div>
+
     <div class="card">
       <h2>Flooring Price Book</h2>
       <p class="muted">Prices shown are the base rate (screed) or marked-up sell rate (material) per m² — glue and R45/m² labour are added on top at quote time, not shown here.</p>
@@ -2695,6 +2717,14 @@ async function renderBusinessOverview(el) {
     you read DOWN a column to see a trend, which tiles cannot do. -->
     ${monthlyTableHtml(data, money)}
 
+    <!-- Historical Comparison (confirmed Sept 2026) — Owner only, and
+         filled in by renderHistoricalComparison() below rather than
+         inline, because it needs its own fetch and must stay hidden
+         entirely for Sales/Admin. Sits directly under Month-by-month:
+         same question, longer timescale. Hidden by default so it can
+         never flash into view before the role check runs. -->
+    <div class="card" id="historicalComparisonCard" style="display:none;"></div>
+
     <div class="card" id="weeklyGraphCard"></div>
     <!-- Daily quoted value by branch (confirmed Sept 2026, brief §4) -->
     <div class="card" id="dailyQuotedByBranchCard"></div>
@@ -2775,8 +2805,143 @@ async function renderBusinessOverview(el) {
   renderWeeklyGraphCard();
   renderDailyQuotedByBranchCard();
   renderTopSellersCard();
+  renderHistoricalComparison();   // Owner-only; hides itself for every other role
   });
 }
+
+// ===== Historical Performance Comparison (confirmed Sept 2026) =====
+// REMOVAL NOTE — if the request is "take this out again", it is this
+// function, the one call to it at the end of renderBusinessOverview(),
+// and the #historicalComparisonCard div. Server side, flip
+// HISTORICAL_COMPARISON_ENABLED (main.py) to False and this disappears
+// on its own without any frontend change at all. The full list of what
+// the feature touches lives on HistoricalYearTotal (models.py).
+//
+// OWNER ONLY, gated in two independent places on purpose. The endpoint
+// itself is require_owner (main.py) — that is the real enforcement, and
+// it refuses an Owner who is previewing as Sales too, so the preview
+// keeps telling the truth. The currentRole() check here is only so the
+// card never flashes up before the 403 comes back.
+//
+// TOTALS ONLY, deliberately: no client names, no job detail, no
+// drill-down. This screen answers "how is the year going against the
+// years before it" and nothing else.
+async function renderHistoricalComparison() {
+  const card = document.getElementById('historicalComparisonCard');
+  if (!card) return;
+  if (currentRole() !== 'owner') { card.style.display = 'none'; return; }
+
+  let data;
+  try {
+    const res = await fetch(`${API}/analytics/historical-comparison`);
+    if (!res.ok) { card.style.display = 'none'; return; }
+    data = await res.json();
+  } catch (e) { card.style.display = 'none'; return; }
+
+  if (!data.enabled || !data.years.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const cur = data.current;
+  const money = R;
+  const pct1 = (v) => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+
+  // Pace against the same point in each prior year — the one comparison
+  // that is actually actionable in September. A year with no curve has
+  // no "same point" to compare to and says so rather than showing a dash
+  // that could be read as zero trade.
+  const paceRows = data.years.slice().reverse().map(y => {
+    const samePoint = y.running_sales_at_same_point;
+    let pace = '<span class="muted">no monthly data</span>';
+    if (samePoint !== null && samePoint !== undefined) {
+      const diff = cur.total_sales - samePoint;
+      const rel = samePoint ? (diff / samePoint) : null;
+      const up = diff >= 0;
+      pace = `<b style="color:${up ? 'var(--teal)' : 'var(--coral)'};">${up ? '+' : '−'}${money(Math.abs(diff))}</b>`
+           + (rel === null ? '' : ` <span class="muted" style="font-size:11px;">(${up ? '+' : '−'}${Math.abs(rel * 100).toFixed(1)}%)</span>`);
+    }
+    return `<tr>
+      <td data-label="Year">${y.label}${y.monthly_complete ? '' : ' <span class="muted" style="font-size:10.5px;">annual only</span>'}</td>
+      <td class="num" data-label="Full year">${money(y.total_sales)}</td>
+      <td class="num" data-label="GP">${money(y.gross_profit)}</td>
+      <td class="num" data-label="Margin">${pct1(y.margin_pct)}</td>
+      <td class="num" data-label="By ${cur.through_month}">${samePoint == null ? '—' : money(samePoint)}</td>
+      <td class="num" data-label="vs this year">${pace}</td>
+    </tr>`;
+  }).join('');
+
+  // The running-total curves. Drawn as a plain table rather than a chart
+  // for the same reason the Month-by-month table above it is: twelve
+  // months of figures across several years is something you read down a
+  // column, and it stays readable on a phone, which a multi-series line
+  // chart does not.
+  const curveYears = data.years.filter(y => y.monthly_complete);
+  const MONTHS = cur.months.map(m => m.label);
+  const headCells = curveYears.map(y => `<th class="num">${y.label}</th>`).join('');
+  const curveRows = MONTHS.map((label, i) => {
+    const c = cur.months[i];
+    const live = (c && c.running_sales !== null)
+      ? `<b style="color:var(--teal);">${money(c.running_sales)}</b>` : '<span class="muted">—</span>';
+    const cells = curveYears.map(y => {
+      const m = y.months.find(x => x.month_index === i);
+      return `<td class="num">${m ? money(m.running_sales) : '—'}</td>`;
+    }).join('');
+    const isCurrent = i === cur.month_index;
+    return `<tr${isCurrent ? ' style="background:var(--cream);"' : ''}>
+      <td><b>${label}</b>${isCurrent ? ' <span class="muted" style="font-size:10.5px;">now</span>' : ''}</td>
+      <td class="num">${live}</td>${cells}</tr>`;
+  }).join('');
+
+  // Anything the import could not vouch for is said on the screen, not
+  // buried in a comment — a year whose figures disagreed with its own
+  // source sheet, or whose curve is missing, is exactly what somebody
+  // reading these numbers needs to know.
+  const caveats = data.years.filter(y => y.notes).map(y =>
+    `<li><b>${y.label}:</b> ${y.notes}</li>`).join('');
+
+  card.innerHTML = `
+    <div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+      <h2 style="margin:0;">Historical Comparison <span class="muted" style="font-weight:400; font-size:12px;">Owner only</span></h2>
+      <span class="muted" style="font-size:12px;">${data.fiscal_year_note} Totals only — no client or job detail.</span>
+    </div>
+    <p style="margin:8px 0 0; font-size:13px;">
+      <b>${cur.label}</b> to end of ${cur.through_month}:
+      <b style="color:var(--teal);">${money(cur.total_sales)}</b> sales,
+      <b style="color:var(--coral);">${money(cur.gross_profit)}</b> gross profit,
+      ${pct1(cur.margin_pct)} margin
+      <span class="muted">(${cur.order_count} jobs, live from Bolton)</span>
+    </p>
+
+    <h3 style="font-size:13px; margin:16px 0 4px;">Where this year sits</h3>
+    <div style="overflow-x:auto;">
+      <table class="mobile-card-table">
+        <thead><tr>
+          <th>Fiscal year</th><th class="num">Full year sales</th><th class="num">Gross profit</th>
+          <th class="num">Margin</th><th class="num">By end ${cur.through_month}</th>
+          <th class="num">This year vs then</th>
+        </tr></thead>
+        <tbody>${paceRows}</tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:13px; margin:18px 0 4px;">Running total by month (sales)</h3>
+    <p class="muted" style="margin:0 0 6px; font-size:12px;">Cumulative from March. This year's column stops at the current month rather than dropping to zero for months that haven't happened.</p>
+    <div style="overflow-x:auto;">
+      <table class="mth-table">
+        <thead><tr><th>Month</th><th class="num">${cur.label} (live)</th>${headCells}</tr></thead>
+        <tbody>${curveRows}</tbody>
+      </table>
+    </div>
+
+    ${caveats ? `<div style="margin-top:14px; padding-top:10px; border-top:1px solid var(--border);">
+      <p class="muted" style="margin:0 0 4px; font-size:12px;"><b>About the imported figures</b></p>
+      <ul class="muted" style="margin:0; padding-left:18px; font-size:11.5px; line-height:1.6;">${caveats}</ul>
+    </div>` : ''}
+    <p class="muted" style="margin:10px 0 0; font-size:11px;">
+      Imported once from the historical Order Index spreadsheets (${data.years[0].label}–${data.years[data.years.length-1].label}).
+      ${cur.label} is live Bolton data only and was never imported, so nothing here is counted twice.
+    </p>`;
+}
+
 
 // Login & Session Activity Log, Phase 1 (confirmed Aug 2026) — Owner-only
 // (enforced server-side by /admin/session-log itself, this render
