@@ -1903,6 +1903,34 @@ class QuoteLineItem(SQLModel, table=True):
     # so "Revert to calculated value" always restores the real original,
     # not whatever the previous override happened to be.
     pre_override_line_total: Optional[float] = None   # None = never overridden
+    # The calculated MARGIN that went with pre_override_line_total, kept
+    # on exactly the same terms (confirmed Sept 2026, Burgert: "the GP
+    # needs to change if we changed the price with a price override").
+    #
+    # THE BUG THIS CLOSES, reproduced on a real line before it was
+    # written: overriding a price moved line_total and nothing else, so
+    # the line went on reporting the margin it had at the OLD price. A
+    # trim dropped from R1 570,68 to R900 still read 45% and still showed
+    # the bright-green band every role sees, when the real margin at that
+    # price was a fraction of it. The one figure whose whole job is to
+    # warn you was the figure saying everything was fine.
+    #
+    # Two stored numbers rather than a stored cost, because together they
+    # ARE the cost basis: pre_override_line_total x (1 - this) is exactly
+    # the cost the line's own calculator used, whichever calculator that
+    # was, including its own wastage treatment. That keeps the margin on
+    # one consistent basis across an override instead of silently
+    # switching to a different cost definition, and it makes "Revert to
+    # calculated value" restore the original margin exactly rather than
+    # re-deriving something close to it.
+    #
+    # Captured only on the FIRST override, never overwritten by a later
+    # one — same rule as pre_override_line_total above, and for the same
+    # reason. None on a line that has never been overridden, and on rows
+    # overridden before this existed: for those the currently-stored
+    # margin_pct IS still the calculated one (nothing ever changed it),
+    # which is exactly what the fallback uses.
+    pre_override_margin_pct: Optional[float] = None
     override_reason: Optional[str] = None
     override_by: Optional[str] = None
     override_at: Optional[datetime] = None
