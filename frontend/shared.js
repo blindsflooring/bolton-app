@@ -1181,6 +1181,9 @@ const LANDING_TILES = [
   // Index." Owner-only (added to OWNER_ONLY_TILES below), same as
   // Session Log/Change Log.
   { id: 'flaggedItems', title: 'Flagged for Review', desc: 'Issues testers spotted, one list', ready: true },
+  // Company-level annual statements and the figures off them — the
+  // business's own books, deliberately NOT the per-job Documents tab.
+  { id: 'financialRecords', title: 'Financial Records', desc: 'Annual statements, year by year', ready: true },
 ];
 
 // Default role/tile split (confirmed Aug 2026, proposed per the go-live
@@ -1200,7 +1203,11 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // HR). Uses currentRole() — the EFFECTIVE role — so an Owner previewing
 // as Sales or Admin correctly loses this tile too, same as the backend
 // blocking the endpoint itself for a previewed non-owner role.
-const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts', 'flaggedItems'];
+// 'financialRecords' (Sept 2026) — company-level annual statements.
+// Hiding the tile is the convenience; every endpoint behind it is
+// require_owner (main.py), which is the actual boundary and refuses an
+// Owner previewing as Sales too.
+const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts', 'flaggedItems', 'financialRecords'];
 // Trusted Tester Accounts brief (confirmed Aug 2026) — same scope as
 // Sales (they're here for client/quote/job work, not business
 // operations), even though they get Sales's pricing-restriction
