@@ -2356,6 +2356,25 @@ class HistoricalYearTotal(SQLModel, table=True):
     # total.
     monthly_coverage_pct: float = 0.0
     monthly_complete: bool = True
+    # THE CUTOVER (confirmed Sept 2026). NULL on a complete year, which
+    # is every year up to and including 2025/26: those are wholly
+    # historical and nothing live overlaps them.
+    #
+    # Set on the one fiscal year that is split between the two systems.
+    # Bolton only went live for real job entry on 1 September 2026, so
+    # fiscal 2026/27 began six months earlier on the old Excel system.
+    # Comparing Bolton's own partial total against nine complete prior
+    # years made the year read as a ~90% collapse when nothing of the
+    # sort had happened -- the live figure simply did not contain
+    # March to August.
+    #
+    # This date is the boundary, held as DATA rather than as a constant
+    # in the comparison code: imported figures on this row cover up to
+    # but NOT INCLUDING it, and everything from it onward comes from
+    # Quote. One row owns the answer to "where does the spreadsheet stop
+    # and Bolton start", so the two sources cannot drift apart or be
+    # counted twice.
+    covers_until: Optional[date] = None
     source_file: str = ""
     imported_at: datetime = Field(default_factory=datetime.utcnow)
     notes: str = ""

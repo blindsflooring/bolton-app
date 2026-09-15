@@ -2908,7 +2908,14 @@ async function renderHistoricalComparison() {
       <b style="color:var(--teal);">${money(cur.total_sales)}</b> sales,
       <b style="color:var(--coral);">${money(cur.gross_profit)}</b> gross profit,
       ${pct1(cur.margin_pct)} margin
-      <span class="muted">(${cur.order_count} jobs, live from Bolton)</span>
+      <span class="muted">(${cur.order_count} jobs${cur.cutover_date ? '' : ', live from Bolton'})</span>
+    </p>
+    ${cur.cutover_date ? `<p class="muted" style="margin:4px 0 0; font-size:11.5px;">
+      Two sources, one continuous year: <b>${money(cur.spreadsheet_sales)}</b> for 1 March–31 August from the
+      old spreadsheet, then <b>${money(cur.live_sales)}</b> from 1 September, when Bolton went live for job
+      entry. Nothing is counted twice — the spreadsheet stops the day Bolton starts.
+    </p>` : ''}
+    <p style="display:none;">
     </p>
 
     <h3 style="font-size:13px; margin:16px 0 4px;">Where this year sits</h3>
@@ -2924,10 +2931,10 @@ async function renderHistoricalComparison() {
     </div>
 
     <h3 style="font-size:13px; margin:18px 0 4px;">Running total by month (sales)</h3>
-    <p class="muted" style="margin:0 0 6px; font-size:12px;">Cumulative from March. This year's column stops at the current month rather than dropping to zero for months that haven't happened.</p>
+    <p class="muted" style="margin:0 0 6px; font-size:12px;">Cumulative from March. This year's column stops at the current month rather than dropping to zero for months that haven't happened.${cur.cutover_date ? ` Months up to August are the old spreadsheet's; September onward is Bolton's own.` : ''}</p>
     <div style="overflow-x:auto;">
       <table class="mth-table">
-        <thead><tr><th>Month</th><th class="num">${cur.label} (live)</th>${headCells}</tr></thead>
+        <thead><tr><th>Month</th><th class="num">${cur.label}${cur.cutover_date ? '' : ' (live)'}</th>${headCells}</tr></thead>
         <tbody>${curveRows}</tbody>
       </table>
     </div>
