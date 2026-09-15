@@ -38,6 +38,9 @@ from models import (
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead, JobWorkDay, ToDo,
     StockPurchase, StockPurchaseLine,
+    # Financial Records (Sept 2026) — company-level annual statements,
+    # owner-only, deliberately separate from job-level DocumentArchive.
+    FinancialStatement,
     # Historical Performance Comparison (Sept 2026) — imported totals
     # only, no link to Quote. See HistoricalYearTotal (models.py) for the
     # full list of what this feature touches if it ever needs removing.
@@ -8652,6 +8655,289 @@ def stock_purchase_summary(months: int = 6, role: str = Depends(require_owner),
         "basis": "Stock bought is cash out, reported beside job profit and never inside it — "
                  "the material cost of stock used on a job is already in that job's own lines.",
     }
+
+
+# ===== Financial Records (confirmed Sept 2026) =====
+# Company-level annual statements: the stored PDF, and the figures typed
+# off it. See FinancialStatement (models.py) for why the figures are
+# entered by hand rather than parsed, and why this is its own table
+# rather than part of the job-level DocumentArchive.
+#
+# OWNER ONLY, ENFORCED HERE. Every endpoint below takes require_owner,
+# which reads through get_current_role — so an Owner previewing as Sales
+# is refused too, and the preview keeps telling the truth. Hiding the
+# tile in the browser is a convenience on top of this, never the
+# boundary.
+#
+# pdf_bytes is NEVER selected into a list response. Same lesson as
+# QuotePhoto.photo_bytes and DocumentArchive.pdf_bytes: a list endpoint
+# that drags multi-megabyte blobs along is slow in a way that only shows
+# up once there are a few years of statements, which is precisely when
+# nobody connects it to this code.
+FINANCIAL_META_COLUMNS = (
+    FinancialStatement.id, FinancialStatement.tenant_id, FinancialStatement.fiscal_year,
+    FinancialStatement.entity_name, FinancialStatement.status, FinancialStatement.statement_type,
+    FinancialStatement.original_filename, FinancialStatement.content_type,
+    FinancialStatement.size_bytes, FinancialStatement.uploaded_at, FinancialStatement.uploaded_by,
+    FinancialStatement.revenue, FinancialStatement.cost_of_sales, FinancialStatement.gross_profit,
+    FinancialStatement.other_income, FinancialStatement.operating_expenses,
+    FinancialStatement.depreciation, FinancialStatement.finance_costs,
+    FinancialStatement.net_profit, FinancialStatement.expense_breakdown_json,
+    FinancialStatement.total_assets, FinancialStatement.total_liabilities,
+    FinancialStatement.total_equity, FinancialStatement.cash_from_operations,
+    FinancialStatement.cash_from_investing, FinancialStatement.cash_from_financing,
+    FinancialStatement.cash_at_year_end, FinancialStatement.figures_entered_at,
+    FinancialStatement.figures_entered_by, FinancialStatement.source_note,
+    FinancialStatement.notes,
+)
+
+FINANCIAL_STATUSES = ("final", "draft")
+FINANCIAL_STATEMENT_TYPES = ("audited", "reviewed", "compiled", "management")
+# 25 MB. A scanned statement runs to a few MB; well past that and
+# something is wrong with the file rather than with the limit.
+MAX_FINANCIAL_PDF_BYTES = 25 * 1024 * 1024
+
+
+def _financial_out(row) -> dict:
+    """One statement as the API returns it — pdf_bytes structurally
+    absent rather than stripped afterwards, so it cannot leak by
+    someone later adding a field to a dict comprehension."""
+    breakdown = []
+    if row.expense_breakdown_json:
+        try:
+            breakdown = json.loads(row.expense_breakdown_json)
+        except (ValueError, TypeError):
+            # Stored JSON that will not parse is reported as empty rather
+            # than 500-ing the whole list for one bad row.
+            breakdown = []
+    return {
+        "id": row.id, "fiscal_year": row.fiscal_year,
+        "label": "%d/%s" % (row.fiscal_year, str(row.fiscal_year + 1)[-2:]),
+        "entity_name": row.entity_name, "status": row.status,
+        "statement_type": row.statement_type,
+        "original_filename": row.original_filename, "size_bytes": row.size_bytes,
+        "uploaded_at": row.uploaded_at, "uploaded_by": row.uploaded_by,
+        "revenue": row.revenue, "cost_of_sales": row.cost_of_sales,
+        "gross_profit": row.gross_profit, "other_income": row.other_income,
+        "operating_expenses": row.operating_expenses, "depreciation": row.depreciation,
+        "finance_costs": row.finance_costs, "net_profit": row.net_profit,
+        "expense_breakdown": breakdown,
+        "total_assets": row.total_assets, "total_liabilities": row.total_liabilities,
+        "total_equity": row.total_equity,
+        "cash_from_operations": row.cash_from_operations,
+        "cash_from_investing": row.cash_from_investing,
+        "cash_from_financing": row.cash_from_financing,
+        "cash_at_year_end": row.cash_at_year_end,
+        # What actually answers "have the numbers been entered yet" — a
+        # timestamp, never an inference from revenue being zero or null.
+        "figures_entered": row.figures_entered_at is not None,
+        "figures_entered_at": row.figures_entered_at,
+        "figures_entered_by": row.figures_entered_by,
+        "source_note": row.source_note, "notes": row.notes,
+    }
+
+
+class FinancialFiguresRequest(BaseModel):
+    """Every figure optional, because a statement can legitimately be
+    filled in over more than one sitting, and because not every
+    statement reports every line."""
+    revenue: Optional[float] = None
+    cost_of_sales: Optional[float] = None
+    gross_profit: Optional[float] = None
+    other_income: Optional[float] = None
+    operating_expenses: Optional[float] = None
+    depreciation: Optional[float] = None
+    finance_costs: Optional[float] = None
+    net_profit: Optional[float] = None
+    expense_breakdown: Optional[List[dict]] = None
+    total_assets: Optional[float] = None
+    total_liabilities: Optional[float] = None
+    total_equity: Optional[float] = None
+    cash_from_operations: Optional[float] = None
+    cash_from_investing: Optional[float] = None
+    cash_from_financing: Optional[float] = None
+    cash_at_year_end: Optional[float] = None
+    source_note: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+    statement_type: Optional[str] = None
+    entity_name: Optional[str] = None
+
+
+@app.post("/financial-records")
+async def upload_financial_statement(
+        fiscal_year: int, file: UploadFile = File(...),
+        entity_name: str = "", status: str = "final", statement_type: str = "reviewed",
+        role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant),
+        username: str = Depends(get_current_username)):
+    """Store a statement PDF. The figures come later, via the form —
+    this endpoint reads nothing out of the file."""
+    if status not in FINANCIAL_STATUSES:
+        raise HTTPException(400, "Status must be %s." % " or ".join(FINANCIAL_STATUSES))
+    if statement_type not in FINANCIAL_STATEMENT_TYPES:
+        raise HTTPException(400, "Statement type must be one of %s."
+                            % ", ".join(FINANCIAL_STATEMENT_TYPES))
+    if fiscal_year < 1990 or fiscal_year > 2200:
+        raise HTTPException(400, "That is not a real fiscal year.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "That file is empty.")
+    if len(data) > MAX_FINANCIAL_PDF_BYTES:
+        raise HTTPException(400, "That file is %.1f MB — the limit is %d MB."
+                            % (len(data) / 1024 / 1024, MAX_FINANCIAL_PDF_BYTES // 1024 // 1024))
+    # Checked by CONTENT, not by the filename or the browser's
+    # content-type, either of which can say anything. A PDF always
+    # starts %PDF-; refusing here means a download can never hand back
+    # something that will not open.
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(400, "That does not look like a PDF — financial statements are stored as PDF.")
+
+    with Session(engine) as session:
+        row = FinancialStatement(
+            tenant_id=tenant_id, fiscal_year=fiscal_year,
+            entity_name=entity_name.strip(), status=status, statement_type=statement_type,
+            original_filename=os.path.basename(file.filename or "statement.pdf"),
+            content_type="application/pdf", size_bytes=len(data), pdf_bytes=data,
+            uploaded_by=username or "",
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return _financial_out(row)
+
+
+@app.get("/financial-records")
+def list_financial_statements(role: str = Depends(require_owner),
+                              tenant_id: str = Depends(get_current_tenant)):
+    """Newest year first. Several statements for one year is allowed and
+    normal — a draft superseded by a final is two real documents, and
+    losing the draft would lose the history of what changed."""
+    with Session(engine) as session:
+        rows = session.exec(
+            select(*FINANCIAL_META_COLUMNS)
+            .where(FinancialStatement.tenant_id == tenant_id)
+            .order_by(FinancialStatement.fiscal_year.desc(), FinancialStatement.uploaded_at.desc())
+        ).all()
+        return [_financial_out(r) for r in rows]
+
+
+@app.get("/financial-records/{record_id}")
+def get_financial_statement(record_id: int, role: str = Depends(require_owner),
+                            tenant_id: str = Depends(get_current_tenant)):
+    with Session(engine) as session:
+        row = get_or_404(session, FinancialStatement, record_id, tenant_id, "Financial statement")
+        return _financial_out(row)
+
+
+@app.get("/financial-records/{record_id}/download")
+def download_financial_statement(record_id: int, role: str = Depends(require_owner),
+                                 tenant_id: str = Depends(get_current_tenant)):
+    """Serves Bolton's own stored copy. inline, so it opens in the
+    browser's PDF viewer rather than forcing a download — the usual
+    reason to open one of these is to check a figure against the form."""
+    with Session(engine) as session:
+        row = get_or_404(session, FinancialStatement, record_id, tenant_id, "Financial statement")
+        name = "%s_%d_%s.pdf" % (
+            (row.entity_name or "Financial").replace(" ", "_"), row.fiscal_year, row.status)
+        return Response(content=row.pdf_bytes, media_type="application/pdf",
+                        headers={"Content-Disposition": 'inline; filename="%s"' % name})
+
+
+@app.put("/financial-records/{record_id}/figures")
+def save_financial_figures(record_id: int, body: FinancialFiguresRequest,
+                           role: str = Depends(require_owner),
+                           tenant_id: str = Depends(get_current_tenant),
+                           username: str = Depends(get_current_username)):
+    """Save the figures somebody read off the statement.
+
+    A field left out of the request is left ALONE, not blanked. That is
+    what makes filling this in over two sittings safe, and it is why
+    every field is Optional rather than defaulted to 0.0 — a default
+    would quietly overwrite last week's entry with zero.
+    """
+    with Session(engine) as session:
+        row = get_or_404(session, FinancialStatement, record_id, tenant_id, "Financial statement")
+
+        if body.status is not None:
+            if body.status not in FINANCIAL_STATUSES:
+                raise HTTPException(400, "Status must be %s." % " or ".join(FINANCIAL_STATUSES))
+            row.status = body.status
+        if body.statement_type is not None:
+            if body.statement_type not in FINANCIAL_STATEMENT_TYPES:
+                raise HTTPException(400, "Statement type must be one of %s."
+                                    % ", ".join(FINANCIAL_STATEMENT_TYPES))
+            row.statement_type = body.statement_type
+        if body.entity_name is not None:
+            row.entity_name = body.entity_name.strip()
+
+        for field in ("revenue", "cost_of_sales", "gross_profit", "other_income",
+                      "operating_expenses", "depreciation", "finance_costs", "net_profit",
+                      "total_assets", "total_liabilities", "total_equity",
+                      "cash_from_operations", "cash_from_investing", "cash_from_financing",
+                      "cash_at_year_end"):
+            value = getattr(body, field)
+            if value is not None:
+                setattr(row, field, float(value))
+
+        if body.expense_breakdown is not None:
+            cleaned = []
+            for item in body.expense_breakdown:
+                label = str(item.get("label", "")).strip()
+                if not label:
+                    continue   # a blank row in the form is not an expense line
+                try:
+                    amount = float(item.get("amount") or 0.0)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "'%s' has an amount that isn't a number." % label)
+                cleaned.append({"label": label, "amount": amount})
+            row.expense_breakdown_json = json.dumps(cleaned)
+
+        if body.source_note is not None:
+            row.source_note = body.source_note.strip()
+        if body.notes is not None:
+            row.notes = body.notes.strip()
+
+        # Stamped on the FIRST save and left alone after, so it records
+        # when the figures were captured rather than when they were last
+        # touched — the same rule pre_override_line_total follows.
+        if row.figures_entered_at is None:
+            row.figures_entered_at = datetime.utcnow()
+            row.figures_entered_by = username or ""
+
+        session.add(row)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username or "", entity_type="FinancialStatement",
+            entity_id=row.id, field="figures_entered",
+            old_value="", new_value="%d %s statement: revenue %s, net profit %s" % (
+                row.fiscal_year, row.status,
+                ("R%.2f" % row.revenue) if row.revenue is not None else "-",
+                ("R%.2f" % row.net_profit) if row.net_profit is not None else "-"),
+        ))
+        session.commit()
+        session.refresh(row)
+        return _financial_out(row)
+
+
+@app.delete("/financial-records/{record_id}")
+def delete_financial_statement(record_id: int, role: str = Depends(require_owner),
+                               tenant_id: str = Depends(get_current_tenant),
+                               username: str = Depends(get_current_username)):
+    """Owner-only, and logged. These are records of the business, so a
+    deletion is worth a permanent trail even though the document itself
+    is gone."""
+    with Session(engine) as session:
+        row = get_or_404(session, FinancialStatement, record_id, tenant_id, "Financial statement")
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username or "", entity_type="FinancialStatement",
+            entity_id=record_id, field="__deleted__",
+            old_value="%d %s %s (%s)" % (row.fiscal_year, row.statement_type, row.status,
+                                         row.original_filename),
+            new_value="(deleted)",
+        ))
+        session.delete(row)
+        session.commit()
+        return {"deleted": record_id}
 
 
 # ===== Historical Performance Comparison (confirmed Sept 2026) =====

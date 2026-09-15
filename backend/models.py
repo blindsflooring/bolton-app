@@ -2398,3 +2398,104 @@ class HistoricalMonthTotal(SQLModel, table=True):
     cost: float = 0.0
     gross_profit: float = 0.0
     order_count: int = 0
+
+
+# ===== Financial Records (confirmed Sept 2026) =====
+# Company-level annual financial statements and the figures taken off
+# them. Deliberately NOT part of DocumentArchive, which is job-level: a
+# DocumentArchive row is a rendered copy of a quote/invoice/order sheet
+# and is keyed to the entity it came from. These are statements about
+# the whole business for a whole year, produced outside Bolton by an
+# accountant. Sharing a table would mean every job-document query had to
+# learn to exclude them.
+#
+# FIGURES ARE TYPED IN, NEVER PARSED FROM THE PDF (confirmed with
+# Burgert, and the same call already made for blinds pricing). The
+# layout is consistent enough year to year that extraction would
+# technically work, which is exactly what makes it dangerous: a figure
+# silently misread from a financial statement is wrong in the one place
+# that carries the authority of being audited, and nobody re-checks it.
+# The volume is one statement a year. Note also that ai_import.py, this
+# app's existing extraction path, never writes to the price book
+# directly — it stages rows for a human to commit. Applying that same
+# safeguard here would mean reading and approving every figure by hand
+# anyway, so the parser would save nothing.
+class FinancialStatement(SQLModel, table=True):
+    """One financial statement: the stored PDF, plus the key figures
+    from it once somebody has entered them.
+
+    The PDF and the figures are deliberately one row rather than two
+    tables. A statement without its figures is a normal, expected state
+    (upload today, type the numbers in when there is time) and is
+    represented by the figure columns simply being NULL — figures_entered_at
+    is what says whether they have been filled in, never a guess from
+    whether revenue happens to be zero.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    # The year the statement covers. Fiscal years run Mar-Feb here, same
+    # as everywhere else in this app, so 2018 means Mar 2018 - Feb 2019
+    # and lines up directly with HistoricalYearTotal.fiscal_year.
+    fiscal_year: int = Field(index=True)
+    # Whose statements. Bolton is one business today, but these
+    # documents are issued per legal entity and a second one is a
+    # paperwork change, not a code change.
+    entity_name: str = ""
+    # DRAFT VS FINAL, carried through rather than lost (the brief's own
+    # point — several real statements are explicitly marked draft). A
+    # draft figure must never be mistaken for a signed-off one.
+    status: str = "final"            # "final" | "draft"
+    # What kind of engagement produced it. Audited and reviewed are
+    # different levels of assurance and the document says which.
+    statement_type: str = "reviewed"  # "audited" | "reviewed" | "compiled" | "management"
+
+    # ---- the stored document ----
+    original_filename: str = ""
+    content_type: str = "application/pdf"
+    size_bytes: int = 0
+    # Same reasoning as DocumentArchive.pdf_bytes: Render's filesystem is
+    # ephemeral across restarts and redeploys, so a column is the only
+    # place this survives. Never selected into a list response — see
+    # FINANCIAL_META_COLUMNS (main.py).
+    pdf_bytes: bytes = b""
+    uploaded_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_by: str = ""
+
+    # ---- the figures, typed in from the document ----
+    # All Optional, all NULL until somebody fills the form in. None means
+    # "not entered"; 0.0 means the statement really says zero.
+    revenue: Optional[float] = None
+    cost_of_sales: Optional[float] = None
+    gross_profit: Optional[float] = None
+    other_income: Optional[float] = None
+    operating_expenses: Optional[float] = None
+    depreciation: Optional[float] = None
+    finance_costs: Optional[float] = None
+    net_profit: Optional[float] = None          # negative for a loss, and left negative
+    # The full expense breakdown, as JSON: [{"label": "Salaries",
+    # "amount": 1234.56}, ...]. A JSON list rather than columns because
+    # every statement itemises differently and a fixed column set would
+    # need a code change the first time the accountant adds a line —
+    # which the brief explicitly rules out ("adding future years
+    # indefinitely without any code changes").
+    expense_breakdown_json: Optional[str] = None
+    # ---- balance sheet ----
+    total_assets: Optional[float] = None
+    total_liabilities: Optional[float] = None
+    total_equity: Optional[float] = None
+    # ---- cash flow ----
+    cash_from_operations: Optional[float] = None
+    cash_from_investing: Optional[float] = None
+    cash_from_financing: Optional[float] = None
+    cash_at_year_end: Optional[float] = None
+
+    # Set the first time figures are saved; what "has this been filled
+    # in" actually reads, rather than inferring from a value being zero.
+    figures_entered_at: Optional[datetime] = None
+    figures_entered_by: Optional[str] = None
+    # Where in the document the figures came from, e.g. "pp. 4-6,
+    # Statement of Comprehensive Income". Not required, but it turns a
+    # future disagreement with the PDF into a one-page check instead of
+    # a re-read of the whole statement.
+    source_note: str = ""
+    notes: str = ""

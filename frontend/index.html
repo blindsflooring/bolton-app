@@ -1902,6 +1902,7 @@ function renderLanding() {
   if (landingView === 'client-detail') return renderClientDetail(el);
   if (landingView === 'settings') return renderBusinessSettings(el);
   if (landingView === 'business') return renderBusinessOverview(el);
+  if (landingView === 'financialRecords') return renderFinancialRecords(el);
   if (landingView === 'hr') return renderHR(el);
   if (landingView === 'sessionLog') return renderSessionLog(el);
   if (landingView === 'supplierConsole') return renderSupplierConsole(el);
@@ -2139,6 +2140,7 @@ function onTileClick(tileId) {
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
   else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }
   else if (tileId === 'business') { landingView = 'business'; renderLanding(); }
+  else if (tileId === 'financialRecords') { landingView = 'financialRecords'; renderLanding(); }
   else if (tileId === 'hr') { landingView = 'hr'; hrView = 'employees'; renderLanding(); }
   else if (tileId === 'sessionLog') { landingView = 'sessionLog'; renderLanding(); }
   else if (tileId === 'supplierConsole') { landingView = 'supplierConsole'; renderLanding(); }
@@ -2615,6 +2617,269 @@ function monthlyTableHtml(data, money) {
         </table>
       </div>
     </div>`;
+}
+
+
+// ===== Financial Records (confirmed Sept 2026) =====
+// Company-level annual statements: the stored PDF, and the figures typed
+// off it. Owner-only — the tile is in OWNER_ONLY_TILES (shared.js) and
+// every endpoint behind it is require_owner (main.py). The tile check is
+// the convenience; the 403 is the boundary.
+//
+// FIGURES ARE TYPED IN, NEVER PARSED. See FinancialStatement (models.py)
+// for the reasoning. Nothing in this file reads the PDF — it uploads it,
+// lists it, and hands it back on request.
+let financialRecords = [];
+let financialOpenId = null;
+
+const FINANCIAL_FIELDS = [
+  { group: 'Income statement', fields: [
+    ['revenue', 'Revenue'], ['cost_of_sales', 'Cost of sales'], ['gross_profit', 'Gross profit'],
+    ['other_income', 'Other income'], ['operating_expenses', 'Operating expenses'],
+    ['depreciation', 'Depreciation'], ['finance_costs', 'Finance costs'],
+    ['net_profit', 'Net profit / (loss)'],
+  ]},
+  { group: 'Balance sheet', fields: [
+    ['total_assets', 'Total assets'], ['total_liabilities', 'Total liabilities'],
+    ['total_equity', 'Total equity'],
+  ]},
+  { group: 'Cash flow', fields: [
+    ['cash_from_operations', 'Cash from operations'], ['cash_from_investing', 'Cash from investing'],
+    ['cash_from_financing', 'Cash from financing'], ['cash_at_year_end', 'Cash at year end'],
+  ]},
+];
+
+function finEscape(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// A figure that has not been entered shows an em dash, never R0,00 — the
+// difference between "nobody has typed this yet" and "the statement says
+// zero" is the whole reason those are separate states in the data.
+function finMoney(v) { return (v === null || v === undefined) ? '—' : R(v); }
+
+function financialStatusBadge(rec) {
+  const draft = rec.status === 'draft';
+  return `<span class="status-badge" style="background:${draft ? 'var(--cream)' : '#dcf5e6'};
+    color:${draft ? '#8a6d00' : '#1a7a3e'};">${draft ? 'Draft' : 'Final'}</span>
+    <span class="muted" style="font-size:11px; text-transform:capitalize;">${finEscape(rec.statement_type)}</span>`;
+}
+
+async function renderFinancialRecords(el) {
+  await renderWithRetry(el, 'Financial Records', async () => {
+  setPageTitle('Financial Records');
+  el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="card"><p class="muted">Loading...</p></div>`;
+  const res = await fetch(`${API}/financial-records`);
+  if (res.status === 403) {
+    el.innerHTML = `<span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+      <div class="card"><h2>Financial Records</h2><p class="muted">This section is owner-only.</p></div>`;
+    return;
+  }
+  financialRecords = res.ok ? await res.json() : [];
+
+  const rows = financialRecords.map(rec => `
+    <tr>
+      <td data-label="Year"><b>${finEscape(rec.label)}</b>${rec.entity_name ? `<br><span class="muted" style="font-size:11px;">${finEscape(rec.entity_name)}</span>` : ''}</td>
+      <td data-label="Status">${financialStatusBadge(rec)}</td>
+      <td data-label="Revenue" class="num">${finMoney(rec.revenue)}</td>
+      <td data-label="Net profit" class="num" style="color:${rec.net_profit != null && rec.net_profit < 0 ? 'var(--coral)' : ''};">${finMoney(rec.net_profit)}</td>
+      <td data-label="Figures">${rec.figures_entered
+          ? `<span class="muted" style="font-size:11px;">entered ${new Date(rec.figures_entered_at).toLocaleDateString('en-ZA')}</span>`
+          : '<span style="font-size:11px; color:var(--coral); font-weight:700;">not entered yet</span>'}</td>
+      <td data-label="Document">
+        <a href="${API}/financial-records/${rec.id}/download" target="_blank" style="font-size:12px;">Open PDF</a>
+        <span class="muted" style="font-size:11px;"> (${(rec.size_bytes/1024/1024).toFixed(1)} MB)</span>
+      </td>
+      <td data-label="">
+        <button onclick="openFinancialFigures(${rec.id})" style="font-size:12px;">${rec.figures_entered ? 'Edit figures' : 'Enter figures'}</button>
+        <button class="delete-btn" onclick="deleteFinancialRecord(${rec.id})">Delete</button>
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <span class="back-link" onclick="landingView='tiles'; renderLanding();">← Back</span>
+    <div class="landing-welcome"><h1>Financial Records</h1>
+      <p>Annual financial statements and the figures from them. Owner only.</p></div>
+
+    <div class="card">
+      <h2>Add a statement</h2>
+      <p class="muted">The PDF is stored permanently and can be opened any time. Figures are typed in
+      afterwards from the document — nothing is read out of the PDF automatically.</p>
+      <div class="grid">
+        <div class="field"><label>Fiscal year <span class="adj">(the year it covers, Mar–Feb)</span></label>
+          <input id="fin_year" type="number" step="1" placeholder="2022"></div>
+        <div class="field"><label>Entity <span class="adj">(optional)</span></label>
+          <input id="fin_entity" type="text" placeholder="e.g. Blinds &amp; Flooring Studio"></div>
+        <div class="field"><label>Status</label>
+          <select id="fin_status"><option value="final">Final</option><option value="draft">Draft</option></select></div>
+        <div class="field"><label>Type</label>
+          <select id="fin_type">
+            <option value="reviewed">Reviewed</option><option value="audited">Audited</option>
+            <option value="compiled">Compiled</option><option value="management">Management accounts</option>
+          </select></div>
+      </div>
+      <div style="margin-top:8px;"><input type="file" id="fin_file" accept="application/pdf"></div>
+      <button class="primary" onclick="uploadFinancialStatement()" style="margin-top:10px;">Upload statement</button>
+      <p class="muted" id="fin_upload_status" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="card">
+      <h2>Statements on file</h2>
+      ${financialRecords.length ? `<div style="overflow-x:auto;"><table class="mobile-card-table">
+        <thead><tr><th>Year</th><th>Status</th><th class="num">Revenue</th><th class="num">Net profit</th>
+          <th>Figures</th><th>Document</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : '<p class="muted" style="margin:0;">Nothing on file yet. Upload a statement above.</p>'}
+    </div>
+
+    <div id="financialFiguresPanel"></div>`;
+  if (financialOpenId) openFinancialFigures(financialOpenId);
+  });
+}
+
+async function uploadFinancialStatement() {
+  const yearEl = document.getElementById('fin_year');
+  const fileEl = document.getElementById('fin_file');
+  const statusEl = document.getElementById('fin_upload_status');
+  const year = parseInt(yearEl.value, 10);
+  if (!year) { alert('Enter the fiscal year this statement covers.'); return; }
+  if (!fileEl.files.length) { alert('Choose the PDF first.'); return; }
+
+  const params = new URLSearchParams({
+    fiscal_year: year,
+    entity_name: document.getElementById('fin_entity').value || '',
+    status: document.getElementById('fin_status').value,
+    statement_type: document.getElementById('fin_type').value,
+  });
+  const form = new FormData();
+  form.append('file', fileEl.files[0]);
+  statusEl.textContent = 'Uploading...';
+  try {
+    const res = await fetch(`${API}/financial-records?${params}`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      statusEl.textContent = body.detail || 'Could not upload that file.';
+      return;
+    }
+    const rec = await res.json();
+    statusEl.textContent = '';
+    financialOpenId = rec.id;   // straight into the form, since the figures are the point
+    renderLanding();
+  } catch (e) {
+    statusEl.textContent = 'Could not upload — check your connection.';
+  }
+}
+
+// The form. Every field optional and blank-means-untouched, so this can
+// be filled in over more than one sitting without an empty box wiping
+// last week's entry (save_financial_figures(), main.py, leaves an absent
+// field alone rather than defaulting it to zero).
+function openFinancialFigures(recordId) {
+  financialOpenId = recordId;
+  const rec = financialRecords.find(r => r.id === recordId);
+  const panel = document.getElementById('financialFiguresPanel');
+  if (!rec || !panel) return;
+
+  const groups = FINANCIAL_FIELDS.map(g => `
+    <h3 style="font-size:13px; margin:14px 0 4px;">${g.group}</h3>
+    <div class="grid">
+      ${g.fields.map(([key, label]) => `
+        <div class="field"><label>${label}</label>
+          <input id="finf_${key}" type="number" step="0.01"
+                 value="${rec[key] === null || rec[key] === undefined ? '' : rec[key]}"></div>`).join('')}
+    </div>`).join('');
+
+  const breakdown = (rec.expense_breakdown || []).concat([{ label: '', amount: '' }]);
+  panel.innerHTML = `
+    <div class="card" style="border:2px solid var(--teal);">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
+        <h2 style="margin:0;">${finEscape(rec.label)} figures</h2>
+        <a href="${API}/financial-records/${rec.id}/download" target="_blank" style="font-size:12px;">Open the PDF alongside →</a>
+      </div>
+      <p class="muted" style="margin-top:4px;">Type these from the statement. A field left blank is left as it
+      was — it is not saved as zero, so you can do this in more than one sitting.</p>
+      ${groups}
+
+      <h3 style="font-size:13px; margin:14px 0 4px;">Expense breakdown</h3>
+      <p class="muted" style="margin:0 0 6px; font-size:12px;">One row per line in the statement. Add as many as it
+      itemises — new lines in a future year need no change to Bolton.</p>
+      <div id="finExpenseRows">
+        ${breakdown.map((item, i) => financialExpenseRowHtml(item, i)).join('')}
+      </div>
+      <button type="button" onclick="addFinancialExpenseRow()" style="font-size:12px; margin-top:6px;">+ Add expense line</button>
+
+      <div class="grid" style="margin-top:14px;">
+        <div class="field"><label>Where in the document <span class="adj">(optional, e.g. "pp. 4–6")</span></label>
+          <input id="finf_source_note" type="text" value="${finEscape(rec.source_note)}"></div>
+        <div class="field"><label>Status</label>
+          <select id="finf_status">
+            <option value="final" ${rec.status === 'final' ? 'selected' : ''}>Final</option>
+            <option value="draft" ${rec.status === 'draft' ? 'selected' : ''}>Draft</option>
+          </select></div>
+      </div>
+      <div class="field"><label>Notes</label>
+        <textarea id="finf_notes" rows="2">${finEscape(rec.notes)}</textarea></div>
+
+      <button class="primary" onclick="saveFinancialFigures(${rec.id})" style="margin-top:10px;">Save figures</button>
+      <button onclick="financialOpenId=null; document.getElementById('financialFiguresPanel').innerHTML='';"
+              style="margin-left:6px;">Close</button>
+      <p class="muted" id="finf_status_msg" style="margin-top:8px;"></p>
+    </div>`;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function financialExpenseRowHtml(item, i) {
+  return `<div class="grid fin-expense-row" style="margin-bottom:4px;">
+    <div class="field"><input type="text" class="fin-exp-label" placeholder="e.g. Salaries and wages"
+       value="${finEscape(item.label)}"></div>
+    <div class="field"><input type="number" step="0.01" class="fin-exp-amount" placeholder="0.00"
+       value="${item.amount === '' || item.amount === null || item.amount === undefined ? '' : item.amount}"></div>
+  </div>`;
+}
+
+function addFinancialExpenseRow() {
+  const host = document.getElementById('finExpenseRows');
+  if (host) host.insertAdjacentHTML('beforeend', financialExpenseRowHtml({ label: '', amount: '' }, -1));
+}
+
+async function saveFinancialFigures(recordId) {
+  const msg = document.getElementById('finf_status_msg');
+  const num = (key) => {
+    const v = document.getElementById('finf_' + key).value;
+    return v === '' ? null : parseFloat(v);
+  };
+  const body = { source_note: document.getElementById('finf_source_note').value,
+                 notes: document.getElementById('finf_notes').value,
+                 status: document.getElementById('finf_status').value };
+  FINANCIAL_FIELDS.forEach(g => g.fields.forEach(([key]) => { body[key] = num(key); }));
+
+  body.expense_breakdown = [...document.querySelectorAll('.fin-expense-row')].map(row => ({
+    label: row.querySelector('.fin-exp-label').value,
+    amount: parseFloat(row.querySelector('.fin-exp-amount').value || 0) || 0,
+  })).filter(x => x.label.trim());
+
+  msg.textContent = 'Saving...';
+  const res = await fetch(`${API}/financial-records/${recordId}/figures`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    msg.textContent = b.detail || 'Could not save those figures.';
+    return;
+  }
+  msg.textContent = 'Saved.';
+  renderLanding();
+}
+
+async function deleteFinancialRecord(recordId) {
+  const rec = financialRecords.find(r => r.id === recordId);
+  if (!confirm(`Delete the ${rec ? rec.label : ''} statement and its figures? The stored PDF goes with it.`)) return;
+  const res = await fetch(`${API}/financial-records/${recordId}`, { method: 'DELETE' });
+  if (!res.ok) { alert('Could not delete that record.'); return; }
+  if (financialOpenId === recordId) financialOpenId = null;
+  renderLanding();
 }
 
 async function renderBusinessOverview(el) {
