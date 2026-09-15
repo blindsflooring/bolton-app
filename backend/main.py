@@ -468,6 +468,10 @@ def _ensure_new_columns():
         ("quote", "override_total_by", "VARCHAR", "NULL"),
         ("quote", "override_total_at", "TIMESTAMP", "NULL"),
         ("quotelineitem", "pre_override_line_total", "FLOAT", "NULL"),
+        # The calculated margin that went with it — see
+        # QuoteLineItem.pre_override_margin_pct (models.py) for why an
+        # override needs both numbers to keep the margin honest.
+        ("quotelineitem", "pre_override_margin_pct", "FLOAT", "NULL"),
         ("quotelineitem", "override_reason", "VARCHAR", "NULL"),
         ("quotelineitem", "override_by", "VARCHAR", "NULL"),
         ("quotelineitem", "override_at", "TIMESTAMP", "NULL"),
@@ -14183,7 +14187,7 @@ def edit_blinds_accessory_line(quote_id: int, line_id: int, kind: str,
         override_result = _reapply_line_calc_respecting_override(
             line, fields["line_total"], spec_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total
+            _restore_surviving_override(line, existing_override_total)
 
         _log_quote_line_edit_audit(session, quote, username, old_desc, line.product_name)
         session.add(line)
@@ -14264,7 +14268,7 @@ def edit_blinds_calc_line(quote_id: int, line_id: int, blind_type: str, width_mm
         override_result = _reapply_line_calc_respecting_override(
             line, fields["line_total"], spec_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total
+            _restore_surviving_override(line, existing_override_total)
 
         new_desc = f"{line.product_name}, {line.width_mm:g}×{line.drop_mm:g}mm"
         _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
@@ -14906,6 +14910,92 @@ def add_misc_line(quote_id: int, description: str, amount_ex_vat: float, cost_ex
 # Stairwell is excluded — same as the pre-existing edit UI (no Edit button
 # offered for it there either); Vaporite/Bondite/stairwell calculator are
 # explicit non-goals per the brief.
+# ===== Margin follows an overridden price (confirmed Sept 2026) =====
+# Burgert: "the GP needs to change if we changed the price with a price
+# override." It did not. Overriding a line moved line_total and left
+# margin_pct exactly where it was, so the line kept reporting the margin
+# it had at the price nobody is charging any more.
+#
+# Reproduced on a real trim line before writing this: R1570.68 dropped to
+# R900, and the line still read margin 0.45 with the bright-green band —
+# the signal that exists to flag a thin margin was showing the healthiest
+# one it has. The low-margin accountability prompt never fired either,
+# because it reads the same field.
+#
+# WHAT WAS ALREADY CORRECT, and deliberately left alone: the QUOTE's
+# totals and therefore commission and every KPI. Those sum line_total and
+# subtract line_real_cost() independently, so they followed the override
+# already — confirmed by watching the quote subtotal move from R5532.94
+# to R4862.26 across the same override. This was only ever wrong on the
+# line's own margin_pct and the colour band derived from it.
+#
+# THE COST BASIS is recovered from the calculated pair rather than
+# recomputed from line_real_cost(), and that is deliberate. The two are
+# genuinely different numbers — line_real_cost() excludes trim wastage
+# while calculate_trim_line()'s own margin includes it — so recomputing
+# would have changed the meaning of margin_pct at the moment of an
+# override, mixing a basis change into what should be purely a price
+# change. Using the line's own calculated pair keeps one basis
+# throughout, whichever calculator produced it.
+def _calc_cost_basis(calc_total: float, calc_margin_pct: float) -> float:
+    """The cost the line's own calculator worked from, recovered from the
+    total and margin it produced: total x (1 - margin)."""
+    return calc_total * (1.0 - (calc_margin_pct or 0.0))
+
+
+def _margin_at_price(line_total: float, calc_total: float, calc_margin_pct: float) -> float:
+    """Margin the line really earns at line_total, on the cost basis its
+    own calculation used.
+
+    Can legitimately go negative — a price overridden below cost IS a
+    loss, and saying so is the entire point of this change. Not clamped.
+    """
+    if not line_total:
+        return 0.0
+    cost = _calc_cost_basis(calc_total, calc_margin_pct)
+    return round((line_total - cost) / line_total, 4)
+
+
+def _override_calc_pair(line: "QuoteLineItem") -> tuple:
+    """(calculated total, calculated margin) for a line that is already
+    overridden.
+
+    Falls back to the line's current margin_pct when
+    pre_override_margin_pct is absent, which is exactly the state of any
+    row overridden before that field existed: nothing had ever changed
+    margin_pct on those, so the stored value IS still the calculated one.
+    """
+    calc_total = line.pre_override_line_total
+    calc_margin = line.pre_override_margin_pct
+    if calc_margin is None:
+        calc_margin = line.margin_pct or 0.0
+    return calc_total, calc_margin
+
+
+def _restore_surviving_override(line: "QuoteLineItem", existing_override_total):
+    """Re-assert an override that survived an edit, and bring the margin
+    with it.
+
+    Replaces the `line.line_total = existing_override_total` assignment
+    that was repeated at all six edit_*_line() endpoints. Those re-asserted the
+    held price but left margin_pct at the value the FRESH calculation had
+    just written — the same class of mismatch as the override endpoint
+    itself, one step removed, and just as invisible.
+
+    Called after _reapply_line_calc_respecting_override(), which has
+    already rebased pre_override_line_total onto the new calculation; the
+    margin that goes with that new calculation is whatever the caller has
+    just assigned to line.margin_pct, so it is captured here before being
+    replaced.
+    """
+    if existing_override_total is None:
+        return
+    line.pre_override_margin_pct = line.margin_pct
+    line.line_total = existing_override_total
+    line.margin_pct = _margin_at_price(
+        existing_override_total, line.pre_override_line_total, line.pre_override_margin_pct)
+
+
 def _reapply_line_calc_respecting_override(line: "QuoteLineItem", calc_line_total: float, product_changed: bool,
                                             session: Session, tenant_id: str, username: str) -> dict:
     """Manual Override survival rule (confirmed Aug 2026, Edit Quote Line In
@@ -14940,6 +15030,11 @@ def _reapply_line_calc_respecting_override(line: "QuoteLineItem", calc_line_tota
         old_total = line.line_total
         line.line_total = calc_line_total
         line.pre_override_line_total = None
+        # Cleared alongside it: the caller has already written the fresh
+        # calculation's own margin onto the line, so a stored "calculated
+        # margin" from the abandoned override would only mislead a later
+        # revert that can no longer happen.
+        line.pre_override_margin_pct = None
         line.override_reason = None
         line.override_by = None
         line.override_at = None
@@ -15050,7 +15145,7 @@ def edit_flooring_line(quote_id: int, line_id: int, product_id: int, quantity_m2
 
         override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total   # stays fixed, confirmed Aug 2026
+            _restore_surviving_override(line, existing_override_total)
 
         new_desc = f"{line.product_name}{', ' + line.colour if line.colour else ''}, {line.quantity_m2}m²"
         _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
@@ -15111,7 +15206,7 @@ def edit_blinds_line(quote_id: int, line_id: int, product_id: int, width_mm: flo
 
         override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total
+            _restore_surviving_override(line, existing_override_total)
 
         new_desc = f"{line.product_name}, {line.width_mm}×{line.drop_mm}mm"
         _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
@@ -15172,7 +15267,7 @@ def edit_trim_line(quote_id: int, line_id: int, product_id: int, length_m: float
 
         override_result = _reapply_line_calc_respecting_override(line, calc["line_total"], product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total
+            _restore_surviving_override(line, existing_override_total)
 
         new_desc = f"{line.product_name}, {line.length_m}lm"
         _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
@@ -15277,7 +15372,7 @@ def edit_stairwell_line(quote_id: int, line_id: int, vinyl_product_id: int, nosi
 
         override_result = _reapply_line_calc_respecting_override(line, combined_line_total, product_changed, session, tenant_id, username)
         if not override_result["override_cleared"] and existing_override_total is not None:
-            line.line_total = existing_override_total   # stays fixed, same rule as every other edit_*_line() above
+            _restore_surviving_override(line, existing_override_total)
 
         new_desc = f"Stairwell — {line.product_name}, {line.num_stairs} stairs"
         _log_quote_line_edit_audit(session, quote, username, old_desc, new_desc)
@@ -16131,7 +16226,37 @@ def override_quote_line(quote_id: int, line_id: int, body: LineOverrideRequest,
         # calculated value" would stop being true to its name.
         if line.pre_override_line_total is None:
             line.pre_override_line_total = line.line_total
+        # Filled on its OWN condition, not alongside the total above, and
+        # that distinction is load-bearing for rows overridden before this
+        # field existed. Such a row already has a total stored and a NULL
+        # margin, so capturing only when the total is NULL would never
+        # fill it — the first re-override would move margin_pct with
+        # nothing recording what the calculated one had been, and the
+        # later revert would restore the price while leaving the
+        # overridden margin behind. Found by reverting exactly that row.
+        #
+        # Whenever this is NULL, margin_pct has not yet been touched by an
+        # override, so it still holds the calculated figure. That is true
+        # both for a brand-new override and for the first new-code
+        # override of a legacy row, which is what makes this safe to key
+        # on independently.
+        if line.pre_override_margin_pct is None:
+            line.pre_override_margin_pct = line.margin_pct
         line.line_total = body.new_value
+        # The margin follows the price (confirmed Sept 2026, Burgert:
+        # "the GP needs to change if we changed the price with a price
+        # override"). Measured against the cost the line's own
+        # calculation used, so this is a price change and not a quiet
+        # change of what margin means. A price set below cost gives a
+        # negative margin, which is the truth and is left to say so.
+        calc_total, calc_margin = _override_calc_pair(line)
+        line.margin_pct = _margin_at_price(body.new_value, calc_total, calc_margin)
+        # A new price is a new pricing decision, so any reason recorded
+        # against the previous margin no longer applies — same rule
+        # edit_trim_line() already applies for the same reason.
+        line.low_margin_reason = None
+        line.low_margin_reason_by = None
+        line.low_margin_reason_at = None
         line.override_reason = body.reason.strip()
         line.override_by = username
         line.override_at = datetime.utcnow()
@@ -16159,6 +16284,14 @@ def revert_quote_line_override(quote_id: int, line_id: int,
         old_value = line.line_total
         restored = line.pre_override_line_total
         line.line_total = restored
+        # The margin goes back with the price. Restored from the stored
+        # calculated value rather than re-derived, so reverting lands on
+        # exactly the original figure. Older rows have no stored margin
+        # (the field postdates them) and never had theirs altered, so
+        # leaving margin_pct alone is already correct for those.
+        if line.pre_override_margin_pct is not None:
+            line.margin_pct = line.pre_override_margin_pct
+        line.pre_override_margin_pct = None
         line.pre_override_line_total = None
         line.override_reason = None
         line.override_by = None
