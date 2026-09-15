@@ -467,6 +467,9 @@ def _ensure_new_columns():
         ("quote", "override_total_reason", "VARCHAR", "NULL"),
         ("quote", "override_total_by", "VARCHAR", "NULL"),
         ("quote", "override_total_at", "TIMESTAMP", "NULL"),
+        # The cutover boundary for a fiscal year split between the old
+        # spreadsheet and Bolton — see HistoricalYearTotal.covers_until.
+        ("historicalyeartotal", "covers_until", "DATE", "NULL"),
         ("quotelineitem", "pre_override_line_total", "FLOAT", "NULL"),
         ("quotelineitem", "override_reason", "VARCHAR", "NULL"),
         ("quotelineitem", "override_by", "VARCHAR", "NULL"),
@@ -8733,10 +8736,18 @@ def historical_comparison(role: str = Depends(require_owner),
         for m in month_rows:
             months_by_year.setdefault(m.fiscal_year, []).append(m)
 
+        # The CUTOVER row, if this fiscal year has one. Bolton went live
+        # part-way through a year (1 Sept 2026), so that year's figures
+        # come from the spreadsheet up to covers_until and from Quote
+        # after it. Held aside here and blended into `current` below —
+        # never served as a prior year, which would show it twice.
+        cutover_row = next((y for y in year_rows
+                            if y.fiscal_year == current_fy and y.covers_until), None)
+        cutover_months = months_by_year.get(current_fy, []) if cutover_row else []
+
         years_out = []
         for y in year_rows:
-            # Belt-and-braces: even if a 2026+ row were somehow written,
-            # it is never served next to live 2026 data.
+            # The current year is never a prior year, cutover row or not.
             if y.fiscal_year >= current_fy:
                 continue
             running_sales = running_profit = 0.0
@@ -8775,11 +8786,22 @@ def historical_comparison(role: str = Depends(require_owner),
 
         buckets = [{"sales": 0.0, "sales_ex_vat": 0.0, "cost": 0.0, "profit": 0.0, "orders": 0}
                    for _ in range(12)]
+        # Where live data is allowed to start. Without a cutover row that
+        # is the whole fiscal year, exactly as before. With one, it is the
+        # boundary date — so a job Bolton happens to hold from before the
+        # cutover is NOT counted here, because the spreadsheet already
+        # counted that period. This is the half of the no-double-count
+        # guarantee that lives on the live side; the other half is the
+        # import refusing to read past the same date.
+        live_from = cutover_row.covers_until if cutover_row else None
+
         for q in quotes:
             if q.accepted_at is None or q.declined_at is not None:
                 continue
             accepted = (q.accepted_at + SAST_OFFSET).date()
             if _fiscal_year_of(accepted) != current_fy:
+                continue
+            if live_from is not None and accepted < live_from:
                 continue
             qlines = lines_by_quote.get(q.id, [])
             totals = _quote_totals(sum(l.line_total for l in qlines) + q.transport_levy, q, vat_pct)
@@ -8790,6 +8812,30 @@ def historical_comparison(role: str = Depends(require_owner),
             b["cost"] += real_cost
             b["profit"] += totals["total_ex_vat"] - real_cost
             b["orders"] += 1
+
+        # ---- Blend the spreadsheet months in, ahead of the live ones ----
+        # Each fiscal month takes ONE source and only one. A month before
+        # the cutover is the spreadsheet's; a month from the cutover on is
+        # Bolton's. The boundary falls on a month start (1 September), so
+        # no single month is ever split between the two and nothing has to
+        # be apportioned.
+        #
+        # The live buckets for pre-cutover months are overwritten rather
+        # than added to, and they are already empty by construction —
+        # live_from filtered those quotes out above. Writing the figure in
+        # rather than adding it keeps that true even if a quote somehow
+        # slipped through, so this cannot double-count under any ordering.
+        cutover_month_cut = None
+        if cutover_row:
+            cutover_month_cut = _fiscal_month_index_of(cutover_row.covers_until)
+            for m in cutover_months:
+                if m.fiscal_month_index >= cutover_month_cut:
+                    continue   # the spreadsheet must never supply a live month
+                buckets[m.fiscal_month_index] = {
+                    "sales": m.sales, "sales_ex_vat": m.sales,
+                    "cost": m.cost, "profit": m.gross_profit, "orders": m.order_count,
+                    "from_spreadsheet": True,
+                }
 
         running_sales = running_profit = 0.0
         current_curve = []
@@ -8811,6 +8857,10 @@ def historical_comparison(role: str = Depends(require_owner),
                 "sales": round(b["sales"], 2), "sales_ex_vat": round(b["sales_ex_vat"], 2),
                 "gross_profit": round(b["profit"], 2), "orders": b["orders"],
                 "running_sales": running_sales, "running_gross_profit": running_profit,
+                # Which system this month came from — said in the payload
+                # rather than inferred in the browser from a date nobody
+                # sent it.
+                "source": "spreadsheet" if b.get("from_spreadsheet") else "bolton",
             })
 
         total_sales = round(sum(b["sales"] for b in buckets), 2)
@@ -8826,6 +8876,14 @@ def historical_comparison(role: str = Depends(require_owner),
             "margin_pct": round(total_profit / total_sales, 6) if total_sales else 0.0,
             "order_count": sum(b["orders"] for b in buckets),
             "months": current_curve,
+            # The cutover, stated outright so the screen can explain the
+            # year rather than leave a reader to wonder why it finally
+            # looks like a normal one.
+            "cutover_date": cutover_row.covers_until.isoformat() if cutover_row else None,
+            "cutover_month_index": cutover_month_cut,
+            "spreadsheet_sales": round(cutover_row.total_sales, 2) if cutover_row else None,
+            "live_sales": round(sum(b["sales"] for b in buckets
+                                    if not b.get("from_spreadsheet")), 2),
         }
 
         # Same point last year, for the one comparison that is actually
