@@ -13519,6 +13519,80 @@ def _trim_line_category(product: "TrimProduct") -> str:
     return "skirting" if product.category in ("skirting", "quarter_round") else "trim"
 
 
+# ===== Trim lines combine instead of duplicating (confirmed Sept 2026) =====
+# Adding the same trim several times (one per room, typically) used to
+# leave one row per addition, so a quote with the same reducer in five
+# rooms read as five near-identical lines instead of one line of the real
+# total length.
+#
+# THE ROOT-CAUSE QUESTION THE BRIEF ASKED — whether these lines carry a
+# room/area that merging would destroy — is NO, confirmed from the code
+# and from the live book before any of this was written:
+#
+#   * section_label is a BLINDS field. Only three paths ever set it:
+#     the blinds spreadsheet import, add_blinds_calc_line() and
+#     add_blinds_accessory_line(). add_trim_line() does not take a room
+#     and never has.
+#   * No trim line in the database carries one — nor does any line of
+#     any category — and every trim line's line_notes is empty too.
+#   * The add-trim form (quote-builder.js) has no room input to send.
+#     It posts product, length, discount and colour, and nothing else.
+#
+# So there is no per-room breakdown to lose: the information the brief
+# was protecting does not exist for trims. Merging on product+colour is
+# therefore the whole answer, and if room-level trims are ever wanted
+# they need a new field first — at which point this key gains a term.
+#
+# WHAT IS IN THE KEY, and why each is there rather than assumed:
+#   product_id   the product itself.
+#   colour       "Anodized Champagne" and "Silver" are different stock.
+#   discount_pct it sets unit_price (calculate_trim_line), so merging
+#                two different discounts would silently reprice one of
+#                them. Different discount, different line.
+# category is deliberately NOT in the key: it is derived from the
+# product by _trim_line_category(), so the same product_id always has
+# the same category and including it would be decoration.
+#
+# WHY THE MATHS IS SAFE, checked in calculate_trim_line() rather than
+# assumed: trim pricing is linear in length. unit_price depends only on
+# product and discount, line_total is unit_price x length, cost is
+# per-lm x length x wastage, and margin_pct is a ratio of two figures
+# that both scale with length — so it is identical at any length. 3m
+# then 5m recomputed as 8m gives the same money as the two separately,
+# only rounded once instead of twice, which is the more correct figure.
+#
+# A LINE WITH A MANUAL TOTAL OVERRIDE IS NEVER MERGED INTO. Its
+# line_total is an agreed price a person typed, not a calculation, and
+# recomputing it from a new length would quietly throw that decision
+# away. Such a line is left alone and the new addition becomes its own
+# row — the one case where a duplicate row is still the right answer.
+def _mergeable_trim_line(session: Session, quote_id: int, tenant_id: str,
+                         product_id: int, colour: str, discount_pct: float):
+    """The existing trim line this addition belongs to, or None.
+
+    Oldest first, so repeated additions keep collapsing into the same
+    original row rather than hopping between rows."""
+    candidates = session.exec(
+        select(QuoteLineItem)
+        .where(
+            QuoteLineItem.quote_id == quote_id,
+            QuoteLineItem.tenant_id == tenant_id,
+            QuoteLineItem.category.in_(("trim", "skirting")),
+            QuoteLineItem.product_id == product_id,
+        )
+        .order_by(QuoteLineItem.id)
+    ).all()
+    for line in candidates:
+        if (line.colour or "") != (colour or ""):
+            continue
+        if abs((line.discount_pct or 0.0) - (discount_pct or 0.0)) > 1e-9:
+            continue
+        if line.pre_override_line_total is not None:
+            continue   # an agreed, hand-typed total — never recalculate it
+        return line
+    return None
+
+
 # ===== Blinds calculator (confirmed Sept 2026, "Integrate standalone
 # Blinds Calculator into Bolton") =====
 #
@@ -14221,6 +14295,46 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         product = get_or_404(session, TrimProduct, product_id, tenant_id, "Trim product")
         settings = get_settings(session, tenant_id)
 
+        # Same trim already on this quote? Add to it rather than making a
+        # second row — see _mergeable_trim_line() above for the key, why
+        # rooms are not part of it, and why an overridden line is excluded.
+        existing = _mergeable_trim_line(session, quote_id, tenant_id, product_id, colour, discount_pct)
+        if existing is not None:
+            previous_length = existing.length_m or 0.0
+            combined_length = round(previous_length + length_m, 4)
+            calc = calculate_trim_line(product, combined_length, discount_pct,
+                                        margin_warn_threshold=settings.flooring_margin_warn_threshold)
+            existing.length_m = combined_length
+            existing.unit_cost = calc["unit_cost"]
+            existing.unit_price = calc["unit_price"]
+            existing.line_total = calc["line_total"]
+            existing.margin_pct = calc["margin_pct"]
+            # A combined line is a fresh pricing decision at a new total,
+            # so a reason recorded against the previous number no longer
+            # applies — cleared for exactly the reason edit_trim_line()
+            # clears it, rather than silently carrying a stale one.
+            existing.low_margin_reason = None
+            existing.low_margin_reason_by = None
+            existing.low_margin_reason_at = None
+            session.add(existing)
+            # Logged as a combine, not a plain "added", so the trail still
+            # shows what went in and what it became — the only record that
+            # this row is the sum of several additions.
+            _log_quote_line_audit(
+                session, quote, username, "added",
+                f"Trim — {product.product_name}, {length_m}lm "
+                f"(combined into existing line: {previous_length}lm + {length_m}lm = {combined_length}lm)")
+            session.commit()
+            session.refresh(existing)
+            result = strip_sensitive_fields(existing.dict(), role, settings)
+            result["merged_into_line_id"] = existing.id
+            result["merged"] = True
+            result["previous_length_m"] = previous_length
+            result["added_length_m"] = length_m
+            if calc["warning"] and role == UserRole.owner:
+                result["warning"] = calc["warning"]
+            return result
+
         calc = calculate_trim_line(product, length_m, discount_pct, margin_warn_threshold=settings.flooring_margin_warn_threshold)
         line = QuoteLineItem(
             quote_id=quote_id, category=_trim_line_category(product), product_id=product_id, tenant_id=tenant_id,
@@ -14236,6 +14350,7 @@ def add_trim_line(quote_id: int, product_id: int, length_m: float,
         session.refresh(line)
 
         result = strip_sensitive_fields(line.dict(), role, settings)
+        result["merged"] = False
         if calc["warning"] and role == UserRole.owner:
             result["warning"] = calc["warning"]
         return result
