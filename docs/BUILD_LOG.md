@@ -18,6 +18,190 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-16 — Ask Bolton narrowed to live jobs for Sales and Admin
+
+**This supersedes the decision taken earlier the same day** that Ryno and Madri would get *both* the historical import and live data. They now get live Order Index data **only**. Nothing about that earlier decision was a breach — no permission boundary ever failed — it was a scope change made before the historical connection had been used in anger.
+
+### Who sees what, now
+
+| | Current jobs | Imported history (2017–2025) | Financial Records |
+|---|---|---|---|
+| Sales (Ryno) | ✅ | ❌ | ❌ |
+| Admin (Madri) | ✅ | ❌ | ❌ |
+| Owner | ✅ | ✅ | ✅ (phase 3) |
+
+Sales and Admin gain no reach they did not already have — everything Ask Bolton can now tell them is already on the Order Index screen. What changes is that they stop hunting across screens for it.
+
+### The boundary is a second database role, not a code check
+
+The important structural change. There are now **two read-only connections, chosen by the asker's role**:
+
+- `ASK_BOLTON_DATABASE_URL` → Owner. Granted the live tables, the historical import, and Financial Records.
+- `ASK_BOLTON_LIVE_DATABASE_URL` → Sales and Admin. Granted **only** `quote`, `quotelineitem`, `quotepayment`, `ordersheet`, `paymentfollowup`.
+
+A total failure of the SQL validator still cannot let Ryno read a historical year, because his connection holds no privilege on that table. Code can have bugs; a `GRANT` that was never made cannot. Neither variable falls back — not to `DATABASE_URL`, and **not from the live connection to the owner one**, which is explicitly tested, because that single fallback would erase the whole boundary silently.
+
+Selected via `get_current_role()`, so an Owner previewing as Sales is answered on the Sales connection. Verified in the browser on both Home and Order Index: the scope line narrows from *"current jobs and the imported Order Index history (2017-2025)"* to *"current jobs in the Order Index"* the moment the preview switches.
+
+### What live data actually backs this
+
+Confirmed by reading `list_quotes()` rather than assuming — the Order Index screen reads exactly six tables. Five are exposed to the agent (`jobworkday` was left out; nothing in the brief's questions needs it). Two descriptions earn their place:
+
+- **`ordersheet.status`** — "still needs ordering" means *no placed order sheet*, not the `materials_ordered` checkbox, which is a legacy hand-ticked field. The catalogue tells the model explicitly not to trust it.
+- **`quotepayment`** — payments are a **list**, not a deposit/final pair, so "who still owes" has to come from the rows, not from two milestone dates.
+
+### Where it lives
+
+Ask Bolton is now on **Home and the Order Index dashboard**, same component, same server boundary. Deliberately *not* on a drill-down: that view has already narrowed to one tile's list, and a free-text question there would answer about something other than what is on screen.
+
+### Testing
+
+Red-team suite extended from 39 to **42 adversarial queries, all refused** — the ten new ones are the new boundary specifically: Sales and Admin reaching for `historicalyeartotal` directly, via table alias, via `AS` alias, via alias shadowing, via subquery, via `UNION` piggyback, via `JOIN` piggyback, and via uppercase evasion.
+
+Correctness is now asserted against **hand-computed answers**, not just "it responded". The fixture's declined quote and price check each carry 999 bags of screed, so a query that forgets to exclude them comes out at 2 058 instead of 60:
+
+| Question | Expected | Got |
+|---|---|---|
+| Bags of screed across open + queued jobs | 60 | 60 |
+| Trim metres across jobs needing installation | 93.0 | 93.0 |
+| Who hasn't paid their deposit | J-101, J-104 | J-101, J-104 |
+| Who still owes final payment | J-106 | J-106 |
+| Which jobs still need ordering | J-101, J-104 | J-101, J-104 |
+| Which jobs still need installing | J-101, J-102, J-104, J-105 | ✅ |
+| Outstanding deposit **in Hermanus** | J-104 | J-104 |
+
+`/ask-bolton/self-check` now takes a `for_role` and derives its probes **from the catalogue**, so the Sales connection is checked for what it must *not* read rather than what the Owner may. The first version had the probes hardcoded to the Owner's entitlements — running it against the Sales connection asserted that reading `historicalyeartotal` should *succeed*, the exact opposite of the requirement.
+
+### Not verified, and it needs a real check
+
+- **The live model call has never run.** No `ANTHROPIC_API_KEY` on the build machine. Every layer downstream of generation is tested; the generation itself is not. Suite D writes the SQL a correctly-described schema *should* lead the model to and proves those numbers are right — it does not prove the model writes that SQL.
+- **The per-table boundary cannot be proven on SQLite**, which has no per-table privileges. `self_check` reports `full_boundary_enforceable: false` locally and says why, rather than implying a guarantee that isn't there. It must be run on the Postgres deployment.
+- **No real job has been checked yet.** The brief's last criterion — one currently-open job with known screed/trim needs and known payment status — needs a real job number from Burgert.
+
+### A rep may only see their own jobs — found while confirming the link-through
+
+The clickable-results brief asked one thing to be confirmed before building: does opening a job from an answer still respect the job page's own per-role rules? **It does** — `GET /quotes/{id}` enforces `scoped_username()` server-side and returns **404, not 403**, on another rep's job, deliberately, so a rep cannot even learn it exists. Ask Bolton is not a second door and does not need to be. Verified directly: job id 1 returns 200 to the Owner and **404** to a Sales user who does not own it.
+
+**But confirming that exposed a real over-exposure in what had already been built.** Ask Bolton was granting Sales the whole `quote` table with only a tenant predicate — so Ryno asking *"who hasn't paid their deposit?"* would have got back client names and job numbers belonging to Madri's and Burgert's jobs. Exactly the information that 404 exists to withhold, handed over in plain text. It existed before any links; links would only have made it clickable.
+
+Fixed by honouring the rule Bolton already has. `PERSON_SCOPED_ROLES` has **one definition, in main.py**, handed to `ask_query` at import — the suite asserts the two have not drifted. For a person-scoped role every query must read `quote` and filter it with a bound `quote.sales_owner = :sales_owner`; a query over `quotelineitem` or `quotepayment` alone is refused, because those tables carry no owner and would otherwise sum every rep's rows.
+
+Admin is deliberately **not** person-scoped — Madri invoices and orders for other people's jobs, and that is a settled decision, not an oversight.
+
+| | Sees | Own jobs only |
+|---|---|---|
+| Sales (Ryno) | current jobs | ✅ |
+| Admin (Madri) | current jobs | ❌ — sees every rep's, by settled decision |
+| Owner | everything | ❌ |
+
+### Clickable results
+
+Job references in an answer are now links to that job's existing detail page. Routed from the row's own `quote_id`, never from the job number — a job number is a label, not a route — and the SQL prompt asks for `quote.id AS quote_id` alongside `quote.job_number` whenever the answer is about specific jobs.
+
+Opening goes through `openOrderDetailScreen()`, the same function the Order Index uses, hitting the same endpoint with the same check. Ask Bolton decides where to navigate and nothing about who may arrive.
+
+### Testing
+
+Red team **42 → 48 adversarial queries, all refused**. The six new ones are this boundary: a Sales query with no owner predicate, one reaching through `quotelineitem` alone, one through `quotepayment` alone, one through `ordersheet` alone, one hardcoding another rep's username as a string literal, and one inventing a third bind parameter.
+
+New suite E proves it end to end against the fixture, with one job reassigned to a second rep: `ryno` sees his five, `other_rep` sees only J-102, an unknown rep sees none. Link routing verified in the browser — clicking `J-101` lands on that job's detail page with its real actions.
+
+### Still outstanding, unchanged
+
+The live model call has still never run, the per-table boundary still cannot be proven on SQLite, and no real open job has been checked. The `ask_bolton_live` role still has to be created.
+
+One addition to that list: the per-person scope is currently enforced by the **validator**, not by the database. The stronger version is an RLS policy on the live role keyed to a session setting, which would make it structural like the table boundary. Worth doing, not done here.
+
+
+### Money is read, never worked out
+
+Checking J-0023 turned up a real hazard. The rand figures on a job - what it is
+worth, what the deposit was, what is still owed, the VAT - are **not columns**.
+Bolton computes them in `_quote_totals()` at the moment it draws the screen. The
+query agent had the ingredients (`line_total`, `deposit_pct`, `transport_levy`,
+`discount_pct`, `manual_override_total_incl_vat`) and could have rebuilt them.
+
+On J-0023 the four line totals sum to R92 027,18 and the real total is R105 831,26
+- the same number times 1,15. An agent that forgets the VAT step returns R92 027,18:
+wrong, confident, and indistinguishable from right to whoever reads it.
+
+Burgert's call, and it matches the rule already set for Financial Records: **only
+real stored numbers, no guessing, no calculating.** If the figure is not stored,
+the honest answer is "I can't answer that yet".
+
+Enforced structurally rather than by asking nicely. Every ingredient of the totals
+formula is **out of the catalogue**, so reaching for one is refused by the validator
+the same way `financialstatement` is - not discouraged in a prompt the model may or
+may not follow. `quotepayment` is left whole and is now the only source of a rand
+figure, because every row in it is money that actually arrived. Summing real
+receipts is still allowed; that is adding up facts, not reconstructing a formula.
+
+| Question | Answer |
+|---|---|
+| Has the deposit been paid? | Yes - `deposit_paid_date` and the payment rows are real |
+| How much came in? | Yes - from `quotepayment` |
+| What is the job worth? | "I can't answer that yet" - not stored |
+| How much is still owed? | "I can't answer that yet" - not stored |
+| What is the margin? | "I can't answer that yet" - cost columns are gone too |
+
+Red team **48 -> 58 refused**. The ten new ones are each a way to rebuild a figure:
+straight from line totals, the same multiplication hidden behind an alias, the
+deposit percentage, the override, the levy, the discount, and the cost columns that
+would let it compute a margin.
+
+### J-0023, checked against the real job
+
+The first end-to-end check against a real open job. J-0023 (Marlize Louw, Gansbaai,
+Ryno's) was read out of production, and its real row values replayed into the
+fixture and put through `validate_sql` -> `run_sql` as Sales, as Ryno.
+
+| | Real job | Ask Bolton |
+|---|---|---|
+| Screed | 55 bags | 55 |
+| Trim | 9,1 m (5,4 reducer + 3,7 angle) | 9.1 |
+| Deposit | paid 15 Sep 2026 | 2026-09-15 |
+| Deposit amount | R74 081,88 | R74 081,88, from the payment row |
+| Final payment | not paid | None |
+| Invoice | not sent | None |
+
+Every figure matches, and both "what is it worth" and "what is still owed" are
+refused rather than estimated.
+
+**What this does not yet prove.** The SQL was written by hand, not by the model, and
+it ran against a replay rather than against Postgres. The model step works - it was
+exercised in production for the first time today and correctly refused a question
+about data it could not see - but it has never written a live-jobs query, because
+that version is not deployed anywhere with an API key. That is the one remaining
+gap, and it needs the `ask_bolton_live` role and a deploy before it can close.
+
+### Worth doing later: store the outstanding amount
+
+The honest "I can't answer that yet" is the right behaviour, not a permanent
+answer. The fix is to make the number real: store `total_incl_vat` and
+`amount_outstanding` on the quote, maintained on write, and have the existing
+nightly consistency monitor assert the stored value still equals what
+`_quote_totals()` computes. Then the agent reads a stored fact, there is still one
+definition of the arithmetic, and drift gets caught by machinery that already runs.
+A database view would also work but would duplicate the formula in SQL, where it
+could quietly disagree with the Python.
+
+
+### Still outstanding
+
+The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
+
+```sql
+CREATE ROLE ask_bolton_live LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE postgres TO ask_bolton_live;
+GRANT USAGE   ON SCHEMA public     TO ask_bolton_live;
+GRANT SELECT  ON quote, quotelineitem, quotepayment, ordersheet, paymentfollowup
+  TO ask_bolton_live;
+```
+
+Plus an RLS policy per table if row-level security is on, or the role reads zero rows. On the pooler the username must be `ask_bolton_live.<project-ref>` — keeping the dashboard's pre-filled `postgres.<project-ref>` connects as a **superuser** and silently removes the guarantee entirely. `/ask-bolton/self-check?for_role=sales` reports `is_superuser` for exactly that reason.
+
+---
+
 ## 2026-09-14 — Photo storage, the memory ceiling, and HEIC
 
 Investigation only. Triggered by a Render memory-limit restart on `bolton-backend`, 14 photos on J-0021 (Amanda De Vos) showing as broken images, and Bolton feeling generally slow. Two of the three turned out to have a different cause than the brief assumed, so nothing was changed until this was written down.

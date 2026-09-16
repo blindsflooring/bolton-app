@@ -5554,6 +5554,12 @@ def delete_employee(employee_id: int, tenant_id: str = Depends(get_current_tenan
 # leaking data.
 PERSON_SCOPED_ROLES = {UserRole.sales}
 
+# Ask Bolton honours the exact same rule, from this exact set - a rep's
+# questions may only cover their own jobs, the same as the Order Index
+# list and get_quote()'s 404. Handed over rather than re-declared so the
+# two can never drift.
+ask_query.set_person_scoped_roles(PERSON_SCOPED_ROLES)
+
 
 def scoped_username(request: Request) -> Optional[str]:
     """The username a person's own records must be filtered to, or None
@@ -11650,10 +11656,10 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     # useful fact is "the shared one" versus "its own", and a key itself
     # has no business leaving the server.
     _key, key_source = ask_query.api_key()
-    _engine, db_problem = ask_query.readonly_engine()
+    _engine, db_problem = ask_query.readonly_engine(role)
     return {
         "phase": phase,
-        "data_available": ask_query.PHASE_NAMES[phase],
+        "data_available": ask_query.data_available(role, phase),
         "tables": [{"table": t["table"], "what": t["what"]} for t in tables],
         "available": bool(tables),
         "ai_configured": bool(_key),
@@ -11663,8 +11669,27 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     }
 
 
+@app.get("/ask-bolton/self-check")
+def ask_bolton_self_check(for_role: str = "owner",
+                          role: str = Depends(require_owner)):
+    """Prove the permission boundary against the REAL database, as the
+    real role, on this deployment.
+
+    The red-team suite in backend/tests exercises the validator and runs
+    against a local fixture — it is connection-independent and proves
+    nothing about production. This endpoint proves the other half: that
+    the database itself refuses. Run it after any change to
+    ASK_BOLTON_DATABASE_URL, and before letting anyone loose on the
+    feature.
+
+    Owner-only, and read-only in effect: the one write it attempts
+    carries WHERE 1=0 and is rolled back, so a wrong grant is REPORTED
+    rather than exercised."""
+    return ask_query.self_check(for_role if for_role in ask_query.CONNECTION_FOR_ROLE else "owner")
+
+
 @app.post("/ask-bolton")
-def ask_bolton_endpoint(payload: AskBoltonRequest,
+def ask_bolton_endpoint(payload: AskBoltonRequest, request: Request,
                         role: str = Depends(get_current_role),
                         tenant_id: str = Depends(get_current_tenant)):
     """Ask anything, in plain English, about the data this role may see.
@@ -11678,7 +11703,8 @@ def ask_bolton_endpoint(payload: AskBoltonRequest,
     This endpoint never touches `engine`. ask_query holds its own
     read-only connection and no handle to the read-write one."""
     try:
-        return ask_query.ask(payload.question, role, tenant_id)
+        return ask_query.ask(payload.question, role, tenant_id,
+                             username=scoped_username(request))
     except RuntimeError as e:
         # A Claude outage, a missing key, a server that has not been
         # given a read-only database user. Reported as what it is rather

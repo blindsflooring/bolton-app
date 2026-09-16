@@ -47,12 +47,26 @@ to fail on its own for anything to go wrong:
      predicate, a LIMIT is enforced, and the database is given a
      statement timeout. A query cannot run away even if it is valid.
 
-PHASED BLAST RADIUS, not phased question scope. Any question may be
-asked at any phase; what changes is how much data the agent may reach
-while the mechanism earns trust. Phase 1 is the imported Order Index
-history - already complete, stable, and the least damaging thing to get
-wrong. Phase 2 adds live Quote data. Phase 3 adds Financial Records,
-owner-only, last. Set by ASK_BOLTON_PHASE.
+WHO SEES WHAT (confirmed Sept 2026, superseding the earlier decision
+that Sales and Admin would get the historical import too):
+
+  Sales and Admin - current jobs in the Order Index only. No prior
+  years, no Financial Records. This is what they already see on the
+  Order Index screen, so Ask Bolton gives them no reach they did not
+  already have; it just stops them hunting across screens for it.
+
+  Owner - all of it: current jobs, the imported history, and (at phase
+  3) Financial Records.
+
+Enforced in TWO places that would both have to fail: the catalogue's own
+`roles`, which decides what the validator will accept and what the model
+is even told exists, and - the real guarantee - a SEPARATE DATABASE ROLE
+per connection, so a Sales question runs on a login that holds no
+privilege on the historical or financial tables at all.
+
+ASK_BOLTON_PHASE remains as a blast-radius control on top of that:
+Financial Records stay at phase 3 and are not reachable by anyone until
+it is raised.
 
 WHAT THIS MODULE WILL NOT DO. It will not answer from the model's own
 knowledge. Every figure comes from a row the database returned, and the
@@ -137,11 +151,28 @@ def current_phase():
         return 1
 
 
-PHASE_NAMES = {
-    1: "the imported Order Index history",
-    2: "the imported Order Index history and live quote data",
-    3: "the imported Order Index history, live quote data and Financial Records",
-}
+# What this role can currently reach, in words, for the screen and for
+# an honest refusal. Derived from the catalogue rather than written out,
+# so it can never describe access that allowed_tables() does not actually
+# grant - the two drifting apart is how a refusal ends up contradicting
+# the sentence above it.
+_TABLE_GROUPS = [
+    ("current jobs in the Order Index", {"quote", "quotelineitem", "quotepayment",
+                                         "ordersheet", "paymentfollowup"}),
+    ("the imported Order Index history (2017-2025)", {"historicalyeartotal",
+                                                      "historicalmonthtotal"}),
+    ("the annual Financial Records", {"financialstatement"}),
+]
+
+
+def data_available(role, phase=None):
+    names = {t["table"] for t in allowed_tables(role, phase)}
+    have = [label for label, group in _TABLE_GROUPS if group & names]
+    if not have:
+        return "nothing yet"
+    if len(have) == 1:
+        return have[0]
+    return "%s and %s" % (", ".join(have[:-1]), have[-1])
 
 
 # =====================================================================
@@ -158,11 +189,30 @@ PHASE_NAMES = {
 ALL_ROLES = ("owner", "sales", "admin")
 OWNER = ("owner",)
 
+# Roles that may only ever see their OWN jobs.
+#
+# Set once at import by main.py from its own PERSON_SCOPED_ROLES, so
+# there is exactly one definition of who is restricted and this cannot
+# drift from the rest of the app. Defaulted rather than left empty: a
+# module imported without that call must fail CLOSED, not hand a rep
+# everybody's jobs.
+_PERSON_SCOPED = {"sales"}
+
+
+def set_person_scoped_roles(roles):
+    """Called by main.py at import with its own PERSON_SCOPED_ROLES."""
+    global _PERSON_SCOPED
+    _PERSON_SCOPED = set(roles)
+
+
+def is_person_scoped(role):
+    return role in _PERSON_SCOPED
+
 CATALOGUE = [
     {
         "table": "historicalyeartotal",
         "phase": 1,
-        "roles": ALL_ROLES,
+        "roles": OWNER,
         "what": "One row per fiscal year of imported Order Index history, 2017 to 2025. "
                 "The fiscal year runs March to February and is named for the year it STARTS in, "
                 "so fiscal_year 2017 means March 2017 to February 2018.",
@@ -189,7 +239,7 @@ CATALOGUE = [
     {
         "table": "historicalmonthtotal",
         "phase": 1,
-        "roles": ALL_ROLES,
+        "roles": OWNER,
         "what": "One row per fiscal month of an imported year, built by summing order rows that carry a "
                 "readable date. Incomplete for some years - check historicalyeartotal.monthly_complete "
                 "before comparing months across years.",
@@ -205,9 +255,15 @@ CATALOGUE = [
     },
     {
         "table": "quote",
-        "phase": 2,
+        "phase": 1,
         "roles": ALL_ROLES,
         "what": "One row per quote or job in Bolton, from 1 September 2026 onward. "
+                "This table carries DATES and STATUS, not money. The quote total, the "
+                "deposit due, the balance and the VAT are all worked out by Bolton at "
+                "the moment it draws the screen, and are not stored here - so they are "
+                "not available to you and cannot be rebuilt from these columns. For any "
+                "question about money, use quotepayment, which holds what really "
+                "arrived. "
                 "A quote becomes a job when it is accepted.",
         "columns": {
             "client_name": "Who the job is for.",
@@ -226,20 +282,16 @@ CATALOGUE = [
             "invoice_sent_date": "When the invoice went out.",
             "deposit_paid_date": "When the deposit landed. NULL if not paid.",
             "final_payment_date": "Set only when the job is FULLY paid.",
-            "actual_deposit_amount": "The real deposit received, where it differs from the percentage.",
-            "deposit_pct": "Deposit share of the total, as a fraction.",
-            "branch": "Which branch the job belongs to.",
+                    "branch": "Which branch the job belongs to.",
             "sales_owner": "Username of the rep the job is attributed to.",
             "installer_team": "Who is fitting it.",
             "on_hold_reason": "Free text. Non-empty means the job is paused.",
-            "transport_levy": "Added to the quote subtotal.",
-            "discount_pct": "Discount as a fraction.",
-            "manual_override_total_incl_vat": "When set, this REPLACES the calculated total.",
+                        "materials_ordered": "A legacy hand-ticked checkbox. Do NOT trust it - whether materials were really ordered is decided by a placed ordersheet row.",
         },
     },
     {
         "table": "quotelineitem",
-        "phase": 2,
+        "phase": 1,
         "roles": ALL_ROLES,
         "what": "The lines on a quote. Join to quote via quote_id.",
         "columns": {
@@ -251,11 +303,51 @@ CATALOGUE = [
             "length_m": "Linear metres, on trim and skirting lines.",
             "boxes_needed": "Boxes to order, on material flooring lines.",
             "bags_allowed": "Bags of screed allowed, on screed lines. Greater than 0 identifies a screed line.",
-            "line_total": "The line's sell price, ex VAT.",
-            "total_job_cost": "Real cost of a flooring or stairwell line.",
-            "unit_cost": "Cost per unit - per linear metre on trim and skirting.",
-            "flooring_pricing_type": "'material' or 'screed', on flooring lines.",
+                        "flooring_pricing_type": "'material' or 'screed', on flooring lines.",
             "trim_sub_category": "'skirting', 'stair_nose', 'reducer', 'carpet_strip' or 'quarter_round'.",
+        },
+    },
+    {
+        "table": "quotepayment",
+        "phase": 1,
+        "roles": ALL_ROLES,
+        "what": "THE ONLY SOURCE OF MONEY FIGURES. Money actually received against a job. "
+                "Every amount here is a real recorded receipt, not a calculation. "
+                "A job's payments are a LIST, not a "
+                "fixed deposit/final pair - a client can pay in several tranches. Join to "
+                "quote via quote_id.",
+        "columns": {
+            "quote_id": "Joins to quote.id.",
+            "amount": "What actually arrived. Never a percentage of anything.",
+            "paid_date": "The date the money landed.",
+            "method": "EFT, Cash, Card, Yoco - free text.",
+            "payment_type": "'deposit', 'final' or 'extra'.",
+        },
+    },
+    {
+        "table": "ordersheet",
+        "phase": 1,
+        "roles": ALL_ROLES,
+        "what": "A supplier order raised for a job. A job with no ordersheet row, or only "
+                "draft ones, has NOT had its materials ordered - which is what 'still needs "
+                "ordering' means.",
+        "columns": {
+            "quote_id": "Joins to quote.id.",
+            "supplier": "Who the order went to.",
+            "status": "'draft' or 'placed'. Only 'placed' counts as actually ordered.",
+            "created_at": "When the sheet was raised.",
+        },
+    },
+    {
+        "table": "paymentfollowup",
+        "phase": 1,
+        "roles": ALL_ROLES,
+        "what": "An append-only log of payment chases. A job can be chased several times, so "
+                "there can be many rows per job.",
+        "columns": {
+            "quote_id": "Joins to quote.id.",
+            "follow_up_date": "When the chase happened.",
+            "notes": "What was said.",
         },
     },
     {
@@ -298,6 +390,10 @@ def schema_prompt(role, phase=None):
     if not tables:
         return ""
     out = []
+    if is_person_scoped(role):
+        out.append("SCOPE: you may only see YOUR OWN jobs. Every query must read `quote` "
+                   "and filter it with `quote.sales_owner = :sales_owner`, joining any "
+                   "other table through quote.")
     for t in tables:
         cols = "\n".join("    %s - %s" % (c, d) for c, d in t["columns"].items())
         out.append("TABLE %s\n  %s\n  Columns:\n%s" % (t["table"], t["what"], cols))
@@ -307,27 +403,49 @@ def schema_prompt(role, phase=None):
 # =====================================================================
 # The read-only connection.
 # =====================================================================
-_READONLY_ENGINE = None
-_READONLY_ERROR = None
+# TWO CONNECTIONS, CHOSEN BY WHO IS ASKING.
+#
+# This is the whole of the access boundary, and it is deliberately not
+# written in Python. The Owner's questions run on a connection granted
+# everything; Sales and Admin run on one granted ONLY the live job
+# tables. A total failure of the validator still cannot let Ryno read a
+# historical year or a financial statement, because his connection holds
+# no privilege on those tables. Code can have bugs; a GRANT that was
+# never made cannot.
+#
+# Selected by the role from get_current_role(), so an Owner previewing as
+# Sales is answered on the Sales connection - a preview that still read
+# owner-only tables would not be a preview.
+CONNECTION_FOR_ROLE = {
+    "owner": "ASK_BOLTON_DATABASE_URL",
+    "sales": "ASK_BOLTON_LIVE_DATABASE_URL",
+    "admin": "ASK_BOLTON_LIVE_DATABASE_URL",
+}
+
+_ENGINES = {}
+_ENGINE_ERRORS = {}
 
 
-def _readonly_url():
-    """The read-only URL, or None with a reason.
+def _readonly_url(role):
+    """The read-only URL for this role, or None with a reason.
 
-    ASK_BOLTON_DATABASE_URL is the production answer: a Postgres role
-    created with CONNECT + USAGE + SELECT and nothing else. There is
-    deliberately NO fallback to DATABASE_URL - an agent that writes its
-    own queries running on a read-write connection is the exact thing
-    this design exists to prevent, and silently degrading to it would
-    leave the guarantee stated in the docstring and absent in fact.
+    In production each variable must point at a Postgres login granted
+    SELECT on exactly that role's tables and nothing else. There is
+    deliberately NO fallback to DATABASE_URL, and no fallback from the
+    live connection to the owner one - either would silently hand a Sales
+    question a connection that reads more than Sales may see, which is
+    the precise thing this design exists to prevent.
 
-    SQLite is the one case that can be made read-only without anybody
-    configuring anything, because the driver itself takes a mode=ro URI.
-    That keeps local development honest: the same refusal path, the same
-    inability to write, no special case in the code that only runs on a
-    developer's machine.
+    SQLite is the one case needing no configuration, because the driver
+    itself takes a mode=ro URI. Local development then has real write
+    protection but NOT the per-table boundary, because SQLite has no
+    per-table privileges at all. self_check() says so plainly rather
+    than implying a guarantee that is not there.
     """
-    explicit = os.environ.get("ASK_BOLTON_DATABASE_URL", "").strip()
+    var = CONNECTION_FOR_ROLE.get(role)
+    if var is None:
+        return None, "Ask Bolton isn't available to your role."
+    explicit = os.environ.get(var, "").strip()
     if explicit:
         return explicit, None
 
@@ -336,41 +454,177 @@ def _readonly_url():
         path = main_url.split("///", 1)[1] if "///" in main_url else main_url
         if path.startswith("file:"):
             return main_url, None
-        return "sqlite:///file:%s?mode=ro&uri=true" % path.replace("\\", "/"), None
+        return "sqlite:///file:%s?mode=ro&uri=true" % path.replace(chr(92), "/"), None
 
     return None, (
-        "Ask Bolton is not configured. It needs ASK_BOLTON_DATABASE_URL set to a "
-        "READ-ONLY database user - a Postgres role granted SELECT and nothing else. "
-        "It deliberately will not fall back to the normal connection, because a query "
-        "the AI wrote must not be able to reach a connection that can write."
-    )
+        "Ask Bolton is not configured for your role. It needs %s set to a READ-ONLY "
+        "database user - a Postgres role granted SELECT on only the tables that role "
+        "may see, and nothing else. It deliberately will not fall back to any other "
+        "connection, because a query the AI wrote must never reach a connection that "
+        "can read more than the person asking may see." % var)
 
 
-def readonly_engine():
-    global _READONLY_ENGINE, _READONLY_ERROR
-    if _READONLY_ENGINE is not None or _READONLY_ERROR is not None:
-        return _READONLY_ENGINE, _READONLY_ERROR
-    url, problem = _readonly_url()
+def readonly_engine(role):
+    if role in _ENGINES:
+        return _ENGINES[role], None
+    if role in _ENGINE_ERRORS:
+        return None, _ENGINE_ERRORS[role]
+    url, problem = _readonly_url(role)
     if problem:
-        _READONLY_ERROR = problem
+        _ENGINE_ERRORS[role] = problem
         return None, problem
     connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    _READONLY_ENGINE = create_engine(url, echo=False, connect_args=connect_args,
-                                     pool_pre_ping=not url.startswith("sqlite"))
-    return _READONLY_ENGINE, None
+    _ENGINES[role] = create_engine(url, echo=False, connect_args=connect_args,
+                                   pool_pre_ping=not url.startswith("sqlite"))
+    return _ENGINES[role], None
 
 
 def reset_engine_for_tests():
-    """Tests point DATABASE_URL at a fixture and need the cached engine
+    """Tests point the URLs at a fixture and need the cached engines
     rebuilt. Named so nothing production-facing calls it by accident."""
-    global _READONLY_ENGINE, _READONLY_ERROR
-    _READONLY_ENGINE = None
-    _READONLY_ERROR = None
+    _ENGINES.clear()
+    _ENGINE_ERRORS.clear()
 
 
-def dialect():
-    url, _ = _readonly_url()
+def dialect(role="owner"):
+    url, _ = _readonly_url(role)
     return "sqlite" if (url or "").startswith("sqlite") else "postgresql"
+
+
+# Probes for self_check(), derived from the catalogue rather than listed.
+#
+# A table this role may never see must be BLOCKED BY THE DATABASE, not
+# merely absent from its allow-list - that is the whole point of giving
+# each role its own login. Expectation comes from the catalogue's own
+# `roles`, so adding a table there gets it probed automatically and the
+# two can never disagree about what should be reachable.
+#
+# Entitlement here is deliberately phase-independent: the GRANT reflects
+# what a role may EVER see, and ASK_BOLTON_PHASE is an app-level control
+# layered on top of it, not a second thing to re-grant.
+def _self_check_probes(role):
+    probes = []
+    for entry in CATALOGUE:
+        table = entry["table"]
+        may_read = role in entry["roles"]
+        probes.append((
+            "read %s%s" % (table, "" if may_read else " (must be blocked)"),
+            "SELECT count(*) FROM %s" % table,
+            not may_read,          # must_be_blocked
+            not may_read,          # postgres_only: SQLite has no per-table grants
+        ))
+    # The write probe carries WHERE 1=0 on purpose. If the grant is wrong
+    # and the statement is NOT blocked, it still matches no rows and
+    # changes nothing - the probe reports a failure instead of causing
+    # one. It is rolled back regardless.
+    readable = [e["table"] for e in CATALOGUE if role in e["roles"]]
+    target = readable[0] if readable else "quote"
+    probes.append((
+        "UPDATE %s (must be blocked)" % target,
+        "UPDATE %s SET tenant_id = tenant_id WHERE 1=0" % target,
+        True, False))
+    return probes
+
+
+def self_check(role="owner"):
+    """Prove the boundary against the REAL connection, as the real role.
+
+    The red-team suite in tests/ exercises the validator (layer 2) and
+    runs against a local fixture, so it is connection-independent and
+    says nothing about production. This says the other half: whether the
+    database itself would refuse, which is layer 1 and the layer that has
+    to hold when every other one has failed.
+
+    IT DELIBERATELY DOES NOT SET `SET TRANSACTION READ ONLY` around the
+    write probe. That guard is layer 4 and would block the write on its
+    own, which would produce a confident pass while the underlying GRANT
+    was wide open - testing our own guard instead of the thing we came to
+    test. The probe runs bare, so a pass means the DATABASE refused.
+
+    Each probe gets its own connection: in Postgres a failed statement
+    aborts the transaction, so sharing one would make every probe after
+    the first failure report a meaningless error.
+
+    connected_as and is_superuser are reported because of a specific,
+    realistic way this goes wrong. Supabase's pooler expects the username
+    as `<role>.<project-ref>`, and the dashboard pre-fills
+    `postgres.<project-ref>`. Change only the password in that string and
+    the agent connects as the postgres SUPERUSER: every validator test
+    still passes, nothing is blocked, and the read-only guarantee is gone
+    with no visible symptom. That is the single most valuable line in
+    this report.
+    """
+    engine, problem = readonly_engine(role)
+    if problem:
+        return {"ok": False, "role": role, "configured": False,
+                "problem": problem, "checks": []}
+
+    url = str(engine.url)
+    is_pg = not url.startswith("sqlite")
+    report = {"ok": True, "role": role, "configured": True,
+              "backend": "postgresql" if is_pg else "sqlite",
+              # True only where the whole boundary can actually be proven at
+              # the connection. False on SQLite, and the report says why.
+              "full_boundary_enforceable": is_pg,
+              "connected_as": None, "is_superuser": None, "checks": []}
+
+    if is_pg:
+        try:
+            with engine.connect() as conn:
+                report["connected_as"] = conn.execute(text("SELECT current_user")).scalar()
+                report["is_superuser"] = (
+                    conn.execute(text("SELECT current_setting('is_superuser')")).scalar() == "on")
+        except Exception as e:
+            report["ok"] = False
+            report["problem"] = "Could not reach the read-only database: %s" % str(e).split("\n")[0][:200]
+            return report
+
+    if not is_pg:
+        report["note"] = (
+            "Running on SQLite. Writes are blocked at the driver, but SQLite has no "
+            "per-table privileges, so the table boundary here rests on the validator "
+            "alone and cannot be proven at the connection. Only a Postgres deployment "
+            "can confirm the full boundary — run this there before trusting it.")
+
+    for label, sql, must_block, postgres_only in _self_check_probes(role):
+        entry = {"check": label, "must_be_blocked": must_block}
+        if postgres_only and not is_pg:
+            entry.update({"blocked": None, "pass": None,
+                          "skipped": "not enforceable on SQLite — Postgres GRANT only"})
+            report["checks"].append(entry)
+            continue
+        try:
+            with engine.connect() as conn:
+                trans = conn.begin()
+                try:
+                    result = conn.execute(text(sql))
+                    entry["blocked"] = False
+                    if not must_block:
+                        try:
+                            entry["value"] = result.scalar()
+                        except Exception:
+                            entry["value"] = None
+                finally:
+                    trans.rollback()
+        except Exception as e:
+            entry["blocked"] = True
+            entry["reason"] = str(e).split("\n")[0][:160]
+        entry["pass"] = (entry["blocked"] == must_block)
+        if not entry["pass"]:
+            report["ok"] = False
+        report["checks"].append(entry)
+
+    # A superuser passes nothing, whatever the probes said - it is simply
+    # not being stopped by anything except our own code.
+    if report["is_superuser"]:
+        report["ok"] = False
+        report["problem"] = (
+            "Connected as a SUPERUSER (%s). The read-only guarantee is not in force: this role "
+            "can do anything, and only Bolton's own validator is standing in the way. On the "
+            "Supabase pooler the username must be `ask_bolton.<project-ref>`, not "
+            "`postgres.<project-ref>` - check %s." % (report["connected_as"],
+                                                       CONNECTION_FOR_ROLE.get(role, "the URL")))
+    return report
 
 
 # =====================================================================
@@ -478,7 +732,7 @@ def _defined_names(tokens, table_names):
     return names
 
 
-def validate_sql(sql, role, phase=None):
+def validate_sql(sql, role, phase=None, person_scoped=None):
     """Refuse anything that is not a single, read-only, tenant-scoped
     SELECT over tables this role may see at this phase.
 
@@ -486,6 +740,8 @@ def validate_sql(sql, role, phase=None):
     written for the MODEL to correct - it names the offending token, so
     a repair attempt can fix a wrong column rather than guess.
     """
+    if person_scoped is None:
+        person_scoped = is_person_scoped(role)
     if not sql or not sql.strip():
         raise SqlRefused("No query was produced.")
     sql = sql.strip().rstrip(";").strip()
@@ -511,13 +767,19 @@ def validate_sql(sql, role, phase=None):
     tokens = _tokenize(sql)
     defined = _defined_names(tokens, set(tables))
 
-    referenced, tenant_params = set(), 0
+    referenced, tenant_params, owner_params = set(), 0, 0
     for kind, val in tokens:
         if kind == "param":
-            if val != ":tenant_id":
-                raise SqlRefused("The only bind parameter allowed is :tenant_id.")
-            tenant_params += 1
-            continue
+            if val == ":tenant_id":
+                tenant_params += 1
+                continue
+            if val == ":sales_owner" and person_scoped:
+                owner_params += 1
+                continue
+            raise SqlRefused(
+                "The only bind parameter allowed is :tenant_id."
+                if not person_scoped else
+                "The only bind parameters allowed are :tenant_id and :sales_owner.")
         if kind != "ident":
             continue
         tok = val.lower()
@@ -554,6 +816,20 @@ def validate_sql(sql, role, phase=None):
             "You referenced %d table(s) but used :tenant_id %d time(s)."
             % (len(referenced), tenant_params))
 
+    # A person-scoped role sees only its own jobs, here as everywhere
+    # else in Bolton. Enforced by requiring the bound predicate rather
+    # than by trusting the prompt - and by requiring `quote` itself,
+    # because sales_owner lives only there: a query over quotelineitem
+    # alone would otherwise sum every rep's lines.
+    if person_scoped:
+        if "quote" not in referenced:
+            raise SqlRefused(
+                "Your questions can only cover your own jobs, so every query must read the "
+                "`quote` table and filter it with `WHERE quote.sales_owner = :sales_owner`.")
+        if owner_params < 1:
+            raise SqlRefused(
+                "Add `AND quote.sales_owner = :sales_owner` - you can only see your own jobs.")
+
     if not re.search(r"(?is)\blimit\b\s+\d+", sql):
         sql = "%s LIMIT %d" % (sql, MAX_ROWS)
     return sql
@@ -562,12 +838,12 @@ def validate_sql(sql, role, phase=None):
 # =====================================================================
 # Running it.
 # =====================================================================
-def run_sql(sql, tenant_id):
+def run_sql(sql, tenant_id, role, username=None):
     """Execute on the read-only engine, inside a read-only transaction,
     with a statement timeout. Layer 1 of 4 - by the time anything gets
     here the query has already been validated, and the connection still
     could not write if it had not been."""
-    engine, problem = readonly_engine()
+    engine, problem = readonly_engine(role)
     if problem:
         raise RuntimeError(problem)
     with engine.connect() as conn:
@@ -577,7 +853,8 @@ def run_sql(sql, tenant_id):
             # to write, and nothing can run away.
             conn.execute(text("SET TRANSACTION READ ONLY"))
             conn.execute(text("SET LOCAL statement_timeout = %d" % STATEMENT_TIMEOUT_MS))
-        result = conn.execute(text(sql), {"tenant_id": tenant_id})
+        result = conn.execute(text(sql),
+                              {"tenant_id": tenant_id, "sales_owner": username})
         columns = list(result.keys())
         rows = [dict(zip(columns, r)) for r in result.fetchmany(MAX_ROWS)]
         truncated = len(rows) >= MAX_ROWS
@@ -649,12 +926,25 @@ and present it as the answer.
 
 Rules for the SQL:
 - One statement. No semicolon. No comments.
-- Every table must be filtered by tenant: `WHERE tenant_id = :tenant_id`. \
-:tenant_id is the only bind parameter allowed, and you need one per table.
+- Every table must be filtered by tenant: `WHERE tenant_id = :tenant_id`. You need \
+one per table.
+- If the schema note says your questions cover only your own jobs, every query must \
+also read `quote` and filter it with `AND quote.sales_owner = :sales_owner`. Join the \
+other tables through quote - they carry no owner of their own.
+- :tenant_id and :sales_owner are the only bind parameters allowed.
 - Always include an explicit LIMIT.
 - Return the columns a person would want to read, with clear names, and prefer a \
 small number of rows that answer the question over a raw dump.
-- Aggregate in SQL rather than returning everything for someone else to add up."""
+- When the answer is about specific JOBS, always include `quote.id AS quote_id` \
+alongside `quote.job_number`, so the person can open the job straight from the answer. \
+Put quote_id first.
+- Aggregate in SQL rather than returning everything for someone else to add up.
+
+About money, which is the one thing you must never work out for yourself:
+- The only rand figures you may report are the ones recorded in `quotepayment`. Those are real receipts. Summing a job's payments is fine - that is adding up money that genuinely arrived.
+- Everything else about money on a live job - what the job is worth, what the deposit should have been, what is still owed, the VAT, a discount, a margin - is worked out by Bolton from rules you have not been given, and is not in your schema. You cannot reconstruct it, and an answer that looks about right is worse than no answer, because nobody can tell it is wrong.
+- So if a question needs a figure that is not a recorded payment, use "cannot_answer" and say plainly which figure is not stored. Do not substitute a number you can reach for one you cannot. Do not multiply anything by a VAT rate.
+- "Has the deposit been paid?" is answerable - deposit_paid_date, final_payment_date and the payment rows are all real. "How much is still owed?" is not."""
 
 EXPLAIN_SYSTEM = """You turn the result of a database query into one or two plain \
 sentences for the owner or staff of a South African flooring and blinds business.
@@ -673,7 +963,7 @@ def generate_sql(question, role, phase=None, repair=None):
     schema = schema_prompt(role, phase)
     if not schema:
         raise RuntimeError("No data is available to your role yet.")
-    user = {"question": question, "sql_dialect": dialect(), "schema": schema}
+    user = {"question": question, "sql_dialect": dialect(role), "schema": schema}
     if repair:
         user["your_previous_query_was_rejected"] = repair
     body = {
@@ -713,7 +1003,7 @@ def explain(question, columns, rows, truncated):
 # =====================================================================
 # The one entry point.
 # =====================================================================
-def ask(question, role, tenant_id, want_explanation=True, phase=None):
+def ask(question, role, tenant_id, username=None, want_explanation=True, phase=None):
     """Question in, answer out. The role arrives from get_current_role()
     and is therefore already the previewed role for an Owner in preview
     mode - a preview that still saw owner-only data would not be a
@@ -731,7 +1021,7 @@ def ask(question, role, tenant_id, want_explanation=True, phase=None):
     # Checked BEFORE spending a model call: a misconfigured server should
     # say so immediately rather than bill somebody for a query it was
     # never going to be allowed to run.
-    _, problem = readonly_engine()
+    _, problem = readonly_engine(role)
     if problem:
         return {"ok": False, "error": problem}
 
@@ -745,7 +1035,7 @@ def ask(question, role, tenant_id, want_explanation=True, phase=None):
         if plan.get("cannot_answer") and not plan.get("sql"):
             return {"ok": True, "kind": "cannot_answer", "question": question,
                     "message": plan["cannot_answer"],
-                    "data_available": PHASE_NAMES[phase]}
+                    "data_available": data_available(role, phase)}
         try:
             sql = validate_sql(plan.get("sql"), role, phase)
             break
@@ -761,7 +1051,7 @@ def ask(question, role, tenant_id, want_explanation=True, phase=None):
             repair = {"sql": plan.get("sql"), "why_it_was_rejected": str(e)}
 
     try:
-        columns, rows, truncated = run_sql(sql, tenant_id)
+        columns, rows, truncated = run_sql(sql, tenant_id, role, username)
     except RuntimeError:
         raise
     except Exception as e:
@@ -782,11 +1072,11 @@ def ask(question, role, tenant_id, want_explanation=True, phase=None):
         "tables": sorted({t["table"] for t in allowed_tables(role, phase)
                           if re.search(r"\b%s\b" % t["table"], sql, re.I)}),
         "phase": phase,
-        "data_available": PHASE_NAMES[phase],
+        "data_available": data_available(role, phase),
         "repairs": attempts,
     }
     if not rows:
-        out["gap"] = "Nothing in %s matches that." % PHASE_NAMES[phase]
+        out["gap"] = "Nothing in %s matches that." % data_available(role, phase)
     if want_explanation:
         try:
             out["answer"] = explain(question, columns, rows, truncated)

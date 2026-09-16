@@ -224,9 +224,31 @@ function askBoltonLabel(key) {
   return String(key).replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 
-function askBoltonCell(key, value) {
+// Opening a job from an answer goes through the SAME screen and the
+// SAME permission check as opening it from the Order Index - Ask Bolton
+// is not a second door. GET /quotes/{id} enforces scoped_username()
+// server-side and returns 404, not 403, on someone else's job, so a link
+// cannot become a way round that. This decides where to navigate; it
+// decides nothing about who may arrive.
+function askBoltonOpenJob(quoteId) {
+  if (!quoteId || typeof openOrderDetailScreen !== 'function') return;
+  landingView = 'orders';
+  openOrderDetailScreen(Number(quoteId));
+}
+
+function askBoltonCell(key, value, row) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  // A job reference is a place to go, not just a fact. Routed from the
+  // row's own quote_id - never from the job number, which is a label and
+  // not a route.
+  const jobId = row && (row.quote_id || row.id);
+  if (jobId && (key === 'job_number' || key === 'quote_id' || key === 'client_name')) {
+    return `<a class="ask-joblink" role="button" tabindex="0"
+               onclick="askBoltonOpenJob(${Number(jobId)})"
+               onkeydown="if(event.key===&quot;Enter&quot;)askBoltonOpenJob(${Number(jobId)})"
+               >${escapeHtmlAsk(value)}</a>`;
+  }
   if (typeof value === 'number') {
     if (ASK_PCT_HINT.test(key)) {
       // Stored as a fraction throughout Bolton (0.36 = 36%), so a bare
@@ -247,12 +269,12 @@ function askBoltonTableHtml(columns, rows) {
     const k = keys[0];
     return `<div class="ask-figures"><div class="ask-figure">
         <span class="ask-figure-label">${escapeHtmlAsk(askBoltonLabel(k))}</span>
-        <span class="ask-figure-value">${askBoltonCell(k, rows[0][k])}</span>
+        <span class="ask-figure-value">${askBoltonCell(k, rows[0][k], rows[0])}</span>
       </div></div>`;
   }
   const head = keys.map(k => `<th>${escapeHtmlAsk(askBoltonLabel(k))}</th>`).join('');
   const body = rows.map(r =>
-    `<tr>${keys.map(k => `<td>${askBoltonCell(k, r[k])}</td>`).join('')}</tr>`).join('');
+    `<tr>${keys.map(k => `<td>${askBoltonCell(k, r[k], r)}</td>`).join('')}</tr>`).join('');
   return `<div class="ask-table-wrap"><table class="ask-table">
       <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
