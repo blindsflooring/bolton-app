@@ -580,6 +580,36 @@ for ph in (1, 2, 3):
           "phase %d lets Sales expect the financials" % ph)
 print("    all three phases: history and financials must be blocked for Sales")
 
+banner("H. 'READY' MUST MEAN THE CONNECTION WORKS")
+
+# The screen reported database_ready: true while every question failed
+# with "tenant/user not found". A SQLAlchemy engine is lazy - create_engine
+# succeeds on a URL naming a role the database has never heard of - so
+# "configured" was being shown as "ready", the box stayed enabled, and the
+# failure only surfaced once somebody typed a question.
+print("  a live connection:")
+print("    connection_problem('owner') = %r" % aq.connection_problem("owner"))
+check(aq.connection_problem("owner") is None,
+      "a working connection is being reported as broken")
+
+print("  a URL that parses but points nowhere:")
+_saved = dict(aq._ENGINES), dict(aq._ENGINE_ERRORS), dict(aq._CONN_PROBE)
+aq._ENGINES.clear(); aq._ENGINE_ERRORS.clear(); aq._CONN_PROBE.clear()
+os.environ["ASK_BOLTON_DATABASE_URL"] = "postgresql://nobody:nothing@127.0.0.1:1/none"
+problem = aq.connection_problem("owner")
+print("    %s" % (problem or "None")[:88])
+check(problem is not None, "a dead connection still reports itself ready")
+check("cannot reach" in (problem or ""), "the reason does not say it cannot connect")
+
+os.environ.pop("ASK_BOLTON_DATABASE_URL", None)
+aq._ENGINES.clear(); aq._ENGINE_ERRORS.clear(); aq._CONN_PROBE.clear()
+aq._ENGINES.update(_saved[0]); aq._ENGINE_ERRORS.update(_saved[1])
+aq._CONN_PROBE.update(_saved[2])
+
+print("  and a failure is cached on a short clock, so a fix heals itself:")
+print("    TTL = %ss - no restart needed once the variable is corrected" % aq._CONN_PROBE_TTL)
+check(aq._CONN_PROBE_TTL <= 60, "a stale failure would stick around too long")
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

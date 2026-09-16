@@ -11656,7 +11656,9 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     # useful fact is "the shared one" versus "its own", and a key itself
     # has no business leaving the server.
     _key, key_source = ask_query.api_key()
-    _engine, db_problem = ask_query.readonly_engine(role)
+    # Whether it WORKS, not merely whether it is configured - a lazy
+    # engine reports a URL pointing nowhere as perfectly fine.
+    db_problem = ask_query.connection_problem(role)
     return {
         "phase": phase,
         "data_available": ask_query.data_available(role, phase),
