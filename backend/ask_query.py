@@ -189,6 +189,25 @@ def data_available(role, phase=None):
 ALL_ROLES = ("owner", "sales", "admin")
 OWNER = ("owner",)
 
+# Roles that may only ever see their OWN jobs.
+#
+# Set once at import by main.py from its own PERSON_SCOPED_ROLES, so
+# there is exactly one definition of who is restricted and this cannot
+# drift from the rest of the app. Defaulted rather than left empty: a
+# module imported without that call must fail CLOSED, not hand a rep
+# everybody's jobs.
+_PERSON_SCOPED = {"sales"}
+
+
+def set_person_scoped_roles(roles):
+    """Called by main.py at import with its own PERSON_SCOPED_ROLES."""
+    global _PERSON_SCOPED
+    _PERSON_SCOPED = set(roles)
+
+
+def is_person_scoped(role):
+    return role in _PERSON_SCOPED
+
 CATALOGUE = [
     {
         "table": "historicalyeartotal",
@@ -371,6 +390,10 @@ def schema_prompt(role, phase=None):
     if not tables:
         return ""
     out = []
+    if is_person_scoped(role):
+        out.append("SCOPE: you may only see YOUR OWN jobs. Every query must read `quote` "
+                   "and filter it with `quote.sales_owner = :sales_owner`, joining any "
+                   "other table through quote.")
     for t in tables:
         cols = "\n".join("    %s - %s" % (c, d) for c, d in t["columns"].items())
         out.append("TABLE %s\n  %s\n  Columns:\n%s" % (t["table"], t["what"], cols))
@@ -709,7 +732,7 @@ def _defined_names(tokens, table_names):
     return names
 
 
-def validate_sql(sql, role, phase=None):
+def validate_sql(sql, role, phase=None, person_scoped=None):
     """Refuse anything that is not a single, read-only, tenant-scoped
     SELECT over tables this role may see at this phase.
 
@@ -717,6 +740,8 @@ def validate_sql(sql, role, phase=None):
     written for the MODEL to correct - it names the offending token, so
     a repair attempt can fix a wrong column rather than guess.
     """
+    if person_scoped is None:
+        person_scoped = is_person_scoped(role)
     if not sql or not sql.strip():
         raise SqlRefused("No query was produced.")
     sql = sql.strip().rstrip(";").strip()
@@ -742,13 +767,19 @@ def validate_sql(sql, role, phase=None):
     tokens = _tokenize(sql)
     defined = _defined_names(tokens, set(tables))
 
-    referenced, tenant_params = set(), 0
+    referenced, tenant_params, owner_params = set(), 0, 0
     for kind, val in tokens:
         if kind == "param":
-            if val != ":tenant_id":
-                raise SqlRefused("The only bind parameter allowed is :tenant_id.")
-            tenant_params += 1
-            continue
+            if val == ":tenant_id":
+                tenant_params += 1
+                continue
+            if val == ":sales_owner" and person_scoped:
+                owner_params += 1
+                continue
+            raise SqlRefused(
+                "The only bind parameter allowed is :tenant_id."
+                if not person_scoped else
+                "The only bind parameters allowed are :tenant_id and :sales_owner.")
         if kind != "ident":
             continue
         tok = val.lower()
@@ -785,6 +816,20 @@ def validate_sql(sql, role, phase=None):
             "You referenced %d table(s) but used :tenant_id %d time(s)."
             % (len(referenced), tenant_params))
 
+    # A person-scoped role sees only its own jobs, here as everywhere
+    # else in Bolton. Enforced by requiring the bound predicate rather
+    # than by trusting the prompt - and by requiring `quote` itself,
+    # because sales_owner lives only there: a query over quotelineitem
+    # alone would otherwise sum every rep's lines.
+    if person_scoped:
+        if "quote" not in referenced:
+            raise SqlRefused(
+                "Your questions can only cover your own jobs, so every query must read the "
+                "`quote` table and filter it with `WHERE quote.sales_owner = :sales_owner`.")
+        if owner_params < 1:
+            raise SqlRefused(
+                "Add `AND quote.sales_owner = :sales_owner` - you can only see your own jobs.")
+
     if not re.search(r"(?is)\blimit\b\s+\d+", sql):
         sql = "%s LIMIT %d" % (sql, MAX_ROWS)
     return sql
@@ -793,7 +838,7 @@ def validate_sql(sql, role, phase=None):
 # =====================================================================
 # Running it.
 # =====================================================================
-def run_sql(sql, tenant_id, role):
+def run_sql(sql, tenant_id, role, username=None):
     """Execute on the read-only engine, inside a read-only transaction,
     with a statement timeout. Layer 1 of 4 - by the time anything gets
     here the query has already been validated, and the connection still
@@ -808,7 +853,8 @@ def run_sql(sql, tenant_id, role):
             # to write, and nothing can run away.
             conn.execute(text("SET TRANSACTION READ ONLY"))
             conn.execute(text("SET LOCAL statement_timeout = %d" % STATEMENT_TIMEOUT_MS))
-        result = conn.execute(text(sql), {"tenant_id": tenant_id})
+        result = conn.execute(text(sql),
+                              {"tenant_id": tenant_id, "sales_owner": username})
         columns = list(result.keys())
         rows = [dict(zip(columns, r)) for r in result.fetchmany(MAX_ROWS)]
         truncated = len(rows) >= MAX_ROWS
@@ -880,11 +926,18 @@ and present it as the answer.
 
 Rules for the SQL:
 - One statement. No semicolon. No comments.
-- Every table must be filtered by tenant: `WHERE tenant_id = :tenant_id`. \
-:tenant_id is the only bind parameter allowed, and you need one per table.
+- Every table must be filtered by tenant: `WHERE tenant_id = :tenant_id`. You need \
+one per table.
+- If the schema note says your questions cover only your own jobs, every query must \
+also read `quote` and filter it with `AND quote.sales_owner = :sales_owner`. Join the \
+other tables through quote - they carry no owner of their own.
+- :tenant_id and :sales_owner are the only bind parameters allowed.
 - Always include an explicit LIMIT.
 - Return the columns a person would want to read, with clear names, and prefer a \
 small number of rows that answer the question over a raw dump.
+- When the answer is about specific JOBS, always include `quote.id AS quote_id` \
+alongside `quote.job_number`, so the person can open the job straight from the answer. \
+Put quote_id first.
 - Aggregate in SQL rather than returning everything for someone else to add up."""
 
 EXPLAIN_SYSTEM = """You turn the result of a database query into one or two plain \
@@ -944,7 +997,7 @@ def explain(question, columns, rows, truncated):
 # =====================================================================
 # The one entry point.
 # =====================================================================
-def ask(question, role, tenant_id, want_explanation=True, phase=None):
+def ask(question, role, tenant_id, username=None, want_explanation=True, phase=None):
     """Question in, answer out. The role arrives from get_current_role()
     and is therefore already the previewed role for an Owner in preview
     mode - a preview that still saw owner-only data would not be a
@@ -992,7 +1045,7 @@ def ask(question, role, tenant_id, want_explanation=True, phase=None):
             repair = {"sql": plan.get("sql"), "why_it_was_rejected": str(e)}
 
     try:
-        columns, rows, truncated = run_sql(sql, tenant_id, role)
+        columns, rows, truncated = run_sql(sql, tenant_id, role, username)
     except RuntimeError:
         raise
     except Exception as e:

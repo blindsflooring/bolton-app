@@ -1909,6 +1909,10 @@
      (body.order-index-active), so the box is held to something a person
      can still read across rather than stretched to the full table. */
   body.order-index-active .ask-bolton { max-width: 900px; }
+  /* A job reference is somewhere to go. Underlined as well as coloured,
+     so it does not rely on colour alone to read as a link. */
+  .ask-joblink { color: var(--teal); text-decoration: underline; cursor: pointer; }
+  .ask-joblink:hover { color: var(--navy); }
   .ask-scope { margin-top: 7px; }
   .ask-scope-text { font-size: 12px; color: #6b7280; }
   .ask-provenance { margin-top: 10px; border-top: 1px solid #f0f0f0; padding-top: 8px; }

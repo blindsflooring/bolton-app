@@ -5554,6 +5554,12 @@ def delete_employee(employee_id: int, tenant_id: str = Depends(get_current_tenan
 # leaking data.
 PERSON_SCOPED_ROLES = {UserRole.sales}
 
+# Ask Bolton honours the exact same rule, from this exact set - a rep's
+# questions may only cover their own jobs, the same as the Order Index
+# list and get_quote()'s 404. Handed over rather than re-declared so the
+# two can never drift.
+ask_query.set_person_scoped_roles(PERSON_SCOPED_ROLES)
+
 
 def scoped_username(request: Request) -> Optional[str]:
     """The username a person's own records must be filtered to, or None
@@ -11683,7 +11689,7 @@ def ask_bolton_self_check(for_role: str = "owner",
 
 
 @app.post("/ask-bolton")
-def ask_bolton_endpoint(payload: AskBoltonRequest,
+def ask_bolton_endpoint(payload: AskBoltonRequest, request: Request,
                         role: str = Depends(get_current_role),
                         tenant_id: str = Depends(get_current_tenant)):
     """Ask anything, in plain English, about the data this role may see.
@@ -11697,7 +11703,8 @@ def ask_bolton_endpoint(payload: AskBoltonRequest,
     This endpoint never touches `engine`. ask_query holds its own
     read-only connection and no handle to the read-write one."""
     try:
-        return ask_query.ask(payload.question, role, tenant_id)
+        return ask_query.ask(payload.question, role, tenant_id,
+                             username=scoped_username(request))
     except RuntimeError as e:
         # A Claude outage, a missing key, a server that has not been
         # given a read-only database user. Reported as what it is rather

@@ -157,6 +157,24 @@ RED_TEAM = [
      "SELECT md5(client_name) FROM quote WHERE tenant_id = :tenant_id"),
     ("unknown: a table nobody may see", "owner", 3,
      "SELECT password_hash FROM app_user WHERE tenant_id = :tenant_id"),
+    # --- A REP MAY ONLY SEE THEIR OWN JOBS ---------------------------
+    # Bolton scopes Sales to their own records everywhere: the Order
+    # Index list filters by sales_owner and get_quote() 404s - not 403s -
+    # on somebody else's job, deliberately, so a rep cannot even learn it
+    # exists. Ask Bolton has to honour the same rule or it hands back the
+    # client names that 404 exists to withhold.
+    ("SCOPE sales: no owner predicate", "sales", 1,
+     "SELECT job_number, client_name FROM quote WHERE tenant_id = :tenant_id"),
+    ("SCOPE sales: line items only, dodging quote", "sales", 1,
+     "SELECT SUM(bags_allowed) AS b FROM quotelineitem WHERE tenant_id = :tenant_id"),
+    ("SCOPE sales: payments only, dodging quote", "sales", 1,
+     "SELECT SUM(amount) AS paid FROM quotepayment WHERE tenant_id = :tenant_id"),
+    ("SCOPE sales: hardcoded someone else", "sales", 1,
+     "SELECT job_number FROM quote WHERE tenant_id = :tenant_id AND sales_owner = 'madri'"),
+    ("SCOPE sales: order sheets only", "sales", 1,
+     "SELECT quote_id, status FROM ordersheet WHERE tenant_id = :tenant_id"),
+    ("SCOPE sales: an invented bind parameter", "sales", 1,
+     "SELECT job_number FROM quote WHERE tenant_id = :tenant_id AND sales_owner = :anyone"),
     ("shape: does not start with SELECT", "sales", 1,
      "EXPLAIN SELECT client_name FROM quote WHERE tenant_id = :tenant_id"),
     ("shape: empty", "sales", 1, "   "),
@@ -174,18 +192,20 @@ print("  %d adversarial queries, %d refused"
 banner("   ...and the legitimate ones must still be ALLOWED")
 
 LEGIT = [
-    ("sales: plain select on live jobs", "sales", 1,
-     "SELECT job_number, client_name FROM quote WHERE tenant_id = :tenant_id"),
-    ("sales: join quote to line items", "sales", 1,
+    ("sales: own jobs, properly scoped", "sales", 1,
+     "SELECT q.id AS quote_id, q.job_number FROM quote q WHERE q.tenant_id = :tenant_id "
+     "AND q.sales_owner = :sales_owner"),
+    ("sales: join line items through quote", "sales", 1,
      "SELECT q.job_number, l.bags_allowed FROM quote q JOIN quotelineitem l "
-     "ON l.quote_id = q.id WHERE q.tenant_id = :tenant_id AND l.tenant_id = :tenant_id"),
-    ("sales: payments", "sales", 1,
-     "SELECT quote_id, amount, payment_type FROM quotepayment WHERE tenant_id = :tenant_id"),
-    ("sales: order sheets", "sales", 1,
-     "SELECT quote_id, status FROM ordersheet WHERE tenant_id = :tenant_id"),
-    ("sales: follow-ups", "sales", 1,
-     "SELECT quote_id, follow_up_date FROM paymentfollowup WHERE tenant_id = :tenant_id"),
-    ("admin: same live access as sales", "admin", 1,
+     "ON l.quote_id = q.id WHERE q.tenant_id = :tenant_id AND l.tenant_id = :tenant_id "
+     "AND q.sales_owner = :sales_owner"),
+    ("sales: payments joined through quote", "sales", 1,
+     "SELECT q.job_number, p.amount FROM quote q JOIN quotepayment p ON p.quote_id = q.id "
+     "WHERE q.tenant_id = :tenant_id AND p.tenant_id = :tenant_id "
+     "AND q.sales_owner = :sales_owner"),
+    ("admin sees EVERY rep's jobs, by settled decision", "admin", 1,
+     "SELECT job_number FROM quote WHERE tenant_id = :tenant_id"),
+    ("owner sees every rep's jobs too", "owner", 1,
      "SELECT job_number FROM quote WHERE tenant_id = :tenant_id"),
     ("owner: historical still allowed", "owner", 1,
      "SELECT fiscal_year, total_sales FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
@@ -194,8 +214,9 @@ LEGIT = [
      "WHERE h.tenant_id = :tenant_id AND q.tenant_id = :tenant_id"),
     ("owner: financial at phase 3", "owner", 3,
      "SELECT fiscal_year, net_profit FROM financialstatement WHERE tenant_id = :tenant_id"),
-    ("CTE over live data", "sales", 1,
-     "WITH open_jobs AS (SELECT id, job_number FROM quote WHERE tenant_id = :tenant_id) "
+    ("CTE over live data, scoped", "sales", 1,
+     "WITH open_jobs AS (SELECT id, job_number FROM quote "
+     "WHERE tenant_id = :tenant_id AND sales_owner = :sales_owner) "
      "SELECT job_number FROM open_jobs"),
 ]
 for label, role, phase, sql in LEGIT:
@@ -351,8 +372,8 @@ CASES = [
 ]
 
 for label, sql, pick, expected in CASES:
-    validated = aq.validate_sql(sql, "sales", 1)
-    cols, rows, truncated = aq.run_sql(validated, "1", "sales")
+    validated = aq.validate_sql(sql, "admin", 1)
+    cols, rows, truncated = aq.run_sql(validated, "1", "admin")
     got = pick(rows)
     ok = got == expected if isinstance(expected, list) else abs(float(got) - float(expected)) < 0.01
     print("  %-46s got %-26s want %-26s %s"
@@ -363,7 +384,7 @@ print()
 print("  a declined quote and a price check carry 999 bags each and must be excluded:")
 allbags = aq.run_sql(aq.validate_sql(
     "SELECT SUM(bags_allowed) AS bags FROM quotelineitem WHERE tenant_id = :tenant_id",
-    "sales", 1), "1", "sales")[1][0]["bags"]
+    "admin", 1), "1", "admin")[1][0]["bags"]
 print("    every line in the table: %d bags   vs   open/queued only: %d"
       % (allbags, E["screed_bags_open_queued"]))
 check(allbags > E["screed_bags_open_queued"],
@@ -384,6 +405,53 @@ was_refused, why = refused(
     "sales", 1)
 print("    %s" % why)
 check(was_refused, "Sales was able to total the historical import")
+
+banner("E. A REP SEES ONLY THEIR OWN JOBS")
+
+from sqlmodel import Session as _Session, select as _select  # noqa: E402
+import main as _main  # noqa: E402
+from models import Quote as _Quote  # noqa: E402
+
+# Hand one job to a different rep so the scope has something to hide.
+with _Session(_main.engine) as _s:
+    _q = _s.exec(_select(_Quote).where(_Quote.job_number == "J-102")).first()
+    _q.sales_owner = "other_rep"
+    _s.add(_q)
+    _s.commit()
+
+SCOPED = ("SELECT q.id AS quote_id, q.job_number FROM quote q "
+          "WHERE q.tenant_id = :tenant_id AND q.sales_owner = :sales_owner "
+          "AND q.job_number IS NOT NULL ORDER BY q.job_number")
+validated = aq.validate_sql(SCOPED, "sales", 1)
+seen = {}
+for who in ("ryno", "other_rep", "nobody"):
+    _, rows, _t = aq.run_sql(validated, "1", "sales", who)
+    seen[who] = sorted(r["job_number"] for r in rows)
+    print("  %-10s sees %d job(s): %s" % (who, len(rows), seen[who]))
+check("J-102" not in seen["ryno"], "ryno can see another rep's job")
+check(seen["other_rep"] == ["J-102"], "the other rep cannot see their own job")
+check(seen["nobody"] == [], "an unknown rep sees somebody's jobs")
+
+print()
+print("  every answer about jobs carries a quote_id, so it can be opened:")
+print("    columns returned: %s" % list(aq.run_sql(validated, "1", "sales", "ryno")[0]))
+check("quote_id" in aq.run_sql(validated, "1", "sales", "ryno")[0],
+      "no quote_id column - answers would be a dead end")
+
+print()
+print("  and the link is not a second door: /quotes/{id} is person-scoped")
+print("    get_quote() enforces scoped_username() and returns 404, not 403")
+import inspect as _inspect  # noqa: E402
+src = _inspect.getsource(_main.get_quote)
+check("scoped_username" in src, "get_quote() no longer scopes by person")
+check('404' in src, "get_quote() no longer 404s on another rep's job")
+
+print()
+print("  the rule has ONE definition, shared with the rest of the app:")
+print("    main.PERSON_SCOPED_ROLES = %s" % sorted(_main.PERSON_SCOPED_ROLES))
+print("    ask_query sees            = %s" % sorted(aq._PERSON_SCOPED))
+check(set(_main.PERSON_SCOPED_ROLES) == set(aq._PERSON_SCOPED),
+      "ask_query's person-scoping has drifted from main.py's")
 
 aq.generate_sql = real_generate
 
