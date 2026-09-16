@@ -1925,3 +1925,10 @@
     line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--navy);
   }
   .ask-sql-bad { border-left: 3px solid var(--coral); }
+
+  /* A setup problem is stated as the scope line, not as an error — the
+     server is simply not configured yet, which is a setting nobody has
+     made rather than something that went wrong. */
+  .ask-scope-blocked { color: var(--coral); }
+  .ask-input:disabled, .ask-btn:disabled { background: var(--bg); cursor: not-allowed; }
+  .ask-btn:disabled { color: #8A93A0; }

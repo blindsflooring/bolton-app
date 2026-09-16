@@ -61,11 +61,45 @@ async function loadAskBoltonScope() {
     return;
   }
   if (!askBoltonScope.available) {
-    host.innerHTML = `<span class="ask-scope-text">Not available to your role yet.</span>`;
+    askBoltonSetEnabled(false, 'Not available to your role yet.');
     return;
   }
-  host.innerHTML =
-    `<span class="ask-scope-text">Ask anything about ${escapeHtmlAsk(askBoltonScope.data_available)}.</span>`;
+  // Told up front, not discovered by asking. A server with no read-only
+  // database user, or no API key, cannot answer ANY question — so the
+  // honest thing is to say that before somebody types one and waits,
+  // and to say which piece is missing rather than "something went
+  // wrong". setup_problem is the server's own sentence, which already
+  // names the environment variable to set.
+  if (askBoltonScope.database_ready === false) {
+    askBoltonSetEnabled(false,
+      escapeHtmlAsk(askBoltonScope.setup_problem || 'Not configured yet.'));
+    return;
+  }
+  if (askBoltonScope.ai_configured === false) {
+    askBoltonSetEnabled(false,
+      'No Anthropic API key is set on the server, so questions can’t be answered yet.');
+    return;
+  }
+  askBoltonSetEnabled(true,
+    `Ask anything about ${escapeHtmlAsk(askBoltonScope.data_available)}.`);
+}
+
+// A disabled box with a reason beats an enabled one that fails 20
+// seconds later. The reason is rendered as the scope line rather than
+// as an error, because nothing has gone wrong yet — it is a setting
+// nobody has made.
+function askBoltonSetEnabled(enabled, message) {
+  const host = document.getElementById('askBoltonScope');
+  const input = document.getElementById('askBoltonInput');
+  const btn = document.getElementById('askBoltonBtn');
+  if (host) {
+    host.innerHTML = `<span class="ask-scope-text${enabled ? '' : ' ask-scope-blocked'}">${message}</span>`;
+  }
+  if (input) {
+    input.disabled = !enabled;
+    if (!enabled) input.placeholder = 'Not available yet';
+  }
+  if (btn) btn.disabled = !enabled;
 }
 
 function askBoltonSubmit(event) {
