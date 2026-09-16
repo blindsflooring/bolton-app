@@ -536,6 +536,50 @@ with _Session(_main.engine) as _s:
         _s.add(row)
     _s.commit()
 
+banner("G. THE PROBES ASK ABOUT THE PHASE THAT IS SWITCHED ON")
+
+# Production reported ok:false for one reason: the probe expected the Owner
+# to be able to read financialstatement, because the catalogue says Owner
+# may - at PHASE 3. On phase 1 the role correctly has no grant on it, so a
+# correct boundary was being reported as a failure. Worse, it trained the
+# eye to expect a red check, which is how a real one gets missed.
+#
+# Phase-gated tables are now expected to be REFUSED, which is a stronger
+# claim than skipping them: it proves phase 3 data is out of reach at the
+# connection, not merely hidden by the app.
+for ph, expect_blocked in ((1, True), (3, False)):
+    probes = {p[0].split(" (")[0].replace("read ", ""): p[2]
+              for p in aq._self_check_probes("owner", ph) if p[0].startswith("read ")}
+    print("  phase %d: financialstatement must_be_blocked=%s"
+          % (ph, probes["financialstatement"]))
+    check(probes["financialstatement"] is expect_blocked,
+          "phase %d expects the wrong thing of financialstatement" % ph)
+    check(probes["historicalyeartotal"] is False,
+          "phase %d stopped expecting the history to be readable" % ph)
+
+print()
+print("  and the probes are derived from the same function as the schema,")
+print("  so they cannot drift from what the validator actually permits:")
+for ph in (1, 3):
+    allowed = {e["table"] for e in aq.allowed_tables("owner", ph)}
+    expected_readable = {p[0].replace("read ", "") for p in aq._self_check_probes("owner", ph)
+                         if p[0].startswith("read ") and p[2] is False}
+    print("    phase %d: allowed_tables=%d  probes expect readable=%d"
+          % (ph, len(allowed), len(expected_readable)))
+    check(allowed == expected_readable,
+          "phase %d: the probes and allowed_tables() disagree" % ph)
+
+print()
+print("  a Sales user is never expected to read the history, at any phase:")
+for ph in (1, 2, 3):
+    probes = {p[0].split(" (")[0].replace("read ", ""): p[2]
+              for p in aq._self_check_probes("sales", ph) if p[0].startswith("read ")}
+    check(probes["historicalyeartotal"] is True,
+          "phase %d lets Sales expect the history" % ph)
+    check(probes["financialstatement"] is True,
+          "phase %d lets Sales expect the financials" % ph)
+print("    all three phases: history and financials must be blocked for Sales")
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

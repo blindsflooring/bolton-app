@@ -502,11 +502,23 @@ def dialect(role="owner"):
 # Entitlement here is deliberately phase-independent: the GRANT reflects
 # what a role may EVER see, and ASK_BOLTON_PHASE is an app-level control
 # layered on top of it, not a second thing to re-grant.
-def _self_check_probes(role):
+def _self_check_probes(role, phase=None):
+    """What this role should and should not be able to read RIGHT NOW.
+
+    Derived from allowed_tables(), which is the same function the schema
+    and the validator use, so the probes cannot drift from the thing they
+    are checking. Phase matters: financialstatement is owner-readable at
+    phase 3, so on phase 1 the honest expectation is that the database
+    REFUSES it - and proving that is worth more than skipping it, because
+    it shows phase 3 data is out of reach at the connection and not
+    merely hidden by the app. Grant it early and this fails loudly.
+    """
+    phase = current_phase() if phase is None else phase
+    readable_now = {e["table"] for e in allowed_tables(role, phase)}
     probes = []
     for entry in CATALOGUE:
         table = entry["table"]
-        may_read = role in entry["roles"]
+        may_read = table in readable_now
         probes.append((
             "read %s%s" % (table, "" if may_read else " (must be blocked)"),
             "SELECT count(*) FROM %s" % table,
@@ -517,8 +529,7 @@ def _self_check_probes(role):
     # and the statement is NOT blocked, it still matches no rows and
     # changes nothing - the probe reports a failure instead of causing
     # one. It is rolled back regardless.
-    readable = [e["table"] for e in CATALOGUE if role in e["roles"]]
-    target = readable[0] if readable else "quote"
+    target = sorted(readable_now)[0] if readable_now else "quote"
     probes.append((
         "UPDATE %s (must be blocked)" % target,
         "UPDATE %s SET tenant_id = tenant_id WHERE 1=0" % target,
@@ -560,7 +571,7 @@ def _app_count(sql):
         return None
 
 
-def self_check(role="owner"):
+def self_check(role="owner", phase=None):
     """Prove the boundary against the REAL connection, as the real role.
 
     The red-team suite in tests/ exercises the validator (layer 2) and
@@ -588,14 +599,15 @@ def self_check(role="owner"):
     with no visible symptom. That is the single most valuable line in
     this report.
     """
+    phase = current_phase() if phase is None else phase
     engine, problem = readonly_engine(role)
     if problem:
-        return {"ok": False, "role": role, "configured": False,
+        return {"ok": False, "role": role, "phase": phase, "configured": False,
                 "problem": problem, "checks": []}
 
     url = str(engine.url)
     is_pg = not url.startswith("sqlite")
-    report = {"ok": True, "role": role, "configured": True,
+    report = {"ok": True, "role": role, "phase": phase, "configured": True,
               "backend": "postgresql" if is_pg else "sqlite",
               # True only where the whole boundary can actually be proven at
               # the connection. False on SQLite, and the report says why.
@@ -620,7 +632,7 @@ def self_check(role="owner"):
             "alone and cannot be proven at the connection. Only a Postgres deployment "
             "can confirm the full boundary — run this there before trusting it.")
 
-    for label, sql, must_block, postgres_only in _self_check_probes(role):
+    for label, sql, must_block, postgres_only in _self_check_probes(role, phase):
         entry = {"check": label, "must_be_blocked": must_block}
         if postgres_only and not is_pg:
             entry.update({"blocked": None, "pass": None,
