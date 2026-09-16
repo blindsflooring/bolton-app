@@ -11663,6 +11663,24 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     }
 
 
+@app.get("/ask-bolton/self-check")
+def ask_bolton_self_check(role: str = Depends(require_owner)):
+    """Prove the permission boundary against the REAL database, as the
+    real role, on this deployment.
+
+    The red-team suite in backend/tests exercises the validator and runs
+    against a local fixture — it is connection-independent and proves
+    nothing about production. This endpoint proves the other half: that
+    the database itself refuses. Run it after any change to
+    ASK_BOLTON_DATABASE_URL, and before letting anyone loose on the
+    feature.
+
+    Owner-only, and read-only in effect: the one write it attempts
+    carries WHERE 1=0 and is rolled back, so a wrong grant is REPORTED
+    rather than exercised."""
+    return ask_query.self_check()
+
+
 @app.post("/ask-bolton")
 def ask_bolton_endpoint(payload: AskBoltonRequest,
                         role: str = Depends(get_current_role),

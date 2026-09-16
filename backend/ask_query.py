@@ -368,6 +368,131 @@ def reset_engine_for_tests():
     _READONLY_ERROR = None
 
 
+# Probes for self_check() below. Each is (label, sql, must_be_blocked).
+#
+# The write probe carries WHERE 1=0 on purpose. If the grant is wrong and
+# the statement is NOT blocked, it still matches no rows and changes
+# nothing - the probe reports a failure instead of causing one. It is
+# also rolled back regardless.
+#
+# postgres_only marks a guarantee SQLite cannot express. SQLite has no
+# per-table privileges: mode=ro stops every write, but it cannot stop a
+# read of financialstatement. On a local fixture the table boundary
+# therefore rests on the validator alone, and saying otherwise would be
+# a comforting lie. In production it must be enforced by GRANT, which is
+# exactly what this endpoint exists to confirm.
+_SELF_CHECK_PROBES = [
+    ("read historicalyeartotal",
+     "SELECT count(*) FROM historicalyeartotal", False, False),
+    ("read historicalmonthtotal",
+     "SELECT count(*) FROM historicalmonthtotal", False, False),
+    ("read financialstatement (must be blocked)",
+     "SELECT count(*) FROM financialstatement", True, True),
+    ("read quote (must be blocked)",
+     "SELECT count(*) FROM quote", True, True),
+    ("UPDATE historicalyeartotal (must be blocked)",
+     "UPDATE historicalyeartotal SET total_sales = total_sales WHERE 1=0", True, False),
+]
+
+
+def self_check():
+    """Prove the boundary against the REAL connection, as the real role.
+
+    The red-team suite in tests/ exercises the validator (layer 2) and
+    runs against a local fixture, so it is connection-independent and
+    says nothing about production. This says the other half: whether the
+    database itself would refuse, which is layer 1 and the layer that has
+    to hold when every other one has failed.
+
+    IT DELIBERATELY DOES NOT SET `SET TRANSACTION READ ONLY` around the
+    write probe. That guard is layer 4 and would block the write on its
+    own, which would produce a confident pass while the underlying GRANT
+    was wide open - testing our own guard instead of the thing we came to
+    test. The probe runs bare, so a pass means the DATABASE refused.
+
+    Each probe gets its own connection: in Postgres a failed statement
+    aborts the transaction, so sharing one would make every probe after
+    the first failure report a meaningless error.
+
+    connected_as and is_superuser are reported because of a specific,
+    realistic way this goes wrong. Supabase's pooler expects the username
+    as `<role>.<project-ref>`, and the dashboard pre-fills
+    `postgres.<project-ref>`. Change only the password in that string and
+    the agent connects as the postgres SUPERUSER: every validator test
+    still passes, nothing is blocked, and the read-only guarantee is gone
+    with no visible symptom. That is the single most valuable line in
+    this report.
+    """
+    engine, problem = readonly_engine()
+    if problem:
+        return {"ok": False, "configured": False, "problem": problem, "checks": []}
+
+    url = str(engine.url)
+    is_pg = not url.startswith("sqlite")
+    report = {"ok": True, "configured": True, "backend": "postgresql" if is_pg else "sqlite",
+              # True only where the whole boundary can actually be proven at
+              # the connection. False on SQLite, and the report says why.
+              "full_boundary_enforceable": is_pg,
+              "connected_as": None, "is_superuser": None, "checks": []}
+
+    if is_pg:
+        try:
+            with engine.connect() as conn:
+                report["connected_as"] = conn.execute(text("SELECT current_user")).scalar()
+                report["is_superuser"] = (
+                    conn.execute(text("SELECT current_setting('is_superuser')")).scalar() == "on")
+        except Exception as e:
+            report["ok"] = False
+            report["problem"] = "Could not reach the read-only database: %s" % str(e).split("\n")[0][:200]
+            return report
+
+    if not is_pg:
+        report["note"] = (
+            "Running on SQLite. Writes are blocked at the driver, but SQLite has no "
+            "per-table privileges, so the table boundary here rests on the validator "
+            "alone and cannot be proven at the connection. Only a Postgres deployment "
+            "can confirm the full boundary — run this there before trusting it.")
+
+    for label, sql, must_block, postgres_only in _SELF_CHECK_PROBES:
+        entry = {"check": label, "must_be_blocked": must_block}
+        if postgres_only and not is_pg:
+            entry.update({"blocked": None, "pass": None,
+                          "skipped": "not enforceable on SQLite — Postgres GRANT only"})
+            report["checks"].append(entry)
+            continue
+        try:
+            with engine.connect() as conn:
+                trans = conn.begin()
+                try:
+                    result = conn.execute(text(sql))
+                    entry["blocked"] = False
+                    if not must_block:
+                        try:
+                            entry["value"] = result.scalar()
+                        except Exception:
+                            entry["value"] = None
+                finally:
+                    trans.rollback()
+        except Exception as e:
+            entry["blocked"] = True
+            entry["reason"] = str(e).split("\n")[0][:160]
+        entry["pass"] = (entry["blocked"] == must_block)
+        if not entry["pass"]:
+            report["ok"] = False
+        report["checks"].append(entry)
+
+    # A superuser passes nothing, whatever the probes said - it is simply
+    # not being stopped by anything except our own code.
+    if report["is_superuser"]:
+        report["ok"] = False
+        report["problem"] = (
+            "Connected as a SUPERUSER (%s). The read-only guarantee is not in force: this role "
+            "can do anything, and only Bolton's own validator is standing in the way. On the "
+            "Supabase pooler the username must be `ask_bolton.<project-ref>`, not "
+            "`postgres.<project-ref>` - check ASK_BOLTON_DATABASE_URL." % report["connected_as"])
+    return report
+
+
 def dialect():
     url, _ = _readonly_url()
     return "sqlite" if (url or "").startswith("sqlite") else "postgresql"
