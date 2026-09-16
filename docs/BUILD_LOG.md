@@ -237,6 +237,68 @@ refused. R31 749,38 is correctly not something it will tell anyone until that
 figure is actually stored - which is the follow-up already logged above.
 
 
+### J-0023 matches
+
+The check Burgert asked for, against the real job, on production:
+
+> "Job J-0023 requires 55 bags of screed and 9.1 metres of trim, with the deposit
+> paid but the final payment still outstanding."
+
+| | Real job | Ask Bolton |
+|---|---|---|
+| Screed | 55 bags | 55 |
+| Trim | 9,1 m | 9.1 |
+| Deposit | paid | true |
+| Final payment | not paid | false |
+| Invoice | not sent | "has not been sent yet" |
+| Received | R74 081,88 | R74 081,88, from the payment record |
+| **Outstanding** | **R31 749,38** | **refuses, by design** |
+
+The last row is the point. R31 749,38 is correct and Ask Bolton will not say it -
+it would have had to multiply by 1,15 to get there, and the plausible wrong answer
+was R92 027,18. It offers what it actually has instead.
+
+Sales is refused cleanly with no fallback, since ASK_BOLTON_LIVE_DATABASE_URL is
+not set yet: the code will not borrow the Owner connection to answer a Sales
+question.
+
+### The probes now ask about the phase that is switched on
+
+Production reported `ok: false` for one reason, and it was the check being wrong
+rather than the boundary. The probe expected the Owner to be able to read
+`financialstatement`, because the catalogue says Owner may - **at phase 3**. On
+phase 1 the role correctly has no grant on it, so a correct boundary was reported
+as a failure.
+
+That matters more than the noise. A check that cries wolf trains the eye to expect
+a red mark, which is how a real one gets missed.
+
+Probes are now derived from `allowed_tables(role, phase)` - the same function the
+schema and the validator use, so they cannot drift from what is actually
+permitted. A phase-gated table is expected to be **refused**, which is a stronger
+claim than skipping it: it proves phase 3 data is out of reach at the connection
+and not merely hidden by the app, and grant it early and the check fails loudly.
+The report now carries the phase it assumed. Suite G covers both phases and all
+three for Sales.
+
+### ask_bolton_live: written down, not done
+
+`docs/ASK_BOLTON_LIVE_SETUP.md` has the whole procedure - create the role, revoke
+everything, grant SELECT on exactly the five live tables, add the `ask_live_read`
+policies, verify the privileges and the role attributes, then set
+`ASK_BOLTON_LIVE_DATABASE_URL` in Render.
+
+Two things in it are worth reading even if the rest is skimmed. `rolbypassrls`
+must be false or every policy is decoration. And on the pooler the username must
+be `ask_bolton_live.<project-ref>` - the dashboard pre-fills
+`postgres.<project-ref>`, and changing only the password in that string connects
+the agent as the superuser with every test still passing and no visible symptom.
+
+The SQL and the environment variable are Burgert's to run; the password and the
+connection string are not Claude Code's to handle. The self-check proves the
+result from the outside, which is the right side of that line to verify from.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
