@@ -50,7 +50,7 @@ from calculations import calculate_flooring_line, calculate_blinds_line, calcula
 import blinds_calc
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
-import ask_bolton
+import ask_query
 from spreadsheet_import import parse_master_spreadsheet
 from blinds_import import parse_blinds_quote, BlindsImportError
 from pdf_render import render_html_to_pdf
@@ -11615,66 +11615,63 @@ def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> Busine
     return settings
 
 
-# ===== Ask Bolton (confirmed Sept 2026) =====
+# ===== Ask Bolton — natural-language query agent (confirmed Sept 2026) =====
 #
-# Registered here rather than imported the other way round, because
-# ask_bolton is imported BY this module - importing back would be a
-# cycle. Every helper handed over is a read-only calculation that
-# already has exactly one definition in this file; the point of passing
-# them rather than letting the answerers re-derive anything is that an
-# Ask Bolton answer and the screen it came from can never disagree about
-# the same number.
-ask_bolton.register_helpers(
-    quote_totals=_quote_totals,
-    quote_totals_for=_quote_totals_for,
-    quote_payments=_quote_payments,
-    payment_state=_quote_payment_state,
-    line_real_cost=line_real_cost,
-    get_settings=get_settings,
-    trusted_tester_usernames=_trusted_tester_usernames,
-    pending_install_statuses=PENDING_INSTALL_STATUSES,
-    sast_offset=SAST_OFFSET,
-)
+# Replaces the fixed catalogue of pre-built answerers that briefly lived
+# in ask_bolton.py (kept in git history at the previous commit, one
+# checkout away if the fast-path answerers are ever wanted back). The
+# reason for the swap is the brief's own: Bolton's data keeps
+# accumulating, and a fixed question list caps the tool's usefulness at
+# whatever somebody thought to pre-build.
+#
+# Nothing here decides what anybody may see. ask_query.ask() does that,
+# after Claude has written a query and before it runs, against the role
+# this endpoint hands it — see that module's docstring for the four
+# layers and why the order of them is the security property.
 
 
 class AskBoltonRequest(BaseModel):
     question: str
 
 
-@app.get("/ask-bolton/can-answer")
-def ask_bolton_can_answer(role: str = Depends(get_current_role)):
-    """What this role may ask, in its own words.
+@app.get("/ask-bolton/scope")
+def ask_bolton_scope(role: str = Depends(get_current_role)):
+    """What this role can currently ask about, and how far the agent is
+    allowed to reach.
 
-    Reads the same catalogue the classifier is given, filtered the same
-    way - so a suggestion on screen can never offer something the asker
-    would then be refused for asking."""
-    return {"can_answer": [{"name": a["name"], "asks": a["asks"]}
-                           for a in ask_bolton.CATALOGUE if role in a["roles"]]}
+    Read from the same catalogue the validator enforces, filtered the
+    same way — so the screen can never advertise data the query layer
+    would then refuse."""
+    phase = ask_query.current_phase()
+    tables = ask_query.allowed_tables(role, phase)
+    return {
+        "phase": phase,
+        "data_available": ask_query.PHASE_NAMES[phase],
+        "tables": [{"table": t["table"], "what": t["what"]} for t in tables],
+        "available": bool(tables),
+    }
 
 
 @app.post("/ask-bolton")
 def ask_bolton_endpoint(payload: AskBoltonRequest,
                         role: str = Depends(get_current_role),
                         tenant_id: str = Depends(get_current_tenant)):
-    """Ask a plain-language question about the business.
+    """Ask anything, in plain English, about the data this role may see.
 
-    ROLE COMES FROM get_current_role, never from the request body - the
+    ROLE COMES FROM get_current_role, never from the request body — the
     same trust boundary every other endpoint uses, so an Owner previewing
-    as Sales is answered as Sales and the preview keeps telling the
-    truth. Each answerer declares its own allowed roles and
-    answer_question() checks them before executing, so the guarantee does
-    not depend on this endpoint remembering to.
+    as Sales is answered as Sales. That matters more here than anywhere
+    else in this file: the role decides which tables even exist as far as
+    the query validator is concerned.
 
-    Read-only by construction: the session is handed to answerers that
-    only ever select, and nothing in ask_bolton commits."""
+    This endpoint never touches `engine`. ask_query holds its own
+    read-only connection and no handle to the read-write one."""
     try:
-        with Session(engine) as session:
-            return ask_bolton.answer_question(
-                session, tenant_id, role, payload.question, sast_today())
+        return ask_query.ask(payload.question, role, tenant_id)
     except RuntimeError as e:
-        # A Claude outage, a missing key, a timeout. Reported as what it
-        # is rather than as an empty answer, so nobody ever reads
-        # "nothing found" when the truth is "nothing was asked".
+        # A Claude outage, a missing key, a server that has not been
+        # given a read-only database user. Reported as what it is rather
+        # than as an empty answer.
         raise HTTPException(503, str(e))
 
 

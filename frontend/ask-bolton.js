@@ -1,36 +1,34 @@
-// ===== Ask Bolton (confirmed Sept 2026) =====
+// ===== Ask Bolton — natural-language query agent (confirmed Sept 2026) =====
 //
-// A question box on Home, because Home is the one screen all three
-// roles land on and the questions are about the business rather than
-// about whichever screen you happen to be looking at. Not a floating
-// chat bubble: this answers a fixed set of questions, and the shape of
-// the control should tell the truth about that rather than inviting an
-// open-ended conversation it cannot have.
+// One box on Home, any question, for all three roles within what each
+// may see. Claude writes a real query against the data it is allowed to
+// describe; the server validates and runs it read-only. Nothing here
+// decides access — this file renders whatever the server permitted, and
+// the server is the boundary.
 //
-// MOBILE FIRST, and that is a real constraint here rather than a note:
-// the people asking "who still owes a deposit" are usually standing in
-// a client's lounge holding a phone. One full-width field, a button big
-// enough for a thumb, suggestions that wrap, and an answer that reads
-// top-down with no horizontal scrolling except inside the table itself.
+// EVERY ANSWER SHOWS ITS WORK. The sentence is written by a model and
+// the rows are not, so the rows are always rendered, and the query that
+// produced them is always one tap away. A confident sentence nobody can
+// check is the failure mode this whole feature has to avoid, and hiding
+// the query would be choosing it.
 //
-// THE SENTENCE IS NEVER THE ONLY THING SHOWN. Every answer renders the
-// figures and the row detail underneath it, plus the sources it came
-// from. That is what makes a phrasing slip visible instead of silent —
-// the sentence is written by a model, the table is not.
+// MOBILE FIRST, and that is a real constraint: the people asking are
+// usually holding a phone in a client's lounge. One full-width field, a
+// thumb-sized button, an answer that reads top-down, and the only thing
+// allowed to scroll sideways is the results table inside its own box.
 
 // The wrapped window.fetch (shared.js) aborts any API call at 20s and
-// deliberately leaves a caller-supplied signal alone. Ask Bolton is the
-// first caller that needs its own: the backend allows 30s to classify
-// plus 45s to phrase, so the shared 20s would abort a request that was
-// still legitimately working and report it as a network failure. Longer
-// than the backend's own worst case on purpose, with real margin, so
-// the specific server-side message wins the race rather than a generic
-// front-end abort — the same reasoning ai_import.py's own timeout
-// comment sets out.
-const ASK_BOLTON_TIMEOUT_MS = 90000;
+// deliberately leaves a caller-supplied signal alone. This is the first
+// caller that needs its own: writing SQL with adaptive thinking, then
+// running it, then phrasing the result, can legitimately take longer
+// than that. Comfortably beyond the backend's own worst case, so the
+// specific server-side message wins the race rather than a generic
+// front-end abort — the same reasoning ai_import.py's timeout comment
+// sets out.
+const ASK_BOLTON_TIMEOUT_MS = 120000;
 
 let askBoltonBusy = false;
-let askBoltonSuggestions = [];
+let askBoltonScope = null;
 
 function askBoltonHtml() {
   return `
@@ -41,51 +39,33 @@ function askBoltonHtml() {
                aria-label="Ask a question about the business">
         <button class="ask-btn" type="submit" id="askBoltonBtn">Ask</button>
       </form>
-      <div class="ask-suggestions" id="askBoltonSuggestions"></div>
+      <div class="ask-scope" id="askBoltonScope"></div>
       <div class="ask-result" id="askBoltonResult" aria-live="polite"></div>
     </div>`;
 }
 
-// Loaded from the server rather than hardcoded here, so the chips can
-// never offer a role something it would then be refused for asking —
-// the endpoint filters by the same catalogue the classifier is given.
-async function loadAskBoltonSuggestions() {
-  const host = document.getElementById('askBoltonSuggestions');
+// What the agent can currently reach, stated up front rather than
+// discovered by asking something it has to refuse. The phase is real
+// information for the person typing: at phase 1 a question about live
+// jobs is not a failure of the tool, it is outside what it has been
+// pointed at yet.
+async function loadAskBoltonScope() {
+  const host = document.getElementById('askBoltonScope');
   if (!host) return;
   try {
-    const res = await fetch(`${API}/ask-bolton/can-answer`);
+    const res = await fetch(`${API}/ask-bolton/scope`);
     if (!res.ok) { host.innerHTML = ''; return; }
-    const data = await res.json();
-    askBoltonSuggestions = data.can_answer || [];
+    askBoltonScope = await res.json();
   } catch (e) {
     host.innerHTML = '';
     return;
   }
-  const chips = ASK_BOLTON_CHIPS.filter(c => askBoltonSuggestions.some(a => a.name === c.name));
-  host.innerHTML = chips.map(c =>
-    `<button type="button" class="ask-chip" onclick="askBoltonAsk(${JSON.stringify(c.q).replace(/"/g, '&quot;')})">${c.label}</button>`
-  ).join('');
-}
-
-// Short, real questions rather than the catalogue's own descriptions —
-// a chip has to fit on a phone and read like something a person would
-// actually type. Keyed by answerer name so the filter above can drop
-// any the current role may not ask.
-const ASK_BOLTON_CHIPS = [
-  { name: 'deposits_outstanding', label: 'Deposits owing', q: "Who still owes their deposit?" },
-  { name: 'final_payments_outstanding', label: 'Money owing', q: "Who still owes us money on finished jobs?" },
-  { name: 'installations_outstanding', label: 'Installs pending', q: "Which jobs still need to be installed?" },
-  { name: 'colours_awaiting_installation', label: 'Floors to go down', q: "What colour floors are still to go down?" },
-  { name: 'screed_bags_needed', label: 'Screed bags', q: "How many bags of screed do we need?" },
-  { name: 'trims_needed', label: 'Trims', q: "How many trims do we need across all jobs?" },
-  { name: 'sales_comparison', label: 'Sales vs last year', q: "How do this year's sales compare to last year?" },
-  { name: 'monthly_gp_target_progress', label: 'On target?', q: "Are we on target for this month?" },
-];
-
-function askBoltonAsk(question) {
-  const input = document.getElementById('askBoltonInput');
-  if (input) input.value = question;
-  askBoltonRun(question);
+  if (!askBoltonScope.available) {
+    host.innerHTML = `<span class="ask-scope-text">Not available to your role yet.</span>`;
+    return;
+  }
+  host.innerHTML =
+    `<span class="ask-scope-text">Ask anything about ${escapeHtmlAsk(askBoltonScope.data_available)}.</span>`;
 }
 
 function askBoltonSubmit(event) {
@@ -104,7 +84,7 @@ async function askBoltonRun(question) {
 
   askBoltonBusy = true;
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  host.innerHTML = `<div class="ask-thinking">Looking that up…</div>`;
+  host.innerHTML = `<div class="ask-thinking">Working that out…</div>`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ASK_BOLTON_TIMEOUT_MS);
@@ -116,13 +96,12 @@ async function askBoltonRun(question) {
       signal: controller.signal,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      // The backend's own message, not a generic one — a missing API
-      // key and a Claude outage need different things done about them.
-      host.innerHTML = askBoltonNoticeHtml(data.detail || `Something went wrong (${res.status}).`);
-    } else {
-      host.innerHTML = askBoltonRenderHtml(data);
-    }
+    host.innerHTML = res.ok
+      ? askBoltonRenderHtml(data)
+      // The backend's own message, never a generic one: a missing API
+      // key, a Claude outage and a server with no read-only database
+      // user each need something different done about them.
+      : askBoltonNoticeHtml(data.detail || `Something went wrong (${res.status}).`);
   } catch (e) {
     host.innerHTML = askBoltonNoticeHtml(
       e.name === 'AbortError'
@@ -146,95 +125,97 @@ function escapeHtmlAsk(s) {
 }
 
 function askBoltonRenderHtml(data) {
-  if (data.ok === false) return askBoltonNoticeHtml(data.error || 'That one is not available.');
-
-  if (data.kind === 'clarify') {
-    // A clarifying question, never a guessed assumption — the standing
-    // rule for this whole feature. Rendered as a question the person
-    // answers by typing again, not as a failure.
-    return `<div class="ask-clarify">
-        <strong>One thing first:</strong> ${escapeHtmlAsk(data.clarify)}
-      </div>`;
+  if (data.ok === false) {
+    // A refusal says what was refused. The rejected query is shown too —
+    // if the agent ever tries to reach somewhere it shouldn't, that
+    // should be visible to the person who asked, not only in a log.
+    const attempts = (data.attempts || []).map(a =>
+      `<pre class="ask-sql ask-sql-bad">${escapeHtmlAsk(a.sql || '')}</pre>`).join('');
+    return `<div class="ask-notice">${escapeHtmlAsk(data.error || 'That one is not available.')}
+      ${attempts ? `<details class="ask-details"><summary>What it tried to run</summary>${attempts}</details>` : ''}
+      ${data.sql ? `<details class="ask-details"><summary>The query</summary>
+         <pre class="ask-sql">${escapeHtmlAsk(data.sql)}</pre></details>` : ''}
+    </div>`;
   }
 
-  if (data.kind === 'unsupported') {
-    const list = (data.can_answer || []).map(x => `<li>${escapeHtmlAsk(x)}</li>`).join('');
-    return `<div class="ask-notice">
-        ${escapeHtmlAsk(data.message || "I can't answer that one yet.")}
-        ${list ? `<div class="ask-can">Things I can answer:<ul>${list}</ul></div>` : ''}
-      </div>`;
+  if (data.kind === 'clarify') {
+    // Asked back, never assumed. Rendered as a question to answer by
+    // typing again, not as a failure.
+    return `<div class="ask-clarify"><strong>One thing first:</strong>
+      ${escapeHtmlAsk(data.clarify)}</div>`;
+  }
+
+  if (data.kind === 'cannot_answer') {
+    // "I don't have that", stated plainly, with what it DOES have — so
+    // the gap is a fact rather than a dead end.
+    return `<div class="ask-notice">${escapeHtmlAsk(data.message)}
+      ${data.data_available
+        ? `<div class="ask-can">Right now I can only see ${escapeHtmlAsk(data.data_available)}.</div>`
+        : ''}</div>`;
   }
 
   const parts = [];
   if (data.answer) parts.push(`<p class="ask-answer">${escapeHtmlAsk(data.answer)}</p>`);
-  if (data.headline) parts.push(`<p class="ask-headline">${escapeHtmlAsk(data.headline)}</p>`);
-  (data.gaps || []).forEach(g => parts.push(`<p class="ask-gap">${escapeHtmlAsk(g)}</p>`));
-  parts.push(askBoltonFiguresHtml(data.figures));
-  parts.push(askBoltonTableHtml(data.rows));
-  if ((data.sources || []).length) {
-    parts.push(`<p class="ask-sources">From: ${data.sources.map(escapeHtmlAsk).join(' · ')}</p>`);
+  if (data.gap) parts.push(`<p class="ask-gap">${escapeHtmlAsk(data.gap)}</p>`);
+  if (data.truncated) {
+    parts.push(`<p class="ask-gap">Only the first ${data.row_count} rows are shown — ask something narrower for the full picture.</p>`);
   }
+  parts.push(askBoltonTableHtml(data.columns, data.rows));
+  parts.push(askBoltonProvenanceHtml(data));
   return parts.join('');
 }
 
-// Which keys are money, which are dates, and what to call them on
-// screen. Anything not listed still renders — with its raw key
-// prettified — so a new answerer is never silently missing a column.
-const ASK_MONEY_KEYS = new Set([
-  'deposit_due', 'amount_outstanding', 'amount_paid', 'total_incl_vat',
-  'gross_profit', 'sales_incl_vat', 'value_incl_vat', 'target', 'shortfall',
-  'current_sales_incl_vat', 'current_gross_profit', 'total_deposit_due',
-  'total_outstanding',
-]);
-const ASK_DATE_KEYS = new Set([
-  'installation_date', 'invoice_sent_date', 'accepted_at', 'won_on',
-]);
-const ASK_LABELS = {
-  quote_id: 'Quote', job_number: 'Job', client_name: 'Client', branch: 'Branch',
-  workflow_status: 'Status', on_hold_reason: 'On hold', installation_date: 'Install',
-  confirmed: 'Booked', installer_team: 'Team', days_away: 'Days away',
-  days_waiting: 'Days waiting', deposit_due: 'Deposit due',
-  amount_outstanding: 'Outstanding', amount_paid: 'Paid', total_incl_vat: 'Total',
-  product_name: 'Product', colour: 'Colour', quantity_m2: 'm²',
-  boxes_needed: 'Boxes', bags: 'Bags', length_m: 'Linear m', jobs: 'Jobs',
-  category: 'Type', colours: 'Colours', line_count: 'Lines', label: 'Period',
-  sales_incl_vat: 'Sales', gross_profit: 'Gross profit', fiscal_year: 'Year',
-  source: 'Source', won_on: 'Won', value_incl_vat: 'Value',
-  accepted_at: 'Accepted', invoice_sent_date: 'Invoiced',
-};
+// Which tables the figures came from, and the exact query — always
+// present, never behind a setting. Collapsed by default because most
+// people want the answer, expanded in one tap because the point is that
+// anybody CAN check it.
+function askBoltonProvenanceHtml(data) {
+  const tables = (data.tables || []).join(', ');
+  return `
+    <div class="ask-provenance">
+      ${tables ? `<span class="ask-sources">From: ${escapeHtmlAsk(tables)}</span>` : ''}
+      ${data.sql ? `<details class="ask-details"><summary>Show the query</summary>
+        <pre class="ask-sql">${escapeHtmlAsk(data.sql)}</pre></details>` : ''}
+    </div>`;
+}
+
+// Columns come back named by the query itself, so they are formatted by
+// what the VALUE is rather than by a fixed label map — the agent can
+// return a column nobody has seen before, and it still has to render
+// sensibly.
+const ASK_MONEY_HINT = /(sales|cost|profit|revenue|total|amount|value|turnover|deposit|outstanding|paid|target|expenses|assets|liabilities|equity)/i;
+const ASK_PCT_HINT = /(pct|percent|margin|coverage|share)/i;
 
 function askBoltonLabel(key) {
-  return ASK_LABELS[key] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+  return String(key).replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 
 function askBoltonCell(key, value) {
   if (value === null || value === undefined || value === '') return '—';
-  if (Array.isArray(value)) return value.length ? escapeHtmlAsk(value.join(', ')) : '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (ASK_MONEY_KEYS.has(key)) return escapeHtmlAsk(R(value));
-  if (ASK_DATE_KEYS.has(key)) return escapeHtmlAsk(dateOrDash(value));
+  if (typeof value === 'number') {
+    if (ASK_PCT_HINT.test(key)) {
+      // Stored as a fraction throughout Bolton (0.36 = 36%), so a bare
+      // 0.36 on screen would read as a third of a percent.
+      return value <= 1.5 ? (value * 100).toFixed(1) + '%' : value.toFixed(1) + '%';
+    }
+    if (ASK_MONEY_HINT.test(key)) return escapeHtmlAsk(R(value));
+    return escapeHtmlAsk(Number.isInteger(value) ? value : value.toFixed(2));
+  }
   return escapeHtmlAsk(value);
 }
 
-function askBoltonFiguresHtml(figures) {
-  const entries = Object.entries(figures || {}).filter(([, v]) => v !== null && v !== undefined);
-  if (!entries.length) return '';
-  return `<div class="ask-figures">${entries.map(([k, v]) =>
-    `<div class="ask-figure"><span class="ask-figure-label">${escapeHtmlAsk(askBoltonLabel(k))}</span>
-       <span class="ask-figure-value">${askBoltonCell(k, v)}</span></div>`).join('')}</div>`;
-}
-
-function askBoltonTableHtml(rows) {
+function askBoltonTableHtml(columns, rows) {
   if (!rows || !rows.length) return '';
-  // The union of keys that actually carry a value on at least one row —
-  // the answerers deliberately return null rather than 0 for a quantity
-  // a job genuinely doesn't have, and a column of dashes helps nobody.
-  const keys = [];
-  rows.forEach(r => Object.keys(r).forEach(k => {
-    if (keys.includes(k)) return;
-    if (rows.some(x => x[k] !== null && x[k] !== undefined && x[k] !== ''
-                       && !(Array.isArray(x[k]) && !x[k].length))) keys.push(k);
-  }));
+  const keys = columns && columns.length ? columns : Object.keys(rows[0]);
+  // A single number is the answer, not a table of one cell.
+  if (rows.length === 1 && keys.length === 1) {
+    const k = keys[0];
+    return `<div class="ask-figures"><div class="ask-figure">
+        <span class="ask-figure-label">${escapeHtmlAsk(askBoltonLabel(k))}</span>
+        <span class="ask-figure-value">${askBoltonCell(k, rows[0][k])}</span>
+      </div></div>`;
+  }
   const head = keys.map(k => `<th>${escapeHtmlAsk(askBoltonLabel(k))}</th>`).join('');
   const body = rows.map(r =>
     `<tr>${keys.map(k => `<td>${askBoltonCell(k, r[k])}</td>`).join('')}</tr>`).join('');
