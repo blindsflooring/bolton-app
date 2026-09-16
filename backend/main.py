@@ -50,6 +50,7 @@ from calculations import calculate_flooring_line, calculate_blinds_line, calcula
 import blinds_calc
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
+import ask_query
 from spreadsheet_import import parse_master_spreadsheet
 from blinds_import import parse_blinds_quote, BlindsImportError
 from pdf_render import render_html_to_pdf
@@ -689,6 +690,7 @@ def _ensure_new_columns():
         ("quote", "area", "VARCHAR", "''"),
         ("quotelineitem", "blind_qty", "INTEGER", "NULL"),
         ("businesssettings", "known_areas", "VARCHAR", "''"),
+        ("businesssettings", "monthly_gp_target", "FLOAT", "210000.0"),
         # Calendar quick entry, Phase 1 (confirmed Sept 2026). 'general'
         # on every existing row is the literal truth — nothing created
         # before this had a category, and a plain reminder is exactly
@@ -11611,6 +11613,77 @@ def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> Busine
         session.commit()
         session.refresh(settings)
     return settings
+
+
+# ===== Ask Bolton — natural-language query agent (confirmed Sept 2026) =====
+#
+# Replaces the fixed catalogue of pre-built answerers that briefly lived
+# in ask_bolton.py (kept in git history at the previous commit, one
+# checkout away if the fast-path answerers are ever wanted back). The
+# reason for the swap is the brief's own: Bolton's data keeps
+# accumulating, and a fixed question list caps the tool's usefulness at
+# whatever somebody thought to pre-build.
+#
+# Nothing here decides what anybody may see. ask_query.ask() does that,
+# after Claude has written a query and before it runs, against the role
+# this endpoint hands it — see that module's docstring for the four
+# layers and why the order of them is the security property.
+
+
+class AskBoltonRequest(BaseModel):
+    question: str
+
+
+@app.get("/ask-bolton/scope")
+def ask_bolton_scope(role: str = Depends(get_current_role)):
+    """What this role can currently ask about, and how far the agent is
+    allowed to reach.
+
+    Read from the same catalogue the validator enforces, filtered the
+    same way — so the screen can never advertise data the query layer
+    would then refuse."""
+    phase = ask_query.current_phase()
+    tables = ask_query.allowed_tables(role, phase)
+    # Which key and which database, reported as CONFIGURATION rather than
+    # left to be inferred from a failed question. ai_key_source is the
+    # NAME of the environment variable in use and never its value — the
+    # useful fact is "the shared one" versus "its own", and a key itself
+    # has no business leaving the server.
+    _key, key_source = ask_query.api_key()
+    _engine, db_problem = ask_query.readonly_engine()
+    return {
+        "phase": phase,
+        "data_available": ask_query.PHASE_NAMES[phase],
+        "tables": [{"table": t["table"], "what": t["what"]} for t in tables],
+        "available": bool(tables),
+        "ai_configured": bool(_key),
+        "ai_key_source": key_source,
+        "database_ready": db_problem is None,
+        "setup_problem": db_problem,
+    }
+
+
+@app.post("/ask-bolton")
+def ask_bolton_endpoint(payload: AskBoltonRequest,
+                        role: str = Depends(get_current_role),
+                        tenant_id: str = Depends(get_current_tenant)):
+    """Ask anything, in plain English, about the data this role may see.
+
+    ROLE COMES FROM get_current_role, never from the request body — the
+    same trust boundary every other endpoint uses, so an Owner previewing
+    as Sales is answered as Sales. That matters more here than anywhere
+    else in this file: the role decides which tables even exist as far as
+    the query validator is concerned.
+
+    This endpoint never touches `engine`. ask_query holds its own
+    read-only connection and no handle to the read-write one."""
+    try:
+        return ask_query.ask(payload.question, role, tenant_id)
+    except RuntimeError as e:
+        # A Claude outage, a missing key, a server that has not been
+        # given a read-only database user. Reported as what it is rather
+        # than as an empty answer.
+        raise HTTPException(503, str(e))
 
 
 def _effective_pricing_zone(session: Session, tenant_id: str, supplier: str, settings: BusinessSettings) -> str:

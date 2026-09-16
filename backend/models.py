@@ -1180,6 +1180,26 @@ class BusinessSettings(SQLModel, table=True):
     default_deposit_pct: float = 0.70
     bag_overage_rate: float = 350.0            # R/bag incl. VAT, screed site-variance charge — see calculations.py's BAG_OVERAGE_RATE comment
     default_labour_rate_per_m2: float = 45.0
+    # Ask Bolton, "are we on target this month" (confirmed Sept 2026,
+    # Burgert: "a target of roughly R210k per month in profit per
+    # month... we will fine tune that as we go along").
+    #
+    # GROSS profit, and that distinction is the whole reason this is a
+    # field rather than a turnover target. Bolton computes gross profit
+    # exactly and live - line_real_cost() books every line's real cost,
+    # and it is the same figure commission is paid on. It cannot compute
+    # NET profit at all: overheads exist nowhere in this app except as
+    # annual totals on FinancialStatement. Answering "are we on target"
+    # against a number Bolton would have to estimate from a year-old
+    # expense total is exactly the silent-workaround this feature's own
+    # rules forbid.
+    #
+    # ONE flat monthly figure, not twelve. Seasonality is real here and
+    # a per-month table is the eventual right answer, but twelve numbers
+    # nobody has decided yet is worse than one that is openly a starting
+    # point. Editable on Business Settings, owner-only like the rest of
+    # that screen.
+    monthly_gp_target: float = 210000.0
     order_overdue_days: int = 7                # days since INVOICE SENT before an unpaid job is chased. Was orphaned when computeOrderStatus() was retired (nothing read it, while it stayed editable on the Business Settings screen); wired back to its own documented meaning Sept 2026 — it now gates the "Log payment" Needs Attention flag in _job_workflow_info(). Deliberately still NOT the same as that function's own QUOTE_STALE_DAYS, which counts days since a QUOTE went quiet — two unrelated clocks.
     # Known areas / suburbs (confirmed Sept 2026, Order Index Redesign
     # brief §4) — the list _derive_area() (main.py) matches a free-text

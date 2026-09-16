@@ -27,3 +27,6 @@ backend/uploads/
 
 # Local verification scratch (throwaway scripts, temp DBs, screenshots)
 .claude/
+
+# Ask Bolton test fixture, rebuilt by the suite on every run.
+backend/tests/bolton-askq.db*
