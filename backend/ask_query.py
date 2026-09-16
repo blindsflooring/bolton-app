@@ -526,6 +526,40 @@ def _self_check_probes(role):
     return probes
 
 
+_APP_ENGINE = [None]
+
+
+def _app_count(sql):
+    """What the APP's own connection sees for the same probe, or None.
+
+    Used for one comparison and nothing else: a read-only role that holds
+    SELECT but is filtered to zero rows by RLS looks identical to a role
+    reading an empty table, and the difference is the whole boundary. The
+    only way to tell them apart is to ask a connection that is not
+    filtered. Read-only use, inside a transaction that is always rolled
+    back; this is a measuring stick, never a path a question can travel.
+    """
+    if _APP_ENGINE[0] is None:
+        url = os.environ.get("DATABASE_URL", "").strip()
+        if not url:
+            return None
+        try:
+            _APP_ENGINE[0] = create_engine(url, pool_pre_ping=True)
+        except Exception:
+            _APP_ENGINE[0] = False
+    if not _APP_ENGINE[0]:
+        return None
+    try:
+        with _APP_ENGINE[0].connect() as conn:
+            trans = conn.begin()
+            try:
+                return conn.execute(text(sql)).scalar()
+            finally:
+                trans.rollback()
+    except Exception:
+        return None
+
+
 def self_check(role="owner"):
     """Prove the boundary against the REAL connection, as the real role.
 
@@ -610,6 +644,26 @@ def self_check(role="owner"):
             entry["blocked"] = True
             entry["reason"] = str(e).split("\n")[0][:160]
         entry["pass"] = (entry["blocked"] == must_block)
+
+        # Not blocked, but nothing comes back. Either the table really is
+        # empty, or the role has SELECT and no RLS policy and is filtered
+        # to zero - which reads to the person asking as "there is nothing
+        # recorded for that job", a confident answer that happens to be
+        # false. Only a connection that is not filtered can tell those
+        # two apart, so go and ask one rather than reporting a pass.
+        if entry["pass"] and not must_block and entry.get("value") == 0:
+            app_sees = _app_count(sql)
+            if app_sees:
+                entry["app_sees"] = app_sees
+                entry["pass"] = False
+                entry["reason"] = (
+                    "readable but returns NO ROWS - the app sees %d. The role has "
+                    "SELECT and no row-level-security policy, so every row is "
+                    "filtered out. Questions about this table will be answered "
+                    "'there is nothing recorded', which is false." % app_sees)
+            elif app_sees == 0:
+                entry["note"] = "empty for everyone, not filtered"
+
         if not entry["pass"]:
             report["ok"] = False
         report["checks"].append(entry)

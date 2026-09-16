@@ -487,6 +487,55 @@ print("    ask_query sees            = %s" % sorted(aq._PERSON_SCOPED))
 check(set(_main.PERSON_SCOPED_ROLES) == set(aq._PERSON_SCOPED),
       "ask_query's person-scoping has drifted from main.py's")
 
+banner("F. A TABLE IT CAN OPEN BUT NOT SEE INTO IS A FAILURE")
+
+# The J-0023 case, in miniature. On production the GRANT landed but no RLS
+# policy did, so `SELECT count(*) FROM quote` came back 0 while the app saw
+# 78 - and the self-check called that a PASS, because it only asked "was I
+# blocked?". The answer the person got was "there is nothing recorded for
+# job J-0023": confident, plain English, and false. A role that can open a
+# table and see nothing in it has to fail loudly.
+print("  a readable table returning 0 rows, while the app sees rows:")
+_real_app_count = aq._app_count
+aq._app_count = lambda sql: 78          # what an unfiltered connection sees
+
+with _Session(_main.engine) as _s:
+    _rows = _s.exec(_select(_Quote)).all()
+    _kept = [(r.id, r.tenant_id) for r in _rows]
+    for r in _rows:
+        r.tenant_id = "filtered-away"   # stand-in for an RLS predicate
+        _s.add(r)
+    _s.commit()
+
+probe = "SELECT count(*) FROM quote WHERE tenant_id = '1'"
+entry = {"check": "read quote", "must_be_blocked": False, "blocked": False, "value": 0}
+entry["pass"] = True
+if entry["pass"] and not entry["must_be_blocked"] and entry.get("value") == 0:
+    app_sees = aq._app_count(probe)
+    if app_sees:
+        entry["pass"] = False
+        entry["app_sees"] = app_sees
+print("    value=%s  app_sees=%s  pass=%s" % (entry["value"], entry.get("app_sees"), entry["pass"]))
+check(entry["pass"] is False, "a role filtered to zero rows still reports a pass")
+
+# ...and a table that is genuinely empty must NOT be called a failure.
+aq._app_count = lambda sql: 0
+entry2 = {"check": "read paymentfollowup", "must_be_blocked": False,
+          "blocked": False, "value": 0, "pass": True}
+if entry2["pass"] and entry2.get("value") == 0:
+    if aq._app_count(probe):
+        entry2["pass"] = False
+print("    an empty table: value=0  app_sees=0  pass=%s" % entry2["pass"])
+check(entry2["pass"] is True, "an genuinely empty table is wrongly failed")
+
+aq._app_count = _real_app_count
+with _Session(_main.engine) as _s:
+    for qid, tid in _kept:
+        row = _s.get(_Quote, qid)
+        row.tenant_id = tid
+        _s.add(row)
+    _s.commit()
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

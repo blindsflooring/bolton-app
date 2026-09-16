@@ -186,6 +186,57 @@ A database view would also work but would duplicate the formula in SQL, where it
 could quietly disagree with the Python.
 
 
+### The self-check said pass, and the answer was false
+
+J-0023, asked for real against production, came back:
+
+> "There is nothing recorded for job J-0023."
+
+Not an error. Not "I can't answer that". A confident, plain-English statement that
+a job Burgert was looking at on his own screen does not exist.
+
+The SQL was **right** - tenant-filtered, correct trim category, correct screed
+logic, `quote.id AS quote_id` for the click-through, explicit LIMIT. The model did
+its job. The GRANT had landed too: the role connects as `ask_bolton`, is not
+superuser, writes are refused, and reads on the five live tables are permitted.
+
+What had not landed was a **row-level-security policy**. RLS was on, `ask_bolton`
+had SELECT and no policy, so every row was filtered out. `SELECT count(*) FROM
+quote` returned 0 while the app saw 78. The historical tables had a policy from the
+original setup (`ask_read`, FOR SELECT, USING true) and returned 9 and 84; the five
+live tables had privileges and no policy at all.
+
+**And the self-check called it a pass.** It only ever asked "was I blocked?", so a
+role that could open a table and see nothing in it looked identical to a role
+reading an empty table. That is the exact false assurance the rest of this design
+exists to avoid - a green check standing in front of an answer that is wrong.
+
+Fixed by asking a second connection. A read that is not blocked but returns zero
+rows is now compared against what the app's own connection sees for the same
+count. App sees rows and the role sees none, it FAILS, and says why: *"readable but
+returns NO ROWS - the app sees 78. The role has SELECT and no row-level-security
+policy, so every row is filtered out. Questions about this table will be answered
+'there is nothing recorded', which is false."* Both see zero and the table is
+simply empty, which passes with a note. The comparison connection is used for that
+one count, inside a transaction that is always rolled back - a measuring stick,
+never a path a question can travel.
+
+New suite F covers both halves: the filtered-to-zero case must fail, and a
+genuinely empty table must not.
+
+### What the production run did prove
+
+The money rule, exercised against the real model for the first time:
+
+> *"How much is still owed on job J-0023?"* - "The amount still owed on a job isn't
+> stored anywhere - the job's total/balance is calculated by Bolton at display time
+> and not recorded in this schema. I can only report actual payments received."
+
+No SQL generated, no VAT arithmetic attempted, both the total and the balance
+refused. R31 749,38 is correctly not something it will tell anyone until that
+figure is actually stored - which is the follow-up already logged above.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
