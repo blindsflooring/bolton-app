@@ -18,6 +18,82 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-16 — Ask Bolton narrowed to live jobs for Sales and Admin
+
+**This supersedes the decision taken earlier the same day** that Ryno and Madri would get *both* the historical import and live data. They now get live Order Index data **only**. Nothing about that earlier decision was a breach — no permission boundary ever failed — it was a scope change made before the historical connection had been used in anger.
+
+### Who sees what, now
+
+| | Current jobs | Imported history (2017–2025) | Financial Records |
+|---|---|---|---|
+| Sales (Ryno) | ✅ | ❌ | ❌ |
+| Admin (Madri) | ✅ | ❌ | ❌ |
+| Owner | ✅ | ✅ | ✅ (phase 3) |
+
+Sales and Admin gain no reach they did not already have — everything Ask Bolton can now tell them is already on the Order Index screen. What changes is that they stop hunting across screens for it.
+
+### The boundary is a second database role, not a code check
+
+The important structural change. There are now **two read-only connections, chosen by the asker's role**:
+
+- `ASK_BOLTON_DATABASE_URL` → Owner. Granted the live tables, the historical import, and Financial Records.
+- `ASK_BOLTON_LIVE_DATABASE_URL` → Sales and Admin. Granted **only** `quote`, `quotelineitem`, `quotepayment`, `ordersheet`, `paymentfollowup`.
+
+A total failure of the SQL validator still cannot let Ryno read a historical year, because his connection holds no privilege on that table. Code can have bugs; a `GRANT` that was never made cannot. Neither variable falls back — not to `DATABASE_URL`, and **not from the live connection to the owner one**, which is explicitly tested, because that single fallback would erase the whole boundary silently.
+
+Selected via `get_current_role()`, so an Owner previewing as Sales is answered on the Sales connection. Verified in the browser on both Home and Order Index: the scope line narrows from *"current jobs and the imported Order Index history (2017-2025)"* to *"current jobs in the Order Index"* the moment the preview switches.
+
+### What live data actually backs this
+
+Confirmed by reading `list_quotes()` rather than assuming — the Order Index screen reads exactly six tables. Five are exposed to the agent (`jobworkday` was left out; nothing in the brief's questions needs it). Two descriptions earn their place:
+
+- **`ordersheet.status`** — "still needs ordering" means *no placed order sheet*, not the `materials_ordered` checkbox, which is a legacy hand-ticked field. The catalogue tells the model explicitly not to trust it.
+- **`quotepayment`** — payments are a **list**, not a deposit/final pair, so "who still owes" has to come from the rows, not from two milestone dates.
+
+### Where it lives
+
+Ask Bolton is now on **Home and the Order Index dashboard**, same component, same server boundary. Deliberately *not* on a drill-down: that view has already narrowed to one tile's list, and a free-text question there would answer about something other than what is on screen.
+
+### Testing
+
+Red-team suite extended from 39 to **42 adversarial queries, all refused** — the ten new ones are the new boundary specifically: Sales and Admin reaching for `historicalyeartotal` directly, via table alias, via `AS` alias, via alias shadowing, via subquery, via `UNION` piggyback, via `JOIN` piggyback, and via uppercase evasion.
+
+Correctness is now asserted against **hand-computed answers**, not just "it responded". The fixture's declined quote and price check each carry 999 bags of screed, so a query that forgets to exclude them comes out at 2 058 instead of 60:
+
+| Question | Expected | Got |
+|---|---|---|
+| Bags of screed across open + queued jobs | 60 | 60 |
+| Trim metres across jobs needing installation | 93.0 | 93.0 |
+| Who hasn't paid their deposit | J-101, J-104 | J-101, J-104 |
+| Who still owes final payment | J-106 | J-106 |
+| Which jobs still need ordering | J-101, J-104 | J-101, J-104 |
+| Which jobs still need installing | J-101, J-102, J-104, J-105 | ✅ |
+| Outstanding deposit **in Hermanus** | J-104 | J-104 |
+
+`/ask-bolton/self-check` now takes a `for_role` and derives its probes **from the catalogue**, so the Sales connection is checked for what it must *not* read rather than what the Owner may. The first version had the probes hardcoded to the Owner's entitlements — running it against the Sales connection asserted that reading `historicalyeartotal` should *succeed*, the exact opposite of the requirement.
+
+### Not verified, and it needs a real check
+
+- **The live model call has never run.** No `ANTHROPIC_API_KEY` on the build machine. Every layer downstream of generation is tested; the generation itself is not. Suite D writes the SQL a correctly-described schema *should* lead the model to and proves those numbers are right — it does not prove the model writes that SQL.
+- **The per-table boundary cannot be proven on SQLite**, which has no per-table privileges. `self_check` reports `full_boundary_enforceable: false` locally and says why, rather than implying a guarantee that isn't there. It must be run on the Postgres deployment.
+- **No real job has been checked yet.** The brief's last criterion — one currently-open job with known screed/trim needs and known payment status — needs a real job number from Burgert.
+
+### Still outstanding
+
+The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
+
+```sql
+CREATE ROLE ask_bolton_live LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE postgres TO ask_bolton_live;
+GRANT USAGE   ON SCHEMA public     TO ask_bolton_live;
+GRANT SELECT  ON quote, quotelineitem, quotepayment, ordersheet, paymentfollowup
+  TO ask_bolton_live;
+```
+
+Plus an RLS policy per table if row-level security is on, or the role reads zero rows. On the pooler the username must be `ask_bolton_live.<project-ref>` — keeping the dashboard's pre-filled `postgres.<project-ref>` connects as a **superuser** and silently removes the guarantee entirely. `/ask-bolton/self-check?for_role=sales` reports `is_superuser` for exactly that reason.
+
+---
+
 ## 2026-09-14 — Photo storage, the memory ceiling, and HEIC
 
 Investigation only. Triggered by a Render memory-limit restart on `bolton-backend`, 14 photos on J-0021 (Amanda De Vos) showing as broken images, and Bolton feeling generally slow. Two of the three turned out to have a different cause than the brief assumed, so nothing was changed until this was written down.

@@ -11650,10 +11650,10 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     # useful fact is "the shared one" versus "its own", and a key itself
     # has no business leaving the server.
     _key, key_source = ask_query.api_key()
-    _engine, db_problem = ask_query.readonly_engine()
+    _engine, db_problem = ask_query.readonly_engine(role)
     return {
         "phase": phase,
-        "data_available": ask_query.PHASE_NAMES[phase],
+        "data_available": ask_query.data_available(role, phase),
         "tables": [{"table": t["table"], "what": t["what"]} for t in tables],
         "available": bool(tables),
         "ai_configured": bool(_key),
@@ -11664,7 +11664,8 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
 
 
 @app.get("/ask-bolton/self-check")
-def ask_bolton_self_check(role: str = Depends(require_owner)):
+def ask_bolton_self_check(for_role: str = "owner",
+                          role: str = Depends(require_owner)):
     """Prove the permission boundary against the REAL database, as the
     real role, on this deployment.
 
@@ -11678,7 +11679,7 @@ def ask_bolton_self_check(role: str = Depends(require_owner)):
     Owner-only, and read-only in effect: the one write it attempts
     carries WHERE 1=0 and is rolled back, so a wrong grant is REPORTED
     rather than exercised."""
-    return ask_query.self_check()
+    return ask_query.self_check(for_role if for_role in ask_query.CONNECTION_FOR_ROLE else "owner")
 
 
 @app.post("/ask-bolton")
