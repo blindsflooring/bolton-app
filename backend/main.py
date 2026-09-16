@@ -11644,11 +11644,22 @@ def ask_bolton_scope(role: str = Depends(get_current_role)):
     would then refuse."""
     phase = ask_query.current_phase()
     tables = ask_query.allowed_tables(role, phase)
+    # Which key and which database, reported as CONFIGURATION rather than
+    # left to be inferred from a failed question. ai_key_source is the
+    # NAME of the environment variable in use and never its value — the
+    # useful fact is "the shared one" versus "its own", and a key itself
+    # has no business leaving the server.
+    _key, key_source = ask_query.api_key()
+    _engine, db_problem = ask_query.readonly_engine()
     return {
         "phase": phase,
         "data_available": ask_query.PHASE_NAMES[phase],
         "tables": [{"table": t["table"], "what": t["what"]} for t in tables],
         "available": bool(tables),
+        "ai_configured": bool(_key),
+        "ai_key_source": key_source,
+        "database_ready": db_problem is None,
+        "setup_problem": db_problem,
     }
 
 

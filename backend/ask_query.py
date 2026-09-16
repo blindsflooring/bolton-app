@@ -68,8 +68,39 @@ import urllib.request
 
 from sqlalchemy import create_engine, text
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+# Its own key where one is provided, the shared one otherwise.
+#
+# Deliberately a FALLBACK rather than a hard requirement, unlike the
+# read-only database URL above. That refuses to fall back because doing
+# so would defeat a safety guarantee; this is an operational preference
+# and falling back costs nothing but visibility, so the feature works on
+# day one and can be separated whenever it suits.
+#
+# Why separating it is worth doing anyway: Anthropic reports usage per
+# key, so a key of its own makes Ask Bolton's spend visible without any
+# instrumentation; it can carry its own spend cap and rate limit in its
+# own Console workspace, so a runaway or abused query loop cannot starve
+# the price-sheet import; and revoking it turns off exactly this feature
+# and nothing else. It also has a genuinely different exposure profile -
+# the price-sheet import is owner-only and reads a file Burgert chose,
+# while this is the first thing in Bolton where Sales and Admin can
+# spend money on free text, many times a day.
+#
+# Read at call time rather than frozen at import, so which key is in use
+# is a fact about now rather than about whenever the process started.
+ASK_KEY_VARS = ("ASK_BOLTON_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def api_key():
+    """(key, which environment variable it came from). ("", None) when
+    neither is set."""
+    for name in ASK_KEY_VARS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value, name
+    return "", None
 
 # Writing correct SQL against a described schema is the step where being
 # wrong actually costs something - a bad query is a wrong answer that
@@ -557,14 +588,18 @@ def run_sql(sql, tenant_id):
 # Claude
 # =====================================================================
 def _post(body, timeout):
-    if not ANTHROPIC_API_KEY:
+    key, _source = api_key()
+    if not key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set on this server - Ask Bolton needs it. "
-            "Set it in Render's environment (never committed to source).")
+            "No Anthropic API key is set on this server - Ask Bolton needs one. "
+            "Set ASK_BOLTON_ANTHROPIC_API_KEY (its own key, recommended: its spend "
+            "is then reported separately and can be capped on its own) or "
+            "ANTHROPIC_API_KEY (shared with AI price-sheet import) in Render's "
+            "environment. Never committed to source.")
     req = urllib.request.Request(
         ANTHROPIC_API_URL, data=json.dumps(body).encode("utf-8"),
         headers={"content-type": "application/json",
-                 "x-api-key": ANTHROPIC_API_KEY,
+                 "x-api-key": key,
                  "anthropic-version": "2023-06-01"},
         method="POST")
     try:
