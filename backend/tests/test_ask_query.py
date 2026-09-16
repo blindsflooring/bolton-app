@@ -157,6 +157,33 @@ RED_TEAM = [
      "SELECT md5(client_name) FROM quote WHERE tenant_id = :tenant_id"),
     ("unknown: a table nobody may see", "owner", 3,
      "SELECT password_hash FROM app_user WHERE tenant_id = :tenant_id"),
+    # --- MONEY IS READ, NEVER WORKED OUT -----------------------------
+    # The quote total, the balance, the VAT and the margin are computed by
+    # _quote_totals() the moment Bolton draws the screen. They are not
+    # columns. An agent that rebuilds them gets a plausible number with no
+    # way for the reader to tell it is wrong - so the ingredients are not
+    # in the catalogue at all, and reaching for one is refused here rather
+    # than discouraged in a prompt. quotepayment is the only money source.
+    ("MONEY: rebuild the total from line totals", "admin", 1,
+     "SELECT SUM(line_total) * 1.15 AS total FROM quotelineitem WHERE tenant_id = :tenant_id"),
+    ("MONEY: same, hidden behind an alias", "admin", 1,
+     "SELECT SUM(l.line_total) * 1.15 AS t FROM quote q JOIN quotelineitem l "
+     "ON l.quote_id = q.id WHERE q.tenant_id = :tenant_id AND l.tenant_id = :tenant_id"),
+    ("MONEY: the deposit percentage", "admin", 1,
+     "SELECT job_number, deposit_pct FROM quote WHERE tenant_id = :tenant_id"),
+    ("MONEY: the manual override total", "admin", 1,
+     "SELECT manual_override_total_incl_vat FROM quote WHERE tenant_id = :tenant_id"),
+    ("MONEY: the levy", "admin", 1,
+     "SELECT job_number, transport_levy FROM quote WHERE tenant_id = :tenant_id"),
+    ("MONEY: the discount", "admin", 1,
+     "SELECT job_number, discount_pct FROM quote WHERE tenant_id = :tenant_id"),
+    ("MONEY: cost, for a margin it must not compute", "admin", 1,
+     "SELECT SUM(total_job_cost) AS c FROM quotelineitem WHERE tenant_id = :tenant_id"),
+    ("MONEY: trim cost per metre", "admin", 1,
+     "SELECT SUM(unit_cost * length_m) AS c FROM quotelineitem WHERE tenant_id = :tenant_id"),
+    ("MONEY: the legacy stored deposit figure", "admin", 1,
+     "SELECT job_number, actual_deposit_amount FROM quote WHERE tenant_id = :tenant_id"),
+
     # --- A REP MAY ONLY SEE THEIR OWN JOBS ---------------------------
     # Bolton scopes Sales to their own records everywhere: the Order
     # Index list filters by sales_owner and get_quote() 404s - not 403s -
@@ -203,6 +230,13 @@ LEGIT = [
      "SELECT q.job_number, p.amount FROM quote q JOIN quotepayment p ON p.quote_id = q.id "
      "WHERE q.tenant_id = :tenant_id AND p.tenant_id = :tenant_id "
      "AND q.sales_owner = :sales_owner"),
+    ("money: summing real receipts is fine - they arrived", "admin", 1,
+     "SELECT q.id AS quote_id, q.job_number, SUM(p.amount) AS paid FROM quote q "
+     "JOIN quotepayment p ON p.quote_id = q.id WHERE q.tenant_id = :tenant_id "
+     "AND p.tenant_id = :tenant_id GROUP BY q.id, q.job_number"),
+    ("money: payment dates are facts, not calculations", "admin", 1,
+     "SELECT job_number, deposit_paid_date, final_payment_date, invoice_sent_date "
+     "FROM quote WHERE tenant_id = :tenant_id"),
     ("admin sees EVERY rep's jobs, by settled decision", "admin", 1,
      "SELECT job_number FROM quote WHERE tenant_id = :tenant_id"),
     ("owner sees every rep's jobs too", "owner", 1,

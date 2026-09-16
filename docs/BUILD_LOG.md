@@ -113,6 +113,79 @@ The live model call has still never run, the per-table boundary still cannot be 
 One addition to that list: the per-person scope is currently enforced by the **validator**, not by the database. The stronger version is an RLS policy on the live role keyed to a session setting, which would make it structural like the table boundary. Worth doing, not done here.
 
 
+### Money is read, never worked out
+
+Checking J-0023 turned up a real hazard. The rand figures on a job - what it is
+worth, what the deposit was, what is still owed, the VAT - are **not columns**.
+Bolton computes them in `_quote_totals()` at the moment it draws the screen. The
+query agent had the ingredients (`line_total`, `deposit_pct`, `transport_levy`,
+`discount_pct`, `manual_override_total_incl_vat`) and could have rebuilt them.
+
+On J-0023 the four line totals sum to R92 027,18 and the real total is R105 831,26
+- the same number times 1,15. An agent that forgets the VAT step returns R92 027,18:
+wrong, confident, and indistinguishable from right to whoever reads it.
+
+Burgert's call, and it matches the rule already set for Financial Records: **only
+real stored numbers, no guessing, no calculating.** If the figure is not stored,
+the honest answer is "I can't answer that yet".
+
+Enforced structurally rather than by asking nicely. Every ingredient of the totals
+formula is **out of the catalogue**, so reaching for one is refused by the validator
+the same way `financialstatement` is - not discouraged in a prompt the model may or
+may not follow. `quotepayment` is left whole and is now the only source of a rand
+figure, because every row in it is money that actually arrived. Summing real
+receipts is still allowed; that is adding up facts, not reconstructing a formula.
+
+| Question | Answer |
+|---|---|
+| Has the deposit been paid? | Yes - `deposit_paid_date` and the payment rows are real |
+| How much came in? | Yes - from `quotepayment` |
+| What is the job worth? | "I can't answer that yet" - not stored |
+| How much is still owed? | "I can't answer that yet" - not stored |
+| What is the margin? | "I can't answer that yet" - cost columns are gone too |
+
+Red team **48 -> 58 refused**. The ten new ones are each a way to rebuild a figure:
+straight from line totals, the same multiplication hidden behind an alias, the
+deposit percentage, the override, the levy, the discount, and the cost columns that
+would let it compute a margin.
+
+### J-0023, checked against the real job
+
+The first end-to-end check against a real open job. J-0023 (Marlize Louw, Gansbaai,
+Ryno's) was read out of production, and its real row values replayed into the
+fixture and put through `validate_sql` -> `run_sql` as Sales, as Ryno.
+
+| | Real job | Ask Bolton |
+|---|---|---|
+| Screed | 55 bags | 55 |
+| Trim | 9,1 m (5,4 reducer + 3,7 angle) | 9.1 |
+| Deposit | paid 15 Sep 2026 | 2026-09-15 |
+| Deposit amount | R74 081,88 | R74 081,88, from the payment row |
+| Final payment | not paid | None |
+| Invoice | not sent | None |
+
+Every figure matches, and both "what is it worth" and "what is still owed" are
+refused rather than estimated.
+
+**What this does not yet prove.** The SQL was written by hand, not by the model, and
+it ran against a replay rather than against Postgres. The model step works - it was
+exercised in production for the first time today and correctly refused a question
+about data it could not see - but it has never written a live-jobs query, because
+that version is not deployed anywhere with an API key. That is the one remaining
+gap, and it needs the `ask_bolton_live` role and a deploy before it can close.
+
+### Worth doing later: store the outstanding amount
+
+The honest "I can't answer that yet" is the right behaviour, not a permanent
+answer. The fix is to make the number real: store `total_incl_vat` and
+`amount_outstanding` on the quote, maintained on write, and have the existing
+nightly consistency monitor assert the stored value still equals what
+`_quote_totals()` computes. Then the agent reads a stored fact, there is still one
+definition of the arithmetic, and drift gets caught by machinery that already runs.
+A database view would also work but would duplicate the formula in SQL, where it
+could quietly disagree with the Python.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

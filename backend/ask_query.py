@@ -258,6 +258,12 @@ CATALOGUE = [
         "phase": 1,
         "roles": ALL_ROLES,
         "what": "One row per quote or job in Bolton, from 1 September 2026 onward. "
+                "This table carries DATES and STATUS, not money. The quote total, the "
+                "deposit due, the balance and the VAT are all worked out by Bolton at "
+                "the moment it draws the screen, and are not stored here - so they are "
+                "not available to you and cannot be rebuilt from these columns. For any "
+                "question about money, use quotepayment, which holds what really "
+                "arrived. "
                 "A quote becomes a job when it is accepted.",
         "columns": {
             "client_name": "Who the job is for.",
@@ -276,16 +282,11 @@ CATALOGUE = [
             "invoice_sent_date": "When the invoice went out.",
             "deposit_paid_date": "When the deposit landed. NULL if not paid.",
             "final_payment_date": "Set only when the job is FULLY paid.",
-            "actual_deposit_amount": "The real deposit received, where it differs from the percentage.",
-            "deposit_pct": "Deposit share of the total, as a fraction.",
-            "branch": "Which branch the job belongs to.",
+                    "branch": "Which branch the job belongs to.",
             "sales_owner": "Username of the rep the job is attributed to.",
             "installer_team": "Who is fitting it.",
             "on_hold_reason": "Free text. Non-empty means the job is paused.",
-            "transport_levy": "Added to the quote subtotal.",
-            "discount_pct": "Discount as a fraction.",
-            "manual_override_total_incl_vat": "When set, this REPLACES the calculated total.",
-            "materials_ordered": "A legacy hand-ticked checkbox. Do NOT trust it - whether materials were really ordered is decided by a placed ordersheet row.",
+                        "materials_ordered": "A legacy hand-ticked checkbox. Do NOT trust it - whether materials were really ordered is decided by a placed ordersheet row.",
         },
     },
     {
@@ -302,10 +303,7 @@ CATALOGUE = [
             "length_m": "Linear metres, on trim and skirting lines.",
             "boxes_needed": "Boxes to order, on material flooring lines.",
             "bags_allowed": "Bags of screed allowed, on screed lines. Greater than 0 identifies a screed line.",
-            "line_total": "The line's sell price, ex VAT.",
-            "total_job_cost": "Real cost of a flooring or stairwell line.",
-            "unit_cost": "Cost per unit - per linear metre on trim and skirting.",
-            "flooring_pricing_type": "'material' or 'screed', on flooring lines.",
+                        "flooring_pricing_type": "'material' or 'screed', on flooring lines.",
             "trim_sub_category": "'skirting', 'stair_nose', 'reducer', 'carpet_strip' or 'quarter_round'.",
         },
     },
@@ -313,7 +311,9 @@ CATALOGUE = [
         "table": "quotepayment",
         "phase": 1,
         "roles": ALL_ROLES,
-        "what": "Money actually received against a job. A job's payments are a LIST, not a "
+        "what": "THE ONLY SOURCE OF MONEY FIGURES. Money actually received against a job. "
+                "Every amount here is a real recorded receipt, not a calculation. "
+                "A job's payments are a LIST, not a "
                 "fixed deposit/final pair - a client can pay in several tranches. Join to "
                 "quote via quote_id.",
         "columns": {
@@ -938,7 +938,13 @@ small number of rows that answer the question over a raw dump.
 - When the answer is about specific JOBS, always include `quote.id AS quote_id` \
 alongside `quote.job_number`, so the person can open the job straight from the answer. \
 Put quote_id first.
-- Aggregate in SQL rather than returning everything for someone else to add up."""
+- Aggregate in SQL rather than returning everything for someone else to add up.
+
+About money, which is the one thing you must never work out for yourself:
+- The only rand figures you may report are the ones recorded in `quotepayment`. Those are real receipts. Summing a job's payments is fine - that is adding up money that genuinely arrived.
+- Everything else about money on a live job - what the job is worth, what the deposit should have been, what is still owed, the VAT, a discount, a margin - is worked out by Bolton from rules you have not been given, and is not in your schema. You cannot reconstruct it, and an answer that looks about right is worse than no answer, because nobody can tell it is wrong.
+- So if a question needs a figure that is not a recorded payment, use "cannot_answer" and say plainly which figure is not stored. Do not substitute a number you can reach for one you cannot. Do not multiply anything by a VAT rate.
+- "Has the deposit been paid?" is answerable - deposit_paid_date, final_payment_date and the payment rows are all real. "How much is still owed?" is not."""
 
 EXPLAIN_SYSTEM = """You turn the result of a database query into one or two plain \
 sentences for the owner or staff of a South African flooring and blinds business.
