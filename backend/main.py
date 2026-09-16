@@ -50,6 +50,7 @@ from calculations import calculate_flooring_line, calculate_blinds_line, calcula
 import blinds_calc
 from auth import hash_password, verify_password, new_session_token, new_expiry
 from ai_import import extract_price_sheet
+import ask_bolton
 from spreadsheet_import import parse_master_spreadsheet
 from blinds_import import parse_blinds_quote, BlindsImportError
 from pdf_render import render_html_to_pdf
@@ -689,6 +690,7 @@ def _ensure_new_columns():
         ("quote", "area", "VARCHAR", "''"),
         ("quotelineitem", "blind_qty", "INTEGER", "NULL"),
         ("businesssettings", "known_areas", "VARCHAR", "''"),
+        ("businesssettings", "monthly_gp_target", "FLOAT", "210000.0"),
         # Calendar quick entry, Phase 1 (confirmed Sept 2026). 'general'
         # on every existing row is the literal truth — nothing created
         # before this had a category, and a plain reminder is exactly
@@ -11611,6 +11613,69 @@ def get_settings(session: Session, tenant_id: str = DEFAULT_TENANT_ID) -> Busine
         session.commit()
         session.refresh(settings)
     return settings
+
+
+# ===== Ask Bolton (confirmed Sept 2026) =====
+#
+# Registered here rather than imported the other way round, because
+# ask_bolton is imported BY this module - importing back would be a
+# cycle. Every helper handed over is a read-only calculation that
+# already has exactly one definition in this file; the point of passing
+# them rather than letting the answerers re-derive anything is that an
+# Ask Bolton answer and the screen it came from can never disagree about
+# the same number.
+ask_bolton.register_helpers(
+    quote_totals=_quote_totals,
+    quote_totals_for=_quote_totals_for,
+    quote_payments=_quote_payments,
+    payment_state=_quote_payment_state,
+    line_real_cost=line_real_cost,
+    get_settings=get_settings,
+    trusted_tester_usernames=_trusted_tester_usernames,
+    pending_install_statuses=PENDING_INSTALL_STATUSES,
+    sast_offset=SAST_OFFSET,
+)
+
+
+class AskBoltonRequest(BaseModel):
+    question: str
+
+
+@app.get("/ask-bolton/can-answer")
+def ask_bolton_can_answer(role: str = Depends(get_current_role)):
+    """What this role may ask, in its own words.
+
+    Reads the same catalogue the classifier is given, filtered the same
+    way - so a suggestion on screen can never offer something the asker
+    would then be refused for asking."""
+    return {"can_answer": [{"name": a["name"], "asks": a["asks"]}
+                           for a in ask_bolton.CATALOGUE if role in a["roles"]]}
+
+
+@app.post("/ask-bolton")
+def ask_bolton_endpoint(payload: AskBoltonRequest,
+                        role: str = Depends(get_current_role),
+                        tenant_id: str = Depends(get_current_tenant)):
+    """Ask a plain-language question about the business.
+
+    ROLE COMES FROM get_current_role, never from the request body - the
+    same trust boundary every other endpoint uses, so an Owner previewing
+    as Sales is answered as Sales and the preview keeps telling the
+    truth. Each answerer declares its own allowed roles and
+    answer_question() checks them before executing, so the guarantee does
+    not depend on this endpoint remembering to.
+
+    Read-only by construction: the session is handed to answerers that
+    only ever select, and nothing in ask_bolton commits."""
+    try:
+        with Session(engine) as session:
+            return ask_bolton.answer_question(
+                session, tenant_id, role, payload.question, sast_today())
+    except RuntimeError as e:
+        # A Claude outage, a missing key, a timeout. Reported as what it
+        # is rather than as an empty answer, so nobody ever reads
+        # "nothing found" when the truth is "nothing was asked".
+        raise HTTPException(503, str(e))
 
 
 def _effective_pricing_zone(session: Session, tenant_id: str, supplier: str, settings: BusinessSettings) -> str:

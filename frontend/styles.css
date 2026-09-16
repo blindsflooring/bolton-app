@@ -1824,3 +1824,79 @@
     .cal-daynum { font-size: 9.5px; }
     .cal-chip { font-size: 9px; }
   }
+
+  /* ===== Ask Bolton (confirmed Sept 2026) =====
+     Mobile first, deliberately: the person asking "who still owes a
+     deposit" is usually holding a phone in someone's lounge. The base
+     rules below ARE the phone layout — full-width field, a 44px-tall
+     button that a thumb can hit, chips that wrap onto as many lines as
+     they need. The wider layout is the media query on top, not the
+     other way round. */
+  .ask-bolton { margin: 0 0 18px; }
+  .ask-row { display: flex; gap: 8px; }
+  .ask-input {
+    flex: 1 1 auto; min-width: 0; padding: 12px 14px; font-size: 16px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--card);
+    color: var(--navy); font-family: inherit;
+  }
+  /* 16px is not a style choice: any smaller and iOS Safari zooms the
+     whole page on focus, which on a phone throws the layout sideways
+     every single time somebody taps the box. */
+  .ask-input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(0,170,178,0.16); }
+  .ask-btn {
+    flex: 0 0 auto; min-height: 44px; padding: 0 20px; border: none; border-radius: 10px;
+    background: var(--teal); color: #fff; font-family: 'Poppins', sans-serif;
+    font-size: 15px; cursor: pointer;
+  }
+  .ask-btn:disabled { opacity: 0.55; cursor: default; }
+  .ask-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .ask-chip {
+    border: 1px solid var(--border); background: var(--card); color: var(--navy);
+    border-radius: 999px; padding: 7px 12px; font-size: 12.5px; cursor: pointer;
+    font-family: inherit; min-height: 32px;
+  }
+  .ask-chip:hover { border-color: var(--teal); color: var(--teal); }
+  .ask-result:empty { display: none; }
+  .ask-result {
+    margin-top: 12px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px;
+  }
+  .ask-thinking { color: #6b7280; font-size: 13.5px; }
+  .ask-answer { margin: 0 0 8px; font-size: 15.5px; line-height: 1.5; color: var(--navy); }
+  .ask-headline {
+    margin: 0 0 10px; font-family: 'Poppins', sans-serif; font-size: 13px;
+    text-transform: uppercase; letter-spacing: 0.4px; color: #6b7280;
+  }
+  /* A stated gap is part of the answer, not a warning decoration - it
+     gets the coral edge so it is impossible to skim past, because the
+     whole rule for this feature is that missing data is said plainly
+     rather than worked around silently. */
+  .ask-gap {
+    margin: 0 0 8px; padding: 8px 10px; border-left: 3px solid var(--coral);
+    background: #fdf3f0; font-size: 13px; line-height: 1.45; color: var(--navy);
+  }
+  .ask-clarify, .ask-notice { font-size: 14px; line-height: 1.5; color: var(--navy); }
+  .ask-can { margin-top: 8px; font-size: 13px; color: #6b7280; }
+  .ask-can ul { margin: 6px 0 0; padding-left: 18px; }
+  .ask-figures { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .ask-figure {
+    flex: 1 1 130px; background: var(--bg); border-radius: 8px; padding: 8px 10px;
+  }
+  .ask-figure-label { display: block; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; }
+  .ask-figure-value { display: block; font-family: 'Poppins', sans-serif; font-size: 15px; color: var(--navy); }
+  /* The ONE thing allowed to scroll sideways on a phone, and only
+     inside its own box - the page body never does. */
+  .ask-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 4px; }
+  .ask-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  .ask-table th, .ask-table td { padding: 6px 10px; text-align: left; white-space: nowrap; }
+  .ask-table th {
+    font-family: 'Poppins', sans-serif; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.3px; color: #6b7280; border-bottom: 1px solid var(--border);
+  }
+  .ask-table tbody tr + tr td { border-top: 1px solid #f0f0f0; }
+  .ask-sources { margin: 10px 0 0; font-size: 11.5px; color: #8A93A0; }
+
+  @media (min-width: 700px) {
+    .ask-input { font-size: 15px; }
+    .ask-figure { flex: 0 1 160px; }
+  }
