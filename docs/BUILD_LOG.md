@@ -464,6 +464,48 @@ Suite I asserts each one names its remedy, shows the surrounding text, and no
 longer reports a character offset.
 
 
+### The Dropbox alarm was telling the truth about the wrong thing
+
+Four consecutive nights of *"no Dropbox credential configured"* sent Burgert
+hunting through Render environment variables. The credentials were fine the whole
+time. Reading the actual failure reasons off every archive row settled it:
+
+| Cause | Count | When |
+|---|---|---|
+| `unexpected use of the catch-all tag 'other'` | 10 | 27 Aug - 3 Sept |
+| `AuthError: expired_access_token` | 17 | 3 Sept - 12 Sept |
+| **Successful uploads** | **24** | **13 Sept - 16 Sept** |
+
+A clean cutover on 12-13 September: every failure before it, every success after.
+The `expired_access_token` errors are the signature of the old static
+`DROPBOX_ACCESS_TOKEN`; since the refresh-token credentials went in, nothing has
+failed. The nightly alert was a scar being re-read as a wound.
+
+**Two bugs made it look otherwise.**
+
+The message asserted rather than asked. `f"{pending} pending (no Dropbox credential
+configured)"` printed whenever anything was pending, regardless of whether a
+credential existed - a label on a bucket, presented as a diagnosis. There is now a
+`credentials_configured()` helper that makes the same check `_get_client()` makes,
+without building a client or touching the network, and the line says which of the
+two situations is actually true. It deliberately does not claim more than it knows:
+a credential that exists can still be expired, and that only shows up when an
+upload is attempted.
+
+And the de-duplication never matched. The monitor keyed on
+`(entity_type, entity_id, note)`, but this note embeds the live counts *and*
+`last_successful_upload` - so the key changed almost every night and a fresh row
+was written each time, which is precisely what the de-dupe exists to prevent. A
+finding whose wording moves with the data now carries a stable `dedupe_prefix` and
+is matched on that instead. The row stays one row, and its note is refreshed in
+place so it carries today's numbers rather than the day it was first raised.
+
+**And the backlog is cleared.** All 32 reachable failed documents were retried and
+all 32 uploaded: `failed` went 36 to 4, `needs_attention` 49 to 17. The four
+stragglers, and the four pending, hang off entities that can no longer be
+enumerated through the API (deleted quotes, most likely) - they need a route that
+addresses an archive by its own id, which does not exist today.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

@@ -5182,12 +5182,27 @@ def _run_consistency_checks(session: Session, tenant_id: str) -> list:
         if health["failed"]:
             bits.append(f"{health['failed']} document(s) FAILED to upload")
         if health["pending"]:
-            bits.append(f"{health['pending']} pending (no Dropbox credential configured)")
+            # Ask, do not assume. This line used to state "no Dropbox
+            # credential configured" whenever anything was pending,
+            # which is a label on a bucket rather than a diagnosis - and
+            # it was wrong for four consecutive nights while uploads
+            # were succeeding.
+            if dropbox_archive.credentials_configured():
+                bits.append(f"{health['pending']} pending (not yet uploaded)")
+            else:
+                bits.append(f"{health['pending']} pending - no Dropbox credential is configured")
         if health["photos_not_uploaded"]:
             bits.append(f"{health['photos_not_uploaded']} job photo(s) not uploaded")
         last = health["last_successful_upload"] or "never"
         findings.append({
             "entity_type": "DocumentArchive", "entity_id": 0,
+            # The note carries live counts AND the last upload time, so
+            # it changes almost every night. De-duping on the note
+            # therefore never matched yesterday's row and this finding
+            # was re-raised daily - the exact thing the de-dupe exists
+            # to prevent. Matched on a stable prefix instead, so it
+            # stays one row and that row keeps current numbers.
+            "dedupe_prefix": "Dropbox archive:",
             "note": ("Dropbox archive: " + "; ".join(bits)
                      + f". Last successful upload: {last}. "
                        "Each failed document can be retried from its job's document history."),
@@ -5272,18 +5287,39 @@ def run_consistency_monitor_job():
                 )).all()
                 already_flagged = {(f.entity_type, f.entity_id, f.note) for f in existing_open}
                 new_count = 0
+                refreshed = 0
                 for finding in findings:
-                    key = (finding["entity_type"], finding["entity_id"], finding["note"])
-                    if key in already_flagged:
+                    prefix = finding.get("dedupe_prefix")
+                    if prefix:
+                        # A finding whose wording moves with the data
+                        # (counts, timestamps) identifies itself by a
+                        # stable prefix instead of by its whole note.
+                        match = next(
+                            (f for f in existing_open
+                             if f.entity_type == finding["entity_type"]
+                             and f.entity_id == finding["entity_id"]
+                             and (f.note or "").startswith(prefix)), None)
+                        if match is not None:
+                            # Still open and still true: keep the one
+                            # row, but let it carry today's numbers
+                            # rather than the day it was first raised.
+                            if match.note != finding["note"]:
+                                match.note = finding["note"]
+                                session.add(match)
+                                refreshed += 1
+                            continue
+                    elif (finding["entity_type"], finding["entity_id"], finding["note"]) in already_flagged:
                         continue
                     session.add(FlaggedRecord(
                         tenant_id=tenant_id, entity_type=finding["entity_type"], entity_id=finding["entity_id"],
                         note=finding["note"], flagged_by=CONSISTENCY_MONITOR_FLAGGED_BY,
                     ))
                     new_count += 1
-                if new_count:
+                if new_count or refreshed:
                     session.commit()
-                print(f"Consistency monitor ({tenant_id}): {len(findings)} issue(s) found, {new_count} newly flagged ({len(findings) - new_count} already open)")
+                print(f"Consistency monitor ({tenant_id}): {len(findings)} issue(s) found, "
+                      f"{new_count} newly flagged, {refreshed} refreshed "
+                      f"({len(findings) - new_count} already open)")
             except Exception as e:
                 # Same "background job failing must never crash the
                 # scheduler thread or take the web service down with
