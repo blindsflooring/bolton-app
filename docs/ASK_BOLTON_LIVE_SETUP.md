@@ -85,9 +85,37 @@ and the role reads whatever it likes.
 A **new** variable on the backend service. Never reuse `DATABASE_URL`, and never
 reuse the `ask_bolton` credentials:
 
+**Copy the host from the Supabase dashboard. Do not type it from this page.**
+Connect → Session pooler, and take the host exactly as shown.
+
 ```
-ASK_BOLTON_LIVE_DATABASE_URL=postgresql://ask_bolton_live.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
+ASK_BOLTON_LIVE_DATABASE_URL=postgresql://ask_bolton_live.<project-ref>:<password>@<HOST-COPIED-FROM-THE-DASHBOARD>:6543/postgres
 ```
+
+The host looks like `aws-1-eu-west-1.pooler.supabase.com`. **The number is a
+pooler cluster index, not part of the region name** - a region can have more than
+one, `aws-0` is not a safe default, and it cannot be worked out from the region.
+Composing it instead of copying it produces `FATAL: Tenant or user not found`,
+which reads like a credentials problem and is not one. This is documented:
+https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found
+
+For **this** project the pooler host is confirmed to be:
+
+```
+aws-1-eu-west-1.pooler.supabase.com
+```
+
+Verified by connecting to both clusters with a deliberately wrong password:
+`aws-1` answers `password authentication failed` for `ask_bolton` and
+`ask_bolton_live` alike, which means the host, the tenant and the role all
+resolve. `aws-0` answers `Tenant or user not found` for **both** roles - including
+`ask_bolton`, which works in production - which is what proves the host was the
+fault and the role was never the problem. Supavisor resolves the tenant before it
+checks the password, so the error class alone distinguishes the two.
+
+The quickest way to get it right is to copy the working `ASK_BOLTON_DATABASE_URL`
+and change only the role name and the password - the host and project ref in it
+are already correct.
 
 **The username is the part that goes wrong.** On the Supabase pooler it must be
 `ask_bolton_live.<project-ref>` — the role name, then a dot, then the project
@@ -132,6 +160,21 @@ step 3 did not land, and questions will be answered "there is nothing recorded"
 rather than failing.
 
 ---
+
+
+## If you get `Tenant or user not found`
+
+It is the **host or the username**, not the password. In order of likelihood:
+
+1. **The host was composed rather than copied.** `aws-0-<region>` is a guess and
+   usually wrong. Copy it from the Connect dialog.
+2. **The username is missing the project ref.** It must be
+   `ask_bolton_live.<project-ref>`, not `ask_bolton_live`.
+3. **The password contains a URL delimiter.** `@ : / ? # %` split the URL in the
+   wrong place. Regenerate with letters, digits, `-` and `_` only.
+
+A password that is simply wrong gives an authentication error, not this one.
+
 
 ## What this does not do
 

@@ -319,6 +319,73 @@ restart. Suite H covers a live connection, a URL that parses but points nowhere,
 and the TTL.
 
 
+### `Tenant or user not found` was my own bad instruction
+
+Three rounds were spent on `FATAL: Tenant or user not found` for `ask_bolton_live`,
+working through the wrong variable, then a missing variable, then whether the role
+existed. The role was fine all along: `rolcanlogin` true, `rolsuper` false,
+`rolbypassrls` false, exactly as it should be.
+
+The cause was in `ASK_BOLTON_LIVE_SETUP.md`. It gave the pooler host as a template
+to fill in - `aws-0-<region>.pooler.supabase.com` - and Supabase's own
+troubleshooting page says plainly that this cannot be done: the number is a
+**pooler cluster index, not part of the region name**, a region can have more than
+one, and `aws-0` is not a safe default. The host has to be copied from the Connect
+dialog. Composing it produces exactly this error, which reads like a credentials
+problem and is not one.
+
+The tell was there the whole time and went unread: `ask_bolton` connects through
+the same pooler perfectly well, so custom roles were never the issue. The only
+difference between the working string and the broken one was that one was copied
+and the other was built from my template.
+
+The doc now says to copy the host, explains why, and suggests the safest route -
+take the working `ASK_BOLTON_DATABASE_URL` and change only the role name and
+password, since its host and project ref are already right. It also has a
+troubleshooting section listing the three real causes in order of likelihood, and
+notes that a merely wrong password gives an authentication error rather than this
+one.
+
+
+### Sales and Admin are live, and a date question found two bugs
+
+The connection fix worked. Burgert ran real questions through the live role: screed
+across open jobs (170 bags), a client quote lookup with a working job link, and a
+pending-installations list (19 jobs). All correct, all against live data.
+
+Then *"what was my turnover last year September"* failed with
+`Unrecognised character at position 123: ':'`. Two bugs behind it, one functional
+and one a real bypass.
+
+**There were no date functions in the whitelist at all.** Not `EXTRACT`, not
+`date_trunc`, not `to_char`, and no `::` cast in the tokeniser. A question about a
+month or a year could not be expressed, so the model reached for `EXTRACT(MONTH
+FROM ...)` and `accepted_at::date`, was refused, and the repair attempt reached for
+the same things again. The error named a colon, which made it look like a syntax
+problem in the generated SQL rather than a hole in what the validator would accept.
+
+`::` is now a token in its own right, matched *before* `:param` so a bind parameter
+is still a bind parameter and a lone colon is still refused. It is safe to allow
+because the type name after a cast is a separate identifier and still faces the
+whitelist: `::date` passes, `::regclass` and `::oid` do not.
+
+**And chasing that turned up a bypass in `_defined_names()`.** It collects names
+the query introduces - aliases and CTE names - which are legal to use later. The
+CTE rule fired on *any* identifier followed by `AS`, so parking a word in front of
+`AS` registered it as defined and it sailed through the whitelist on that alone.
+`'quote'::regclass AS c` passed. So did `current_user AS c` and `session_user AS c`.
+
+No data could be read that way - the table and column checks run first, and
+`SELECT 1 AS financialstatement` was already refused - but it leaked the database
+role and the schema, and more to the point it broke the property this validator
+exists for: that an unknown word fails closed. A CTE name is now only a CTE name
+when a parenthesis follows the `AS`, and a keyword after a table name is the next
+clause rather than an alias.
+
+Red team **58 -> 64 refused**. The six new ones are the alias bypass in four
+flavours, a lone colon, and `::oid`.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

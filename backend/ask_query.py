@@ -762,6 +762,18 @@ SQL_FUNCTIONS = {
     # Type names, which appear as bare identifiers inside CAST(...)
     "int", "integer", "float", "real", "numeric", "decimal", "text",
     "varchar", "boolean", "date", "bigint", "double", "precision",
+    "timestamp",
+    # Dates. There were none of these at all, which is why "what was my
+    # turnover last September" failed: the model reached for EXTRACT and
+    # a ::date cast, both of which the validator refused, and the repair
+    # attempt reached for them again. A question about a month or a year
+    # cannot be answered without them.
+    "extract", "date_part", "date_trunc", "to_char", "to_date",
+    "strftime", "datetime", "julianday", "now", "current_date",
+    "current_timestamp", "interval", "epoch", "age",
+    # EXTRACT(MONTH FROM x) - the field name is a bare identifier
+    "year", "month", "day", "quarter", "week", "doy", "dow",
+    "hour", "minute", "second",
 }
 # A second net under the whitelist. Everything here would already be
 # refused as an unknown identifier; listed anyway so that if the
@@ -781,6 +793,14 @@ FORBIDDEN = {
 
 _TOKEN_RE = re.compile(r"""
     (?P<string>'(?:[^']|'')*')     # single-quoted literal, '' escape
+  | (?P<cast>::)                   # Postgres cast. MUST precede <param>,
+                                   # so `::date` is a cast and `:tenant_id`
+                                   # is still a bind parameter. A LONE colon
+                                   # stays unrecognised, which is the point.
+                                   # Safe because the type name after it is
+                                   # a separate ident and still faces the
+                                   # whitelist: `::date` passes because date
+                                   # is a known type, `::regclass` does not.
   | (?P<param>:[A-Za-z_][A-Za-z0-9_]*)
   | (?P<number>\b\d+(?:\.\d+)?\b)
   | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
@@ -828,11 +848,19 @@ def _defined_names(tokens, table_names):
         # `... AS x` - a column alias or the name of a CTE's output
         if prev_ident == "as":
             names.add(val.lower())
-        # `x AS (...)` - the name of a common table expression
+        # `WITH x AS (...)` - the name of a common table expression.
+        # The parenthesis is REQUIRED. Without it, any word sitting in
+        # front of AS became a defined name and sailed through the
+        # whitelist on that alone: `'quote'::regclass AS c` and
+        # `current_user AS c` both passed, which is a bypass of the one
+        # property this function exists to protect.
         if next_ident == "as":
-            names.add(val.lower())
-        # `historicalyeartotal h` - a table alias with AS left out
-        if prev_ident in table_names:
+            after = tokens[i + 2] if i + 2 < len(tokens) else None
+            if after and after[0] == "op" and "(" in after[1]:
+                names.add(val.lower())
+        # `historicalyeartotal h` - a table alias with AS left out. A
+        # keyword in that position is the next clause, not an alias.
+        if prev_ident in table_names and val.lower() not in SQL_KEYWORDS:
             names.add(val.lower())
     return names
 

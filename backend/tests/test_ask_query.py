@@ -157,6 +157,25 @@ RED_TEAM = [
      "SELECT md5(client_name) FROM quote WHERE tenant_id = :tenant_id"),
     ("unknown: a table nobody may see", "owner", 3,
      "SELECT password_hash FROM app_user WHERE tenant_id = :tenant_id"),
+    # --- A WORD IN FRONT OF `AS` IS NOT A PASS -----------------------
+    # _defined_names() collects names the query introduces, which are
+    # legal to use later. The CTE rule used to fire on ANY identifier
+    # followed by AS, so parking a word in front of AS registered it as
+    # defined and it sailed through the whitelist on that alone. A CTE
+    # name is now only a CTE name when a parenthesis follows the AS.
+    ("ALIAS: regclass probe", "owner", 1,
+     "SELECT 'quote'::regclass AS c FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
+    ("ALIAS: current_user", "owner", 1,
+     "SELECT current_user AS c FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
+    ("ALIAS: session_user", "owner", 1,
+     "SELECT session_user AS c FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
+    ("ALIAS: current_database", "owner", 1,
+     "SELECT current_database AS c FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
+    ("CAST: a lone colon is still refused", "owner", 1,
+     "SELECT total_sales FROM historicalyeartotal WHERE tenant_id = :tenant_id AND 1 : 1"),
+    ("CAST: oid is still not a type you may name", "owner", 1,
+     "SELECT 1::oid AS c FROM historicalyeartotal WHERE tenant_id = :tenant_id"),
+
     # --- MONEY IS READ, NEVER WORKED OUT -----------------------------
     # The quote total, the balance, the VAT and the margin are computed by
     # _quote_totals() the moment Bolton draws the screen. They are not
@@ -230,6 +249,23 @@ LEGIT = [
      "SELECT q.job_number, p.amount FROM quote q JOIN quotepayment p ON p.quote_id = q.id "
      "WHERE q.tenant_id = :tenant_id AND p.tenant_id = :tenant_id "
      "AND q.sales_owner = :sales_owner"),
+    # Dates. There were no date functions in the whitelist at all, so
+    # "what was my turnover last September" was refused rather than
+    # answered - the model reached for EXTRACT and a ::date cast, and the
+    # repair attempt reached for them again.
+    ("dates: EXTRACT a month", "admin", 1,
+     "SELECT EXTRACT(MONTH FROM q.accepted_at) AS m, COUNT(*) AS n FROM quote q "
+     "WHERE q.tenant_id = :tenant_id GROUP BY 1"),
+    ("dates: a ::date cast", "admin", 1,
+     "SELECT job_number FROM quote WHERE tenant_id = :tenant_id "
+     "AND accepted_at::date >= '2025-09-01'"),
+    ("dates: date_trunc", "admin", 1,
+     "SELECT date_trunc('month', accepted_at) AS m FROM quote WHERE tenant_id = :tenant_id"),
+    ("dates: to_char", "admin", 1,
+     "SELECT to_char(accepted_at, 'YYYY-MM') AS m FROM quote WHERE tenant_id = :tenant_id"),
+    ("a real CTE still works", "owner", 1,
+     "WITH m AS (SELECT total_sales AS t FROM historicalmonthtotal WHERE tenant_id = :tenant_id) "
+     "SELECT SUM(t) AS s FROM m"),
     ("money: summing real receipts is fine - they arrived", "admin", 1,
      "SELECT q.id AS quote_id, q.job_number, SUM(p.amount) AS paid FROM quote q "
      "JOIN quotepayment p ON p.quote_id = q.id WHERE q.tenant_id = :tenant_id "
