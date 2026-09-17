@@ -299,6 +299,26 @@ connection string are not Claude Code's to handle. The self-check proves the
 result from the outside, which is the right side of that line to verify from.
 
 
+### "Ready" now means the connection works
+
+The screen said `database_ready: true` while every question was failing with
+*"tenant/user ask_bolton_live not found"*. The box stayed enabled, looked healthy,
+and only broke once somebody typed a question.
+
+The cause is that a SQLAlchemy engine is lazy. `create_engine()` succeeds happily
+on a URL naming a role the database has never heard of, so `readonly_engine()`
+returning no problem meant "the string parsed", not "this works" - and the screen
+was showing the first as if it were the second. Same fault as the self-check had:
+a green light standing in front of a broken thing.
+
+`connection_problem(role)` now actually opens the connection and runs `SELECT 1`.
+Cached for 30 seconds, because the screen asks on every page load and a round trip
+to Supabase each time is not worth paying. Failures are cached on the same short
+clock as successes, so a corrected variable heals on its own rather than needing a
+restart. Suite H covers a live connection, a URL that parses but points nowhere,
+and the TTL.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

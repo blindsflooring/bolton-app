@@ -77,6 +77,7 @@ says so rather than approximating.
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -569,6 +570,44 @@ def _app_count(sql):
                 trans.rollback()
     except Exception:
         return None
+
+
+_CONN_PROBE = {}
+_CONN_PROBE_TTL = 30.0
+
+
+def connection_problem(role, ttl=None):
+    """Whether the read-only connection actually WORKS, or None if it does.
+
+    Not the same question as whether it is configured, which is what the
+    screen used to ask. A SQLAlchemy engine is lazy: create_engine()
+    happily succeeds on a URL pointing at a role the database has never
+    heard of, so a dead connection reported itself as "ready", the Ask
+    Bolton box stayed enabled, and the failure only surfaced once
+    somebody typed a question. A green light in front of a broken thing,
+    which is the same fault the self-check had.
+
+    Cached for a few seconds, because the screen asks on every load and a
+    round trip to Supabase per page is not worth paying. Failures are
+    cached on the same short clock as successes, so a fixed connection
+    heals on its own rather than needing a restart.
+    """
+    engine, problem = readonly_engine(role)
+    if problem:
+        return problem
+    now = time.time()
+    hit = _CONN_PROBE.get(role)
+    if hit and (now - hit[0]) < (_CONN_PROBE_TTL if ttl is None else ttl):
+        return hit[1]
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        result = None
+    except Exception as e:
+        result = ("Ask Bolton cannot reach its read-only database. %s"
+                  % str(e).split(chr(10))[0][:220])
+    _CONN_PROBE[role] = (now, result)
+    return result
 
 
 def self_check(role="owner", phase=None):
