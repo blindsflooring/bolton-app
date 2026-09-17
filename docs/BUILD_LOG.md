@@ -319,6 +319,34 @@ restart. Suite H covers a live connection, a URL that parses but points nowhere,
 and the TTL.
 
 
+### `Tenant or user not found` was my own bad instruction
+
+Three rounds were spent on `FATAL: Tenant or user not found` for `ask_bolton_live`,
+working through the wrong variable, then a missing variable, then whether the role
+existed. The role was fine all along: `rolcanlogin` true, `rolsuper` false,
+`rolbypassrls` false, exactly as it should be.
+
+The cause was in `ASK_BOLTON_LIVE_SETUP.md`. It gave the pooler host as a template
+to fill in - `aws-0-<region>.pooler.supabase.com` - and Supabase's own
+troubleshooting page says plainly that this cannot be done: the number is a
+**pooler cluster index, not part of the region name**, a region can have more than
+one, and `aws-0` is not a safe default. The host has to be copied from the Connect
+dialog. Composing it produces exactly this error, which reads like a credentials
+problem and is not one.
+
+The tell was there the whole time and went unread: `ask_bolton` connects through
+the same pooler perfectly well, so custom roles were never the issue. The only
+difference between the working string and the broken one was that one was copied
+and the other was built from my template.
+
+The doc now says to copy the host, explains why, and suggests the safest route -
+take the working `ASK_BOLTON_DATABASE_URL` and change only the role name and
+password, since its host and project ref are already right. It also has a
+troubleshooting section listing the three real causes in order of likelihood, and
+notes that a merely wrong password gives an authentication error rather than this
+one.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
