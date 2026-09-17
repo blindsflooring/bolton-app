@@ -51,6 +51,28 @@ def _get_client():
     return None
 
 
+def credentials_configured() -> bool:
+    """Whether a Dropbox credential exists at all - the same check
+    _get_client() makes, without building a client or touching the
+    network.
+
+    Exists because the consistency monitor was ASSERTING this rather
+    than asking. It printed "no Dropbox credential configured" on the
+    strength of a pending count alone, which sent four days of hunting
+    through Render environment variables while the credentials were
+    fine and uploads were landing every night. A pending row means "not
+    uploaded yet"; it has never meant "no credential".
+
+    Note what this does NOT claim: a credential that exists can still be
+    expired or revoked. That only shows up when an upload is actually
+    attempted, and it surfaces as a failed row with its own reason.
+    """
+    if os.environ.get("DROPBOX_REFRESH_TOKEN") and os.environ.get("DROPBOX_APP_KEY") \
+            and os.environ.get("DROPBOX_APP_SECRET"):
+        return True
+    return bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
+
+
 def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
     """Returns {"ok": True, "path": ..., "file_id": ...} on a genuine,
     confirmed upload, or {"ok": False, "reason": ...} on absolutely any
