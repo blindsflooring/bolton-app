@@ -597,15 +597,16 @@ function R(n) { return 'R' + (n || 0).toLocaleString('en-ZA', {minimumFractionDi
 function dateOrDash(d) { return d ? new Date(d).toLocaleDateString('en-ZA') : '—'; }
 
 // The date HERE, on this device, as a plain YYYY-MM-DD (found and fixed
-// Sept 2026 while working on the Home panel).
+// Sept 2026 while working on what was then the Home panel; that panel is
+// gone, this is not - it is used by the calendar, to-dos, HR and leads).
 //
 // new Date().toISOString().slice(0,10) is the obvious way to write this
 // and it is wrong for this business. toISOString() is UTC, and SAST is
 // UTC+2, so between midnight and 02:00 local the UTC date is still
 // YESTERDAY. Reproduced, not theorised: at 00:18 on 13 Sept it returned
-// 2026-09-12, and a to-do due that day was therefore filtered off the
-// "My Leads & To-Dos Today" panel entirely -- the one screen whose whole
-// job is telling you what is due today.
+// 2026-09-12, and a to-do due that day was therefore filtered out of a
+// "due today" list entirely -- by the one comparison whose whole job is
+// deciding what counts as today.
 //
 // It only misfires in a two-hour window, which is exactly why it had
 // survived: nobody is testing at 00:30, but someone finishing up late,

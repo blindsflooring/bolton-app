@@ -2001,20 +2001,14 @@ function renderLandingTiles(el) {
       <p>Pick where you're working today.</p>
     </div>
     ${askBoltonHtml()}
-    <!-- Home in one view (confirmed Sept 2026, Burgert: "I need the my
-    leads and to dos, possibly be on the left of the page. I dont want
-    to be scrolling hardly anywhere on this system. Scrolling breaks
-    work flow and breaks up your data").
-    My Leads & To-Dos used to sit ABOVE the tile grid, so a busy day
-    pushed every tile below the fold — the more work you had, the less
-    of the app you could see. Side by side instead: the personal list
-    keeps its own column on the left and the tiles keep theirs, so
-    neither can push the other off screen no matter how long the list
-    gets. #myLeadsToday empties itself when nothing is due
-    (loadMyLeadsToday()), and .home-side:empty then collapses the
-    column entirely so a quiet day gives the tiles the full width. -->
+    <!-- My Leads & To-Dos Today was removed from Home (Sept 2026,
+    Burgert: confirmed unused in practice, cluttering the screen for no
+    benefit). Leads and To-Dos are untouched and still reached by their
+    own tiles - this removed the Home-screen surface only.
+    .home-layout / .home-main are kept: they carry Home's own tile
+    sizing (.home-main .tile-grid, styles.css), which is not the same as
+    the tile grid on other screens. -->
     <div class="home-layout">
-      <div id="myLeadsToday" class="home-side"></div>
       <div class="home-main">
         <div class="tile-grid">
           ${visibleLandingTiles().map(t => `
@@ -2031,103 +2025,9 @@ function renderLandingTiles(el) {
     </div>
   `;
   loadAskBoltonScope();
-  loadMyLeadsToday();
-  // Async, after the tiles are already on screen — same reasoning as
-  // loadMyLeadsToday() above: Home must never wait on a health check.
+  // Async, after the tiles are already on screen: Home must never wait
+  // on a health check.
   renderSchemaAlert();
-}
-
-// Assigned Leads, Stage 1 (confirmed Sept 2026) — Burgert's own real
-// gap: "nothing pushes anyone to actually act on one." Reuses the
-// EXACT same ageing signal that already existed (_lead_next_action(),
-// main.py — a new lead, or one gone quiet for LEAD_STALE_DAYS) — this
-// is only about surfacing it somewhere personal, per the proposal's
-// own confirmed scope ("surface the existing signal personally," not
-// a new mechanism). currentUser.username (never previewRole-swapped —
-// see its own comment, shared.js) is deliberately who's actually
-// sitting at this device, not whichever role an Owner is previewing
-// as — a personal task list has to mean the real person, always.
-// Loaded async, after the tile grid already rendered, same "don't
-// block Home on this" pattern as every other lazy-loaded section in
-// this app (loadDocumentPreview, etc.) — a slow/failed fetch here must
-// never delay or break the one screen every single login lands on.
-// Assigned Leads / To-Dos, Stage 2 (confirmed Sept 2026) — "a
-// personalized 'today' view per person... assigned leads and to-dos
-// for today, combined in one place — not something they have to hunt
-// for across separate screens." Leads (their own existing ageing
-// signal) and open To-Dos due today-or-earlier (or with no due date at
-// all — an undated task still belongs on a personal list, just never
-// flagged overdue) fetched together, rendered as one combined list.
-async function loadMyLeadsToday() {
-  const container = document.getElementById('myLeadsToday');
-  if (!container || !currentUser?.username) return;
-  try {
-    const [leadsRes, todosRes] = await Promise.all([
-      fetch(`${API}/leads?assigned_to=${encodeURIComponent(currentUser.username)}`),
-      fetch(`${API}/todos?assigned_to=${encodeURIComponent(currentUser.username)}&done=false`),
-    ]);
-    const leads = leadsRes.ok ? await leadsRes.json() : [];
-    const todos = todosRes.ok ? await todosRes.json() : [];
-    const needsAction = leads.filter(l => l.attention_priority);
-    const todayStr = todayLocalISO();   // NOT toISOString() -- see todayLocalISO(), shared.js
-    const dueTodos = todos.filter(t => !t.due_date || t.due_date <= todayStr);
-    // Cleared, not just skipped (fixed Sept 2026): this function is now
-    // re-run after closing a lead from this very card
-    // (refreshAfterLeadChange(), leads.js), so an early `return` on an
-    // empty result would leave the last-closed lead sitting on screen
-    // looking like it hadn't worked.
-    if (!needsAction.length && !dueTodos.length) { container.innerHTML = ''; return; }
-    // Link inline on the feed, Lost deliberately NOT (confirmed
-    // Sept 2026). Both were inline here originally, on Burgert's own
-    // earlier instruction ("yes add the link and lost actions inline
-    // on the home feed") -- reversed by him after living with it: a
-    // destructive, hard-to-undo action sitting alongside routine ones,
-    // on a panel that reappears on every single login, is an
-    // accidental misclick waiting to happen.
-    //
-    // A confirm() in the same spot was explicitly rejected as the fix,
-    // and rightly: this panel is worked at speed by muscle memory, and
-    // a dialog that always appears in the same place while you are
-    // clicking fast gets dismissed by the same reflex that opened it.
-    // Removing the click surface is the fix; a prompt is a speed bump.
-    // Lost still lives on the lead's own detail screen (Mark Lost /
-    // No Result, leads.js) and on the Leads list row -- both places
-    // you navigate to on purpose, which is the entire point.
-    //
-    // What is left is forward-moving only: Contact and Link to Quote.
-    // Nothing on this panel can now lose you a lead.
-    //
-    // stopPropagation on each, since the row itself opens the lead.
-    // The quote picker renders into this row's OWN container --
-    // several leads show here at once, so one shared picker div would
-    // collide.
-    //
-    // .attn-actions groups the buttons into one fixed row rather than
-    // letting them wrap in among the text (see .home-side-card
-    // .attention-item, styles.css): buttons that move depending on how
-    // long a client's name is are the other half of the same problem.
-    const leadItems = needsAction.map(l => `
-      <div class="attention-item priority-${l.attention_priority}" onclick="openLeadDetailScreen(${l.id})">
-        <span class="attn-flag">${l.attention_priority === 'critical' ? '🔴' : '🟡'} ${l.attention_label}</span>
-        <span class="attn-detail" title="${l.name}${l.contact ? ' — ' + l.contact : ''}">${l.name}${l.contact ? ' · ' + l.contact : ''}</span>
-        <div class="attn-actions">
-          ${leadNextActionButton(l)}
-          <button onclick="event.stopPropagation(); openLinkQuotePicker(${l.id}, 'homeLeadPicker${l.id}')" style="font-size:11px; padding:2px 6px;">Link to Quote</button>
-        </div>
-      </div>
-      <div id="homeLeadPicker${l.id}" onclick="event.stopPropagation();"></div>`).join('');
-    const todoItems = dueTodos.map(t => `
-      <div class="attention-item ${t.due_date && t.due_date < todayStr ? 'priority-critical' : 'priority-notice'}" onclick="landingView='todos'; renderLanding();">
-        <span class="attn-flag">${t.due_date && t.due_date < todayStr ? '🔴 Overdue' : '🟡 To-Do'}</span>
-        <span class="attn-detail">${t.title}</span>
-        <div class="attn-actions"></div>
-      </div>`).join('');
-    container.innerHTML = `
-      <div class="card home-side-card" style="border-color:var(--coral);">
-        <h2 style="margin-top:0;">My Leads &amp; To-Dos Today (${needsAction.length + dueTodos.length})</h2>
-        <div class="attention-list">${leadItems}${todoItems}</div>
-      </div>`;
-  } catch (e) { /* best-effort — Home must never break because this one fetch failed */ }
 }
 
 function onTileClick(tileId) {
