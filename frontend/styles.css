@@ -494,68 +494,18 @@
   /* Home in one view (confirmed Sept 2026) — "I dont want to be
      scrolling hardly anywhere on this system... i need to be able to
      see all my data with one view".
-     Flexbox rather than grid deliberately: when the personal list has
-     nothing due it removes itself (.home-side:empty below), and flex
-     lets the tiles simply reclaim the whole row. A grid would keep the
-     empty column's track reserved and leave the tiles squeezed into a
-     340px lane with dead space beside them. */
+     This was two columns: a personal My Leads & To-Dos list beside the
+     tiles. The list was removed in Sept 2026 as unused, and the tiles
+     now have the row to themselves. The wrapper stays because Home's
+     own tile sizing hangs off .home-main below, and those are not the
+     same tiles as every other screen's. */
   .home-layout { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-  .home-side { flex: 0 0 340px; min-width: 0; position: sticky; top: 12px; display: flex; max-height: calc(100vh - 285px); }
-  .home-side:empty { display: none; }
   .home-main { flex: 1 1 460px; min-width: 0; }
-  /* The list scrolls inside its own card rather than growing the page:
-     twenty overdue leads must not turn Home into a scrolling document,
-     which is the exact failure this whole change is about.
-     The COLUMN is what's bounded, and the card fills it — deliberately
-     not a magic max-height on the list itself, which would have to be
-     re-guessed every time the card's heading or padding changed.
-     min-height:0 on both is what actually lets a flex child shrink
-     below its content and scroll; without it the list just grows and
-     pushes the page down again, which is the failure being fixed. */
-  .home-side-card { display: flex; flex-direction: column; min-height: 0; width: 100%; margin-bottom: 0; }
-  .home-side-card .attention-list { overflow-y: auto; min-height: 0; }
-  /* One fixed shape for every row in this panel (confirmed Sept 2026:
-     "card height/button position should be consistent across all cards
-     in this panel regardless of content length, since inconsistent
-     layout is part of what causes mis-taps in fast use").
-
-     What was here before was flex-wrap:wrap -- the fix for a cramped
-     row in a 340px column, since the @media (max-width:700px) stacking
-     rule further down keys off the VIEWPORT and so never fires for a
-     narrow column on a wide screen. It did stop the overlap, but it
-     left the geometry content-dependent: a long client name wrapped and
-     pushed the buttons somewhere new in every card, so the same button
-     was never twice in the same place. Fine to look at, bad to work at
-     speed -- which is the actual complaint.
-
-     An explicit three-part column instead: flag, name, actions. Every
-     row the same height, every button at the same offset, whatever is
-     in it. */
-  .home-side-card .attention-item {
-    flex-direction: column; align-items: stretch; justify-content: flex-start;
-    flex-wrap: nowrap; gap: 2px; min-height: 76px;
-  }
-  .home-side-card .attention-item .attn-flag { flex: 0 0 auto; }
-  /* One line, always. The name is truncated rather than allowed to
-     wrap, because a second line is precisely what was moving the
-     buttons. Nothing is lost: the full name is in the title attribute
-     and the row itself opens the lead. */
-  .home-side-card .attention-item .attn-detail {
-    flex: 0 0 auto; margin-left: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  /* margin-top:auto pins the actions to the bottom of the card, so they
-     sit at the same height whether the text above is one short line or
-     a truncated one. min-height holds a to-do row -- which has no
-     buttons at all -- level with a lead's, so the list keeps one
-     rhythm and your thumb can trust the spacing. */
-  .home-side-card .attn-actions {
-    display: flex; gap: 6px; flex-wrap: wrap;
-    margin-top: auto; padding-top: 4px; min-height: 24px;
-  }
-  /* Tighter tiles on Home only (not .tile everywhere) — with a column
-     taken by the personal list, this is what keeps the whole tile grid
-     visible without scrolling on a normal laptop screen. */
+  /* Tighter tiles on Home only (not .tile everywhere) — what keeps the
+     whole tile grid visible without scrolling on a normal laptop
+     screen. Kept after the personal list was removed: the tiles now
+     have more room, and the point was never the column, it was not
+     having to scroll Home. */
   .home-welcome { margin-bottom: 14px; }
   .home-main .tile-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
   .home-main .tile { min-height: 68px; padding: 12px 14px; }
@@ -564,8 +514,6 @@
   /* Stacked below the two-column breakpoint — on a phone the personal
      list belongs first, exactly where it was before this change. */
   @media (max-width: 900px) {
-    .home-side { flex: 1 1 100%; position: static; max-height: none; display: block; }
-    .home-side-card .attention-list { overflow-y: visible; }
   }
   .tile {
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;

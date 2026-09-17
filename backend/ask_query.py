@@ -861,6 +861,46 @@ _TOKEN_RE = re.compile(r"""
 """, re.VERBOSE)
 
 
+# What an unrecognised character usually MEANS. The character itself is
+# almost never the story - it is the visible edge of a construct this tool
+# does not accept - and "position 123: ':'" sent a real debugging session
+# looking at the generated SQL when the fault was the whitelist. These
+# messages go straight into the repair prompt, so each one says what to
+# write instead.
+_CHAR_HELP = {
+    ":": "A single colon is not valid here. The only bind parameters are "
+         ":tenant_id and :sales_owner, and a type cast takes TWO colons, "
+         "like `accepted_at::date`.",
+    '"': "Double-quoted identifiers are not supported - use the plain name, "
+         "`job_number` rather than \"job_number\".",
+    "`": "Backticks are not supported - use the plain column name.",
+    "$": "Dollar-quoting and positional parameters like $1 are not "
+         "supported. The bind parameters are :tenant_id and :sales_owner.",
+    "~": "Regular-expression operators are not available. Use LIKE or ILIKE.",
+    "&": "Bitwise operators are not available.",
+    "^": "That operator is not available. For exponentiation use power().",
+    "@": "That operator is not available.",
+    "#": "That operator is not available.",
+    "?": "Placeholders like ? are not supported. Use :tenant_id.",
+    "{": "Braces are not valid in this SQL.",
+    "}": "Braces are not valid in this SQL.",
+    chr(92): "Backslash escapes are not supported. To put a quote inside a "
+             "string literal, double it: 'it''s'.",
+}
+
+
+def _unrecognised(sql, pos):
+    """A refusal the model can act on, naming the construct and showing
+    where it is, rather than an offset into a string it cannot count."""
+    ch = sql[pos]
+    near = sql[max(0, pos - 24):pos + 24].strip()
+    help_text = _CHAR_HELP.get(ch)
+    if help_text is None:
+        help_text = ("That character is not part of the SQL this tool accepts. "
+                     "Rewrite the query using plain SELECT syntax.")
+    return SqlRefused("%s Near: ...%s..." % (help_text, near))
+
+
 class SqlRefused(Exception):
     """Raised with a message written for the MODEL to correct, not for
     the end user - it names the offending token so a retry can fix it."""
@@ -871,7 +911,7 @@ def _tokenize(sql):
     while pos < len(sql):
         m = _TOKEN_RE.match(sql, pos)
         if not m:
-            raise SqlRefused("Unrecognised character at position %d: %r" % (pos, sql[pos]))
+            raise _unrecognised(sql, pos)
         pos = m.end()
         if m.lastgroup != "ws":
             out.append((m.lastgroup, m.group()))

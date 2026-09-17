@@ -29,6 +29,7 @@ writes that SQL — that needs an API key and a live call, and is called
 out as unverified rather than implied.
 """
 import os
+import re
 import sys
 
 SP = os.path.dirname(os.path.abspath(__file__))
@@ -646,6 +647,49 @@ print("  and a failure is cached on a short clock, so a fix heals itself:")
 print("    TTL = %ss - no restart needed once the variable is corrected" % aq._CONN_PROBE_TTL)
 check(aq._CONN_PROBE_TTL <= 60, "a stale failure would stick around too long")
 
+banner("I. A REFUSAL THE MODEL CAN ACT ON")
+
+# "Unrecognised character at position 123: ':'" was technically accurate
+# and sent a real debugging session to look at the generated SQL, when the
+# fault was that the whitelist had no date functions in it. The character
+# is the visible edge of a construct, not the story. These messages go
+# straight into the repair prompt, so each one has to say what to write
+# instead.
+MSG_CASES = [
+    (":", "SELECT total_sales FROM historicalyeartotal "
+          "WHERE tenant_id = :tenant_id AND 1 : 1", "two colons"),
+    ('"', 'SELECT "total_sales" FROM historicalyeartotal '
+          "WHERE tenant_id = :tenant_id", "plain name"),
+    ("$", "SELECT total_sales FROM historicalyeartotal WHERE tenant_id = $1",
+     ":tenant_id"),
+    ("?", "SELECT total_sales FROM historicalyeartotal WHERE tenant_id = ?",
+     ":tenant_id"),
+    ("~", "SELECT total_sales FROM historicalyeartotal "
+          "WHERE tenant_id = :tenant_id AND notes ~ 'x'", "LIKE"),
+]
+for ch, sql, must_say in MSG_CASES:
+    try:
+        aq.validate_sql(sql, "owner", 1)
+        msg = ""
+        check(False, "%r was allowed" % ch)
+    except aq.SqlRefused as e:
+        msg = str(e)
+    print("  %r -> %s" % (ch, msg[:104]))
+    check(must_say.lower() in msg.lower(),
+          "the %r refusal does not tell the model to use %s" % (ch, must_say))
+    check(re.search(r"at position\s+\d", msg) is None,
+          "the %r refusal still reports a character offset" % ch)
+    check("Near:" in msg, "the %r refusal does not show where it is" % ch)
+
+print()
+print("  an unknown character still refuses, with the generic advice:")
+try:
+    aq.validate_sql("SELECT total_sales FROM historicalyeartotal "
+                    "WHERE tenant_id = :tenant_id AND a " + chr(167) + " b", "owner", 1)
+    check(False, "an unknown character was allowed")
+except aq.SqlRefused as e:
+    print("    %s" % str(e)[:96])
+    check("plain SELECT syntax" in str(e), "no fallback advice given")
 banner("J. TWO BUSINESS TERMS")
 
 # Vocabulary, not new data: both terms map onto columns that already
@@ -711,7 +755,6 @@ _def_line = [ln for ln in src.split(chr(10)) if ln.startswith("def get_job_card"
 check("request: Request" in _def_line,
       "get_job_card() does not take the request it needs to scope by person")
 print("    get_job_card() enforces scoped_username() and 404s, same as get_quote()")
-
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

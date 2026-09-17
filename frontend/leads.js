@@ -476,22 +476,21 @@ async function renderLeadDetail(el) {
 // action row rather than as a prompt(): unlike an outcome note, this is
 // a CHOICE between real records, and typing an id from memory is exactly
 // the free-text guessing the brief rules out.
-// Lead actions inline on the home feed (confirmed Sept 2026, Burgert:
-// "yes add the link and lost actions inline on the home feed"). The
-// same two actions now fire from three different screens, so where to
+// The same two actions fire from more than one screen, so where to
 // redraw afterwards is decided here, once, rather than each call site
-// hardcoding a re-render that's wrong on the other two.
+// hardcoding a re-render that is wrong on the other. The third branch
+// used to refresh the Home panel; Home no longer shows one, and there
+// is nothing to redraw there now.
 function refreshAfterLeadChange() {
   const el = document.getElementById('landing');
   if (landingView === 'leadDetail') renderLeadDetail(el);
   else if (landingView === 'leads') renderLeads(el);
-  else if (typeof loadMyLeadsToday === 'function') loadMyLeadsToday();   // home feed
 }
 
 // containerId (Sept 2026) — the picker used to render into the lead
-// detail's own fixed #linkQuotePicker div. The home feed shows several
-// leads at once, so each row passes its own container and the pickers
-// can't collide.
+// detail's own fixed #linkQuotePicker div. Kept parameterised: it was
+// needed when several leads rendered at once on Home, and a list screen
+// that wants its own picker per row can still ask for one.
 async function openLinkQuotePicker(leadId, containerId) {
   const box = document.getElementById(containerId || 'linkQuotePicker');
   if (!box) return;
