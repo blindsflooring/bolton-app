@@ -236,6 +236,21 @@ function askBoltonOpenJob(quoteId) {
   openOrderDetailScreen(Number(quoteId));
 }
 
+// A job card is not a file and there is nothing to fetch or attach -
+// it is regenerated from the job's order sheets every time it is opened
+// (openJobCardScreen(), order-index.js). So Ask Bolton never returns a
+// card's CONTENTS; it identifies the job and hands back the way in,
+// which is the same thing the Job Card button on the job screen does.
+//
+// Same permission story as askBoltonOpenJob(): this decides where to
+// navigate and nothing about who may arrive. GET /quotes/{id}/job-card
+// enforces the person scope server-side and 404s on another rep's job,
+// exactly as GET /quotes/{id} does.
+function askBoltonOpenJobCard(quoteId) {
+  if (!quoteId || typeof openJobCardScreen !== 'function') return;
+  openJobCardScreen(Number(quoteId));
+}
+
 function askBoltonCell(key, value, row) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
@@ -243,6 +258,14 @@ function askBoltonCell(key, value, row) {
   // row's own quote_id - never from the job number, which is a label and
   // not a route.
   const jobId = row && (row.quote_id || row.id);
+  // The model is told to select `'Job Card' AS job_card` when the
+  // question is about one, so the column's presence IS the intent.
+  if (jobId && key === 'job_card') {
+    return `<a class="ask-joblink" role="button" tabindex="0"
+               onclick="askBoltonOpenJobCard(${Number(jobId)})"
+               onkeydown="if(event.key===&quot;Enter&quot;)askBoltonOpenJobCard(${Number(jobId)})"
+               >${escapeHtmlAsk(value)}</a>`;
+  }
   if (jobId && (key === 'job_number' || key === 'quote_id' || key === 'client_name')) {
     return `<a class="ask-joblink" role="button" tabindex="0"
                onclick="askBoltonOpenJob(${Number(jobId)})"

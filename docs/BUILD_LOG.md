@@ -386,6 +386,57 @@ Red team **58 -> 64 refused**. The six new ones are the alias bypass in four
 flavours, a lone colon, and `::oid`.
 
 
+### Two business terms, and two wrong premises
+
+The brief asked for two words to be taught, and asked one thing to be confirmed
+first: which table links a job to its uploaded job card documents. The answer is
+none of them, and confirming it changed what got built.
+
+**There is no job card document.** `Document` is HR-only and hangs off
+`employee_id`. `QuotePhoto` does attach to a quote, but holds photos.
+`DocumentArchive` keeps versioned PDFs of Quote, Invoice, OrderSheet and
+OrderIndexSnapshot - there is no JobCard entity type. A job card is generated on
+demand by `GET /quotes/{id}/job-card` from the job's order sheets, and the
+codebase already says so plainly: *"a Job Card is a regenerate-on-demand
+operational aid with no independent existence of its own"* (order-index.js). So
+Ask Bolton is taught that it cannot read a card's contents and must never invent
+them; what it does instead is identify the job and hand back the way in, by
+selecting `'Job Card' AS job_card` alongside `quote.id AS quote_id`. The frontend
+turns that column into a link to the real card, the same screen the Job Card
+button opens.
+
+**And "landed" is not the accepted status.** The brief equated the two. They are
+different, and the difference is silently wrong rather than loudly wrong: a job
+that has moved on to `scheduled` or `completed` was still won, so
+`workflow_status = 'accepted'` drops it from the count. Work that landed is
+`accepted_at IS NOT NULL`, price checks excluded. Flagged rather than quietly
+decided, because it changes the number.
+
+### A job card was readable by any rep
+
+Found while wiring that link, because a link is only as safe as what it points at.
+
+`get_quote()` was hardened in Sept 2026 to enforce `scoped_username()` and return
+404 - not 403 - on another rep's job, so a rep cannot even learn it exists.
+`get_job_card()` never got the same treatment. It took no `request` at all, so
+person scoping was structurally impossible in it, and `get_or_404()` enforces the
+tenant only. Any logged-in rep could read any job's card by id: client name,
+contact, address, installation notes, and the client's and lead's own notes.
+
+No pricing was exposed - a job card carries none by design - so this was
+operational rather than commercial. It was still another rep's client, which is
+exactly what that 404 exists to withhold.
+
+Now scoped identically to `get_quote()`, and suite J asserts it stays that way.
+
+### Vocabulary as a structure, not a paragraph
+
+`VOCABULARY` is a list of (what people say, what it means, which tables it needs),
+and the third element is what keeps it honest: a term is only shown to a role
+whose connection can actually reach the tables behind it. A Sales user is never
+taught a word whose answer lives in a table their GRANT does not cover - the
+vocabulary cannot become a way to learn what is out of reach.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

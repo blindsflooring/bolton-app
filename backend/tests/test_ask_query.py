@@ -646,6 +646,72 @@ print("  and a failure is cached on a short clock, so a fix heals itself:")
 print("    TTL = %ss - no restart needed once the variable is corrected" % aq._CONN_PROBE_TTL)
 check(aq._CONN_PROBE_TTL <= 60, "a stale failure would stick around too long")
 
+banner("J. TWO BUSINESS TERMS")
+
+# Vocabulary, not new data: both terms map onto columns that already
+# exist. The entries are gated on the tables behind them, so a role is
+# never taught a word whose answer lives somewhere its connection holds
+# no privilege on.
+for role in ("owner", "sales", "admin"):
+    p = aq.schema_prompt(role, 1)
+    check("HOW THE BUSINESS SAYS IT" in p, "%s is not taught the vocabulary" % role)
+    check("work that's landed" in p, "%s was not taught 'work that's landed'" % role)
+    check("job card" in p, "%s was not taught 'job card'" % role)
+print("  owner, sales and admin are all taught both terms")
+
+# The distinction that decides whether the number is right. "Work we
+# won" is accepted_at IS NOT NULL, NOT workflow_status = 'accepted' -
+# a job that has since moved to scheduled or completed was still won,
+# and filtering on the status alone silently drops it.
+won = [v for v in aq.VOCABULARY if "work we won" in v[0]][0]
+check("accepted_at IS NOT NULL" in won[1], "'won' is not defined by accepted_at")
+check("NOT `workflow_status = 'accepted'`" in won[1],
+      "'won' does not warn against the status trap")
+check("is_price_check" in won[1], "'won' does not exclude price checks")
+print("  'won' is accepted_at IS NOT NULL, price checks excluded - not the status")
+
+# A job card has no independent existence: generated from the job's
+# order sheets on demand, never stored. So the honest answer is the
+# job and a way in, never invented contents.
+card = [v for v in aq.VOCABULARY if "job card" in v[0]][0]
+check("GENERATED" in card[1], "the job card entry does not say it is generated")
+check("must never invent" in card[1] or "never invent" in card[1],
+      "the job card entry does not forbid inventing its contents")
+check("job_card" in card[1], "the job card entry does not ask for the link column")
+print("  'job card' returns the job and a link, never invented contents")
+
+print()
+print("  the SQL each term leads to is accepted by the validator:")
+VOCAB_SQL = [
+    ("sales: this job's card", "sales",
+     "SELECT q.id AS quote_id, q.job_number, 'Job Card' AS job_card FROM quote q "
+     "WHERE q.tenant_id = :tenant_id AND q.sales_owner = :sales_owner "
+     "AND q.job_number IS NOT NULL"),
+    ("owner: work that landed", "owner",
+     "SELECT q.id AS quote_id, q.job_number, q.accepted_at FROM quote q "
+     "WHERE q.tenant_id = :tenant_id AND q.accepted_at IS NOT NULL "
+     "AND q.is_price_check = false"),
+    ("admin: every job's card", "admin",
+     "SELECT id AS quote_id, job_number, 'Job Card' AS job_card FROM quote "
+     "WHERE tenant_id = :tenant_id AND job_number IS NOT NULL"),
+]
+for name, role, sql in VOCAB_SQL:
+    try:
+        aq.validate_sql(sql, role, 1)
+        print("    ok  %s" % name)
+    except Exception as e:
+        check(False, "%s was refused: %s" % (name, str(e)[:60]))
+
+print()
+print("  and a rep may only open their OWN job's card:")
+src = _inspect.getsource(_main.get_job_card)
+check("scoped_username" in src, "get_job_card() is not person-scoped")
+check("Quote not found" in src, "get_job_card() does not 404 on another rep's job")
+_def_line = [ln for ln in src.split(chr(10)) if ln.startswith("def get_job_card")][0]
+check("request: Request" in _def_line,
+      "get_job_card() does not take the request it needs to scope by person")
+print("    get_job_card() enforces scoped_username() and 404s, same as get_quote()")
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))
