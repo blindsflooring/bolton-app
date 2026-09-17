@@ -386,6 +386,33 @@ Red team **58 -> 64 refused**. The six new ones are the alias bypass in four
 flavours, a lone colon, and `::oid`.
 
 
+### A refusal the model can act on
+
+`Unrecognised character at position 123: ':'` was accurate and useless. It sent a
+real debugging session looking at the generated SQL, when the SQL was fine and the
+fault was that the whitelist had no date functions in it. The character is the
+visible edge of a construct this tool does not accept; it is almost never the
+story.
+
+These messages are not for a person - they go straight into the repair prompt as
+`your_previous_query_was_rejected`, so each one now names the construct, says what
+to write instead, and shows the text around it rather than an offset into a string
+the model cannot count.
+
+| Character | What it now says |
+|---|---|
+| `:` | the bind parameters are `:tenant_id` / `:sales_owner`, a cast takes two colons |
+| `"` | double-quoted identifiers are not supported, use the plain name |
+| `` ` `` | backticks are not supported |
+| `$` | no dollar-quoting or `$1`; use `:tenant_id` |
+| `?` | no `?` placeholders; use `:tenant_id` |
+| `~` | no regex operators; use LIKE or ILIKE |
+| anything else | not part of the accepted SQL, rewrite as plain SELECT |
+
+Suite I asserts each one names its remedy, shows the surrounding text, and no
+longer reports a character offset.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
