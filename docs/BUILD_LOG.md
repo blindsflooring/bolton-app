@@ -347,6 +347,45 @@ notes that a merely wrong password gives an authentication error rather than thi
 one.
 
 
+### Sales and Admin are live, and a date question found two bugs
+
+The connection fix worked. Burgert ran real questions through the live role: screed
+across open jobs (170 bags), a client quote lookup with a working job link, and a
+pending-installations list (19 jobs). All correct, all against live data.
+
+Then *"what was my turnover last year September"* failed with
+`Unrecognised character at position 123: ':'`. Two bugs behind it, one functional
+and one a real bypass.
+
+**There were no date functions in the whitelist at all.** Not `EXTRACT`, not
+`date_trunc`, not `to_char`, and no `::` cast in the tokeniser. A question about a
+month or a year could not be expressed, so the model reached for `EXTRACT(MONTH
+FROM ...)` and `accepted_at::date`, was refused, and the repair attempt reached for
+the same things again. The error named a colon, which made it look like a syntax
+problem in the generated SQL rather than a hole in what the validator would accept.
+
+`::` is now a token in its own right, matched *before* `:param` so a bind parameter
+is still a bind parameter and a lone colon is still refused. It is safe to allow
+because the type name after a cast is a separate identifier and still faces the
+whitelist: `::date` passes, `::regclass` and `::oid` do not.
+
+**And chasing that turned up a bypass in `_defined_names()`.** It collects names
+the query introduces - aliases and CTE names - which are legal to use later. The
+CTE rule fired on *any* identifier followed by `AS`, so parking a word in front of
+`AS` registered it as defined and it sailed through the whitelist on that alone.
+`'quote'::regclass AS c` passed. So did `current_user AS c` and `session_user AS c`.
+
+No data could be read that way - the table and column checks run first, and
+`SELECT 1 AS financialstatement` was already refused - but it leaked the database
+role and the schema, and more to the point it broke the property this validator
+exists for: that an unknown word fails closed. A CTE name is now only a CTE name
+when a parenthesis follows the `AS`, and a keyword after a table name is the next
+clause rather than an alias.
+
+Red team **58 -> 64 refused**. The six new ones are the alias bypass in four
+flavours, a lone colon, and `::oid`.
+
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
