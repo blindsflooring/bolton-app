@@ -16485,7 +16485,7 @@ def _job_card_quote_line_data(session: Session, line: "QuoteLineItem") -> dict:
 
 
 @app.get("/quotes/{quote_id}/job-card")
-def get_job_card(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
+def get_job_card(quote_id: int, request: Request, tenant_id: str = Depends(get_current_tenant)):
     """Job Card Content Spec (confirmed Aug 2026) — a printable,
     installer-facing document: what a team needs on-site to actually do
     the job, without navigating the quoting system and without seeing
@@ -16530,6 +16530,22 @@ def get_job_card(quote_id: int, tenant_id: str = Depends(get_current_tenant)):
     the no-pricing constraint exists for."""
     with Session(engine) as session:
         quote = get_or_404(session, Quote, quote_id, tenant_id, "Quote")
+        # Per-person visibility, same rule and same 404 as get_quote()
+        # above. This was missing: get_or_404 enforces the TENANT only,
+        # and this endpoint took no request at all, so person scoping
+        # was structurally impossible here. A rep could read any job's
+        # card by id - client name, contact, address, installation and
+        # client notes - which is exactly what get_quote()'s 404 exists
+        # to withhold. No pricing was ever on a job card, so this was
+        # operational rather than commercial exposure, but it was still
+        # another rep's client.
+        #
+        # Found while teaching Ask Bolton the term "job card": the
+        # answer needed a link to this endpoint, and a link is only as
+        # safe as what it points at.
+        only_mine = scoped_username(request)
+        if only_mine and quote.sales_owner != only_mine:
+            raise HTTPException(404, "Quote not found")
         sheets = session.exec(select(OrderSheet).where(OrderSheet.quote_id == quote_id, OrderSheet.tenant_id == tenant_id)).all()
         order_sheets_out = []
         for s in sheets:

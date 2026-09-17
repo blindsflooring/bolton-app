@@ -386,6 +386,55 @@ def allowed_tables(role, phase=None):
     return [t for t in CATALOGUE if t["phase"] <= phase and role in t["roles"]]
 
 
+# How the business says it, next to how the database stores it. Kept
+# here rather than in the system prompt because it is about THIS schema:
+# a term only earns a place once it maps onto real columns.
+#
+# Each entry is (what people say, what it means, which tables it needs).
+# The third element is what keeps this honest - a term is only shown to
+# a role that can actually reach the tables behind it, so a Sales user
+# is never taught a word whose answer lives in a table their connection
+# holds no privilege on.
+VOCABULARY = [
+    (["work that's landed", "work we won", "won work", "work landed",
+      "what we've won", "landed work"],
+     "Work the client has agreed to. That is `quote.accepted_at IS NOT NULL` "
+     "- NOT `workflow_status = 'accepted'`. The two are different and the "
+     "difference matters: a job that has since moved on to 'scheduled' or "
+     "'completed' was still won, and filtering on the status alone silently "
+     "drops it. Always exclude price checks (`is_price_check`), which are "
+     "never real work. The opposite, 'lost' or 'turned down', is "
+     "`declined_at IS NOT NULL`.",
+     ["quote"]),
+    (["job card", "job cards", "the card for a job"],
+     "An installer-facing sheet for one job - what to load and what to fit, "
+     "deliberately with no pricing on it. It is GENERATED on demand from the "
+     "job's order sheets, not stored: there is no job card table, no file and "
+     "no row, so you cannot read what is on one and must never invent it. "
+     "What you CAN do is identify the job and hand back a way to open it - "
+     "select `quote.id AS quote_id`, `quote.job_number`, and the literal "
+     "`'Job Card' AS job_card`. That last column is what turns the answer "
+     "into a link to the real card. A job only has a card once it has a job "
+     "number, so require `quote.job_number IS NOT NULL`.",
+     ["quote"]),
+]
+
+
+def vocabulary_prompt(role, phase=None):
+    """The terms this role can actually be answered on."""
+    reachable = {t["table"] for t in allowed_tables(role, phase)}
+    lines = []
+    for says, means, needs in VOCABULARY:
+        if set(needs) <= reachable:
+            lines.append('  "%s" - %s' % ('" / "'.join(says), means))
+    if not lines:
+        return ""
+    return ("HOW THE BUSINESS SAYS IT. These are words Burgert and his staff "
+            "actually use. Treat each as an exact synonym for what follows, "
+            "and keep answering the plain wording just as well:\n"
+            + "\n".join(lines))
+
+
 def schema_prompt(role, phase=None):
     tables = allowed_tables(role, phase)
     if not tables:
@@ -398,6 +447,9 @@ def schema_prompt(role, phase=None):
     for t in tables:
         cols = "\n".join("    %s - %s" % (c, d) for c, d in t["columns"].items())
         out.append("TABLE %s\n  %s\n  Columns:\n%s" % (t["table"], t["what"], cols))
+    vocab = vocabulary_prompt(role, phase)
+    if vocab:
+        out.append(vocab)
     return "\n\n".join(out)
 
 
