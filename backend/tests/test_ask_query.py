@@ -755,6 +755,63 @@ _def_line = [ln for ln in src.split(chr(10)) if ln.startswith("def get_job_card"
 check("request: Request" in _def_line,
       "get_job_card() does not take the request it needs to scope by person")
 print("    get_job_card() enforces scoped_username() and 404s, same as get_quote()")
+banner("K. WHERE A JOB IS")
+
+# Ask Bolton was asked where clients are situated and said it could not
+# answer. That was read as "Bolton does not store addresses". It was
+# actually "this column is not in MY catalogue" - Quote.site_address and
+# Quote.area had existed since the Order Index Redesign, populated on 58
+# of 78 real jobs, searchable, and on screen. An honest refusal about its
+# own schema got mistaken for a statement about the business.
+q = [e for e in aq.CATALOGUE if e["table"] == "quote"][0]
+for col in ("site_address", "area"):
+    check(col in q["columns"], "quote.%s is missing from the catalogue" % col)
+print("  site_address and area are both in the catalogue")
+
+# area is the groupable one. site_address is free text a person typed -
+# same suburb, four spellings - so grouping on it splits one place into
+# several. The description has to say so, or the model will group on
+# whichever column it saw first.
+check("group" in q["columns"]["area"].lower(),
+      "the area description does not tell the model to group on it")
+check("blank" in q["columns"]["area"].lower(),
+      "the area description does not explain what blank means")
+check("differ" in q["columns"]["site_address"].lower()
+      or "vary" in q["columns"]["site_address"].lower(),
+      "the site_address description does not warn that spelling varies")
+print("  area is described as the groupable one; site_address as free text")
+
+# branch is NOT location. A Gansbaai job can be installed in Hermanus,
+# so answering "where are the jobs" from branch would be wrong.
+check("not where the work happens" in q["columns"]["branch"].lower()
+      or "shop" in q["columns"]["branch"].lower(),
+      "branch is not distinguished from where the work actually happens")
+print("  branch is distinguished from where the work happens")
+
+print()
+print("  the SQL a location question leads to is accepted:")
+LOC_SQL = [
+    ("owner: jobs per suburb", "owner",
+     "SELECT q.area, COUNT(*) AS jobs FROM quote q WHERE q.tenant_id = :tenant_id "
+     "AND q.area <> '' GROUP BY q.area"),
+    ("owner: where is this client", "owner",
+     "SELECT q.id AS quote_id, q.job_number, q.client_name, q.site_address, q.area "
+     "FROM quote q WHERE q.tenant_id = :tenant_id AND q.client_name LIKE '%Louw%'"),
+    ("sales: my own jobs in a suburb", "sales",
+     "SELECT q.id AS quote_id, q.job_number, q.area FROM quote q "
+     "WHERE q.tenant_id = :tenant_id AND q.sales_owner = :sales_owner "
+     "AND q.area = 'Hermanus'"),
+    ("admin: installs to route by area", "admin",
+     "SELECT q.area, q.job_number, q.installation_date FROM quote q "
+     "WHERE q.tenant_id = :tenant_id AND q.installation_date IS NOT NULL"),
+]
+for name, role, sql in LOC_SQL:
+    try:
+        aq.validate_sql(sql, role, 1)
+        print("    ok  %s" % name)
+    except Exception as e:
+        check(False, "%s was refused: %s" % (name, str(e)[:60]))
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

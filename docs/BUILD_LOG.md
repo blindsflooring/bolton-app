@@ -506,6 +506,47 @@ stragglers, and the four pending, hang off entities that can no longer be
 enumerated through the API (deleted quotes, most likely) - they need a route that
 addresses an archive by its own id, which does not exist today.
 
+### Ask Bolton could not say where a job is. The data was always there.
+
+The brief was to add a client address field, because Ask Bolton had been asked
+where clients are situated and answered that it could not. That answer was read as
+*"Bolton does not store addresses"*. It actually meant *"this column is not in my
+catalogue"* - which is a statement about Ask Bolton, not about Bolton.
+
+Everything the brief asked for already existed:
+
+| Asked for | Already there |
+|---|---|
+| Address capturable on a job | `Quote.site_address`, on the Order Details screen |
+| Visible on the job screen | Yes, and on the client's own screen |
+| Searchable | Yes - the bar literally reads "Search customer, job number or site" |
+| Structured, not just free text | `Quote.area`, matched against 25 curated Overberg suburbs |
+| Existing jobs unaffected | Nothing to change |
+
+And it is not sparse data: **58 of 78 quotes carry a site address, 53 carry a
+derived area** - Hermanus, Franskraal, Voelklip, Pearly Beach, Kleinbaai, De
+Kelders, Sandbaai, Vermont, Pringle Bay - and 56 of 72 clients have an address of
+their own.
+
+So the whole job was two lines of catalogue. `site_address` and `area` are now
+described to the model, and nothing else changed - no migration, no new grant, no
+RLS policy, because both columns sit on a table every role's connection already
+reads.
+
+The descriptions carry the part that matters. `area` is the groupable one and says
+so, because `site_address` is free text a person typed and the same suburb appears
+in it four different ways; grouping on it would split one place into several.
+Blank `area` is described as an honest "no known suburb found", never as "somewhere
+else". And `branch` is explicitly NOT location - it is which shop owns the job, and
+a Gansbaai job can be installed in Hermanus.
+
+**The lesson worth keeping.** Ask Bolton is built to be scrupulous about the limits
+of its own schema, and it was scrupulous here. But a refusal phrased as "I don't
+have that" reads like a fact about the business, and it was believed. The agent
+should say which of the two it means - "that is not in the data I can see" is a
+different sentence from "that is not recorded anywhere", and only the first one is
+ever true of it. Worth a follow-up on the refusal wording.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
