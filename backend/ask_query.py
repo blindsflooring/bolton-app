@@ -283,7 +283,22 @@ CATALOGUE = [
             "invoice_sent_date": "When the invoice went out.",
             "deposit_paid_date": "When the deposit landed. NULL if not paid.",
             "final_payment_date": "Set only when the job is FULLY paid.",
-                    "branch": "Which branch the job belongs to.",
+                    "branch": "Which branch the job belongs to - gansbaai or hermanus. This is "
+                  "which SHOP owns the job, not where the work happens; a Gansbaai job "
+                  "can be installed in Hermanus.",
+        "site_address": "Where the work actually happens - the install or delivery "
+                        "address, free text as somebody typed it. May differ from the "
+                        "client's own registered address, and is blank on roughly a "
+                        "quarter of jobs. Good for showing a person; poor for grouping, "
+                        "because the spelling and punctuation vary. Use `area` to group.",
+        "area": "The suburb the job is in, matched from site_address against the "
+                "business's own list of the places it works (Hermanus, Voelklip, "
+                "Franskraal, Pearly Beach, Kleinbaai, De Kelders, Sandbaai and so on). "
+                "Always the list's own spelling, so every job in one suburb carries one "
+                "identical label and grouping by it is safe. Blank means no known "
+                "suburb was found in the address, which is an honest 'not known', NOT "
+                "a claim that the job is somewhere else. When a question is about WHERE "
+                "jobs are, group and filter on this, not on site_address or branch.",
             "sales_owner": "Username of the rep the job is attributed to.",
             "installer_team": "Who is fitting it.",
             "on_hold_reason": "Free text. Non-empty means the job is paused.",
