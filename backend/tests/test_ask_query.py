@@ -812,6 +812,51 @@ for name, role, sql in LOC_SQL:
     except Exception as e:
         check(False, "%s was refused: %s" % (name, str(e)[:60]))
 
+banner("L. \'I CANNOT SEE THAT\' IS NOT \'THAT DOES NOT EXIST\'")
+
+# Twice now, an honest refusal has been read as a fact about the business.
+# Asked where clients are, Ask Bolton said it could not answer - and a
+# whole address field was nearly rebuilt beside the populated one that had
+# been there since the Order Index Redesign. Earlier, with an RLS policy
+# missing, it said "there is nothing recorded for job J-0023" about a job
+# that was open on screen at the time.
+#
+# It cannot tell the difference between "the business never records this"
+# and "this is not in my slice", so it must only ever claim the second.
+print("  the cannot_answer rule:")
+check("not in the data I can see" in aq.SQL_SYSTEM,
+      "no wording is offered for a refusal about its own schema")
+for banned in ("Bolton does not store that", "there is no record of that",
+               "not tracked anywhere"):
+    check(banned in aq.SQL_SYSTEM,
+          "the phrasing %r is not explicitly forbidden" % banned)
+print("    offers 'not in the data I can see'; names three phrasings to avoid")
+
+print("  the empty-result rule:")
+check("nothing recorded for it" not in aq.EXPLAIN_SYSTEM,
+      "still instructs the model to say 'there is nothing recorded'")
+check("MATCHED NOTHING" in aq.EXPLAIN_SYSTEM,
+      "does not say an empty result is about the query, not the record")
+check("does not exist" in aq.EXPLAIN_SYSTEM,
+      "does not warn how an unscoped empty-result sentence reads")
+print("    an empty result is described as the QUERY matching nothing")
+
+print("  the gap line shown beside an empty answer:")
+import inspect as _i2
+_src = _i2.getsource(aq.ask)
+check("not that the record does not exist" in _src,
+      "the gap line still reads as an absence")
+check("No rows matched" in _src, "the gap line does not say what actually happened")
+print("    says no rows matched, and names the slice that was searched")
+
+print()
+print("  and the three are consistent - none of them claims absence:")
+for name, text in (("SQL_SYSTEM", aq.SQL_SYSTEM), ("EXPLAIN_SYSTEM", aq.EXPLAIN_SYSTEM)):
+    bad = [p for p in ("say plainly that there is nothing recorded",)
+           if p in text]
+    check(not bad, "%s still contains %s" % (name, bad))
+print("    SQL_SYSTEM, EXPLAIN_SYSTEM and ask()'s gap line all scope their claims")
+
 aq.generate_sql = real_generate
 
 banner("FAILURES: %s" % (fails if fails else "ALL CHECKS PASSED"))

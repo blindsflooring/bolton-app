@@ -547,6 +547,46 @@ should say which of the two it means - "that is not in the data I can see" is a
 different sentence from "that is not recorded anywhere", and only the first one is
 ever true of it. Worth a follow-up on the refusal wording.
 
+### "I cannot see that" is not "that does not exist"
+
+Twice now an honest refusal has been read as a fact about the business.
+
+Asked where clients are situated, Ask Bolton said it could not answer - and a whole
+address field was nearly rebuilt beside the populated one that had been there since
+the Order Index Redesign, on 58 of 78 jobs. Earlier, with an RLS policy missing, it
+said *"There is nothing recorded for job J-0023"* about a job that was open on
+Burgert's screen at the time.
+
+Both sentences were true about Ask Bolton and false about Bolton. It is shown one
+slice of the database and genuinely cannot tell the difference between something
+the business never records and something simply not in its slice - so it must only
+ever claim the second. Three places said otherwise:
+
+**`cannot_answer`** now has to be phrased about the tool. "That is not in the data I
+can see" and "I have no column for that" are offered; "Bolton does not store that",
+"there is no record of that" and "that is not tracked anywhere" are named and
+forbidden. The prompt carries the reason, not just the rule, because a rule without
+its reason gets optimised away by the next person editing the prompt.
+
+**The empty result** was the worst of the three, because the old prompt literally
+instructed the bad sentence: *"If the result is empty, say plainly that there is
+nothing recorded for it."* That is where "nothing recorded for J-0023" came from. An
+empty result now means THIS QUERY MATCHED NOTHING, scoped to what was actually
+searched - "no payments are recorded against J-0023", "no jobs are in Stanford" -
+and never widened into a claim about the record as a whole.
+
+**The gap line** beside an empty answer now reads "No rows matched, searching <the
+slice>. That means nothing matched this question - not that the record does not
+exist."
+
+The distinction is worth stating plainly, because it is the same one behind the
+Dropbox alert that said "no credential configured" while the credentials were fine,
+and behind a deploy check that reported "not yet deployed" when the endpoint had
+merely returned 401. A system that reports its own blind spots as facts about the
+world will be believed, and acted on.
+
+Suite L asserts all three, including that the old instruction cannot come back.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
