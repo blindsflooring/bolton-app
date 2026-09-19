@@ -517,6 +517,49 @@
     border-bottom: 2px solid var(--teal);
     padding-bottom: 7px;
   }
+  /* Money sections (confirmed Sept 2026). The scope and the counting
+     rule are part of the tile, not small print under the group - the
+     whole complaint was that you had to already know what a tile meant
+     to read it. They are quieter than the number and louder than the
+     old 10.5px grey that nobody read. */
+  .ms-block { margin: 0 0 26px; }
+  .ms-h { margin: 0 0 4px; font-size: 20px; }
+  .ms-sub { margin: 0 0 14px; font-size: 13px; color: var(--ink-soft, #55606D); max-width: 78ch; line-height: 1.45; }
+  .ms-h3 { margin: 16px 0 8px; font-size: 14.5px; font-weight: 700; color: var(--navy); }
+  .ms-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+  .ms-tile {
+    display: flex; flex-direction: column; gap: 2px;
+    border: 1px solid var(--border); border-left: 3px solid var(--teal);
+    border-radius: 8px; padding: 12px 14px; background: var(--card);
+  }
+  .ms-tile-total { border-left-color: var(--navy); background: var(--bg, #f7f7f7); }
+  /* Only ever rendered when a quote carries both trades, which should
+     not happen - coral because it is an anomaly to look at, not a
+     category to accept. */
+  .ms-tile-odd { border-left-color: var(--coral); }
+
+  /* Same treatment on the By Product group: an anomaly to look at, not
+     a category to accept. Not a button - there is no drill-down for
+     "should not exist", the point is to notice it and fix the quote. */
+  .oi-tile-odd {
+    border: 1px solid var(--coral); border-left-width: 3px;
+    background: var(--card); cursor: default; text-align: left;
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 8px;
+  }
+  .oi-tile-odd .oi-tile-label, .oi-tile-odd .oi-tile-count { color: var(--coral); }
+  .oi-tile-odd .oi-tile-sub { color: var(--coral); font-weight: 600; }
+  .ms-tile-odd .ms-tile-rule { color: var(--coral); font-weight: 600; }
+  .ms-tile-head { font-family: 'Poppins', sans-serif; font-size: 13px; font-weight: 700; color: var(--navy); }
+  .ms-tile-amount {
+    font-family: 'Poppins', sans-serif; font-size: 23px; font-weight: 800;
+    color: var(--navy); font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  .ms-tile-count { font-size: 12px; font-weight: 600; color: var(--ink-soft, #55606D); }
+  .ms-tile-scope { margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--teal-dark, #00838A); }
+  .ms-tile-rule { font-size: 11px; color: var(--ink-soft, #55606D); line-height: 1.3; }
+  @media (max-width: 700px) {
+    .ms-row { grid-template-columns: 1fr; }
+  }
   .home-welcome { margin-bottom: 14px; }
   .home-main .tile-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
   .home-main .tile { min-height: 68px; padding: 12px 14px; }
