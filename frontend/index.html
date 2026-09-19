@@ -2008,6 +2008,12 @@ function renderLandingTiles(el) {
     .home-layout / .home-main are kept: they carry Home's own tile
     sizing (.home-main .tile-grid, styles.css), which is not the same as
     the tile grid on other screens. -->
+    <!-- The money sections, mirrored from Business Overview (confirmed
+    Sept 2026). Empty at first render and filled in afterwards, because
+    Home is the screen every login lands on and must never wait on a
+    fetch - the same rule the Ask Bolton scope and the old leads panel
+    both followed. -->
+    <div id="homeMoneySections"></div>
     <div class="home-layout">
       <div class="home-main">
         <div class="tile-grid">
@@ -2025,9 +2031,41 @@ function renderLandingTiles(el) {
     </div>
   `;
   loadAskBoltonScope();
+  loadHomeMoneySections();
   // Async, after the tiles are already on screen: Home must never wait
   // on a health check.
   renderSchemaAlert();
+}
+
+// Home's copy of the Business Overview money sections.
+//
+// SAME DOOR AS THE TILE. Sales cannot open Business Overview
+// (SALES_HIDDEN_TILES, shared.js), so mirroring these on Home
+// unconditionally would have handed a rep business-wide outstanding and
+// turnover on the first screen he sees - the opposite of the settled
+// rule that he is scoped to his own work. Rather than repeat the role
+// list here, this asks whether THIS role can see the Business Overview
+// tile at all: one definition, and if that ever changes the mirror
+// follows it automatically. currentRole() is the effective role, so an
+// Owner previewing as Sales correctly loses this too.
+//
+// Same moneySectionsHtml() the Business Overview calls - never a second
+// copy, which is how two screens start disagreeing about one number.
+async function loadHomeMoneySections() {
+  const host = document.getElementById('homeMoneySections');
+  if (!host) return;
+  if (!visibleLandingTiles().some(t => t.id === 'business')) return;
+  try {
+    const quotes = await fetch(`${API}/quotes`).then(r => r.ok ? r.json() : null);
+    if (!Array.isArray(quotes) || !quotes.length) return;
+    // Still on Home? A slow fetch that resolves after somebody has
+    // navigated away must not paint over whatever they opened.
+    if (landingView !== 'tiles' || !document.getElementById('homeMoneySections')) return;
+    host.innerHTML = moneySectionsHtml(quotes, R);
+  } catch (e) {
+    // Best effort, exactly like every other lazy section on this
+    // screen: Home must never break because one fetch failed.
+  }
 }
 
 function onTileClick(tileId) {

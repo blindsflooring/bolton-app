@@ -980,6 +980,34 @@ One oddity noticed in passing and not chased: J-0019 has a completion date one d
 BEFORE its accepted_at, which is either a timestamp-versus-date comparison artefact
 or a real data error. Worth a look; not part of this.
 
+### The money sections, mirrored on Home
+
+Built on Business Overview first, because that is where every figure they clarify
+already lived. Burgert wanted them on Home too.
+
+**The interesting part is who may see them.** Home is the screen every login lands
+on, including Ryno's. Business Overview is not: `SALES_HIDDEN_TILES` hides it from
+Sales, and `TRUSTED_TESTER_HIDDEN_TILES` hides it from testers. Mirroring these
+unconditionally would have put business-wide outstanding and turnover on the first
+screen a rep sees - the exact opposite of the settled rule that he is scoped to his
+own work, and a leak arriving through the back door of a layout change.
+
+So the mirror asks one question: **can this role open the Business Overview tile at
+all?** Not a repeated role list - `visibleLandingTiles().some(t => t.id ===
+'business')`, the same function the tile grid itself uses. One definition; if the
+tile's visibility ever changes the mirror follows it without anyone remembering to
+look here. Verified against the deployed lists: owner yes, admin yes, sales no,
+trusted tester no. `currentRole()` is the effective role, so an Owner previewing as
+Sales correctly loses it too.
+
+It renders after the tiles rather than with them - Home must never wait on a fetch,
+the same rule the Ask Bolton scope line and the old leads panel both followed - and
+bails if the view has changed by the time the fetch returns, so a slow response
+cannot paint over whatever somebody opened in the meantime.
+
+Same `moneySectionsHtml()` the Business Overview calls. Never a second copy: that is
+how two screens start disagreeing about one number.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
