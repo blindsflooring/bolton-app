@@ -6,6 +6,11 @@ Stores the four AFS PDFs and the figures read off them. Run by hand:
     python populate_financial_records.py                # report, write nothing
     python populate_financial_records.py --apply        # store them
     python populate_financial_records.py --apply --replace   # reload from clean
+    python populate_financial_records.py --apply --local     # deliberately into local SQLite
+
+Every run prints the database it is pointed at before it does anything,
+and --apply refuses a SQLite target unless --local says you meant it -
+see run() for the incident that earned both.
 
 NOT wired into startup. Future years are added through the form on the
 Financial Records screen — this script exists only to load the backlog
@@ -252,7 +257,50 @@ def _self_check(s):
     return problems, exp_total, cash
 
 
-def run(apply_changes=False, replace=False, tenant_id=DEFAULT_TENANT_ID):
+def _target_description():
+    """Which database this run is about to touch, safe to print.
+
+    Host and database name only - never the user, never the password.
+    """
+    url = engine.url
+    if url.drivername.startswith("sqlite"):
+        return "sqlite", "SQLite file: %s" % (url.database or "(memory)")
+    return "postgres", "Postgres: %s/%s" % (url.host or "?", url.database or "?")
+
+
+def run(apply_changes=False, replace=False, tenant_id=DEFAULT_TENANT_ID, allow_local=False):
+    kind, where = _target_description()
+
+    # SAY WHERE THIS IS GOING, BEFORE DOING IT.
+    #
+    # This script was once run with a production connection string and
+    # reported five statements stored, reconciled, no errors - into the
+    # local SQLite file. The connection string never reached the
+    # process (a bash-style `VAR=x python ...` prefix on Windows sets
+    # nothing), main.py fell back to its sqlite default, and every
+    # word of the success message was true about the wrong database.
+    #
+    # A one-time backfill that cannot say which database it wrote to is
+    # not finished, so it says it, every run, apply or not.
+    print("Target -> %s" % where)
+
+    # And refuses the combination that caused it. SQLite is a real,
+    # legitimate target for testing this script; silently defaulting to
+    # it while someone believes they are loading production is not.
+    # --local is how you say you meant it.
+    if apply_changes and kind == "sqlite" and not allow_local:
+        print()
+        print("REFUSING TO APPLY: this is the local SQLite database, not production.")
+        print("If that is genuinely what you want, re-run with --local.")
+        print()
+        print("To load production, set the connection string so the PROCESS sees it:")
+        print("    PowerShell:  $env:DATABASE_URL = \'<production url>\'")
+        print("                 python populate_financial_records.py --apply")
+        print("    Git Bash:    DATABASE_URL=\'<production url>\' python populate_financial_records.py --apply")
+        print()
+        print("Then check the Target line above says Postgres before trusting the result.")
+        return False
+
     _ensure_new_columns()
     SQLModel.metadata.create_all(engine)
 
@@ -328,7 +376,8 @@ def run(apply_changes=False, replace=False, tenant_id=DEFAULT_TENANT_ID):
 
 
 if __name__ == "__main__":
-    good = run(apply_changes="--apply" in sys.argv, replace="--replace" in sys.argv)
+    good = run(apply_changes="--apply" in sys.argv, replace="--replace" in sys.argv,
+               allow_local="--local" in sys.argv)
     if not good:
         print("One or more checks failed - nothing should be trusted until they are resolved.")
         raise SystemExit(1)
