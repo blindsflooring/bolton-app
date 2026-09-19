@@ -741,6 +741,59 @@ query against it would fail. `create_all()` runs before the check, so an absent
 table means create_all could not make it, which is worth saying. Now reported
 separately, and `ok` accounts for it.
 
+### Money, said plainly
+
+Tiles sitting together were answering different questions without saying so. "This
+Month - Sales" is the current month on `accepted_at`; "Total quotes / Won" is all
+time; the m2 tiles are this month and this week; the By Product tiles are all time
+and count a mixed job twice. Every figure correct, none of them comparable, and
+nothing on screen said which was which.
+
+The sharper half was the money itself: `orderStageValue()` returns
+`amount_outstanding` for Awaiting Payment and `total_incl_vat` for every other
+stage - so one tile showed what is still OWED while the tile beside it showed what
+the work is WORTH.
+
+Three sections now, each carrying its time scope and its counting rule in the tile,
+not in small print underneath:
+
+| Section | Scope label | What it counts |
+|---|---|---|
+| Still to come in | "Outstanding right now, whenever it landed" | money not yet received |
+| September 2026 | "Landed in September 2026" | job value of work won this month |
+| All time | "Landed all time" | job value of every job ever won |
+
+Each splits Flooring / Blinds / All work, and each tile says either *"Counts a job
+once per trade if it has both"* or *"Counts once per job"*, so Flooring + Blinds not
+summing to the total is stated rather than discovered.
+
+**The mapping was confirmed before anything was built**, per the brief. Outstanding
+breaks into exactly two buckets and no more, which `_order_stage()` settles: a
+`completed` job is `closed` if `final_payment_date` is set and `awaiting_payment`
+otherwise, so closed jobs owe nothing. Measured against the real 78 rows: closed
+outstanding is R0, confirming it. Quoted jobs carry R1 430 044 of "outstanding" and
+are deliberately excluded - an open quote is not money owed, and including it would
+have inflated the figure tenfold.
+
+Nothing is recalculated. `amount_outstanding` and `total_incl_vat` are computed
+server-side per quote and arrive on the row; `job_category` is derived server-side
+from the lines; the month basis is `accepted_at`, the same date the monthly series
+and the Order Index turnover banner already use. This groups and labels values that
+already exist rather than producing a second opinion about any of them.
+
+The two sections deliberately do NOT reconcile with each other, and the labels say
+so: a job that landed in August and is still unpaid is in "still to come in" and not
+in September's figures.
+
+Real figures at the time of building: R131 545 owed on 19 landed-not-installed jobs,
+R13 276 on 3 installed-not-paid, R434 940 landed in September across 22 jobs,
+R508 003 all time across 25.
+
+`frontend/tests/test_money_sections.js` reconstructs production stage by stage and
+asserts every figure and every label. The fixture is built from measured production
+values rather than from whatever the code produces - a test that takes its
+expectations from the code under test proves only that the code agrees with itself.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

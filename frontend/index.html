@@ -2937,6 +2937,11 @@ async function renderBusinessOverview(el) {
          here as well as where it was actually reported, since it is the
          identical pattern on the identical screen — fixing only the
          reported instance would have left this one contradicting it. -->
+    <!-- Three sections that state their own scope and counting rule
+    (confirmed Sept 2026). Reads the SAME /quotes rows the By Product
+    tiles below already use - one fetch, one set of numbers, no second
+    opinion about anything. -->
+    ${Array.isArray(productQuotes) && productQuotes.length ? moneySectionsHtml(productQuotes, money) : ''}
     ${Array.isArray(productQuotes) && productQuotes.length ? orderProductGroupHtml(productQuotes, money, true) : ''}
 
     <div class="tile-grid" style="margin-bottom:16px;">
