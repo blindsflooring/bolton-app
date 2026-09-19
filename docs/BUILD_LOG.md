@@ -834,6 +834,47 @@ still reads `cats` is the obvious thing for a later change to "reuse" by mistake
 The test now asserts `'mixed'` is in neither product's cats and that each maps to
 exactly one category, so it cannot creep back and quietly restore the double-count.
 
+### Stock arrival already existed, and blinds jobs were never blocked
+
+Two briefs, and neither needed code. Both were worth checking properly rather than
+building on the assumption in the brief.
+
+**"No way to mark that ordered stock has arrived."** There is, and it is exactly
+that: `ready_for_installation`, set by the **Mark Materials Received** button on the
+job's Work Flow panel. The model comment defines it precisely - *"the flooring/blinds
+have been delivered and stock is physically on hand - ready to install from that
+moment"* - and it is deliberately independent of `materials_ordered`, because
+ordering and arriving are days apart and collapsing them would produce false ready
+signals. `PUT /quotes/{id}/materials` takes `tenant_id` and no role dependency at
+all, so any logged-in staff member can set it, which is what the brief asked for.
+It shows on the job as a green tick with an Undo, and the Order Index's CHASE badge
+already flags a job whose stock is overdue.
+
+**"Unclear whether a blinds job can be closed."** It can. Proven end to end on a
+throwaway database: a blinds-only quote goes quoted -> accepted (J-0001) ->
+scheduled -> completed with a completion date, through the same three endpoints a
+flooring job uses. None of `accept_quote()`, `schedule_quote()` or
+`complete_quote()` looks at `job_category` at all, and the only place
+`is_blinds_only` appears in the workflow UI changes a word - "blinds" instead of
+"materials" - never a button.
+
+**But the reason the brief was written is real.** In production: 27 blinds quotes,
+11 accepted, and **zero ever scheduled, awaiting payment, or closed**. Flooring
+reaches closed routinely - six of them. Thirty-eight blinds jobs and not one has
+passed "accepted".
+
+That is the shape of a blocked path, which is why it deserved proving rather than
+assuming. It is not blocked. So the gap is operational, not mechanical: nobody is
+walking blinds jobs through, and no amount of code will fix that. Two things worth
+considering, neither of them a build: it may be the same discoverability problem
+Madri hit - the Work Flow panel had no name until this week, and the button lives on
+it - or blinds may simply be tracked elsewhere, in which case the eleven accepted
+jobs sitting open in Bolton are the thing to resolve.
+
+`backend/tests/test_blinds_lifecycle.py` exists so the mechanical half stays true:
+if a product gate is ever added to that path, it fails rather than another
+thirty-eight jobs quietly piling up.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
