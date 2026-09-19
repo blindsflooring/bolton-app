@@ -834,6 +834,59 @@ still reads `cats` is the obvious thing for a later change to "reuse" by mistake
 The test now asserts `'mixed'` is in neither product's cats and that each maps to
 exactly one category, so it cannot creep back and quietly restore the double-count.
 
+### The restore path works. It has now actually been done.
+
+The single highest-value open item since the backup system was built: backups ran
+nightly, were confirmed complete and byte-identical, and had **never once been
+restored**. A backup nobody has restored is a hypothesis.
+
+On 19 September the 02:00 backup was pulled from Dropbox, verified byte-identical
+against Dropbox's own content hash, and restored into a throwaway Supabase project.
+
+**41 of 41 tables. 8 031 of 8 031 rows. No mismatches.** J-0023 came back whole -
+Marlize Louw, Franskraal, 55 bags of screed, 5,4 m + 3,7 m of trim, R74 081,88
+deposit paid 15 September, final payment outstanding - alongside 86 indexes and 66
+constraints.
+
+Four things were learned that the old documentation had no way to know.
+
+**The documented Dropbox path was wrong.** It said `/Bolton/Database Backups/`;
+backups actually go to `/Apps/Bolton Archive 2/Bolton/Database Backups/`, a
+different namespace. The documented folder does exist and holds one stale backup
+from 27 August, left over from an earlier app configuration - so following the old
+instructions during a real incident would have shown one three-week-old file and
+none of the good ones.
+
+**A successful restore reports 583 errors.** A Supabase `pg_dump` carries Supabase's
+own managed schemas - `auth`, `storage`, `realtime`, `graphql`, `vault`,
+`pgbouncer`, `extensions` - which already exist on a fresh project and which the
+`postgres` role may not modify. Every one of those statements fails, and none of it
+matters, because Bolton's data is entirely in `public`. The documentation now says
+so in capitals: **do not judge the restore by whether it reported errors**, judge it
+by counting `public` tables and rows.
+
+**`psql` was not available**, and Supabase's SQL editor cannot ingest a 13 MB dump
+by paste. `backend/tools/restore_driver.py` does it with psycopg2 alone, and handles
+the thing a naive executor gets wrong: `pg_dump` 18 emits psql meta-commands
+(\restrict, \unrestrict) that are not SQL and that the server
+rejects.
+
+**A restore is not a rollback.** The 02:00 backup does not contain the five annual
+financial statements, because those were loaded into production later the same
+morning - the restored copy has `financialstatement` empty, correctly. Obvious
+stated plainly, easy to forget at 3am: a restore is a reset to that moment, and
+everything since is gone.
+
+Still untested, and now the honest next item: whether Bolton's own startup
+reconciles an OLDER dump's schema. `create_all()` and `_ensure_new_columns()` should
+add what is missing, but nobody has pointed the app at a restored database and
+watched. The 27 August dump was missing 12 whole tables and 78 columns against the
+models three weeks later, so the gap is real.
+
+The dump, both copies of the connection string, and the local files were deleted
+immediately afterwards - they contained real client addresses and real password
+hashes.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

@@ -1,9 +1,14 @@
 # Restoring Bolton from a Database Backup
 
 This document explains, in plain terms, what Bolton's database backups
-are and exactly what to do if one is ever needed. If a backup can't be
-explained back in plain language, it isn't a finished backup — this is
-that explanation.
+are and exactly what to do if one is ever needed.
+
+**This procedure has been performed end to end and verified.** On
+19 September 2026 the previous night's backup was restored into a
+throwaway Supabase project and checked table by table: 41 of 41 tables,
+8 031 of 8 031 rows, no mismatches. Everything below describes what
+actually happened, not what should happen in theory. The things that
+went wrong are written down too, because they will go wrong again.
 
 ## What's actually being protected here
 
@@ -11,123 +16,192 @@ Bolton's real, live data (every quote, client, price book entry, staff
 account — everything) lives in one place: a Postgres database hosted by
 Supabase. That live database is the only copy that matters day to day.
 
-This backup system is a **safety net**, separate from that live
-database, for the situation where something goes badly wrong with it —
-accidental deletion, a Supabase outage, corruption, anything that makes
-the live data unavailable or wrong. It answers one question: *if the
-live database were lost today, could we get the data back?*
+This backup system is a **safety net** for the situation where something
+goes badly wrong with it — accidental deletion, a Supabase outage,
+corruption. It answers one question: *if the live database were lost
+today, could we get the data back?* The answer is now yes, demonstrably.
 
-It is **not** the same thing as the Dropbox document archive (the
-separate system that keeps a permanent copy of every quote/invoice/
-order PDF ever generated). That system protects individual documents.
-This one protects the whole database.
+It is **not** the same thing as the Dropbox document archive (which keeps
+a permanent copy of every quote/invoice/order PDF). That protects
+individual documents. This protects the whole database.
 
-## Where backups live and how often they're taken
+## Where backups actually live
 
-- **Daily** — a fresh backup every night, automatically. The last **7**
-  daily backups are kept; older ones are deleted automatically so
-  storage doesn't grow forever.
-- **Weekly** — every Sunday, that night's backup is also kept in a
-  separate weekly set. The last **4** weekly backups are kept.
-- Both live in Dropbox, in `Bolton/Database Backups/Daily/` and
-  `Bolton/Database Backups/Weekly/`.
-- Burgert (Owner) can also trigger a backup manually at any time from
-  Bolton itself, right before doing something risky (a big price-book
-  import, for example), rather than waiting for the nightly one.
+**In the app's own Dropbox folder, not the personal one:**
+
+```
+/Apps/Bolton Archive 2/Bolton/Database Backups/Daily/
+/Apps/Bolton Archive 2/Bolton/Database Backups/Weekly/
+```
+
+This document used to give the path as `/Bolton/Database Backups/`, and
+that is wrong — it is a different Dropbox namespace. A folder of that
+name does exist there, holding one stale backup from 27 August left over
+from an earlier app configuration. Looking there during a real incident
+would show one three-week-old file and none of the good ones.
+
+- **Daily** — every night at 02:00 UTC. The last **7 restorable** backups
+  are kept.
+- **Weekly** — every Sunday, kept as a separate set of **4**. Note: no
+  weekly backup has ever succeeded as of 19 Sept 2026 (three attempts,
+  all during the Dropbox token outage). Do not assume one exists.
+- Burgert can trigger one manually at any time from Bolton, before doing
+  anything risky.
+
+Retention counts backups that actually uploaded, not rows in the
+tracking table — a failed run no longer displaces a good backup. That
+was a real bug, fixed 19 Sept 2026.
 
 ## If you ever actually need one restored
 
-**You don't need to do this yourself.** If Bolton's data is ever lost
-or looks wrong and a restore might be needed:
+**You don't need to do this yourself.**
 
-1. Don't panic, and don't try to fix it by hand in the meantime —
-   that can make a real restore harder later.
-2. Go to Bolton's "Database Backups" screen (or ask whoever manages
-   Bolton's technical side — Claude Code, or a developer) to see the
-   list of available backups and pick the most recent good one.
-3. A developer (or Claude Code) runs the actual restore against the
-   live database. This is a deliberate, careful, one-off technical
-   action — not a button in the app — because restoring the wrong
-   backup, or restoring into a database that still has other people
-   using it, can cause more damage than the original problem. It
-   should only ever be done by someone who understands what they're
-   about to overwrite.
-4. Once restored, check a few real, familiar records (a recent quote,
-   a client you know) to confirm it looks right before trusting it.
-
-That's genuinely all you need to know. Everything below this line is
-the technical detail for whoever actually performs the restore.
+1. Don't panic, and don't try to fix the data by hand in the meantime —
+   that makes a real restore harder later.
+2. Go to Bolton's "Database Backups" screen (or ask whoever manages the
+   technical side) and pick the most recent good one.
+3. A developer performs the restore. **Never straight into the live
+   database** — see below.
+4. Once restored, check a few real, familiar records before trusting it.
 
 ---
 
-## Technical detail (for the person doing the restore)
+# Technical detail (for whoever performs the restore)
 
-### Which format is a given backup in?
+## Step 1 — Restore into a THROWAWAY database first, always
 
-Every backup is one of two formats, and which one is recorded right
-alongside it (visible via `GET /admin/database-backup`, or in the
-filename's extension):
+Create a new, empty Supabase project. Never restore into the live
+database, and never into anything with data you care about: the dump
+begins by creating tables and will fight anything already there.
 
-- **`.sql.gz`** — a real `pg_dump` output, gzip-compressed. This is
-  the preferred, standard format: a full, faithful Postgres dump.
-- **`.json.gz`** — a plain-Python fallback, gzip-compressed JSON, used
-  automatically whenever `pg_dump` isn't available in the running
-  environment (a standard Render Python deployment has no guarantee of
-  the `pg_dump` command-line tool being present — this fallback exists
-  specifically so a backup is never skipped just because that binary
-  is missing). Contains every table's rows as plain JSON. One
-  deliberate omission: binary blob columns (currently only
-  `documentarchive.pdf_bytes`, the stored archived-PDF bytes) are
-  recorded as a size placeholder, not the actual bytes — those PDFs
-  already have their own permanent copy via the Dropbox document
-  archive itself, so duplicating them into every nightly DB backup too
-  would bloat it for no real recovery benefit.
+Verify the target is empty before starting:
 
-### Restoring a `.sql.gz` backup
+```sql
+SELECT count(*) FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
+```
+
+**It must return 0.** And check the project ref in the connection string
+is *not* the production one. The restore used for this verification
+refused to start until both were confirmed.
+
+Use the **Session pooler** connection string (port `5432` on the
+`...pooler.supabase.com` host), copied from that project's own Connect
+dialog. Do not compose the host by hand — the cluster number is not
+derivable from the region, and getting it wrong produces
+`Tenant or user not found`, which reads like a credentials problem and
+is not.
+
+## Step 2 — Which format is this backup?
+
+Recorded alongside every backup (`GET /admin/database-backup`) and
+visible in the filename:
+
+- **`.sql.gz`** — a real `pg_dump`, gzip-compressed. Every backup to date
+  has been this. Full schema and data.
+- **`.json.gz`** — the pure-Python fallback, used only when `pg_dump` is
+  unavailable. Data but no schema, and **binary columns are omitted**
+  (`documentarchive.pdf_bytes`, `quotephoto.photo_bytes` — those have
+  their own Dropbox copies).
+
+## Step 3 — Restore it
+
+With `psql` available, this is the whole job:
 
 ```bash
-gunzip -c backup_2026-08-27.sql.gz > backup.sql
-psql "$DATABASE_URL" < backup.sql
+gunzip -c backup_2026-09-19.sql.gz > backup.sql
+psql "$TARGET_DATABASE_URL" < backup.sql
 ```
 
-Run this against a **fresh or intentionally-being-restored** database,
-never blindly against the live one while it's still in normal use.
+**If `psql` is not installed** — it was not on the machine this was
+verified from, and Supabase's SQL editor cannot ingest a 13 MB dump by
+paste — use the committed driver, which needs only `psycopg2`:
 
-### Restoring a `.json.gz` backup
-
-```python
-import gzip, json, psycopg2
-
-with gzip.open("backup_2026-08-27.json.gz") as f:
-    data = json.load(f)
-
-conn = psycopg2.connect(DATABASE_URL)
-cur = conn.cursor()
-for table, rows in data["tables"].items():
-    if not rows or isinstance(rows, dict):   # dict means this table failed to export — see failure noted inline
-        continue
-    for row in rows:
-        cols = list(row.keys())
-        placeholders = ", ".join(["%s"] * len(cols))
-        cur.execute(
-            f'INSERT INTO "{table}" ({", ".join(cols)}) VALUES ({placeholders}) ON CONFLICT DO NOTHING',
-            [row[c] for c in cols],
-        )
-conn.commit()
+```bash
+python backend/tools/restore_driver.py backup.sql          # dry run
+python backend/tools/restore_driver.py backup.sql --go     # execute
 ```
 
-This restores DATA (every row, every real value) but not schema/
-indexes — it's meant to be run against a database that already has
-Bolton's tables created (e.g. a fresh deploy that's run its own
-startup migrations), not an empty Postgres instance.
+It reads the target connection string from `target-url.txt` beside it,
+never prints it, and handles the one thing a naive executor gets wrong:
+`pg_dump` 18 emits psql **meta-commands** (`\restrict`, `\unrestrict`)
+that are not SQL and that the server rejects.
 
-### Where the code lives
+## Step 4 — EXPECT HUNDREDS OF ERRORS, AND IGNORE THEM
 
-- `backend/database_backup.py` — how each backup is actually produced
-  (`try_pg_dump()`, `python_logical_backup()`).
-- `backend/main.py` — `run_database_backup_job()` (the scheduled job),
+This is the most surprising part and the reason this section exists.
+
+A Supabase `pg_dump` contains Supabase's own managed schemas — `auth`,
+`storage`, `realtime`, `graphql`, `graphql_public`, `vault`, `pgbouncer`,
+`extensions`. On a fresh project these **already exist**, and the
+`postgres` role **is not permitted to modify them**. The verified restore
+produced **583 errors**, every one of them of this kind:
+
+```
+CREATE SCHEMA auth;              -> schema "auth" already exists
+CREATE TYPE auth.aal_level ...   -> permission denied for schema auth
+CREATE FUNCTION auth.email() ... -> permission denied for schema auth
+```
+
+None of that matters. Supabase provides those schemas itself. Bolton's
+data is entirely in `public`.
+
+**So do not judge the restore by whether it reported errors.** Judge it
+by Step 5.
+
+## Step 5 — Verify against the dump, table by table
+
+This is the actual test of success:
+
+```sql
+-- every table Bolton owns
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1;
+
+-- and a row count for each
+SELECT count(*) FROM public.quote;
+```
+
+Compare against the dump itself — each `COPY public.<table> ... FROM
+stdin;` block is followed by exactly one line per row, terminated by a
+lone `\.`. The verified restore matched on all 41 tables and all 8 031
+rows.
+
+Then check records you recognise. The verification used J-0023
+(Marlize Louw, Franskraal): 55 bags of screed, 5,4 m + 3,7 m of trim,
+R74 081,88 deposit paid 15 September, final payment outstanding — all
+present and correct, along with 86 indexes and 66 constraints.
+
+## Step 6 — Two things that will catch you out
+
+**A backup is a point in time, and that cuts deeper than it sounds.**
+The 19 September backup was taken at 02:00. The five annual financial
+statements were loaded into production later that same morning, so they
+are **not in it** — the restored copy has `financialstatement` empty,
+correctly. Before restoring over live data, ask what has happened since
+the backup ran. A restore is not a rollback; it is a reset to that
+moment.
+
+**An older backup carries an older schema.** Restoring a dump from a
+month ago gives you that month's columns. Bolton's own startup
+(`SQLModel.metadata.create_all()` then `_ensure_new_columns()`, main.py)
+adds missing tables and columns when it boots, so pointing the app at a
+restored database should reconcile it — but that path has not been
+tested, and it is the obvious next thing to verify. For reference, the
+27 August dump was missing 12 whole tables and 78 columns relative to
+the models three weeks later.
+
+## Step 7 — Afterwards
+
+**Delete the throwaway project.** It now contains real client data, real
+addresses and real password hashes. Delete the local dump and the
+connection-string file too.
+
+## Where the code lives
+
+- `backend/database_backup.py` — `try_pg_dump()`, `python_logical_backup()`
+- `backend/tools/restore_driver.py` — the psycopg2 restore driver
+- `backend/main.py` — `run_database_backup_job()` (nightly),
   `_prune_old_backups()` (retention), `_record_and_upload_backup()`
-  (tracking + Dropbox upload), and the `/admin/database-backup*`
-  endpoints (Owner-only: manual trigger, history).
-- `backend/models.py` — `DatabaseBackupRecord` (the tracking table;
-  does not store the actual backup bytes — those live in Dropbox only).
+- `backend/models.py` — `DatabaseBackupRecord` (tracking only; the bytes
+  live in Dropbox)
