@@ -547,6 +547,93 @@ should say which of the two it means - "that is not in the data I can see" is a
 different sentence from "that is not recorded anywhere", and only the first one is
 ever true of it. Worth a follow-up on the refusal wording.
 
+### "I cannot see that" is not "that does not exist"
+
+Twice now an honest refusal has been read as a fact about the business.
+
+Asked where clients are situated, Ask Bolton said it could not answer - and a whole
+address field was nearly rebuilt beside the populated one that had been there since
+the Order Index Redesign, on 58 of 78 jobs. Earlier, with an RLS policy missing, it
+said *"There is nothing recorded for job J-0023"* about a job that was open on
+Burgert's screen at the time.
+
+Both sentences were true about Ask Bolton and false about Bolton. It is shown one
+slice of the database and genuinely cannot tell the difference between something
+the business never records and something simply not in its slice - so it must only
+ever claim the second. Three places said otherwise:
+
+**`cannot_answer`** now has to be phrased about the tool. "That is not in the data I
+can see" and "I have no column for that" are offered; "Bolton does not store that",
+"there is no record of that" and "that is not tracked anywhere" are named and
+forbidden. The prompt carries the reason, not just the rule, because a rule without
+its reason gets optimised away by the next person editing the prompt.
+
+**The empty result** was the worst of the three, because the old prompt literally
+instructed the bad sentence: *"If the result is empty, say plainly that there is
+nothing recorded for it."* That is where "nothing recorded for J-0023" came from. An
+empty result now means THIS QUERY MATCHED NOTHING, scoped to what was actually
+searched - "no payments are recorded against J-0023", "no jobs are in Stanford" -
+and never widened into a claim about the record as a whole.
+
+**The gap line** beside an empty answer now reads "No rows matched, searching <the
+slice>. That means nothing matched this question - not that the record does not
+exist."
+
+The distinction is worth stating plainly, because it is the same one behind the
+Dropbox alert that said "no credential configured" while the credentials were fine,
+and behind a deploy check that reported "not yet deployed" when the endpoint had
+merely returned 401. A system that reports its own blind spots as facts about the
+world will be believed, and acted on.
+
+Suite L asserts all three, including that the old instruction cannot come back.
+
+### The pipeline was counting 49 jobs twice
+
+Work Quoted counted the `quoted` stage. By Product counted *"open jobs - quoted
+through awaiting payment"*. Measured against production: **49 of the 53 quoted jobs
+appeared in both**, and By Product read 71 when only 22 of those jobs had actually
+landed.
+
+By Product is now accepted onwards - accepted, scheduled, awaiting payment - as a
+named constant rather than a negation, because "everything except closed" is how it
+drifted in the first place. The two groups now answer two different questions: Work
+Quoted is what MIGHT land, By Product is what HAS landed and still needs doing.
+Overlap is zero, verified against the real 78 rows.
+
+The deliberate overlap that remains is the other one, and it stays: a job carrying
+both flooring and blinds lines counts in both product tiles, because it genuinely is
+work of both trades. The group says so on its own face.
+
+**Work Quoted gains the product filter By Product used to provide for it** - 24
+flooring and 25 blinds among the 53 quoted, with 4 uncategorised because a quote
+with no lines has no category, which the badge already refuses to guess at. The
+chips nest branch -> product -> area, so the suburb counts describe what is actually
+on screen. Changing product drops the suburb (a suburb from the old product list
+usually matches nothing in the new one, and an empty screen reads as a broken
+filter); changing BRANCH deliberately keeps the product, because every branch has
+both trades and "Flooring, now show me Hermanus" is a coherent thing to ask.
+
+**And every tile now states its exact scope.** "Awaiting an answer" described a
+mood, not a set of jobs. It is now "Quoted - not accepted yet", "Installed - money
+still owed", and so on. The scope line was also 10.5px in the faintest ink on the
+page - there to be found rather than read, which is how two tiles double-counted
+half the pipeline for months without anyone noticing. Darker, a size up, still
+secondary to the number.
+
+### The Work Flow panel had no name
+
+Madri could not find it, and the reason is simple: it had no heading. Accept, the
+installation date, Confirm Installation, Invoice now - all of it reachable only by
+opening a job and recognising the controls, which works if you already know they are
+there and not otherwise.
+
+It now carries a "Work Flow" heading, and every Order Index row has a Work Flow
+link straight to it, sitting beside Quick View rather than inside the overflow menu
+- burying the fix for a discoverability problem in a menu would have reproduced the
+problem. The jump waits for the panel to exist before scrolling, because opening a
+job returns before its data has arrived, and gives up quietly after a couple of
+seconds: the job is open either way.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

@@ -1160,9 +1160,20 @@ Return exactly one of:
 - "sql": a single SELECT (or WITH ... SELECT) that answers the question.
 - "clarify": a short question back, when the question is genuinely ambiguous in a way \
 that changes the answer. Ask rather than assume.
-- "cannot_answer": a plain statement of what is missing, when the data described \
-cannot answer the question. Never approximate, never substitute a different figure \
-and present it as the answer.
+- "cannot_answer": when the schema you were given cannot answer the question. \
+Never approximate, never substitute a different figure and present it as the answer.
+
+  SAY WHAT IS TRUE OF YOU, NOT OF THE BUSINESS. You are shown one slice of Bolton, \
+and you cannot tell the difference between something the business never records and \
+something that is simply not in your slice. So never claim the second. Write "that \
+is not in the data I can see" or "I have no column for that", NOT "Bolton does not \
+store that", "there is no record of that" or "that is not tracked anywhere".
+
+  This is not a style note. A refusal worded as an absence has already been believed: \
+asked where a client was, an earlier version answered in a way that read as "Bolton \
+has no addresses", and a field was nearly rebuilt alongside the populated one that \
+had been there all along. Name the thing you looked for and say it is not in front \
+of you; whether it exists elsewhere is not yours to state.
 
 Rules for the SQL:
 - One statement. No semicolon. No comments.
@@ -1193,7 +1204,13 @@ Absolute rules:
 - Use ONLY the rows you are given. Never calculate a figure that is not in them, \
 never estimate, never bring in outside knowledge.
 - Rands are written like R12 500 or R12 500,40.
-- If the result is empty, say plainly that there is nothing recorded for it.
+- An empty result means THIS QUERY MATCHED NOTHING. Say that, scoped to exactly \
+what was looked for - "no payments are recorded against J-0023", "no jobs are in \
+Stanford". Never widen it into a claim about the record as a whole: "there is \
+nothing recorded for job J-0023" reads as "that job does not exist", and has been \
+said, out loud, about a job that was open on screen at the time. If you cannot \
+scope the sentence to the specific thing that was searched for, say the query \
+returned no rows and stop there.
 - If the rows were truncated, say so.
 - No preamble, no restating the question, no offer of further help. Two sentences at \
 most. The rows are shown to the reader underneath, so do not list them all."""
@@ -1316,7 +1333,12 @@ def ask(question, role, tenant_id, username=None, want_explanation=True, phase=N
         "repairs": attempts,
     }
     if not rows:
-        out["gap"] = "Nothing in %s matches that." % data_available(role, phase)
+        # Scoped on purpose, and it names the slice: "nothing in the data
+        # I can see matches" is true, "there is nothing recorded" is a
+        # claim about Bolton that this code is in no position to make.
+        out["gap"] = ("No rows matched, searching %s. That means nothing matched this "
+                      "question - not that the record does not exist."
+                      % data_available(role, phase))
     if want_explanation:
         try:
             out["answer"] = explain(question, columns, rows, truncated)
