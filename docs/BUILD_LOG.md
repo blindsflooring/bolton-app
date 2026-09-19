@@ -1044,6 +1044,46 @@ taken away without taking away her work. If the intent is that she should not kn
 the business's turnover, that is a different and much larger conversation than a
 tile.
 
+### HOTFIX: #42 would have stopped the backend booting
+
+`analytics_overview` was changed in #42 from `Depends(get_current_role)` to
+`Depends(require_owner)`. `require_owner` is defined at line 5697; the endpoint is
+at line 3489. A default argument is evaluated at import time, so the module raises
+`NameError: name 'require_owner' is not defined` and **the app does not start**.
+
+Production stayed up only because Render had not yet redeployed `main` - the backend
+was still serving the previous commit. The next deploy would have taken the whole
+business offline.
+
+Reverted to `Depends(get_current_role)`, and main.py imports cleanly again.
+
+**The change was not just dangerous, it was unnecessary, and the file said so.**
+Six lines below the signature sits the guard that was always there:
+
+    # Checked in the body rather than via Depends(require_owner) for a
+    # boring but real reason: require_owner is defined further down this
+    # file, and a default argument is evaluated at import time, so
+    # depending on it here would crash the app at startup.
+
+    if role != UserRole.owner:
+        raise HTTPException(403, "The Business Overview is only available to the Owner.")
+
+So the claim in #42 - that the endpoint "answered whoever asked" and that hiding the
+tile was the only thing in the way - was **wrong**. Business Overview has been
+owner-only server-side all along. The 403 measured while verifying #42 came from
+this guard, not from the change, which is exactly why it looked like proof.
+
+What #42 genuinely achieved stands: `'business'` moved from `SALES_HIDDEN_TILES` to
+`OWNER_ONLY_TILES`, which is what actually revoked **Madri's** access - she could
+open the screen before, and the in-body guard had never stopped her because she
+reached it through a tile that was never hidden from Admin.
+
+Two lessons, both cheap to state and expensive to relearn. A grep for
+`Depends(require_owner)` showed 65 endpoints using it and none of the reason it
+could not be used here - the comment was one screen below and went unread. And a
+test that passes for the wrong reason is worse than no test: the 403 was real, the
+inference from it was not.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
