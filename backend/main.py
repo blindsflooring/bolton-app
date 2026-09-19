@@ -3486,7 +3486,7 @@ def _trusted_tester_usernames(session: Session, tenant_id: str) -> dict:
 
 
 @app.get("/analytics/overview")
-def analytics_overview(role: str = Depends(get_current_role), tenant_id: str = Depends(get_current_tenant)):
+def analytics_overview(role: str = Depends(require_owner), tenant_id: str = Depends(get_current_tenant)):
     """
     Business Overview data. Deliberately built from data that already
     exists — no new pricing logic here, just querying quotes/lines that

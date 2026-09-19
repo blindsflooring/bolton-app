@@ -1008,6 +1008,42 @@ cannot paint over whatever somebody opened in the meantime.
 Same `moneySectionsHtml()` the Business Overview calls. Never a second copy: that is
 how two screens start disagreeing about one number.
 
+### Business Overview is Owner-only, at the door as well as on screen
+
+Burgert: *"the whole section just for my eyes only - lets revoke all permissions to
+the KPI section for madri and ryno."*
+
+Two things were true before this, and only one of them was obvious.
+
+**Madri could already see it.** `SALES_HIDDEN_TILES` hid Business Overview from
+Ryno; Admin was never excluded. So "revoking Madri's access" was a real change, not
+a formality.
+
+**And the tile was the only thing in the way.** `/analytics/overview` was gated with
+`get_current_role` - which means any logged-in user, not any particular one. Hiding
+a tile is a layout decision, not a permission: the endpoint answered whoever asked.
+It now requires owner, like the 65 other endpoints on this codebase that already
+do, and like `/analytics/historical-comparison` beside it always has.
+
+`'business'` moved from `SALES_HIDDEN_TILES` to `OWNER_ONLY_TILES`, which settles
+Admin, Sales and Trusted Tester in one line rather than three.
+
+**The Home mirror needed no change at all.** It asks
+`visibleLandingTiles().some(t => t.id === 'business')` rather than carrying its own
+role list, so it lost Admin the moment the tile did. That was the point of building
+it that way yesterday, and this is the first time it paid.
+
+`frontend/tests/test_tile_permissions.js` asserts the matrix - owner yes, admin no,
+sales no, tester no - and that nothing else moved with it. A role list is exactly
+the kind of thing a later change widens by accident while fixing something adjacent.
+
+**One limit worth stating plainly.** Madri still reaches `/quotes`, because
+invoicing and ordering are her job, and every figure on that dashboard is derived
+from quotes. The KPI SCREEN is now hers no longer; the underlying job data cannot be
+taken away without taking away her work. If the intent is that she should not know
+the business's turnover, that is a different and much larger conversation than a
+tile.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
