@@ -928,6 +928,58 @@ The dump, both copies of the connection string, and the local files were deleted
 immediately afterwards - they contained real client addresses and real password
 hashes.
 
+### The 11 blinds jobs are not stuck, and were never imported
+
+The brief described 11 blinds jobs imported from the old system, sitting at
+"accepted" with no path forward, needing a review screen to close them out against
+the old system's completion dates.
+
+None of that holds. Every one of them was accepted **in Bolton, this month**:
+
+| | |
+|---|---|
+| Job numbers | J-0009 to J-0025 - Bolton's own sequence, interleaved with the flooring jobs |
+| Accepted | 8 to 16 September 2026 |
+| Age | 3 to 11 days |
+| Installation date set | 0 of 11 |
+
+They are this month's live work, not a historical backlog. And they are not slow:
+flooring jobs close in **3 to 11 days** from acceptance, so the oldest blinds job
+sits exactly at flooring's own slowest, and most are well inside it. Blinds are made
+to measure with supplier lead time on top, so if anything they should take longer.
+
+The reason no blinds job has ever been closed is simply that **Bolton's blinds
+workflow is about three weeks old and none has come due yet.** The first ones
+accepted on 8 September are about due now. There is no backlog to build a review
+screen for, and building one would have created a screen for a problem that does not
+exist while the real jobs moved through normally.
+
+### But the completion DATE was a real gap
+
+The brief asked one thing to be confirmed: does `complete_quote()` always stamp
+today? **The endpoint never did** - it has always accepted a `completion_date` and
+defaulted to today only when none was sent.
+
+**The screen never sent one.** So a job marked complete on Monday for work finished
+the previous Thursday was recorded as Monday, and that date is what the monthly
+turnover series, the Order Index and Ask Bolton all count the job under.
+
+There is now a date field beside **Mark Installation Complete**, defaulted to today
+because that is genuinely the common case - the aim is to make the uncommon case
+possible, not to turn the common one into a form. The date appears in the
+confirmation prompt too ("Mark this job complete, finished on 12 September 2026?"),
+so it is part of the question rather than something to remember having set. When no
+field is on screen the parameter is omitted rather than sent empty, because
+`complete_quote()` treats absent as "use today" and an empty string as a bad date.
+
+Stock arrival needed nothing: `ready_for_installation` and its **Mark Materials
+Received** button already exist, already carry no role restriction, and are already
+on the job - confirmed in the previous brief.
+
+One oddity noticed in passing and not chased: J-0019 has a completion date one day
+BEFORE its accepted_at, which is either a timestamp-versus-date comparison artefact
+or a real data error. Worth a look; not part of this.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
