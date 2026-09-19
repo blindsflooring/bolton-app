@@ -634,6 +634,39 @@ problem. The jump waits for the panel to exist before scrolling, because opening
 job returns before its data has arrived, and gives up quietly after a couple of
 seconds: the job is open either way.
 
+### The Work Flow jump does not scroll, and no longer pretends to
+
+The Work Flow button opens the right job and the panel carries its heading. The
+auto-scroll that was meant to land you on it never worked, through two attempts,
+and has been removed rather than left in as decoration.
+
+What was established, measured on the deployed screen:
+
+- The page scrolls perfectly well - `window.scrollTo(0, 295)` moves it.
+- **`behavior: 'smooth'` moves nothing at all.** Instant scrolling works; smooth
+  returns 0 every time. `prefers-reduced-motion` is false, so that is not the
+  cause.
+- A direct instant `scrollIntoView({block:'start'})` lands correctly.
+- The same instant call issued from inside the post-render poll does not stick,
+  and what undoes it was never found. The two `window.scrollTo(0, 0)` calls in
+  this file are in openOrderDrill/closeOrderDrill, not this path.
+
+Dropped on Burgert's call. The heading and the button are what was actually
+missing - Madri could not find a panel that had no name - and on a desktop
+viewport the panel sits about 295px down a 639px window, already on screen when
+you arrive. The scroll only ever mattered on a phone.
+
+**The wider finding is worth more than the feature.** If smooth scrolling is
+genuinely inert in the browsers this business uses, several other "jump to"
+behaviours in this app are silently doing nothing too: the tiles block in
+order-index.js and two panels in index.html all ask for it. Nobody has reported
+them, which is exactly how a silent no-op survives. Worth a check.
+
+Two rounds of fixes also went out before this: the drill heading now says "24 of
+54 jobs - Flooring" instead of "54 jobs" over a list of 24, and the By Product
+tiles stopped double-counting 49 quotes. Both were found by driving the real
+screen after deploy, not by reading the diff.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
