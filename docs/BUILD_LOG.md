@@ -763,9 +763,22 @@ not in small print underneath:
 | September 2026 | "Landed in September 2026" | job value of work won this month |
 | All time | "Landed all time" | job value of every job ever won |
 
-Each splits Flooring / Blinds / All work, and each tile says either *"Counts a job
-once per trade if it has both"* or *"Counts once per job"*, so Flooring + Blinds not
-summing to the total is stated rather than discovered.
+Each splits Flooring / Blinds / All work, and every tile says **"Counts once per
+job"** - one rule, because one quote is one trade.
+
+**That last part is a confirmed business fact, not an inference** (Burgert: "I will
+always dish out two separate quotes for flooring and one for blinds, lets not
+confuse that"). The first version of this carried the older "counts a job once per
+trade if it has both" wording, inherited from the By Product tiles. It described a
+case this business does not produce, and its only effect was to invite the reader to
+wonder whether the columns should add up. They do.
+
+A quote carrying both trades is therefore not a category to explain away - it is
+something that should not exist, most likely a line added to the wrong quote. It
+gets its own coral tile, rendered only when one exists, labelled *"Unexpected -
+flooring and blinds are quoted separately"*. So the invariant holds either way:
+every job counted exactly once across the product tiles, nothing double-counted and
+nothing hidden from the total.
 
 **The mapping was confirmed before anything was built**, per the brief. Outstanding
 breaks into exactly two buckets and no more, which `_order_stage()` settles: a

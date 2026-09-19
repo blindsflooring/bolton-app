@@ -85,8 +85,23 @@ check(distinctScopes.length === 3, 'expected exactly 3 distinct time scopes');
 const distinctRules = [...new Set(rules)];
 console.log('distinct rules (%d):', distinctRules.length);
 distinctRules.forEach(r => console.log('   ', r));
-check(distinctRules.some(r => /once per trade/.test(r)), 'no product tile states the double-count rule');
-check(distinctRules.some(r => /once per job/.test(r)), 'no total tile states the single-count rule');
+check(distinctRules.length === 1 && /once per job/.test(distinctRules[0]),
+      'every tile should now say "Counts once per job": ' + JSON.stringify(distinctRules));
+
+// One quote is one trade, so the columns must ADD UP. This is the whole
+// point of the change: the old wording invited the reader to wonder
+// whether Flooring + Blinds should equal the total, and now it does.
+const amtNum = s => Number(String(s).replace(/[^0-9]/g, ''));
+check(amtNum(amts[0]) + amtNum(amts[1]) === amtNum(amts[2]),
+      'landed: Flooring + Blinds should equal All work');
+check(amtNum(amts[3]) + amtNum(amts[4]) === amtNum(amts[5]),
+      'installed: Flooring + Blinds should equal All work');
+check(amtNum(amts[6]) + amtNum(amts[7]) === amtNum(amts[8]),
+      'September: Flooring + Blinds should equal All work');
+check(amtNum(amts[9]) + amtNum(amts[10]) === amtNum(amts[11]),
+      'all time: Flooring + Blinds should equal All work');
+check(heads.filter(h => /Both trades/.test(h)).length === 0,
+      'no mixed quotes in the fixture, so no "Both trades" tile should render');
 
 // the figures themselves
 check(amts[0] === money(83763), 'landed/flooring outstanding wrong: ' + amts[0]);
@@ -105,6 +120,32 @@ check(amts[11] === money(508003), 'all-time total wrong: ' + amts[11]);
 check(counts[11] === '25 jobs', 'all-time job count wrong: ' + counts[11]);
 check(counts[2] === '19 jobs', 'landed-not-installed count wrong: ' + counts[2]);
 check(counts[5] === '3 jobs', 'installed-not-paid count wrong: ' + counts[5]);
+
+// And a stray both-trades quote must be SURFACED, never folded silently
+// into both columns - it should not exist, so it gets its own tile.
+const Q2 = Q.slice();
+Q2.push({ stage: 'accepted', job_category: 'mixed', amount_outstanding: 5000,
+          total_incl_vat: 9000, accepted_at: SEPT });
+const html2 = moneySectionsHtml(Q2, money);
+const heads2 = [...html2.matchAll(/ms-tile-head">([^<]+)</g)].map(m => m[1]);
+const rules2 = [...html2.matchAll(/ms-tile-rule">([^<]+)</g)].map(m => m[1]);
+console.log();
+console.log('with one stray both-trades quote:');
+const oddAt = heads2.findIndex(h => /Both trades/.test(h));
+console.log('   tile:', heads2[oddAt], '|', rules2[oddAt]);
+check(oddAt !== -1, 'a both-trades quote was not surfaced anywhere');
+check(/Unexpected/.test(rules2[oddAt] || ''), 'the both-trades tile does not flag it as unexpected');
+const amts2 = [...html2.matchAll(/ms-tile-amount">([^<]+)</g)].map(m => m[1]);
+// The real invariant, and the reason the odd tile exists: every job is
+// counted EXACTLY ONCE across the product tiles. Normally that means
+// Flooring + Blinds = All work; with a stray both-trades quote it means
+// Flooring + Blinds + Both = All work. Either way nothing is
+// double-counted and nothing is hidden from the total.
+const oddAmt = amtNum(amts2[oddAt]);
+check(amtNum(amts2[0]) + amtNum(amts2[1]) + oddAmt === amtNum(amts2[2]),
+      'Flooring + Blinds + Both should equal All work: ' +
+      [amts2[0], amts2[1], amts2[oddAt], amts2[2]].join(' / '));
+check(oddAmt === 5000, 'the stray quote should carry its own value: ' + amts2[oddAt]);
 
 console.log();
 console.log(fails ? fails + ' CHECK(S) FAILED' : 'ALL CHECKS PASSED');

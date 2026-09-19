@@ -533,6 +533,11 @@
     border-radius: 8px; padding: 12px 14px; background: var(--card);
   }
   .ms-tile-total { border-left-color: var(--navy); background: var(--bg, #f7f7f7); }
+  /* Only ever rendered when a quote carries both trades, which should
+     not happen - coral because it is an anomaly to look at, not a
+     category to accept. */
+  .ms-tile-odd { border-left-color: var(--coral); }
+  .ms-tile-odd .ms-tile-rule { color: var(--coral); font-weight: 600; }
   .ms-tile-head { font-family: 'Poppins', sans-serif; font-size: 13px; font-weight: 700; color: var(--navy); }
   .ms-tile-amount {
     font-family: 'Poppins', sans-serif; font-size: 23px; font-weight: 800;
