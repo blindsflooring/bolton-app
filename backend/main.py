@@ -135,8 +135,9 @@ def schema_health():
     none.
     """
     return {
-        "ok": not SCHEMA_CHECK["missing"],
+        "ok": not SCHEMA_CHECK["missing"] and not SCHEMA_CHECK.get("missing_tables"),
         "missing_columns": SCHEMA_CHECK["missing"],
+        "missing_tables": SCHEMA_CHECK.get("missing_tables", []),
         "tables_checked": SCHEMA_CHECK["tables_checked"],
         "checked_at": SCHEMA_CHECK["checked_at"],
     }
@@ -847,7 +848,7 @@ def _reconcile_model_columns() -> list:
 # The result of the last startup schema check, held in memory so the
 # dashboard and the health endpoint can report it without re-querying
 # the database on every page load. Written once at boot.
-SCHEMA_CHECK = {"checked_at": None, "missing": [], "tables_checked": 0}
+SCHEMA_CHECK = {"checked_at": None, "missing": [], "missing_tables": [], "tables_checked": 0}
 
 
 def _check_schema_matches_models():
@@ -878,6 +879,12 @@ def _check_schema_matches_models():
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     missing = []
+    # A table that is not there AT ALL used to be skipped by the
+    # continue below, so the whole check reported ok while every query
+    # against it would fail - the check answering a question it had not
+    # asked. create_all() runs before this, so an absent table means
+    # create_all could not make it, which is worth saying out loud.
+    missing_tables = sorted(t for t in SQLModel.metadata.tables if t not in existing_tables)
     for table_name, table in SQLModel.metadata.tables.items():
         if table_name not in existing_tables:
             continue
@@ -887,7 +894,15 @@ def _check_schema_matches_models():
                 missing.append(f"{table_name}.{column.name}")
     SCHEMA_CHECK["checked_at"] = datetime.utcnow().isoformat()
     SCHEMA_CHECK["missing"] = missing
+    SCHEMA_CHECK["missing_tables"] = missing_tables
     SCHEMA_CHECK["tables_checked"] = len(existing_tables)
+    if missing_tables:
+        print("=" * 70)
+        print(f"SCHEMA MISMATCH: {len(missing_tables)} table(s) declared by the models do "
+              f"NOT exist in the database: {', '.join(missing_tables)}")
+        print("create_all() runs before this check, so it could not create them — "
+              "check the database user's privileges.")
+        print("=" * 70)
     if missing:
         # Deliberately shouty and deliberately one line: this has to be
         # findable in a wall of startup output, and greppable.
@@ -5377,13 +5392,42 @@ def _prune_old_backups(session: Session, tenant_id: str, tier: str, keep_n: int)
     rows = session.exec(select(DatabaseBackupRecord).where(
         DatabaseBackupRecord.tenant_id == tenant_id, DatabaseBackupRecord.tier == tier,
     ).order_by(DatabaseBackupRecord.created_at.desc())).all()
-    for old in rows[keep_n:]:
+
+    # KEEP N RESTORABLE BACKUPS, NOT N ROWS.
+    #
+    # This counted every record, whatever its status. A failed run
+    # writes a record with no file, so failures took up slots in the
+    # keep window and pushed genuinely restorable backups out of it -
+    # eroding the supply of real backups fastest during exactly the
+    # outage that makes them matter. Five consecutive failures (30 Aug
+    # to 13 Sept 2026, the Dropbox token expiry) were already sitting in
+    # this table when it was found; seven would have pruned away every
+    # good daily while the retention count still read healthy.
+    #
+    # Uploaded rows are the backups. Everything else is the record of a
+    # run that did not produce one, kept separately so the failures stay
+    # visible without displacing anything.
+    restorable = [r for r in rows if r.status == "uploaded"]
+    unrestorable = [r for r in rows if r.status != "uploaded"]
+
+    for old in restorable[keep_n:]:
         if old.dropbox_path:
             result = dropbox_archive.delete_document(old.dropbox_path)
             if not result["ok"] and not result.get("not_configured"):
                 print(f"Database backup prune ({tier}): FAILED to delete {old.dropbox_path} from Dropbox ({result['reason']}) — leaving record, will retry next run")
                 continue
         session.delete(old)
+
+    # Failed/pending rows hold no file, so there is nothing to delete
+    # from Dropbox and nothing lost by dropping the oldest of them. They
+    # are bounded rather than kept forever, on the same count.
+    for old in unrestorable[keep_n:]:
+        session.delete(old)
+
+    if len(restorable) <= keep_n and len(rows) > len(restorable):
+        print(f"Database backup prune ({tier}): {len(restorable)} restorable of "
+              f"{len(rows)} record(s) — {len(unrestorable)} run(s) produced no file "
+              f"and no longer count against retention")
     session.commit()
 
 
@@ -5429,6 +5473,32 @@ def run_database_backup_job():
     # here, from the real in-memory bytes, before they're discarded —
     # never persisted anywhere.
     preview = database_backup.summarize_for_preview(file_bytes, method)
+
+    # SAY WHAT IS IN IT, EVERY NIGHT.
+    #
+    # This preview is the only thing in the system that ever looks
+    # INSIDE a backup, and on the scheduled path it was computed and
+    # thrown away - the scheduler discards the return value, so only a
+    # manual run ever saw it. Nothing distinguished a good nightly
+    # backup from a corrupt one: both recorded "uploaded".
+    #
+    # It still proves nothing about restorability (only a real restore
+    # does that, see RESTORE_BACKUP.md), but a backup that cannot even
+    # be parsed should not pass in silence.
+    if preview.get("preview_error"):
+        print("=" * 70)
+        print(f"DATABASE BACKUP UNREADABLE ({method}): the file was generated and is "
+              f"about to be uploaded, but its own contents could not be parsed "
+              f"({preview['preview_error']}). Treat this backup as unproven.")
+        print("=" * 70)
+    elif method == "python_json":
+        counts = preview.get("table_row_counts") or {}
+        total = sum(v for v in counts.values() if isinstance(v, int))
+        print(f"Database backup contents: {len(counts)} table(s), {total} row(s), "
+              f"sample: {preview.get('sample_real_row')}")
+    else:
+        print(f"Database backup contents: {preview.get('line_count')} line(s) of SQL")
+
     is_sunday = date.today().weekday() == 6
     results = []
     with Session(engine) as session:

@@ -699,6 +699,48 @@ deploy check that read 401 as "not deployed", and Ask Bolton reporting its own b
 spot as a fact about the business. A system that reports success about the wrong
 thing is worse than one that fails.
 
+### Sweep: what else reports success about the wrong thing?
+
+Four of these turned up by accident in a week - a Dropbox alert blaming a working
+credential, a deploy check reading 401 as "not deployed", Ask Bolton reporting its
+own blind spot as a fact about the business, and a backfill reporting success about
+the wrong database. So the nightly jobs, health checks and import scripts were read
+deliberately, asking one question of each: **can this report success or failure
+about something it never actually checked?**
+
+The codebase came out of it well. Exception handling is careful almost everywhere -
+three silent `except: pass` blocks exist and all three are correct (skipping a
+malformed job number, a best-effort delete). The consistency monitor's own checks
+genuinely inspect data. `_record_and_upload_backup()` sets its status from the real
+upload result. Three real findings, all in the backup layer.
+
+**Retention counted records, not backups.** `_prune_old_backups()` kept the newest
+seven ROWS, whatever their status. A failed run writes a row with no file, so
+failures took up slots in the keep window and pushed genuinely restorable backups
+out of it - eroding the supply of real backups fastest during exactly the outage
+that makes them matter. This was not hypothetical: five consecutive failures (30
+Aug to 13 Sept, the Dropbox token expiry) were sitting in the table. Against the
+real records, seven "kept" slots held five restorable backups, and the 27 August one
+was queued for deletion to make room for two failures. Seven consecutive failures
+would have pruned away every good daily while the count still read healthy. Now
+only `uploaded` rows count toward retention; failure rows are kept separately,
+bounded on the same count, so they stay visible without displacing anything.
+
+**The nightly backup never looked inside itself.** `summarize_for_preview()` is the
+only thing in the system that reads a backup's contents, and on the scheduled path
+it was computed and discarded - the scheduler ignores the return value, so only a
+manual run ever saw it. A corrupt backup and a good one both recorded "uploaded".
+It now prints what it found every night, and says so loudly if the file cannot be
+parsed at all. This still proves nothing about restorability - only a real restore
+does that - but a backup that cannot be read should not pass in silence.
+
+**The schema check reported ok for a table that was not there.** It compared
+model-declared columns against live ones, and `continue`d past any table missing
+entirely - so a wholly absent table produced no finding and `ok: true`, while every
+query against it would fail. `create_all()` runs before the check, so an absent
+table means create_all could not make it, which is worth saying. Now reported
+separately, and `ok` accounts for it.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
