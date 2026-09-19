@@ -587,6 +587,53 @@ world will be believed, and acted on.
 
 Suite L asserts all three, including that the old instruction cannot come back.
 
+### The pipeline was counting 49 jobs twice
+
+Work Quoted counted the `quoted` stage. By Product counted *"open jobs - quoted
+through awaiting payment"*. Measured against production: **49 of the 53 quoted jobs
+appeared in both**, and By Product read 71 when only 22 of those jobs had actually
+landed.
+
+By Product is now accepted onwards - accepted, scheduled, awaiting payment - as a
+named constant rather than a negation, because "everything except closed" is how it
+drifted in the first place. The two groups now answer two different questions: Work
+Quoted is what MIGHT land, By Product is what HAS landed and still needs doing.
+Overlap is zero, verified against the real 78 rows.
+
+The deliberate overlap that remains is the other one, and it stays: a job carrying
+both flooring and blinds lines counts in both product tiles, because it genuinely is
+work of both trades. The group says so on its own face.
+
+**Work Quoted gains the product filter By Product used to provide for it** - 24
+flooring and 25 blinds among the 53 quoted, with 4 uncategorised because a quote
+with no lines has no category, which the badge already refuses to guess at. The
+chips nest branch -> product -> area, so the suburb counts describe what is actually
+on screen. Changing product drops the suburb (a suburb from the old product list
+usually matches nothing in the new one, and an empty screen reads as a broken
+filter); changing BRANCH deliberately keeps the product, because every branch has
+both trades and "Flooring, now show me Hermanus" is a coherent thing to ask.
+
+**And every tile now states its exact scope.** "Awaiting an answer" described a
+mood, not a set of jobs. It is now "Quoted - not accepted yet", "Installed - money
+still owed", and so on. The scope line was also 10.5px in the faintest ink on the
+page - there to be found rather than read, which is how two tiles double-counted
+half the pipeline for months without anyone noticing. Darker, a size up, still
+secondary to the number.
+
+### The Work Flow panel had no name
+
+Madri could not find it, and the reason is simple: it had no heading. Accept, the
+installation date, Confirm Installation, Invoice now - all of it reachable only by
+opening a job and recognising the controls, which works if you already know they are
+there and not otherwise.
+
+It now carries a "Work Flow" heading, and every Order Index row has a Work Flow
+link straight to it, sitting beside Quick View rather than inside the overflow menu
+- burying the fix for a discoverability problem in a menu would have reproduced the
+problem. The jump waits for the panel to exist before scrolling, because opening a
+job returns before its data has arrived, and gives up quietly after a couple of
+seconds: the job is open either way.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

@@ -506,6 +506,17 @@
      screen. Kept after the personal list was removed: the tiles now
      have more room, and the point was never the column, it was not
      having to scroll Home. */
+  /* The Work Flow panel's own name (confirmed Sept 2026). Sized to sit
+     above the status strip without competing with it: this labels the
+     panel, the strip is still the first thing to read inside it. */
+  .jd-workflow-heading {
+    margin: 0 0 12px;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    color: var(--navy);
+    border-bottom: 2px solid var(--teal);
+    padding-bottom: 7px;
+  }
   .home-welcome { margin-bottom: 14px; }
   .home-main .tile-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
   .home-main .tile { min-height: 68px; padding: 12px 14px; }
@@ -901,7 +912,13 @@
     line-height: 1.05; color: var(--navy); font-variant-numeric: tabular-nums;
   }
   .oi-tile-value { font-size: 12.5px; font-weight: 700; color: #4b5563; font-variant-numeric: tabular-nums; }
-  .oi-tile-sub { font-size: 10.5px; color: var(--ink-faint, #8A939C); line-height: 1.25; }
+  /* The scope line, not decoration (confirmed Sept 2026). Every tile
+     now states the exact set it counts, and at 10.5px in the faintest
+     ink on the page that sentence was there to be found rather than
+     read - which is how Work Quoted and By Product were both believed
+     for months while they double-counted 49 jobs. Darker and a size up:
+     still secondary to the number, no longer invisible. */
+  .oi-tile-sub { font-size: 11.5px; color: var(--ink-soft, #55606D); line-height: 1.3; font-weight: 500; }
 
   /* Same low-saturation stage language the old tiles established —
      these sit above a screen with real urgency colouring elsewhere, so
