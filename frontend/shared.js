@@ -1197,7 +1197,7 @@ const LANDING_TILES = [
 // enforcement that already existed (strip_sensitive_fields, the
 // owner-only business-settings write, etc.) — it doesn't change what the
 // backend allows, just what's surfaced in the UI.
-const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
+const SALES_HIDDEN_TILES = ['settings', 'hr'];   // 'business' moved to OWNER_ONLY_TILES (Sept 2026) - see there
 // Login & Session Activity Log (confirmed Aug 2026): Owner-only, under
 // all circumstances — stricter than SALES_HIDDEN_TILES above, which
 // only hides from Sales (Admin still sees Business Overview/Settings/
@@ -1208,7 +1208,14 @@ const SALES_HIDDEN_TILES = ['business', 'settings', 'hr'];
 // Hiding the tile is the convenience; every endpoint behind it is
 // require_owner (main.py), which is the actual boundary and refuses an
 // Owner previewing as Sales too.
-const OWNER_ONLY_TILES = ['sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts', 'flaggedItems', 'financialRecords'];
+// 'business' joined this list in Sept 2026 (Burgert: "the whole
+// section just for my eyes only - revoke all permissions to the KPI
+// section for madri and ryno"). It was only ever hidden from SALES;
+// Admin could open it, and the endpoint behind it was not gated at all.
+// Moving it here does both: the tile disappears for Admin as well as
+// Sales, and /analytics/overview now requires owner server-side, so
+// hiding the tile is no longer the only thing standing in the way.
+const OWNER_ONLY_TILES = ['business', 'sessionLog', 'supplierConsole', 'changeLog', 'builderPortal', 'accounts', 'flaggedItems', 'financialRecords'];
 // Trusted Tester Accounts brief (confirmed Aug 2026) — same scope as
 // Sales (they're here for client/quote/job work, not business
 // operations), even though they get Sales's pricing-restriction
