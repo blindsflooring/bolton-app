@@ -807,6 +807,33 @@ asserts every figure and every label. The fixture is built from measured product
 values rather than from whatever the code produces - a test that takes its
 expectations from the code under test proves only that the code agrees with itself.
 
+### By Product counts one trade per quote too
+
+The money sections were aligned to the business rule first; the By Product tiles
+still carried the old *"a job with both trades counts in both tiles"* note, which
+left one screen using a counting rule the business does not produce - exactly the
+inconsistency this whole brief exists to remove.
+
+`'mixed'` is out of `ORDER_PRODUCTS` cats. That one edit aligns **three** things at
+once, because all three ask that list what counts as which trade: the By Product
+tiles, the drill-down they open, and the Work Quoted product chips. A both-trades
+quote is now in neither.
+
+It gets its own coral tile in the group, rendered only when one exists, reading
+*"Unexpected - flooring and blinds are quoted separately, so these are in neither
+tile"*. Deliberately not a button: there is no drill-down for "should not exist" -
+the point is to notice it and fix the quote. Silently counting it in both tiles is
+precisely how such a mistake stays invisible.
+
+No number changes today: there are zero mixed quotes in production, so Flooring 11
+and Blinds 11 are what they were. The change is what happens the first time somebody
+adds a blinds line to a flooring quote.
+
+`moneySectionInProduct()` was deleted rather than left behind - a dead helper that
+still reads `cats` is the obvious thing for a later change to "reuse" by mistake.
+The test now asserts `'mixed'` is in neither product's cats and that each maps to
+exactly one category, so it cannot creep back and quietly restore the double-count.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):

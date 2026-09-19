@@ -537,6 +537,17 @@
      not happen - coral because it is an anomaly to look at, not a
      category to accept. */
   .ms-tile-odd { border-left-color: var(--coral); }
+
+  /* Same treatment on the By Product group: an anomaly to look at, not
+     a category to accept. Not a button - there is no drill-down for
+     "should not exist", the point is to notice it and fix the quote. */
+  .oi-tile-odd {
+    border: 1px solid var(--coral); border-left-width: 3px;
+    background: var(--card); cursor: default; text-align: left;
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 8px;
+  }
+  .oi-tile-odd .oi-tile-label, .oi-tile-odd .oi-tile-count { color: var(--coral); }
+  .oi-tile-odd .oi-tile-sub { color: var(--coral); font-weight: 600; }
   .ms-tile-odd .ms-tile-rule { color: var(--coral); font-weight: 600; }
   .ms-tile-head { font-family: 'Poppins', sans-serif; font-size: 13px; font-weight: 700; color: var(--navy); }
   .ms-tile-amount {

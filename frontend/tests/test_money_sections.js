@@ -23,8 +23,8 @@ function grab(startMarker, endMarker) {
   return src.slice(i, j);
 }
 
-eval(grab('const MONEY_SECTION_STAGES', 'function moneySectionInProduct').replace('const MONEY_SECTION_STAGES', 'global.MONEY_SECTION_STAGES'));
-eval(grab('function moneySectionInProduct', '// ===== Turnover'));
+eval(grab('const MONEY_SECTION_STAGES', 'function moneySectionTile').replace('const MONEY_SECTION_STAGES', 'global.MONEY_SECTION_STAGES'));
+eval(grab('function moneySectionTile', '// ===== Turnover'));
 
 const money = n => 'R' + Math.round(n).toLocaleString('en-ZA');
 
@@ -146,6 +146,18 @@ check(amtNum(amts2[0]) + amtNum(amts2[1]) + oddAmt === amtNum(amts2[2]),
       'Flooring + Blinds + Both should equal All work: ' +
       [amts2[0], amts2[1], amts2[oddAt], amts2[2]].join(' / '));
 check(oddAmt === 5000, 'the stray quote should carry its own value: ' + amts2[oddAt]);
+
+// The By Product tiles, the drill-down they open and the Work Quoted
+// chips all ask ORDER_PRODUCTS what counts as which trade. One quote is
+// one trade, so 'mixed' must belong to neither - if it creeps back into
+// cats, all three silently start double-counting again.
+const realProducts = eval(grab('const ORDER_PRODUCTS = [', '];').replace('const ORDER_PRODUCTS =', '') + ']');
+console.log();
+console.log('ORDER_PRODUCTS cats:', JSON.stringify(realProducts.map(p => [p.key, p.cats])));
+check(realProducts.every(p => p.cats.indexOf('mixed') === -1),
+      "'mixed' is back in ORDER_PRODUCTS cats - By Product would double-count again");
+check(realProducts.length === 2 && realProducts[0].cats.length === 1 && realProducts[1].cats.length === 1,
+      'each product should map to exactly one job_category');
 
 console.log();
 console.log(fails ? fails + ' CHECK(S) FAILED' : 'ALL CHECKS PASSED');
