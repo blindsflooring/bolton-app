@@ -667,6 +667,38 @@ Two rounds of fixes also went out before this: the drill heading now says "24 of
 tiles stopped double-counting 49 quotes. Both were found by driving the real
 screen after deploy, not by reading the diff.
 
+### A backfill that could not say which database it wrote to
+
+`populate_financial_records.py --apply` was run with the production connection
+string. It reported five statements stored, all reconciled, no errors. Production
+still returned zero rows.
+
+The five statements were in `backend/bolton.db` - the local SQLite file. The
+connection string never reached the process: the command was written in bash prefix
+form, `DATABASE_URL="..." python ...`, which sets nothing on Windows. `main.py`
+fell back to its `sqlite:///./bolton.db` default, and every word of the success
+message was true about the wrong database.
+
+That is my error twice over - handing a bash-syntax command to a Windows machine,
+and building a script whose wrong-database failure mode is a clean success.
+
+Two guards, both earned:
+
+**It says where it is going, every run.** `Target -> Postgres: db.xyz/postgres` or
+`Target -> SQLite file: ./bolton.db`, printed before anything happens, apply or
+not. Host and database name only - never the user, never the password. A one-time
+backfill that cannot say which database it wrote to is not finished.
+
+**And `--apply` refuses a SQLite target** unless `--local` says you meant it, with
+the correct PowerShell and Git Bash invocations printed in the refusal. SQLite is a
+legitimate target for testing this script; silently defaulting to it while somebody
+believes they are loading production is not.
+
+The same shape as the Dropbox alert that blamed a credential that was fine, the
+deploy check that read 401 as "not deployed", and Ask Bolton reporting its own blind
+spot as a fact about the business. A system that reports success about the wrong
+thing is worse than one that fails.
+
 ### Still outstanding
 
 The `ask_bolton_live` Postgres role has to be created and `ASK_BOLTON_LIVE_DATABASE_URL` set, or Ask Bolton correctly refuses every Sales and Admin question. Same least-privilege pattern as `ask_bolton`, on the Supabase **pooler** (direct connections are IPv6-only and Render can't reach them):
