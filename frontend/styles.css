@@ -1948,3 +1948,98 @@
   .ask-scope-blocked { color: var(--coral); }
   .ask-input:disabled, .ask-btn:disabled { background: var(--bg); cursor: not-allowed; }
   .ask-btn:disabled { color: #8A93A0; }
+
+  /* ===== Material stock on hand (confirmed Sept 2026) =====
+     Screed, glue, slurry and bondite. Built after the business ran short
+     of bonding liquid with no warning, which is why the warning below is
+     styled to be unmissable rather than tasteful: something that looks
+     like the tiles beside it is something you stop seeing by Thursday.
+
+     No non-ASCII inside any quoted string in here. xhtml2pdf's CSS
+     parser cannot read one and it takes down document archiving for the
+     whole app - see _strip_non_ascii_in_css_strings() (pdf_render.py),
+     which now catches it, and the test that would have caught it sooner. */
+  .stock-section { margin: 18px 0 8px; }
+  .stock-section-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  .stock-section-head h2 { margin: 0; font-size: 17px; color: var(--navy); }
+
+  /* Readable from across the room, per the brief. auto-fit rather than a
+     fixed four, so four tiles on a desktop become two and two on a phone
+     without a second rule. */
+  .stock-tile-grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+  .stock-tile {
+    background: #fff; border: 1px solid var(--border); border-left: 5px solid var(--teal);
+    border-radius: 10px; padding: 14px 16px; cursor: pointer;
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .stock-tile:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+  .stock-tile-label { font-size: 13px; font-weight: 700; color: var(--navy); }
+  .stock-tile-figure {
+    font-size: 42px; line-height: 1.05; font-weight: 800; color: var(--navy);
+    margin: 4px 0 0; letter-spacing: -1px;
+  }
+  .stock-tile-unknown-text { font-size: 20px; font-weight: 700; color: #8A93A0; letter-spacing: 0; }
+  .stock-tile-unit { font-size: 11.5px; color: #6b7280; margin-bottom: 8px; }
+  .stock-tile-detail {
+    display: flex; justify-content: space-between; gap: 10px;
+    font-size: 12px; color: #4b5563; border-top: 1px solid var(--border); padding-top: 7px;
+  }
+  .stock-tile-foot { font-size: 11px; color: #9aa0a6; margin-top: 6px; }
+  /* Short is the app's existing alarming colour, reused rather than
+     introduced - the same var(--coral) every other warning already uses. */
+  .stock-tile-short { border-left-color: var(--coral); background: #FFF6F3; }
+  .stock-tile-flag {
+    margin-top: 7px; font-size: 12px; font-weight: 700; color: var(--coral);
+  }
+  /* Not counted is grey, NOT red. It is an absence of information, not a
+     problem with the stock, and colouring it as an alarm would train
+     people to ignore the real one beside it. */
+  .stock-tile-unknown { border-left-color: #c3c8ce; background: #FAFAFA; }
+
+  .stock-alert {
+    border-radius: 10px; padding: 12px 16px; margin: 0 0 12px;
+    border-left: 5px solid var(--coral); background: #FFF1EC;
+  }
+  .stock-alert-title { font-weight: 800; color: var(--navy); font-size: 14.5px; margin-bottom: 4px; }
+  .stock-alert-line { font-size: 13px; color: #3f4855; line-height: 1.5; }
+  .stock-alert-action { color: var(--teal); text-decoration: underline; cursor: pointer; margin-left: 4px; }
+  .stock-alert-unknown { border-left-color: #8A93A0; background: #F4F5F6; }
+  .stock-alert-drift { border-left-color: #E0A82E; background: #FFF9EC; }
+
+  .stock-count-row { margin-bottom: 14px; }
+  .stock-count-head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 14px; flex-wrap: wrap;
+  }
+  .stock-count-head h3 { margin: 0 0 2px; }
+  .stock-count-head p { margin: 0; font-size: 12px; }
+  /* What Bolton expects, shown BEFORE anything is typed. This is the
+     whole reconciliation idea made visible at the moment of entry rather
+     than reported afterwards. */
+  .stock-count-expected { text-align: right; font-size: 11.5px; }
+  .stock-count-expected-figure { font-size: 22px; font-weight: 700; color: var(--navy); }
+  .stock-count-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+  .stock-step {
+    border: 1px solid var(--border); background: #fff; border-radius: 6px;
+    padding: 6px 11px; font-size: 13px; cursor: pointer; color: var(--navy);
+  }
+  .stock-step:hover { border-color: var(--teal); color: var(--teal); }
+  .stock-count-entry { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .stock-count-entry label { font-size: 13px; font-weight: 600; }
+  .stock-count-entry input[type="number"] { width: 110px; }
+  .stock-count-entry input[type="text"] { flex: 1; min-width: 150px; }
+  .stock-count-result:empty { display: none; }
+  .stock-count-result { margin-top: 10px; font-size: 13px; line-height: 1.5; }
+  .stock-result-ok { color: #1f7a3d; }
+  .stock-result-flag {
+    color: var(--navy); background: #FFF9EC; border-left: 4px solid #E0A82E;
+    padding: 9px 12px; border-radius: 6px; font-weight: 600;
+  }
+  .stock-result-bad { color: var(--coral); }
+  .stock-row-flagged { border-left: 4px solid #E0A82E; }

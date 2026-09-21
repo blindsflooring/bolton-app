@@ -1142,6 +1142,13 @@ const LANDING_TILES = [
   // Placed right after Order Index, before quoting itself — a lead is
   // the step BEFORE a quote exists.
   { id: 'leads', title: 'Leads', desc: 'New enquiries, before they’re a quote', ready: true },
+  // Material stock (confirmed Sept 2026) - screed, glue, slurry and
+  // bondite, counted daily. Its own tile rather than a corner of
+  // Settings: running short stops a job on site, and the brief asks for
+  // it to be reachable without digging. Visible to every role - what is
+  // on the shelf is an operational fact with no money in it, unlike the
+  // Business Overview next to it.
+  { id: 'stockCount', title: 'Stock Count', desc: 'Screed, glue, slurry, bondite — what’s on the shelf', ready: true },
   // Assigned Leads / To-Dos, Stage 2 (confirmed Sept 2026) — genuinely
   // separate from Leads (own table, no sales-process status/proof-of-
   // work note), placed right next to it since both feed the same

@@ -2287,6 +2287,105 @@ class StockPurchaseLine(SQLModel, table=True):
     line_total_ex_vat: float = 0.0
 
 
+class StockMaterial(SQLModel, table=True):
+    """A consumable Bolton counts on the shelf (confirmed Sept 2026).
+
+    Four of them to begin with — screed, glue, slurry, bondite — after a
+    real near-miss: the business ran short of bonding liquid and slurry
+    with no warning, and had no idea how much glue or screed was on hand.
+    That is a job-stopping risk, and nothing in Bolton could see it.
+
+    A TABLE RATHER THAN FOUR CONSTANTS, for the reason this codebase has
+    already settled once (see BusinessSettings' own history): the unit a
+    material is counted in is a business rule, not an engineering one.
+    Burgert changed his mind about screed's increment between writing the
+    brief and answering the question about it, which is exactly the kind
+    of change that must not need a deploy.
+
+    WHAT IS NOT HERE, deliberately: a quantity. There is no on-hand
+    column anywhere in this model set. On-hand is DERIVED — the last real
+    count a person made, minus what jobs have consumed since (see
+    stock_overview(), main.py). A stored running balance would be a
+    second source of truth that drifts silently the first time anything
+    fails mid-write, and "the number was confidently wrong" is the one
+    outcome that would make this feature worse than the spreadsheet it
+    replaces.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    key: str = Field(index=True)          # "screed" | "glue" | "slurry" | "bondite"
+    label: str                             # what the tile says
+    unit_label: str = "units"              # "bags" | "drums" — plural, used in the UI
+    pack_note: str = ""                    # "20 kg bag", "70 m² per drum" — the thing a person counts
+    # Quarter drums are countable by eye; a tenth of a drum is not. 1.0
+    # means whole units only. Burgert's own answer, and editable here
+    # rather than baked into a validator.
+    increment: float = 0.25
+    # WHERE CONSUMPTION COMES FROM. Not a style choice — the four
+    # materials genuinely record their usage in two different places, and
+    # pretending otherwise would mean inventing a number for two of them:
+    #   "quote_line_bags"  QuoteLineItem.bags_allowed      (screed)
+    #   "quote_line_glue"  QuoteLineItem.glue_units_needed (glue)
+    #   "order_sheet_line" OrderSheetLine.quantity on a floor_prep sheet,
+    #                      matched by name (slurry, bondite)
+    # The third is weaker than the first two and it is worth being honest
+    # about why: it only sees a job that had a floor-prep order sheet
+    # generated. A job that used slurry without one is invisible to it,
+    # and the daily count is what catches that — which is precisely the
+    # argument for keeping the manual count as a real check rather than a
+    # formality.
+    source: str = "order_sheet_line"
+    # Lowercase substrings matched against a line's product name, for the
+    # order-sheet source and for on-order purchase lines. Comma-separated
+    # because a material can be spelled more than one way on a supplier's
+    # list ("iTe SLURRY", "slurry 30kg").
+    match_terms: str = ""
+    # Counted-but-not-alarming headroom. A shortfall inside this is not
+    # worth an unmissable warning; below it, it is.
+    low_stock_buffer: float = 0.0
+    display_order: int = 0
+    active: bool = True
+
+
+class StockCount(SQLModel, table=True):
+    """One material, counted by a person, on one day (confirmed Sept 2026).
+
+    The anchor the whole feature hangs off. Everything else is derived
+    from the most recent one of these plus what jobs have consumed since,
+    so a count is not a formality — it is the only point at which Bolton
+    learns what is actually on the shelf.
+
+    WHICH IS WHY THE VARIANCE IS STORED. The brief's own requirement:
+    "if a day's manual entry doesn't match what the automatic deduction
+    expects (e.g. someone re-enters yesterday's number without actually
+    checking), flag the mismatch rather than silently accepting it."
+    expected_qty is what Bolton predicted immediately before this count
+    was saved, and variance is counted minus expected. Both are written
+    once, at the moment of counting, and never recomputed — recomputing
+    later against today's data would quietly erase the disagreement this
+    record exists to preserve.
+
+    A positive variance means more was found than expected (a delivery
+    nobody recorded, or a job that did not use what it was quoted). A
+    negative one means material left without a job to account for it.
+    Neither is automatically an error, and neither is corrected here.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True)
+    material_key: str = Field(index=True)
+    counted_qty: float
+    # None only for the very first count of a material, when there is no
+    # previous figure to have expected anything from. Explicitly NOT 0.0
+    # — a real zero expectation and "nothing to compare against" are
+    # different facts and must not render the same.
+    expected_qty: Optional[float] = None
+    variance: Optional[float] = None
+    counted_on: date = Field(index=True)
+    counted_by: str = ""
+    note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # ===== Historical Performance Comparison (confirmed Sept 2026) =====
 # FEATURE FLAG / REMOVAL NOTE — read this first if the request is
 # "take the historical comparison out again".

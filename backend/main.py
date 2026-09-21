@@ -37,7 +37,7 @@ from models import (
     SupplierDefault, FloorPrepProduct, Builder, BuilderEstimate, QuotePhoto, BuilderPortalVisit,
     OrderSheet, OrderSheetLine, PasswordResetToken, DocumentArchive, DatabaseBackupRecord,
     FlaggedRecord, Lead, JobWorkDay, ToDo,
-    StockPurchase, StockPurchaseLine,
+    StockPurchase, StockPurchaseLine, StockMaterial, StockCount,
     # Financial Records (Sept 2026) — company-level annual statements,
     # owner-only, deliberately separate from job-level DocumentArchive.
     FinancialStatement,
@@ -2552,6 +2552,8 @@ def on_startup():
     except Exception as e:
         print(f"Migration: invoice_sent_date backfill failed ({e}) — already-sent invoices keep prompting in Needs Attention until this is retried or the date is set by hand")
 
+
+    _seed_stock_materials()
 
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render
@@ -8665,6 +8667,351 @@ def delete_stock_purchase(purchase_id: int, role: str = Depends(require_owner),
         session.delete(purchase)
         session.commit()
         return {"deleted": purchase_id}
+
+
+def _seed_stock_materials():
+    """The four materials, once, with the units Burgert confirmed.
+
+    Seeds only what is missing, by key, and never edits a row that is
+    already there — the increments and labels are his to change from
+    here on, and a redeploy quietly resetting them to these values would
+    make the table pointless.
+
+    The pack sizes are not invented: screed, slurry and bondite are read
+    off Azura's own price list (FloorPrepProduct, seeded separately), and
+    glue is Techem Tek 70/70 at 70 m² per drum — the same figure
+    BusinessSettings.stairwell_default_glue_coverage_m2 already carries
+    and that calculate_*_line() already divides by to get
+    QuoteLineItem.glue_units_needed. So the glue tile counts exactly the
+    drums the quote maths has always counted.
+    """
+    seed = [
+        # key, label, unit_label, pack_note, source, match_terms, order
+        ("screed", "Screed", "bags", "20 kg bag", "quote_line_bags",
+         "leveli,screed,f10,f30", 1),
+        ("glue", "Glue (Teck 70/70)", "drums", "70 m² per drum", "quote_line_glue",
+         "teck,tek 70,70/70,techem", 2),
+        ("slurry", "Slurry", "drums", "30 kg drum", "order_sheet_line",
+         "slurry", 3),
+        ("bondite", "Bondite", "drums", "25 L drum", "order_sheet_line",
+         "bondite,bondit", 4),
+    ]
+    try:
+        with Session(engine) as session:
+            existing = {m.key for m in session.exec(select(StockMaterial)).all()}
+            added = 0
+            for key, label, unit_label, pack_note, source, terms, order in seed:
+                if key in existing:
+                    continue
+                session.add(StockMaterial(
+                    tenant_id=DEFAULT_TENANT_ID, key=key, label=label,
+                    unit_label=unit_label, pack_note=pack_note, increment=0.25,
+                    source=source, match_terms=terms, display_order=order))
+                added += 1
+            if added:
+                session.commit()
+                print(f"Stock: seeded {added} tracked material(s)")
+    except Exception as exc:            # noqa: BLE001
+        print(f"Stock: could not seed materials ({exc}) — the tiles will be empty "
+              "until this is retried; no existing data is affected")
+
+
+# =====================================================================
+# Material stock on hand (confirmed Sept 2026)
+#
+# Screed, glue, slurry and bondite, counted daily and deducted as jobs
+# consume them. Built after a real near-miss: the business ran short of
+# bonding liquid and slurry with no warning at all.
+#
+# THE ONE DESIGN DECISION EVERYTHING ELSE FOLLOWS FROM: nothing stores a
+# running balance. On-hand is the last count a person actually made,
+# minus what jobs have consumed since that count. A stored balance would
+# be a second source of truth, and the first time a write failed halfway
+# it would be silently wrong for weeks — which is worse than the
+# spreadsheet this replaces, because it would look authoritative.
+#
+# That also makes reconciliation fall out for free rather than needing
+# its own machinery: what Bolton expects a count to be IS the on-hand
+# figure, so comparing it to what was actually counted is one
+# subtraction, not a parallel calculation that could disagree.
+# =====================================================================
+
+# A job consumes its material when the work is DONE, not when it is won.
+# completion_date is the field that records that (added Sept 2026, "the
+# screen never sent one" — see complete_quote()), and it is a real date a
+# person set rather than an inference. A job with no completion date has
+# not eaten anything yet; it sits in "needed" instead.
+STOCK_CONSUMED_STATUSES = ("completed",)
+# What is coming but has not landed: accepted or scheduled work.
+STOCK_NEEDED_STATUSES = ("accepted", "scheduled")
+
+
+def _stock_materials(session: Session, tenant_id: str) -> list:
+    return list(session.exec(
+        select(StockMaterial)
+        .where(StockMaterial.tenant_id == tenant_id, StockMaterial.active == True)  # noqa: E712
+        .order_by(StockMaterial.display_order, StockMaterial.key)
+    ).all())
+
+
+def _stock_matches(material: "StockMaterial", text: str) -> bool:
+    """Does this line's product name look like this material?
+
+    Substring matching on purpose. These names are typed by suppliers and
+    by people — "iTe SLURRY (30kg)", "Slurry 30kg", "ITE Slurry" — and an
+    exact-match lookup would silently count nothing while looking like it
+    worked, which is the failure this codebase keeps meeting.
+    """
+    haystack = (text or "").lower()
+    terms = [t.strip().lower() for t in (material.match_terms or "").split(",") if t.strip()]
+    return any(term in haystack for term in terms)
+
+
+def _stock_quantity_for(session: Session, tenant_id: str, material: "StockMaterial",
+                        quote_ids: list) -> float:
+    """How much of this material the given jobs account for.
+
+    The three sources are genuinely different places, not three styles of
+    the same query — see StockMaterial.source (models.py) for why, and
+    for the honest weakness of the third.
+    """
+    if not quote_ids:
+        return 0.0
+    if material.source in ("quote_line_bags", "quote_line_glue"):
+        column = (QuoteLineItem.bags_allowed if material.source == "quote_line_bags"
+                  else QuoteLineItem.glue_units_needed)
+        total = session.exec(select(func.sum(column)).where(
+            QuoteLineItem.tenant_id == tenant_id,
+            QuoteLineItem.quote_id.in_(quote_ids))).one()
+        return float(total or 0.0)
+    # order_sheet_line: floor-prep sheets carry slurry/bondite quantities
+    # that exist nowhere on the quote line itself.
+    rows = session.exec(
+        select(OrderSheetLine.product_name, OrderSheetLine.quantity)
+        .join(OrderSheet, OrderSheet.id == OrderSheetLine.order_sheet_id)
+        .where(OrderSheetLine.tenant_id == tenant_id,
+               OrderSheet.quote_id.in_(quote_ids))).all()
+    return float(sum(qty or 0.0 for name, qty in rows if _stock_matches(material, name)))
+
+
+def _stock_quote_ids(session: Session, tenant_id: str, statuses, since: "date" = None,
+                     completed: bool = False) -> list:
+    """Jobs in the given workflow states, excluding the ones that are not
+    real work. A declined quote and a price check consume nothing, and
+    counting them would overstate demand on every tile."""
+    conditions = [Quote.tenant_id == tenant_id,
+                  Quote.workflow_status.in_(statuses),
+                  Quote.declined_at.is_(None)]
+    if hasattr(Quote, "is_price_check"):
+        conditions.append(Quote.is_price_check == False)  # noqa: E712
+    if completed:
+        conditions.append(Quote.completion_date.is_not(None))
+        if since is not None:
+            conditions.append(Quote.completion_date > since)
+    return [q.id for q in session.exec(select(Quote).where(*conditions)).all()]
+
+
+def _last_stock_count(session: Session, tenant_id: str, material_key: str):
+    return session.exec(
+        select(StockCount)
+        .where(StockCount.tenant_id == tenant_id, StockCount.material_key == material_key)
+        .order_by(StockCount.counted_on.desc(), StockCount.id.desc())
+    ).first()
+
+
+def _stock_on_order(session: Session, tenant_id: str, material: "StockMaterial") -> float:
+    """Ordered from a supplier and not yet received.
+
+    StockPurchase.status is already exactly this distinction ("ordered" |
+    "received" | "cancelled"), so nothing new is invented here — a
+    received order has landed and belongs to a count, and a cancelled one
+    was never coming.
+    """
+    rows = session.exec(
+        select(StockPurchaseLine.description, StockPurchaseLine.product_code,
+               StockPurchaseLine.qty)
+        .join(StockPurchase, StockPurchase.id == StockPurchaseLine.stock_purchase_id)
+        .where(StockPurchaseLine.tenant_id == tenant_id,
+               StockPurchase.status == "ordered")).all()
+    return float(sum(qty or 0.0 for description, code, qty in rows
+                     if _stock_matches(material, f"{description} {code}")))
+
+
+def _stock_state(session: Session, tenant_id: str, material: "StockMaterial") -> dict:
+    """One material's whole picture. The single place these figures are
+    worked out — the tiles, the warning and the reconciliation check all
+    read this, so they cannot disagree with each other about what is on
+    the shelf."""
+    last = _last_stock_count(session, tenant_id, material.key)
+    consumed_since = 0.0
+    if last is not None:
+        consumed_since = _stock_quantity_for(
+            session, tenant_id, material,
+            _stock_quote_ids(session, tenant_id, STOCK_CONSUMED_STATUSES,
+                             since=last.counted_on, completed=True))
+    on_hand = None if last is None else round(last.counted_qty - consumed_since, 2)
+    needed = round(_stock_quantity_for(
+        session, tenant_id, material,
+        _stock_quote_ids(session, tenant_id, STOCK_NEEDED_STATUSES)), 2)
+    on_order = round(_stock_on_order(session, tenant_id, material), 2)
+    # None, never 0.0, when nothing has ever been counted: "not known"
+    # and "none left" must never render the same, and a tile that says
+    # 0 bags when nobody has looked is the exact false confidence this
+    # whole feature exists to remove.
+    available = None if on_hand is None else round(on_hand + on_order, 2)
+    short_by = None if available is None else round(needed - available, 2)
+    return {
+        "key": material.key,
+        "label": material.label,
+        "unit_label": material.unit_label,
+        "pack_note": material.pack_note,
+        "increment": material.increment,
+        "source": material.source,
+        "on_hand": on_hand,
+        "consumed_since_count": round(consumed_since, 2),
+        "needed": needed,
+        "on_order": on_order,
+        "available": available,
+        "short_by": short_by if (short_by is not None and short_by > 0) else 0.0,
+        "is_short": bool(short_by is not None and short_by > material.low_stock_buffer),
+        "never_counted": last is None,
+        "last_counted_on": last.counted_on.isoformat() if last else None,
+        "last_counted_by": last.counted_by if last else "",
+        "last_counted_qty": last.counted_qty if last else None,
+        "last_variance": last.variance if last else None,
+        # A count that disagreed with expectation, still the most recent
+        # word on this material. Surfaced rather than buried in history:
+        # the brief's own point is that a count is a check, and a check
+        # nobody sees is not one.
+        "last_variance_flagged": bool(
+            last is not None and last.variance is not None
+            and abs(last.variance) > material.increment / 2),
+    }
+
+
+@app.get("/stock/overview")
+def stock_overview(tenant_id: str = Depends(get_current_tenant)):
+    """Every tracked material, with what is on hand, needed and on order.
+
+    Not role-gated. Whether there is screed on the shelf is an
+    operational fact every person who books or fits work needs, and it
+    carries no cost, margin or client money — the things this app is
+    careful about. Nothing here exposes a price.
+    """
+    with Session(engine) as session:
+        materials = [_stock_state(session, tenant_id, m)
+                     for m in _stock_materials(session, tenant_id)]
+        return {
+            "materials": materials,
+            "short": [m for m in materials if m["is_short"]],
+            "never_counted": [m for m in materials if m["never_counted"]],
+            "needs_attention": sum(1 for m in materials
+                                   if m["is_short"] or m["never_counted"]
+                                   or m["last_variance_flagged"]),
+        }
+
+
+class StockCountRequest(BaseModel):
+    material_key: str
+    counted_qty: float
+    counted_on: Optional[date] = None
+    note: str = ""
+
+
+@app.post("/stock/count")
+def record_stock_count(body: StockCountRequest, tenant_id: str = Depends(get_current_tenant),
+                       username: str = Depends(get_current_username)):
+    """Record what was actually counted, and say so when it disagrees.
+
+    The expected figure is captured BEFORE the count is written, because
+    afterwards it is no longer knowable — the new count immediately
+    becomes the anchor everything is derived from. Writing it down is
+    what turns "the numbers moved" into "this count disagreed with
+    Bolton by two drums", which is the only form of it anyone can act on.
+    """
+    with Session(engine) as session:
+        material = session.exec(select(StockMaterial).where(
+            StockMaterial.tenant_id == tenant_id,
+            StockMaterial.key == body.material_key)).first()
+        if material is None:
+            raise HTTPException(404, f"No tracked material called '{body.material_key}'.")
+        if body.counted_qty < 0:
+            raise HTTPException(400, "A count cannot be negative.")
+        increment = material.increment or 1.0
+        steps = body.counted_qty / increment
+        if abs(steps - round(steps)) > 0.001:
+            raise HTTPException(
+                400, f"{material.label} is counted in steps of {increment:g} "
+                     f"{material.unit_label} — {body.counted_qty:g} is not a whole number of those.")
+
+        before = _stock_state(session, tenant_id, material)
+        expected = before["on_hand"]          # None on the very first count
+        variance = None if expected is None else round(body.counted_qty - expected, 2)
+
+        count = StockCount(
+            tenant_id=tenant_id, material_key=material.key,
+            counted_qty=body.counted_qty, expected_qty=expected, variance=variance,
+            counted_on=body.counted_on or sast_date(datetime.utcnow()),
+            counted_by=username, note=body.note or "",
+        )
+        session.add(count)
+        session.add(AuditLog(
+            tenant_id=tenant_id, username=username, entity_type="StockCount",
+            entity_id=0, field=material.key,
+            old_value="" if expected is None else f"{expected:g}",
+            new_value=f"{body.counted_qty:g}"))
+        session.commit()
+        session.refresh(count)
+
+        flagged = variance is not None and abs(variance) > (increment / 2)
+        after = _stock_state(session, tenant_id, material)
+        return {
+            "id": count.id,
+            "material": after,
+            "expected_qty": expected,
+            "counted_qty": body.counted_qty,
+            "variance": variance,
+            "variance_flagged": flagged,
+            # Said in words rather than left as a number for the screen to
+            # interpret, so the message cannot drift from the arithmetic.
+            "message": _stock_variance_message(material, expected, body.counted_qty, variance),
+        }
+
+
+def _stock_variance_message(material, expected, counted, variance) -> str:
+    unit = material.unit_label
+    if expected is None:
+        return (f"First count recorded: {counted:g} {unit} of {material.label}. "
+                "Nothing to compare against yet — from tomorrow this will be checked "
+                "against what jobs have used.")
+    if variance is None or abs(variance) <= (material.increment or 1.0) / 2:
+        return (f"{counted:g} {unit} — matches what Bolton expected "
+                f"({expected:g}). Nothing unaccounted for.")
+    if variance > 0:
+        return (f"{counted:g} {unit} counted, but Bolton expected {expected:g} — "
+                f"{variance:g} MORE than it can account for. Usually a delivery that "
+                "was never recorded, or a job that used less than it was quoted.")
+    return (f"{counted:g} {unit} counted, but Bolton expected {expected:g} — "
+            f"{abs(variance):g} SHORT. That material left without a job to account "
+            "for it. Worth knowing why before it happens again.")
+
+
+@app.get("/stock/history")
+def stock_count_history(material_key: str, limit: int = 30,
+                        tenant_id: str = Depends(get_current_tenant)):
+    """Recent counts for one material, newest first — including the ones
+    that disagreed, which are the only interesting ones."""
+    with Session(engine) as session:
+        rows = session.exec(
+            select(StockCount)
+            .where(StockCount.tenant_id == tenant_id, StockCount.material_key == material_key)
+            .order_by(StockCount.counted_on.desc(), StockCount.id.desc())
+            .limit(max(1, min(limit, 200)))).all()
+        return [{
+            "id": r.id, "counted_on": r.counted_on.isoformat(), "counted_qty": r.counted_qty,
+            "expected_qty": r.expected_qty, "variance": r.variance,
+            "counted_by": r.counted_by, "note": r.note,
+        } for r in rows]
 
 
 @app.get("/stock-purchases/summary")

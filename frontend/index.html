@@ -1402,6 +1402,7 @@ editing" scope. -->
 <script src="quote-builder.js"></script>
 <script src="hr.js"></script>
 <script src="ask-bolton.js"></script>
+<script src="stock.js"></script>
 <script>
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => showSection(btn.dataset.tab));
@@ -1893,6 +1894,7 @@ function renderLanding() {
   if (landingView === 'photoGallery') return renderPhotoGallery(el);
   if (landingView === 'leads') return renderLeads(el);
   if (landingView === 'todos') return renderTodos(el);
+  if (landingView === 'stockCount') return renderStockCount(el);
   if (landingView === 'leadDetail') return renderLeadDetail(el);
   if (landingView === 'leadsDayList') return renderLeadsDayList(el);
   if (landingView === 'orderDetail') return renderOrderDetail(el);
@@ -1996,11 +1998,17 @@ function renderLandingTiles(el) {
   document.body.classList.add('home-active');
   el.innerHTML = `
     <div id="schemaAlertHost"></div>
+    <!-- Material stock (confirmed Sept 2026). The warning sits ABOVE the
+    welcome deliberately: the brief asks for something that "surfaces on
+    its own", and running short of bonding liquid stops a job on site.
+    Both are filled in after first paint - Home never waits on a fetch. -->
+    <div id="homeStockAlert"></div>
     <div class="landing-welcome home-welcome">
       <h1>Blinds &amp; Flooring Studio</h1>
       <p>Pick where you're working today.</p>
     </div>
     ${askBoltonHtml()}
+    <div id="homeStockTiles"></div>
     <!-- My Leads & To-Dos Today was removed from Home (Sept 2026,
     Burgert: confirmed unused in practice, cluttering the screen for no
     benefit). Leads and To-Dos are untouched and still reached by their
@@ -2031,6 +2039,7 @@ function renderLandingTiles(el) {
     </div>
   `;
   loadAskBoltonScope();
+  loadHomeStock();
   loadHomeMoneySections();
   // Async, after the tiles are already on screen: Home must never wait
   // on a health check.
@@ -2077,6 +2086,7 @@ function onTileClick(tileId) {
   else if (tileId === 'photoGallery') { landingView = 'photoGallery'; renderLanding(); }
   else if (tileId === 'leads') { landingView = 'leads'; renderLanding(); }
   else if (tileId === 'todos') { landingView = 'todos'; renderLanding(); }
+  else if (tileId === 'stockCount') { landingView = 'stockCount'; renderLanding(); }
   else if (tileId === 'clients') { landingView = 'clients'; renderLanding(); }
   else if (tileId === 'printInvoice') { landingView = 'printInvoice'; renderLanding(); }
   else if (tileId === 'settings') { landingView = 'settings'; renderLanding(); }
