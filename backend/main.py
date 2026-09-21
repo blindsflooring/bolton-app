@@ -5023,12 +5023,29 @@ def download_archived_document(archive_id: int, tenant_id: str = Depends(get_cur
     actually be opened, not merely marked Uploaded in Bolton. Serves
     Bolton's own stored copy directly (not a Dropbox fetch) — this is
     intentionally also the disaster-recovery path if Dropbox itself is
-    ever unreachable, not just a convenience."""
+    ever unreachable, not just a convenience.
+
+    THE FILENAME IS THE ONE DROPBOX WOULD HAVE USED (confirmed Sept
+    2026). It used to be "{reference}_v{version}.pdf" — "Q-291_v1.pdf" —
+    which names the document by an internal handle and omits the one
+    thing anyone looking at a downloaded file actually needs, the client.
+    The good name already exists on the row: dropbox_path is computed and
+    stored up front for every archive, uploaded or not, so its basename
+    is available even when the upload itself failed. Reusing it means a
+    document downloaded from Bolton and the same document fetched from
+    Dropbox arrive with identical names, rather than two conventions for
+    one file. Falls back to the old shape if a legacy row has no path.
+    """
     with Session(engine) as session:
         archive = get_or_404(session, DocumentArchive, archive_id, tenant_id, "Archived document")
         ext = ARCHIVE_FILE_EXTENSION.get(archive.entity_type, "pdf")
+        filename = (archive.dropbox_path or "").rsplit("/", 1)[-1] \
+            or f"{archive.reference}_v{archive.version}.{ext}"
+        # A quoted Content-Disposition filename cannot itself contain a
+        # quote or a newline without breaking the header.
+        filename = filename.replace('"', "'").replace("\r", " ").replace("\n", " ")
         return Response(content=archive.pdf_bytes, media_type=ARCHIVE_MEDIA_TYPE[ext],
-                         headers={"Content-Disposition": f'inline; filename="{archive.reference}_v{archive.version}.{ext}"'})
+                         headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
 @app.post("/documents/archive/{archive_id}/retry")

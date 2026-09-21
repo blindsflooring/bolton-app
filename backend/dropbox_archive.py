@@ -73,6 +73,58 @@ def credentials_configured() -> bool:
     return bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
 
 
+def describe_failure(exc: Exception, action: str, dropbox_path: str = "",
+                     size_bytes: int = None, seconds: float = None) -> str:
+    """A failure reason that is never empty and names something you can act on.
+
+    WHY THIS EXISTS, stated plainly because it replaces something that
+    actively misled. Both calls below used to record `str(e)`, and for
+    Dropbox's own API errors that is fine — ApiError.__str__ returns
+    repr(self), which always carries the request id and the error union.
+    But the exceptions a flaky upload actually raises are network ones,
+    and every single one of those stringifies to the EMPTY STRING:
+
+        requests.exceptions.ConnectionError   str(e) == ''
+        requests.exceptions.ReadTimeout       str(e) == ''
+        ConnectionResetError                  str(e) == ''
+        OSError                               str(e) == ''
+
+    So the reason was saved as "", the screen printed
+    "the Dropbox upload failed: unknown error" (shared.js's own `||`
+    fallback), and the document-history panel showed no reason at all
+    because it only renders one when truthy. The information needed to
+    tell a network blip from an expired token was discarded at the point
+    it was caught — one more system reporting a status about something
+    it never actually said.
+
+    The exception TYPE is the diagnosis here, not the message: an empty
+    ConnectionError IS the answer ("could not reach Dropbox"), it was
+    just never written down. So the type name always leads, the message
+    follows when there is one, and the context (which path, how big, how
+    long before it gave up) is what separates "network dropped" from
+    "this particular file is the problem".
+    """
+    name = "%s.%s" % (type(exc).__module__, type(exc).__name__)
+    if name.startswith("builtins."):
+        name = name[len("builtins."):]
+    message = str(exc).strip()
+    if not message:
+        # repr() is the last resort before admitting there is nothing:
+        # some exceptions carry their detail in args rather than __str__.
+        detail = repr(exc)
+        message = ("no message — the exception carried none, which for a "
+                   "network error is normal and is itself the finding"
+                   if detail in ("%s()" % type(exc).__name__, "") else detail)
+    parts = ["%s while %s: %s" % (name, action, message)]
+    if dropbox_path:
+        parts.append("path %s" % dropbox_path)
+    if size_bytes is not None:
+        parts.append("%.1f KB" % (size_bytes / 1024.0))
+    if seconds is not None:
+        parts.append("gave up after %.1fs" % seconds)
+    return " | ".join(parts)
+
+
 def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
     """Returns {"ok": True, "path": ..., "file_id": ...} on a genuine,
     confirmed upload, or {"ok": False, "reason": ...} on absolutely any
@@ -94,6 +146,8 @@ def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
     caller is expected to pass an already-uniquely-versioned path
     (see _next_archive_version(), main.py), so this should only ever
     trigger on a genuine, worth-investigating conflict."""
+    import time
+    started = time.monotonic()
     try:
         import dropbox
         dbx = _get_client()
@@ -106,7 +160,10 @@ def upload_document(file_bytes: bytes, dropbox_path: str) -> dict:
         result = dbx.files_upload(file_bytes, dropbox_path, mode=dropbox.files.WriteMode("add"))
         return {"ok": True, "path": result.path_display, "file_id": result.id}
     except Exception as e:
-        return {"ok": False, "not_configured": False, "reason": str(e)}
+        return {"ok": False, "not_configured": False,
+                "reason": describe_failure(e, "uploading to Dropbox", dropbox_path,
+                                           size_bytes=len(file_bytes or b""),
+                                           seconds=time.monotonic() - started)}
 
 
 def delete_document(dropbox_path: str) -> dict:
@@ -131,4 +188,5 @@ def delete_document(dropbox_path: str) -> dict:
         dbx.files_delete_v2(dropbox_path)
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "not_configured": False, "reason": str(e)}
+        return {"ok": False, "not_configured": False,
+                "reason": describe_failure(e, "deleting from Dropbox", dropbox_path)}

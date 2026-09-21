@@ -156,6 +156,52 @@ def _strip_unsupported_selector_rules(css: str) -> str:
     return "".join(out)
 
 
+def _strip_non_ascii_in_css_strings(css: str) -> str:
+    """Remove non-ASCII characters from inside quoted CSS string values.
+
+    THE FOURTH TIME THIS CLASS OF BUG HAS STOPPED DOCUMENT ARCHIVING, and
+    the first three fixes are documented in render_html_to_pdf() below:
+    @keyframes, @media, and unreadable selectors. Same shape every time —
+    somebody adds a perfectly ordinary line to styles.css for the live
+    app, xhtml2pdf's CSS parser cannot read it, and CreatePDF() raises
+    before a single document is rendered. Every Quote, Invoice and Order
+    Sheet save fails at once, and none of them ever reaches Dropbox.
+
+    This one arrived with Ask Bolton's disclosure arrows:
+
+        .ask-details summary::before        { content: '› '; }
+        .ask-details[open] summary::before  { content: '⌄ '; }
+
+    Reproduced exactly, then narrowed by bisection rather than guessed.
+    The trigger is a quoted string containing BOTH a non-ASCII character
+    AND whitespace:
+
+        content: '▶';        parses fine
+        content: '▶ ';       CSSParseError: Declaration group closing '}' not found
+        content: 'Foo Bar';  parses fine  (ASCII + space is fine)
+        font-family: '▶ x';  also breaks — so this is NOT about `content`
+
+    That last line is why this strips strings generally rather than
+    special-casing `content`: the property involved is irrelevant, the
+    tokenizer loses its place inside any such string and then cannot find
+    the closing brace. Escaping does not help either — '\\25B6 ' breaks
+    the same way, because a CSS escape is itself terminated by a space.
+
+    Lossless for a PDF. What lives in these strings is decorative glyphs
+    on ::before/::after pseudo-elements, which xhtml2pdf does not render
+    anyway, and the occasional font name that has ASCII fallbacks beside
+    it. Confirmed separately, and worth stating because it is the obvious
+    worry: non-ASCII in the DOCUMENT itself is untouched and renders
+    correctly — an Afrikaans client name, an em dash, a Rand amount. Only
+    quoted strings inside the STYLESHEET are affected.
+    """
+    def clean(match):
+        quote, body = match.group(1), match.group(2)
+        return quote + "".join(ch for ch in body if ord(ch) < 128) + quote
+
+    return re.sub(r"(['\"])([^'\"\n]*)\1", clean, css)
+
+
 def render_html_to_pdf(html: str, css: str = "") -> bytes:
     """html/css: exactly what the frontend's buildPrintDocHtml() (or
     equivalent) already produced for on-screen viewing — this function
@@ -230,6 +276,10 @@ def render_html_to_pdf(html: str, css: str = "") -> bytes:
     # :has(input:checked) highlight — found the same way, by a real
     # archive attempt failing on a real stylesheet.
     css = _strip_unsupported_selector_rules(css)
+    # ...and any quoted string the tokenizer cannot read. Ask Bolton's
+    # disclosure arrows broke every PDF archive in the app this way; see
+    # _strip_non_ascii_in_css_strings() for the bisection that found it.
+    css = _strip_non_ascii_in_css_strings(css)
     variables = _extract_css_variables(css)
     css = _substitute_var_refs(css, variables)
     html = _substitute_var_refs(html, variables)

@@ -661,9 +661,66 @@ function todayLocalISO() { return localISO(new Date()); }
 // the brief's own point is that the original agreed Send behaviour IS the
 // mailto-only one the Mail button already does. Print now just prints.
 
-function triggerPrint(html) {
+// The Save-as-PDF filename is document.title, and nothing was ever
+// setting it on purpose (confirmed Sept 2026).
+//
+// Every browser offers document.title as the default filename in the
+// print dialog, so whatever the sticky header happened to say became the
+// name of the file — which is why the same quote saved under different
+// names depending on which screen it was printed from:
+//
+//   from Quote Builder   "Quote #291 — Bolt-on"
+//   from Client Detail   "Client_ Heleen Cilliers — Bolt-on"
+//
+// That second one is not a naming convention either — it is
+// setPageTitle('Client: ' + name) reaching the filesystem, with Windows
+// substituting "_" for the ":" it will not allow in a filename, and the
+// app's own " — Bolt-on" suffix riding along.
+//
+// So `filename` is now passed deliberately and matches what Bolton
+// itself calls the same document in Dropbox (dropbox_filename(),
+// main.py): client, job reference, document type. A printed copy and an
+// archived copy of one document now agree on its name.
+//
+// Restored on afterprint rather than straight after window.print():
+// the dialog is modal and the user may sit in it for a while, and the
+// filename is read when they confirm, not when print() is called.
+// Putting the title back immediately would race that and often lose.
+function triggerPrint(html, filename) {
   document.getElementById('printArea').innerHTML = html;
+  if (!filename) { window.print(); return; }
+  const previousTitle = document.title;
+  const restore = () => {
+    document.title = previousTitle;
+    window.removeEventListener('afterprint', restore);
+  };
+  window.addEventListener('afterprint', restore);
+  document.title = filename;
   window.print();
+  // Belt and braces: afterprint is not fired by every browser in every
+  // path (notably some mobile share-sheet flows), and a page left titled
+  // after its own PDF would be a worse bug than the one being fixed.
+  setTimeout(restore, 60000);
+}
+
+// The name a document should be saved under, in one place, so the print
+// dialog and anything else that needs one cannot drift apart. Mirrors
+// dropbox_filename()'s ordering (main.py) — client first, because that
+// is what someone scanning a folder is looking for — but deliberately
+// does NOT reproduce the "Client_" prefix seen on some older files:
+// that prefix is not a convention, it is a mangled "Client: " (see
+// triggerPrint above), and reproducing it would make a workaround
+// permanent. No extension: the browser appends .pdf itself.
+function printDocFilename(quote, docLabel) {
+  const parts = [
+    (quote && quote.client_name || '').trim(),
+    (quote && quote.job_number || '').trim() || (quote && quote.id ? 'Q-' + quote.id : ''),
+    docLabel || 'Document',
+  ].filter(Boolean);
+  // Characters Windows and macOS reject in a filename. The browser would
+  // substitute something of its own choosing otherwise — "Client: X"
+  // silently becoming "Client_ X" is exactly how the current mess reads.
+  return parts.join(' - ').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
 }
 
 // Moved here during the quote-builder.js extraction — a real cross-file
@@ -729,7 +786,7 @@ async function loadDocumentArchiveStatus(entityType, entityId, reference, printS
         <a href="${API}/documents/archive/${h.id}/download" target="_blank" style="font-size:12px; margin-left:auto;">Download</a>
         ${h.status !== 'uploaded' ? `<button onclick="retryArchiveVersion(${h.id}, '${entityType}', ${entityId}, '${safeRef}', ${printSourceId}, '${printDocType}')" style="font-size:12px;">Retry</button>` : ''}
       </div>
-      ${h.status !== 'uploaded' && h.failure_reason ? `<div class="muted" style="font-size:11px; margin:2px 0 4px;">${h.failure_reason}</div>` : ''}
+      ${h.status !== 'uploaded' ? `<div class="muted" style="font-size:11px; margin:2px 0 4px;">${h.failure_reason || 'No reason was recorded. Rows archived before Sept 2026 lost the reason for network failures specifically — see describe_failure() (dropbox_archive.py). Retry will now record a real one.'}</div>` : ''}
     `).join('') : '<p class="muted" style="margin:0 0 10px;">Not archived yet.</p>'}
     <button class="primary" id="archiveNowBtn" onclick="triggerArchiveDocument('${entityType}', ${entityId}, '${safeRef}', ${printSourceId}, '${printDocType}')" style="margin-top:10px;">Archive now</button>
   `;
@@ -746,7 +803,14 @@ async function triggerArchiveDocument(entityType, entityId, reference, printSour
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ entity_type: entityType, entity_id: entityId, reference, html, css }),
     });
-    if (!res.ok) { alert('Could not archive this document.'); return; }
+    // Same reasoning as saveDocumentArchive()'s own res.ok check: the
+    // server's `detail` is the only thing that says WHY, and throwing it
+    // away leaves a message that could mean anything.
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Could not archive this document.\n\n${body.detail || `The server returned ${res.status} ${res.statusText}.`}`);
+      return;
+    }
     await loadDocumentArchiveStatus(entityType, entityId, reference, printSourceId, printDocType);
   } catch (e) {
     alert('Could not archive this document — check your connection.');
@@ -763,8 +827,8 @@ async function retryArchiveVersion(archiveId, entityType, entityId, reference, p
 }
 
 async function renderPrintDoc(quoteId, docType) {
-  const { html } = await buildPrintDocHtml(quoteId, docType);
-  triggerPrint(html);
+  const { html, filename } = await buildPrintDocHtml(quoteId, docType);
+  triggerPrint(html, filename);
 }
 
 async function buildPrintDocHtml(quoteId, docType) {
@@ -929,7 +993,10 @@ async function buildPrintDocHtml(quoteId, docType) {
       ${biz.bank_details ? `<div style="margin-top:20px; padding-top:14px; border-top:1px solid var(--border); font-size:11px; color:#6b7280;"><b>Banking details for deposit payment:</b><br>${biz.bank_details.replace(/\n/g,'<br>')}</div>` : ''}
     </div>
   `;
-  return { html, docLabel, mailtoLink, waLink, clientEmail };
+  // Computed here, beside the data it is built from, so every caller
+  // that prints this document gets the same name without re-deriving it.
+  const filename = printDocFilename({ ...data.quote, id: quoteId }, docLabel);
+  return { html, docLabel, mailtoLink, waLink, clientEmail, filename };
 }
 
 // Send button (confirmed Aug 2026) — a genuinely SEPARATE action from
@@ -1105,10 +1172,23 @@ async function saveDocumentArchive(docType, id) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ entity_type: entityType, entity_id: id, reference, html, css, branch }),
     });
+    // res.ok FIRST, and this is the whole point of the check. Without
+    // it, a backend error (a PDF that would not render, an expired
+    // session, a 500) returns {detail: "..."} with no `status` field at
+    // all, falls straight through to the `else` below, and is reported
+    // as "the Dropbox upload failed" — naming the one component that
+    // was never even contacted, while the real reason sat unread in
+    // `detail`. Nothing was saved in that case either, so saying "saved
+    // locally" was wrong twice over.
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`This document was NOT saved — the failure happened before Dropbox was involved.\n\n${body.detail || `The server returned ${res.status} ${res.statusText}.`}`);
+      return;
+    }
     const result = await res.json();
     if (result.status === 'uploaded') alert('Saved — a new version has been uploaded to Dropbox.');
     else if (result.status === 'pending') alert('Saved — will upload to Dropbox automatically once connected (currently pending).');
-    else alert(`Saved locally, but the Dropbox upload failed: ${result.failure_reason || 'unknown error'}`);
+    else alert(`Saved — the PDF is stored in Bolton and can be downloaded from this job's Document History, but the Dropbox copy failed:\n\n${result.failure_reason || `no reason was recorded (archive id ${result.id}, version ${result.version}) — this is itself a bug worth reporting`}\n\nUse Retry in Document History once the cause is cleared.`);
   } catch (e) {
     alert('Could not save this document right now — check your connection and try again.');
   }
