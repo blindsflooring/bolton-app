@@ -183,13 +183,47 @@ the backup ran. A restore is not a rollback; it is a reset to that
 moment.
 
 **An older backup carries an older schema.** Restoring a dump from a
-month ago gives you that month's columns. Bolton's own startup
-(`SQLModel.metadata.create_all()` then `_ensure_new_columns()`, main.py)
-adds missing tables and columns when it boots, so pointing the app at a
-restored database should reconcile it — but that path has not been
-tested, and it is the obvious next thing to verify. For reference, the
-27 August dump was missing 12 whole tables and 78 columns relative to
-the models three weeks later.
+month ago gives you that month's columns. Bolton's own startup adds the
+missing tables and columns when it boots — and as of 21 September 2026
+that is **tested, not assumed**:
+
+```
+python backend/tests/test_restore_schema_reconcile.py
+```
+
+It builds a database from the *real* `models.py` as of 27 August 2026
+(pulled out of git history, not an approximation), seeds it with a
+client, a quote and a line, boots the current backend against it, and
+checks what came out the other side:
+
+```
+11 tables created  ·  76 columns added  ·  0 reported missing afterwards
+every seeded row intact, field by field
+a column added today reads fine on a row written in August
+```
+
+Three mechanisms do this, in order — `create_all()` for whole tables,
+then `_ensure_new_columns()` (a hand-written list of ~175 tuples), then
+`_reconcile_model_columns()`, which derives the same thing from
+SQLModel's own metadata and exists because the hand list can be
+forgotten. The test deliberately drops a column the hand list does *not*
+cover, so the reconciler is proven to fire rather than being masked by
+the list in front of it. `_check_schema_matches_models()` then records
+anything still missing, and the test asserts that record is empty.
+
+**Two real limits, stated rather than glossed:**
+
+1. **The test runs on SQLite**, because this machine has no Postgres,
+   psql or Docker. The reconciliation code is dialect-agnostic apart
+   from `column.type.compile()`, which is exactly where a Postgres-only
+   difference could still hide. One run against a throwaway Supabase
+   project would close that; nothing else would.
+2. **Booting against a restored database changes data, not just schema.**
+   The startup migrations are not read-only — in this run they linked an
+   orphaned quote to a client, seeded price-book rows, and **reset the
+   password of every user still on their original seed password**. All
+   by design, but during a real recovery expect it, and check logins
+   afterwards.
 
 ## Step 7 — Afterwards
 
