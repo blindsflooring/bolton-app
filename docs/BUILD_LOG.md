@@ -18,6 +18,63 @@ history (129 commits, 2026-08-19 → 2026-08-28) rather than from memory.
 
 ---
 
+## 2026-09-21 — The restore path's last untested piece, and a figure Bolton could not tell you about its own business
+
+Two things, both of the same shape: a claim the system was making that nothing had ever checked.
+
+### 1. Restoring an old backup now demonstrably works, not just probably
+
+PR #38 proved the nightly backup **restores**. It never proved the other half of a recovery: that the *current* code can boot against that restored database. The backup is always older than the code, and the 27 August dump was missing 12 whole tables and 78 columns against the models three weeks later. `RESTORE_BACKUP.md` said, honestly, that this "has not been tested".
+
+Now tested, and repeatable — `backend/tests/test_restore_schema_reconcile.py` builds a database from the **real `models.py` as of 27 August 2026**, pulled out of git history rather than hand-approximated, seeds it with a client, a quote and a line, and boots the current backend against it:
+
+```
+11 tables created  ·  76 columns added  ·  0 reported missing afterwards
+every seeded row intact, field by field
+quote.area — a column that did not exist in August — reads fine on an August row
+```
+
+**The first green run was hiding something, and that is the more useful half.** Two mechanisms add missing columns and the first masks the second: the hand-written list in `_ensure_new_columns()` covered all 76, so `_reconcile_model_columns()` — the metadata-derived safety net that exists *because* the hand list can be forgotten, and whose absence took the Order Index and the KPI dashboard down on 14 September — added exactly zero. A passing test was saying nothing at all about the mechanism that matters when somebody forgets. It now drops a column the hand list does not cover and requires the reconciler to be what restores it.
+
+Two limits, stated rather than glossed, and written into `RESTORE_BACKUP.md` beside the result:
+
+- **It runs on SQLite.** No Postgres, psql or Docker on this machine. The code is dialect-agnostic apart from `column.type.compile()`, which is exactly where a Postgres-only difference could still hide. One run against a throwaway Supabase project would close it; nothing else would.
+- **Booting against a restored database changes DATA, not just schema.** In this run the startup migrations linked an orphaned quote to a client, seeded price-book rows, and reset the password of every user still on their original seed password. All by design — but during a real recovery, expect it and check logins afterwards.
+
+### 2. "Who still owes me money?" is now a question Bolton can answer
+
+Ask Bolton works by writing real SQL. A figure that only exists inside a Python function while a page renders is invisible to SQL — so the quote total and the outstanding balance, which every screen in the app shows, were figures Bolton could not report on. It refused, correctly and uselessly.
+
+`Quote.total_incl_vat` and `Quote.amount_outstanding` are now stored, along with `totals_refreshed_at`.
+
+**Which means Bolton now has a cache, and a stale cache answers confidently and wrongly — strictly worse than the honest refusal it replaced.** Three things hold that line, and the middle one is the design decision worth recording:
+
+| | |
+|---|---|
+| `_refresh_quote_totals()` | the ONE writer. Owns no math — it asks `_quote_totals_for()` and `_quote_payment_state()`, the same two functions every screen asks, so a stored figure can never become a second opinion. |
+| a **session-level hook** | refreshes on every commit that touched a quote, its lines or its payments. |
+| the nightly consistency monitor | recomputes every quote from scratch and flags any row that disagrees. Detects; never repairs — a silent nightly fix would hide the bug that caused the drift. |
+
+The hook rather than a call at each of the **57** quote-mutating endpoints is a deliberate repeat of the `_reconcile_model_columns()` lesson: *a hand-maintained list of places to remember IS the bug.* All 229 database sessions in `main.py` go through `Session(engine)`, so one registration covers every endpoint — and the test asserts that premise rather than assuming it, so the day somebody opens a raw session it fails loudly.
+
+**A real bug the test caught before it shipped, and the reason the test drives real commits instead of calling the refresher:** `before_commit` fires *before* commit's own flush, so on a plain `session.add(x); session.commit()` nothing had flushed yet, the collection hook had never run, and the refresh quietly did nothing — while looking perfectly healthy. Exactly this week's recurring failure mode: a system reporting success about something it never checked. Only the first quote appeared to work, and only because that code path happened to call `flush()` for an id. Fixed by flushing at the top of the hook.
+
+Also handled: **VAT is not a property of a quote.** It is a business-wide setting every stored total was computed through, so changing it invalidates all of them at once — the one change a purely per-quote hook would miss. A `vat_pct` change now recomputes every quote in the same transaction.
+
+Ask Bolton's catalogue entry for `quote` — which said in so many words that money "is not available to you" — now describes both columns, warns that **NULL means not known and never zero**, and carries a vocabulary entry mapping "who owes us / outstanding / debtors" onto the column *with* the caveats that a quote nobody accepted is not a debt.
+
+No grant change was needed: `GRANT SELECT ON quote` is table-level, so Postgres gave both read-only roles the new columns automatically. Noted in `ASK_BOLTON_LIVE_SETUP.md`, because a new *table* would be the opposite case.
+
+Verified on a copy of the real database as well as on synthetic rows: 25 of 25 quotes got totals, none left NULL, no drift reported.
+
+### Still open
+
+- The **Postgres** half of the restore test (see the limit above).
+- `ASK_BOLTON_ANTHROPIC_API_KEY` is still unset on Render — Ask Bolton shares the general key. Nothing to build; one environment variable.
+- Per-rep scoping in Ask Bolton is still enforced by the validator rather than an RLS policy. Designed, not built.
+
+---
+
 ## 2026-09-16 — Ask Bolton narrowed to live jobs for Sales and Admin
 
 **This supersedes the decision taken earlier the same day** that Ryno and Madri would get *both* the historical import and live data. They now get live Order Index data **only**. Nothing about that earlier decision was a breach — no permission boundary ever failed — it was a scope change made before the historical connection had been used in anger.

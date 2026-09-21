@@ -1611,6 +1611,43 @@ class Quote(SQLModel, table=True):
     blinds_import_file: Optional[str] = None
     blinds_import_at: Optional[datetime] = None
 
+    # ---------- Stored totals (confirmed Sept 2026) ----------
+    # What this job is worth and what it still owes, WRITTEN DOWN.
+    #
+    # Every other consumer of these two figures computes them at the
+    # moment it draws the screen, via _quote_totals()/_quote_payment_state()
+    # (main.py) — and that is still the only place the math lives. These
+    # two columns are a cache of that math's answer, not a second copy of
+    # it.
+    #
+    # WHY THEY EXIST AT ALL, given "derive, don't duplicate" is this
+    # codebase's own rule: Ask Bolton answers questions by writing real
+    # SQL against these tables. A figure that only exists inside a Python
+    # function during a page render is invisible to SQL, so "who still
+    # owes me money?" was a question Bolton could not answer about its
+    # own business — it refused, correctly but uselessly. A column is the
+    # only shape SQL can see.
+    #
+    # THE RISK THIS CARRIES, stated plainly because it is the whole
+    # danger of a cache: a stored figure that has drifted from the real
+    # one is worse than no figure, because it answers confidently and
+    # wrongly. Three things hold the line, in order:
+    #   1. _refresh_quote_totals() is the ONE writer, and a session-level
+    #      hook calls it on every commit that touches a quote, its lines
+    #      or its payments — so it cannot be forgotten at any of the 57
+    #      quote-mutating endpoints.
+    #   2. totals_refreshed_at below timestamps every write, so a stale
+    #      row is visible rather than merely suspected.
+    #   3. the nightly consistency monitor recomputes every quote from
+    #      scratch and flags any row that disagrees, so drift surfaces
+    #      as a flagged record instead of as a wrong answer.
+    # None on a quote whose totals have never been written (and on every
+    # quote restored from a backup older than this field) — never zero,
+    # which would be a real figure meaning "owes nothing".
+    total_incl_vat: Optional[float] = None
+    amount_outstanding: Optional[float] = None
+    totals_refreshed_at: Optional[datetime] = None
+
 
 class JobWorkDay(SQLModel, table=True):
     """Calendar: Multiple Work Days Per Job (confirmed Sept 2026, approved

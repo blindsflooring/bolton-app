@@ -259,13 +259,17 @@ CATALOGUE = [
         "phase": 1,
         "roles": ALL_ROLES,
         "what": "One row per quote or job in Bolton, from 1 September 2026 onward. "
-                "This table carries DATES and STATUS, not money. The quote total, the "
-                "deposit due, the balance and the VAT are all worked out by Bolton at "
-                "the moment it draws the screen, and are not stored here - so they are "
-                "not available to you and cannot be rebuilt from these columns. For any "
-                "question about money, use quotepayment, which holds what really "
-                "arrived. "
-                "A quote becomes a job when it is accepted.",
+                "A quote becomes a job when it is accepted. "
+                "Two money figures ARE stored here - total_incl_vat (what the job is "
+                "worth) and amount_outstanding (what it still owes) - and they are the "
+                "right columns for 'how big is this job' and 'who still owes me money'. "
+                "Both are NULL on a job whose figures have never been written; NULL "
+                "means NOT KNOWN, never zero, so exclude NULLs from a total rather than "
+                "counting them as nothing. "
+                "The deposit due, the balance and the VAT split are still worked out "
+                "only at the moment Bolton draws the screen and are NOT stored, so do "
+                "not try to rebuild them from these columns. For what money actually "
+                "ARRIVED and when, use quotepayment.",
         "columns": {
             "client_name": "Who the job is for.",
             "job_number": "Assigned once at acceptance, never reused. NULL before acceptance.",
@@ -299,6 +303,25 @@ CATALOGUE = [
                 "suburb was found in the address, which is an honest 'not known', NOT "
                 "a claim that the job is somewhere else. When a question is about WHERE "
                 "jobs are, group and filter on this, not on site_address or branch.",
+            "total_incl_vat": "What this job is worth, in rands, VAT included - after any "
+                              "discount and after any manually agreed override total. This "
+                              "is the SELL price, never a cost. Use it for 'how big is this "
+                              "job' and for summing what was quoted or won. NULL means the "
+                              "figure has never been written for this job, which is 'not "
+                              "known', NOT zero - leave those rows out rather than adding "
+                              "them in as nothing.",
+            "amount_outstanding": "What this job still owes, in rands, VAT included - the "
+                                  "total less everything actually paid. 0 means fully paid "
+                                  "and owes nothing. This is the column for 'who still owes "
+                                  "me money' and 'how much is outstanding'. NULL means not "
+                                  "known, NOT zero - exclude NULLs from a total. A quote "
+                                  "that was never accepted still carries a figure here, so "
+                                  "for money genuinely owed on real work, also require "
+                                  "accepted_at IS NOT NULL and declined_at IS NULL.",
+            "totals_refreshed_at": "When total_incl_vat and amount_outstanding were last "
+                                   "written. Only useful for judging how fresh those two "
+                                   "figures are; never a business date, and never the date "
+                                   "anything happened to the job.",
             "sales_owner": "Username of the rep the job is attributed to.",
             "installer_team": "Who is fitting it.",
             "on_hold_reason": "Free text. Non-empty means the job is paused.",
@@ -431,6 +454,20 @@ VOCABULARY = [
      "`'Job Card' AS job_card`. That last column is what turns the answer "
      "into a link to the real card. A job only has a card once it has a job "
      "number, so require `quote.job_number IS NOT NULL`.",
+     ["quote"]),
+    (["outstanding", "outstanding balance", "who owes us", "who owes me money",
+      "still owing", "unpaid", "what's owed", "money owed", "debtors"],
+     "Money on real work that has not been paid yet. That is "
+     "`quote.amount_outstanding > 0`, and it is ONLY meaningful on work the "
+     "client actually agreed to - so always also require `accepted_at IS NOT "
+     "NULL`, `declined_at IS NULL` and `NOT is_price_check`. Without those a "
+     "quote nobody ever said yes to counts as a debt, which it is not. "
+     "`amount_outstanding IS NULL` means the figure has never been written "
+     "for that job - that is 'not known', NOT zero, so never SUM over NULLs "
+     "as if they were paid-up; if any relevant row is NULL, say how many were "
+     "left out. For what has actually been RECEIVED and when, use "
+     "`quotepayment` - `amount_outstanding` is what is still owed, not a "
+     "payment history.",
      ["quote"]),
 ]
 

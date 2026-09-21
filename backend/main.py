@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, create_engine, select
-from sqlalchemy import inspect, text, or_, func
+from sqlalchemy import inspect, text, or_, func, event
 
 from models import (
     FlooringProduct, BlindsProduct, TrimProduct, Quote, QuoteLineItem, Client,
@@ -472,6 +472,15 @@ def _ensure_new_columns():
         ("quote", "override_total_reason", "VARCHAR", "NULL"),
         ("quote", "override_total_by", "VARCHAR", "NULL"),
         ("quote", "override_total_at", "TIMESTAMP", "NULL"),
+        # Stored totals (confirmed Sept 2026) — what a job is worth and
+        # what it still owes, written down so Ask Bolton's SQL can see
+        # them. NULL, deliberately, on every quote that predates the
+        # field: 0.00 would be a real figure meaning "owes nothing".
+        # See Quote.total_incl_vat (models.py) and
+        # _refresh_quote_totals() below.
+        ("quote", "total_incl_vat", "FLOAT", "NULL"),
+        ("quote", "amount_outstanding", "FLOAT", "NULL"),
+        ("quote", "totals_refreshed_at", "TIMESTAMP", "NULL"),
         # The cutover boundary for a fiscal year split between the old
         # spreadsheet and Bolton — see HistoricalYearTotal.covers_until.
         ("historicalyeartotal", "covers_until", "DATE", "NULL"),
@@ -2552,6 +2561,14 @@ def on_startup():
     except Exception as e:
         print(f"Migration: invoice_sent_date backfill failed ({e}) — already-sent invoices keep prompting in Needs Attention until this is retried or the date is set by hand")
 
+    # Stored totals (confirmed Sept 2026) — deliberately LAST of the
+    # startup data work. Every migration above this line can change what
+    # a job is worth or what it has paid (the orphaned-quote relink, the
+    # payments backfill, the margin rescale), and each of those commits
+    # already refreshes the quotes it touched via the session hook. This
+    # catches the rest: every quote that has never had its totals
+    # written, which on a fresh restore is all of them.
+    _backfill_quote_totals()
 
     # Order Index Nightly Snapshot (Dropbox Document Archive brief v2,
     # confirmed Aug 2026) — in-process APScheduler, not a separate Render
@@ -5267,6 +5284,66 @@ def _run_consistency_checks(session: Session, tenant_id: str) -> list:
                     "entity_type": "QuoteLineItem", "entity_id": line.id,
                     "note": f"Wrong formula suspected on Quote #{line.quote_id}: {line.carpet_category} line has quantity_lm={line.quantity_lm!r}, boxes_needed={line.boxes_needed!r} — looks priced as a box product, not a roll.",
                 })
+
+    # Check 3 — stored totals that have drifted from the real ones
+    # (confirmed Sept 2026). Quote.total_incl_vat/amount_outstanding are
+    # a cache of _quote_totals()/_quote_payment_state(); Ask Bolton reads
+    # them as SQL and reports them as fact. A cache that has silently
+    # gone stale answers confidently and WRONGLY, which is worse than the
+    # refusal it replaced — so it gets checked against a from-scratch
+    # recompute every night, the same way the schema check re-derives the
+    # columns instead of trusting the list that claims to maintain them.
+    #
+    # Reads only. This never repairs a drifted row, deliberately: the
+    # monitor's own rule is detect and alert, never correct. A silent
+    # nightly repair would also hide the bug that caused the drift, which
+    # is the thing actually worth knowing about.
+    #
+    # A NULL total is NOT drift — it is a quote whose totals have never
+    # been written (one restored from an older backup, or one the
+    # backfill could not compute). Reported separately and as one row,
+    # because the fix is different: a restart warms them.
+    never_written = 0
+    for quote in session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all():
+        if quote.totals_refreshed_at is None:
+            never_written += 1
+            continue
+        try:
+            totals = _quote_totals_for(session, quote, tenant_id)
+            state = _quote_payment_state(quote, totals, _quote_payments(session, quote.id, tenant_id))
+        except Exception as exc:        # noqa: BLE001
+            findings.append({
+                "entity_type": "Quote", "entity_id": quote.id,
+                "note": f"Stored totals on Quote #{quote.id} could not be checked ({exc}) — "
+                        "Ask Bolton is reading a figure nothing has verified.",
+            })
+            continue
+        # A cent, not zero: both sides round to 2dp, and float addition
+        # over many lines can legitimately land a cent apart without
+        # anything being wrong. More than a cent is a real disagreement.
+        drifted = []
+        if abs((quote.total_incl_vat or 0.0) - totals["total_incl_vat"]) > 0.01:
+            drifted.append(f"total R{quote.total_incl_vat:,.2f} stored vs R{totals['total_incl_vat']:,.2f} real")
+        if abs((quote.amount_outstanding or 0.0) - state["amount_outstanding"]) > 0.01:
+            drifted.append(f"outstanding R{quote.amount_outstanding:,.2f} stored vs R{state['amount_outstanding']:,.2f} real")
+        if drifted:
+            findings.append({
+                "entity_type": "Quote", "entity_id": quote.id,
+                "note": (f"Stored totals drifted on Quote #{quote.id} "
+                         f"({quote.client_name}): " + "; ".join(drifted)
+                         + f". Last written {quote.totals_refreshed_at}. Ask Bolton reports "
+                           "the stored figure, so it is currently answering this job wrongly."),
+            })
+    if never_written:
+        findings.append({
+            "entity_type": "Quote", "entity_id": 0,
+            "dedupe_prefix": "Stored totals never written:",
+            "note": (f"Stored totals never written: {never_written} quote(s) have no stored "
+                     "total or outstanding balance, so Ask Bolton cannot see them and will "
+                     "say so rather than guess. A backend restart runs the backfill that "
+                     "fills them in."),
+        })
+
     return findings
 
 
@@ -11338,6 +11415,49 @@ def _order_stage(quote: "Quote", expired: bool) -> str:
 PAYMENT_TYPES = ("deposit", "final", "extra")
 
 
+def _backfill_quote_totals():
+    """Write stored totals onto every quote that has none yet.
+
+    Idempotent and cheap on a warm database: only quotes with
+    totals_refreshed_at IS NULL are touched, so this does real work once
+    — the first boot after the field ships, and again on any database
+    restored from a backup older than it.
+
+    NULL is the marker rather than "total_incl_vat IS NULL" on its own,
+    because a quote genuinely can be worth 0.00 (an empty draft), and a
+    real zero must not be mistaken for "never computed" and recomputed
+    forever.
+
+    Never raises. A backend that refuses to start because a reporting
+    cache could not be warmed would be trading a whole business offline
+    against one Ask Bolton question — the same call
+    _check_schema_matches_models() already makes, for the same reason.
+    """
+    try:
+        with Session(engine) as session:
+            quotes = session.exec(
+                select(Quote).where(Quote.totals_refreshed_at.is_(None))
+            ).all()
+            if not quotes:
+                print("Stored totals: every quote already has them — nothing to do")
+                return
+            done = failed = 0
+            for quote in quotes:
+                try:
+                    _refresh_quote_totals(session, quote, quote.tenant_id)
+                    done += 1
+                except Exception as exc:        # noqa: BLE001
+                    failed += 1
+                    print(f"Stored totals: could not compute quote {quote.id} ({exc})")
+            session.commit()
+            print(f"Stored totals: written for {done} quote(s)"
+                  + (f"; {failed} could not be computed and stay NULL" if failed else ""))
+    except Exception as exc:                    # noqa: BLE001
+        print(f"Stored totals: backfill failed ({exc}) — quotes keep NULL totals; "
+              "Ask Bolton will say it cannot see them rather than guess, and the "
+              "nightly consistency monitor will flag them")
+
+
 def _backfill_quote_payments():
     """One-time, idempotent: turn the old flat payment fields into rows.
 
@@ -11563,6 +11683,160 @@ def _quote_payment_state(quote: "Quote", totals: dict, payments: list = None) ->
         "deposit_required": deposit_required,
         "deposit_settled": deposit_settled,
     }
+
+
+# ===== Stored totals (confirmed Sept 2026) =====
+#
+# Quote.total_incl_vat and Quote.amount_outstanding are a CACHE of what
+# _quote_totals()/_quote_payment_state() above already work out. They
+# exist because Ask Bolton answers questions by writing real SQL, and a
+# figure that only lives inside a Python function during a page render is
+# invisible to SQL — so "who still owes me money?" was a question Bolton
+# could not answer about its own business.
+#
+# The danger of any cache is that it answers confidently and wrongly.
+# Three things hold the line, and it is worth being explicit about which
+# does what:
+#
+#   _refresh_quote_totals()       the ONE writer. No endpoint sets these
+#                                 fields by hand, ever.
+#   the session hook below        calls it on every commit that touched a
+#                                 quote, its lines or its payments, so it
+#                                 cannot be forgotten at any of the 57
+#                                 quote-mutating endpoints.
+#   the consistency monitor       recomputes every quote nightly and
+#                                 flags any row that disagrees.
+#
+# The hook rather than 57 call sites is a deliberate repeat of the
+# lesson in _reconcile_model_columns(): a hand-maintained list of places
+# to remember IS the bug, and deriving the list from what actually
+# happened is the fix.
+
+_TOTALS_PENDING = "_bolton_quotes_needing_totals"
+_TOTALS_TENANTS = "_bolton_tenants_needing_full_totals"
+
+
+def _refresh_quote_totals(session: Session, quote: "Quote", tenant_id: str = None) -> dict:
+    """Recompute this quote's stored totals and write them onto it.
+
+    The ONE writer of Quote.total_incl_vat/amount_outstanding. It owns no
+    math of its own — it asks _quote_totals_for() and
+    _quote_payment_state(), the same two functions every screen asks, so
+    a stored figure can never be a second opinion about what a job is
+    worth. If those two ever change, this follows automatically.
+
+    Does not commit. The caller's commit persists it, which is what lets
+    the session hook below fold this into the same transaction as the
+    change that triggered it — so a quote and its stored total are never
+    briefly out of step with each other in the database.
+    """
+    tenant_id = tenant_id or quote.tenant_id
+    totals = _quote_totals_for(session, quote, tenant_id)
+    state = _quote_payment_state(quote, totals, _quote_payments(session, quote.id, tenant_id))
+    quote.total_incl_vat = totals["total_incl_vat"]
+    quote.amount_outstanding = state["amount_outstanding"]
+    quote.totals_refreshed_at = datetime.utcnow()
+    return {"total_incl_vat": quote.total_incl_vat,
+            "amount_outstanding": quote.amount_outstanding}
+
+
+@event.listens_for(Session, "after_flush")
+def _collect_quotes_needing_totals(session, flush_context):
+    """Note which quotes this flush touched. Writes nothing.
+
+    after_flush rather than before_commit because this is the last point
+    at which session.new/dirty/deleted still describe what actually
+    changed — by commit time they have been cleared, and a hook that
+    looked then would find nothing and silently do nothing, which is the
+    exact "reported success about something it never checked" failure
+    this project keeps meeting.
+    """
+    pending = session.info.setdefault(_TOTALS_PENDING, set())
+    tenants = session.info.setdefault(_TOTALS_TENANTS, set())
+
+    # A quote being deleted must not be resurrected by refreshing it, and
+    # neither must its lines drag it back.
+    doomed = {obj.id for obj in session.deleted if isinstance(obj, Quote)}
+
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        if isinstance(obj, Quote):
+            if obj.id is not None and obj.id not in doomed:
+                pending.add((obj.id, obj.tenant_id))
+        elif isinstance(obj, (QuoteLineItem, QuotePayment)):
+            quote_id = getattr(obj, "quote_id", None)
+            if quote_id is not None and quote_id not in doomed:
+                pending.add((quote_id, obj.tenant_id))
+        elif isinstance(obj, BusinessSettings):
+            # VAT is not a property of a quote — it is a business-wide
+            # setting every stored total was computed through. Change it
+            # and every one of them is wrong at once, which the nightly
+            # monitor would then report as hundreds of separate drifts.
+            # Rare enough (South African VAT moves about once a decade)
+            # that a full recompute in the same transaction is the honest
+            # answer rather than a clever incremental one.
+            try:
+                if inspect(obj).attrs.vat_pct.history.has_changes():
+                    tenants.add(obj.tenant_id)
+            except Exception:       # noqa: BLE001 — a settings save must never fail over this
+                tenants.add(obj.tenant_id)
+
+
+@event.listens_for(Session, "before_commit")
+def _write_quote_totals(session):
+    """Refresh the stored totals for everything this transaction touched.
+
+    Assigning here is enough: Session.commit() flushes whatever is dirty
+    after this hook returns, so the totals land in the SAME transaction
+    as the change that caused them. Nothing half-committed, no second
+    round trip.
+
+    NOTHING IN HERE IS ALLOWED TO RAISE. These two columns are a
+    convenience for one reporting feature; the write that triggered the
+    refresh is somebody's actual job. A cache that can take down
+    "add a line to a quote" is a worse bug than the one it fixes, so a
+    failure is logged and left for the nightly monitor to flag.
+    """
+    try:
+        # MUST flush first, and this is not a tidiness detail — it is the
+        # whole hook working or silently doing nothing. before_commit runs
+        # BEFORE commit's own flush, so on a plain "session.add(x);
+        # session.commit()" nothing has flushed yet, _collect_quotes_needing_totals()
+        # has never run, and the set below is empty. The refresh would then
+        # skip every such write while looking perfectly healthy — a hook
+        # reporting success about something it never checked, which is the
+        # exact failure mode this project keeps meeting. Caught by
+        # test_quote_totals_stored.py, which is why it is a test that drives
+        # real commits rather than calling the refresher itself.
+        session.flush()
+    except Exception as exc:                # noqa: BLE001 — see the docstring
+        print(f"Stored totals: could not flush before refreshing ({exc}) — "
+              "left for the nightly consistency monitor")
+        return
+
+    pending = session.info.pop(_TOTALS_PENDING, None) or set()
+    tenants = session.info.pop(_TOTALS_TENANTS, None) or set()
+    if not pending and not tenants:
+        return
+
+    try:
+        for tenant_id in tenants:
+            rows = session.exec(select(Quote).where(Quote.tenant_id == tenant_id)).all()
+            print(f"Stored totals: VAT changed for tenant {tenant_id} — "
+                  f"recomputing {len(rows)} quote(s)")
+            pending.update((q.id, q.tenant_id) for q in rows if q.id is not None)
+
+        for quote_id, tenant_id in pending:
+            quote = session.get(Quote, quote_id)
+            if quote is None:
+                continue        # deleted inside this same transaction
+            try:
+                _refresh_quote_totals(session, quote, tenant_id)
+            except Exception as exc:        # noqa: BLE001 — see the docstring
+                print(f"Stored totals: FAILED to refresh quote {quote_id} ({exc}) — "
+                      "left for the nightly consistency monitor")
+    except Exception as exc:                # noqa: BLE001 — see the docstring
+        print(f"Stored totals: refresh pass failed ({exc}) — "
+              "left for the nightly consistency monitor")
 
 
 def _blinds_count(lines: list) -> int:

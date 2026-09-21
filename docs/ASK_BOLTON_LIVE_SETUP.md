@@ -39,6 +39,15 @@ Note what is **not** in that list: `historicalyeartotal`, `historicalmonthtotal`
 and `financialstatement`. Sales and Admin must not reach any of them, and the
 self-check probes for exactly that.
 
+**These grants are table-level, and that matters when a column is added.**
+`GRANT SELECT ON quote` covers every column the table has *and every column it
+gains later* — Postgres only freezes the set when the grant names columns
+explicitly (`GRANT SELECT (a, b) ON quote`), which this deliberately does not.
+So `quote.total_incl_vat` and `quote.amount_outstanding`, added in September
+2026, became readable by both read-only roles the moment they existed, with no
+grant to re-run. A new **table** is the opposite case and does need adding here
+— the list above is the whole allow-list, and nothing outside it is reachable.
+
 ## 3. Add the RLS policies
 
 Privileges alone are not enough — this is the thing that went wrong with the
